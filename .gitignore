@@ -1,0 +1,19 @@
+## Build output
+bin/
+obj/
+
+## Secrets — never commit API keys
+secrets.json
+appsettings.Development.json
+*.secrets.json
+
+## Generated / backup files
+best_genotype_original.json
+*.log
+
+## OS / editor
+.DS_Store
+*.user
+.vs/
+.vscode/
+.idea/

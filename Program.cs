@@ -141,7 +141,7 @@ async Task RunBacktest()
 // ══════════════════════════════════════════════════════════════════════════════
 async Task RunPaperTrade()
 {
-    Console.WriteLine("=== Gravity-gen2 | PAPER TRADE (regime-aware) ===\n");
+    Console.WriteLine("=== Gravity-gen2 | PAPER TRADE (regime-aware) — Ctrl+C to stop ===\n");
     var g = LoadGenotype(); if (g == null) return;
     Console.WriteLine($"Genotype: {g}\n");
 
@@ -152,29 +152,52 @@ async Task RunPaperTrade()
         "ADAUSDT", "1000PEPEUSDT", "ATOMUSDT", "1000FLOKIUSDT",
     };
 
-    Console.WriteLine($"{"Coin",-18}  {"Regime",-12} {"State",-16} {"Entry",11}  {"Current",11}  {"Unrealised",10}  {"Mode",8}");
-    Console.WriteLine(new string('-', 92));
+    // Refresh every 5 minutes (one 5m candle) — aligns with candle close
+    const int RefreshSeconds = 300;
 
-    foreach (var sym in coins)
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+
+    while (!cts.Token.IsCancellationRequested)
     {
-        var candles = await FetchCandles(sym, batches: 5);
-        if (candles.Count < 200) { Console.WriteLine($"  {sym,-16} (no data)"); continue; }
+        Console.Clear();
+        Console.WriteLine($"=== Gravity-gen2 | PAPER TRADE  [{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC]  Ctrl+C to stop ===\n");
+        Console.WriteLine($"{"Coin",-18}  {"Regime",-12} {"State",-16} {"Entry",11}  {"Current",11}  {"Unrealised",10}  {"Mode",8}");
+        Console.WriteLine(new string('-', 92));
 
-        double px = candles[^1].Close;
-        var    st = Simulator.GetUnifiedTradeState(g, candles.ToArray(), true);
+        foreach (var sym in coins)
+        {
+            if (cts.Token.IsCancellationRequested) break;
 
-        string state  = st.PumpOpen
-            ? (st.PumpInRecovery ? $"SHORT R{st.PumpRecoveryLeg}" : $"SHORT D{st.PumpDca}")
-            : "watching";
-        string entry  = st.PumpOpen ? $"{st.PumpEntry:F6}" : "—";
-        string unreal = st.PumpOpen
-            ? $"{(st.PumpEntry - px) / st.PumpEntry * 100.0:+0.00}%" : "—";
-        string mode   = st.PumpOpen ? (st.PumpInRecovery ? "recovery" : $"DCA {st.PumpDca}/{g.MaxDcaLevels}") : "—";
+            var candles = await FetchCandles(sym, batches: 5);
+            if (candles.Count < 200) { Console.WriteLine($"  {sym,-18}  (no data)"); continue; }
 
-        Console.WriteLine($"  {sym,-18}  {st.Regime,-12} {state,-16} {entry,11}  {px,11:F6}  {unreal,10}  {mode,8}");
+            double px = candles[^1].Close;
+            var    st = Simulator.GetUnifiedTradeState(g, candles.ToArray(), true);
+
+            string state  = st.PumpOpen
+                ? (st.PumpInRecovery ? $"SHORT R{st.PumpRecoveryLeg}" : $"SHORT D{st.PumpDca}")
+                : "watching";
+            string entry  = st.PumpOpen ? $"{st.PumpEntry:F6}" : "—";
+            string unreal = st.PumpOpen
+                ? $"{(st.PumpEntry - px) / st.PumpEntry * 100.0:+0.00}%" : "—";
+            string mode   = st.PumpOpen ? (st.PumpInRecovery ? "recovery" : $"DCA {st.PumpDca}/{g.MaxDcaLevels}") : "—";
+
+            Console.WriteLine($"  {sym,-18}  {st.Regime,-12} {state,-16} {entry,11}  {px,11:F6}  {unreal,10}  {mode,8}");
+        }
+
+        if (cts.Token.IsCancellationRequested) break;
+
+        // Count down to next refresh
+        for (int s = RefreshSeconds; s > 0; s--)
+        {
+            if (cts.Token.IsCancellationRequested) break;
+            Console.Write($"\r  Next refresh in {s,3}s  ");
+            await Task.Delay(1000, cts.Token).ContinueWith(_ => { });
+        }
     }
 
-    Console.WriteLine($"\n  {DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC  |  dotnet run -- papertrade  to refresh");
+    Console.WriteLine("\n\n  Paper trade stopped.");
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

@@ -57,7 +57,13 @@ async Task RunTrain()
     Console.WriteLine($"  Saved → {GenoFile}\n");
 
     // ── Overfit check ─────────────────────────────────────────────────────────
+    // NOTE: the val Sharpe below is a biased estimate — the GA selected this
+    // genotype by scoring on this same val set. After multiple retrains the
+    // reported val number will drift upward. Use RunBacktest (14 unseen coins)
+    // as the authoritative pass/fail gate before trusting or deploying a genotype.
     Console.WriteLine("─── Overfit check (WIF train 80% vs val 20%) ───");
+    Console.WriteLine("  ⚠  Val Sharpe is selection-biased — GA winner was chosen on this split.");
+    Console.WriteLine("     Treat it as a sanity check only. Run backtest for the unbiased verdict.\n");
     var tRet = Simulator.GetUnifiedReturns(best, trainArr, true).Select(t => t.Return).ToList();
     var vRet = Simulator.GetUnifiedReturns(best, valArr,   true).Select(t => t.Return).ToList();
     PrintSplitStats("Train 80%", tRet);
@@ -67,9 +73,9 @@ async Task RunTrain()
     double vSh = Simulator.SharpeRatio(vRet);
     Console.WriteLine(vSh < tSh * 0.5 || vSh <= 0
         ? "\n  !! Possible overfit — val Sharpe < 50% of train"
-        : "\n  OK — val Sharpe within acceptable range");
+        : "\n  OK — val Sharpe within acceptable range (but see bias warning above)");
 
-    Console.WriteLine($"\nNext: dotnet run -- backtest");
+    Console.WriteLine($"\nNext: dotnet run -- backtest   ← authoritative test on 14 unseen coins");
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -77,7 +83,8 @@ async Task RunTrain()
 // ══════════════════════════════════════════════════════════════════════════════
 async Task RunBacktest()
 {
-    Console.WriteLine("=== Gravity-gen2 | BACKTEST (~1yr, 14 coins, regime-aware) ===\n");
+    Console.WriteLine("=== Gravity-gen2 | BACKTEST (~1yr, 14 coins, regime-aware) ===");
+    Console.WriteLine("    Authoritative test — these coins were not used in training or genotype selection.\n");
     var g = LoadGenotype(); if (g == null) return;
     Console.WriteLine($"Genotype: {g}\n");
 

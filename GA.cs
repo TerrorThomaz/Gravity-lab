@@ -34,7 +34,19 @@ public class GeneticAlgorithm
 
     // Walk-forward temporal cross-validation on full candle series (5 folds).
     // Each fold runs GetUnifiedReturns (pump + grid, regime-gated).
-    // Fitness = weighted mean of per-coin (mean_fold_sharpe − 0.5 × std_fold_sharpe).
+    // Fitness = weighted mean of per-coin (mean_fold_score − 0.75 × std_fold_score).
+    // Per-fold score = 0.9×Sharpe + 0.1×Clamp(Calmar,−2,3). Folds with <5 trades score −1.
+    // Calmar weight capped at 0.1: higher weights reward tight stops + force wide entry gates.
+    private const int MinTradesPerFold = 5;
+
+    private static double FoldScore(List<double> returns)
+    {
+        if (returns.Count < MinTradesPerFold) return -1.0;
+        double sharpe = Simulator.SharpeRatio(returns);
+        double calmar = Math.Clamp(Simulator.CalmarRatio(returns), -2.0, 3.0);
+        return 0.9 * sharpe + 0.1 * calmar;
+    }
+
     private double Fitness(Genotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
     {
         double weightedSum = 0, totalWeight = 0;
@@ -53,12 +65,12 @@ public class GeneticAlgorithm
                 {
                     var returns = Simulator.GetUnifiedReturns(ind, candles, _useAtr)
                                            .Select(t => t.Return).ToList();
-                    coinScore = Simulator.SharpeRatio(returns);
+                    coinScore = FoldScore(returns);
                 }
                 else
                 {
                     int foldSize = candles.Length / k;
-                    var sharpes  = new double[k];
+                    var scores   = new double[k];
 
                     for (int f = 0; f < k; f++)
                     {
@@ -67,19 +79,19 @@ public class GeneticAlgorithm
                         var chunk   = candles[start..end];
                         var returns = Simulator.GetUnifiedReturns(ind, chunk, _useAtr)
                                                .Select(t => t.Return).ToList();
-                        sharpes[f]  = Simulator.SharpeRatio(returns);
+                        scores[f]   = FoldScore(returns);
                     }
 
-                    double mean = sharpes.Average();
-                    double std  = Math.Sqrt(sharpes.Select(s => (s - mean) * (s - mean)).Average());
-                    coinScore   = mean - 0.5 * std;
+                    double mean = scores.Average();
+                    double std  = Math.Sqrt(scores.Select(s => (s - mean) * (s - mean)).Average());
+                    coinScore   = mean - 0.75 * std;
                 }
             }
             else
             {
                 var returns = Simulator.GetUnifiedReturns(ind, candles, _useAtr)
                                        .Select(t => t.Return).ToList();
-                coinScore = Simulator.SharpeRatio(returns);
+                coinScore = FoldScore(returns);
             }
 
             weightedSum  += coin.Weight * coinScore;
@@ -119,9 +131,14 @@ public class GeneticAlgorithm
         List<Genotype> eliteIsland    = new();
         List<Genotype> struggleIsland = new();
 
+        double bestFitnessSeen = double.MinValue;
+        int    stagnantGens    = 0;
+
         for (int gen = 0; gen < _generations; gen++)
         {
-            double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
+            double baseMutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
+            // Stagnation boost: if no improvement for 15 gens, double mutation rate to escape local optima
+            double mutationRate = stagnantGens >= 15 ? Math.Min(baseMutationRate * 2.0, 0.9) : baseMutationRate;
 
             Parallel.ForEach(population, individual =>
                 individual.Fitness = Fitness(individual, coins, useValidation: false));
@@ -130,9 +147,21 @@ public class GeneticAlgorithm
             eliteIsland    = population.Take(_eliteCount).ToList();
             struggleIsland = population.Skip(_eliteCount).ToList();
 
+            double topFitness = eliteIsland.First().Fitness;
+            if (topFitness > bestFitnessSeen + 1e-6)
+            {
+                bestFitnessSeen = topFitness;
+                stagnantGens    = 0;
+            }
+            else
+            {
+                stagnantGens++;
+            }
+
             if (_verbose && (gen + 1) % _migrationInterval == 0)
             {
-                Console.WriteLine($"Gen {gen + 1,3} — elite: {eliteIsland.First().ToString(_useAtr)}");
+                string stagnantTag = stagnantGens >= 15 ? $" [STAGNANT×{stagnantGens} boost]" : "";
+                Console.WriteLine($"Gen {gen + 1,3} — elite: {eliteIsland.First().ToString(_useAtr)}{stagnantTag}");
 
                 population     = eliteIsland.Concat(struggleIsland).OrderByDescending(g => g.Fitness).ToList();
                 eliteIsland    = population.Take(_eliteCount).ToList();

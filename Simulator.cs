@@ -21,7 +21,7 @@ public static class Simulator
         double avgVolume = volumes.Average();
 
         // 15m blending: aggregate segment to 15m and compute higher-TF indicators
-        double w = g.TimeframeBlend;
+        double w = 1.0;
         var seg15m   = AggregateSegment(segment, 3);
         var closes15 = seg15m.Select(c => c.Close).ToArray();
         var rsi15m   = closes15.Length > g.RsiPeriod ? ComputeRsi(closes15, g.RsiPeriod) : rsi5m;
@@ -316,7 +316,7 @@ public static class Simulator
         var ema5m   = ComputeEma(closes, g.EmaPeriod);
         double avgVolume = volumes.Average();
 
-        double w       = g.TimeframeBlend;
+        double w       = 1.0;
         var seg15m     = AggregateSegment(segment, 3);
         var closes15   = seg15m.Select(c => c.Close).ToArray();
         var rsi15m     = closes15.Length > g.RsiPeriod ? ComputeRsi(closes15, g.RsiPeriod) : rsi5m;
@@ -425,7 +425,7 @@ public static class Simulator
         var ema5m   = ComputeEma(closes, g.EmaPeriod);
         double avgVolume = volumes.Average();
 
-        double w = g.TimeframeBlend;
+        double w = 1.0;
         var seg15m   = AggregateSegment(segment, 3);
         var closes15 = seg15m.Select(c => c.Close).ToArray();
         var rsi15m   = closes15.Length > g.RsiPeriod ? ComputeRsi(closes15, g.RsiPeriod) : rsi5m;
@@ -807,7 +807,7 @@ public static class Simulator
         var adx        = ComputeAdx(highs, lows, closes, g.RegimeAdxPeriod);
         double avgVol  = volumes.Average();
 
-        double w       = g.TimeframeBlend;
+        double w       = 1.0;
         var seg15m     = AggregateSegment(candles, 3);
         var closes15   = seg15m.Select(c => c.Close).ToArray();
         var rsi15m     = closes15.Length > g.RsiPeriod ? ComputeRsi(closes15, g.RsiPeriod) : rsi5m;

@@ -12,11 +12,13 @@ switch (mode)
     case "train":      await RunTrain();      break;
     case "backtest":   await RunBacktest();   break;
     case "papertrade": await RunPaperTrade(); break;
+    case "livetrain":  await RunLiveTrain();  break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
         Console.WriteLine("  dotnet run -- train       GA on WIF (regime-aware pump+grid)");
         Console.WriteLine("  dotnet run -- backtest    1yr backtest on 14 coins");
         Console.WriteLine("  dotnet run -- papertrade  Live signals per coin");
+        Console.WriteLine("  dotnet run -- livetrain   20 genotypes evaluated on live data, evolves hourly");
         break;
 }
 
@@ -205,6 +207,79 @@ async Task RunPaperTrade()
     }
 
     Console.WriteLine("\n\n  Paper trade stopped.");
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  LIVE TRAIN
+// ══════════════════════════════════════════════════════════════════════════════
+async Task RunLiveTrain()
+{
+    Console.WriteLine("=== Gravity-gen2 | LIVE TRAIN (20 genotypes, rolling ~10d window) — Ctrl+C to stop ===\n");
+    Console.WriteLine("  Fitness = mean Sharpe across 14 coins − 0.4×σ (cross-coin variance penalty).");
+    Console.WriteLine("  Threshold genes that overfit to one coin will rank low; universal genes survive.\n");
+
+    var seed    = LoadGenotype();   // seed population from saved best if available
+    var trainer = new LiveTrainer(popSize: 20, seed: seed);
+
+    var coins = new[]
+    {
+        "WIFUSDT", "SOLUSDT",  "MEMEUSDT",    "DOGEUSDT",    "1000BONKUSDT",
+        "XRPUSDT", "ETHUSDT",  "AVAXUSDT",    "BNBUSDT",     "LINKUSDT",
+        "ADAUSDT", "1000PEPEUSDT", "ATOMUSDT", "1000FLOKIUSDT",
+    };
+
+    const int RefreshSeconds = 300;
+    const int RollingBatches = 3;    // 3 × up-to-1000 candles ≈ 10 days of 5m data
+
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+
+    while (!cts.Token.IsCancellationRequested)
+    {
+        Console.Clear();
+        Console.WriteLine($"=== Gravity-gen2 | LIVE TRAIN  [{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC] — Ctrl+C to stop ===\n");
+
+        // ── Fetch rolling candles for all coins ───────────────────────────────
+        Console.Write($"  Fetching {RollingBatches * 1000} candles per coin... ");
+        var recentCandles = new Dictionary<string, Candle[]>();
+        foreach (var sym in coins)
+        {
+            if (cts.Token.IsCancellationRequested) break;
+            var candles = await FetchCandles(sym, batches: RollingBatches);
+            if (candles.Count >= 100)
+                recentCandles[sym] = candles.ToArray();
+        }
+        Console.WriteLine($"{recentCandles.Count}/{coins.Length} coins ready\n");
+
+        // ── Evaluate + maybe evolve ───────────────────────────────────────────
+        trainer.EvaluateAll(recentCandles);
+        trainer.MaybeEvolve();
+
+        // ── Print ranking ─────────────────────────────────────────────────────
+        trainer.PrintRanking(recentCandles);
+
+        // ── Auto-save if session best improves on saved genotype ──────────────
+        var savedFitness = LoadGenotype()?.Fitness ?? double.MinValue;
+        if (trainer.SessionBest != null && trainer.SessionBestScore > savedFitness)
+        {
+            Console.WriteLine($"\n  ★ Session best beats saved genotype — writing live_best_genotype.json");
+            File.WriteAllText("live_best_genotype.json",
+                JsonSerializer.Serialize(GenotypeDto.From(trainer.SessionBest),
+                    new JsonSerializerOptions { WriteIndented = true }));
+        }
+
+        if (cts.Token.IsCancellationRequested) break;
+
+        for (int s = RefreshSeconds; s > 0 && !cts.Token.IsCancellationRequested; s--)
+        {
+            Console.Write($"\r  Next refresh in {s,3}s  ");
+            await Task.Delay(1000, cts.Token).ContinueWith(_ => { });
+        }
+    }
+
+    Console.WriteLine("\n\n  Live train stopped.");
+    if (trainer.SessionBest != null)
+        Console.WriteLine($"  Session best: {trainer.SessionBest}");
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

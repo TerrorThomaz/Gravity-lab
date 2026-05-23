@@ -11,6 +11,11 @@ appsettings.Development.json
 best_genotype_original.json
 *.log
 
+## Discord bot env + venv
+.env
+.env.local
+.venv/
+
 ## OS / editor
 .DS_Store
 *.user

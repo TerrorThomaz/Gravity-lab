@@ -119,13 +119,15 @@ public class GeneticAlgorithm
             .Select(_ => Genotype.Random(_rng, _useAtr))
             .ToList();
 
-        // Inject seed into 20% of initial population as mutated variants + one pure copy
+        // Inject seed into 20% of initial population as mutated variants + one clamped copy.
+        // Clamp first so out-of-range values from old saved files don't bypass the new bounds.
         if (seed != null)
         {
-            population[0] = seed;
+            var clampedSeed = seed.ClampToBounds(_useAtr);
+            population[0] = clampedSeed;
             int seedCount = Math.Min(_populationSize / 5, _populationSize - 1);
             for (int s = 1; s <= seedCount; s++)
-                population[s] = seed.Mutate(_rng, 0.25, _useAtr);
+                population[s] = clampedSeed.Mutate(_rng, 0.25, _useAtr);
         }
 
         List<Genotype> eliteIsland    = new();

@@ -3,7 +3,7 @@ namespace TradingGA;
 public class Genotype
 {
     public int    RsiPeriod         { get; set; }
-    public double RsiOverbought     { get; set; }   // min 65 — below that is noise, not a pump
+    public double RsiOverbought     { get; set; }   // min 68 — gives execution headroom vs live fills
     public int    BosCandlesWait    { get; set; }
     public double GridStepAtrMult   { get; set; }   // trailing stop / grid step width (×ATR)
     public double DcaTriggerAtrMult { get; set; }
@@ -20,9 +20,9 @@ public class Genotype
     public static Genotype Random(System.Random rng, bool atrMode = true) => new()
     {
         RsiPeriod          = rng.Next(7, 22),
-        RsiOverbought      = rng.NextDouble() * 15 + 65,   // 65–80
+        RsiOverbought      = rng.NextDouble() * 12 + 68,   // 68–80
         BosCandlesWait     = rng.Next(1, 6),
-        GridStepAtrMult    = atrMode ? rng.NextDouble() * 4.7 + 0.3 : rng.NextDouble() * 1.5 + 0.3,
+        GridStepAtrMult    = atrMode ? rng.NextDouble() * 4.4 + 0.6 : rng.NextDouble() * 1.2 + 0.6,
         DcaTriggerAtrMult  = atrMode ? rng.NextDouble() * 7.7 + 0.3 : rng.NextDouble() * 2.7 + 0.3,
         EmaPeriod          = rng.Next(10, 51),
         BreakEvenAtrMult   = rng.NextDouble() * 2.0,
@@ -65,9 +65,9 @@ public class Genotype
         return new Genotype
         {
             RsiPeriod          = NudgeInt(RsiPeriod, 7, 21),
-            RsiOverbought      = Nudge(RsiOverbought, 65, 80, 3),    // floor at 65
+            RsiOverbought      = Nudge(RsiOverbought, 68, 80, 3),    // floor at 68
             BosCandlesWait     = NudgeInt(BosCandlesWait, 1, 5),
-            GridStepAtrMult    = atrMode ? Nudge(GridStepAtrMult,   0.3, 5.0, 0.4) : Nudge(GridStepAtrMult,   0.3, 1.8, 0.2),
+            GridStepAtrMult    = atrMode ? Nudge(GridStepAtrMult,   0.6, 5.0, 0.4) : Nudge(GridStepAtrMult,   0.6, 1.8, 0.2),
             DcaTriggerAtrMult  = atrMode ? Nudge(DcaTriggerAtrMult, 0.3, 8.0, 0.6) : Nudge(DcaTriggerAtrMult, 0.3, 3.0, 0.3),
             EmaPeriod          = NudgeInt(EmaPeriod, 10, 50),
             BreakEvenAtrMult   = Nudge(BreakEvenAtrMult,  0.0, 2.0, 0.20),
@@ -78,6 +78,27 @@ public class Genotype
             RegimeAdxThreshold = Nudge(RegimeAdxThreshold, 15.0, 35.0, 3.0),
         };
     }
+
+    public Genotype ClampToBounds(bool atrMode = true) => new()
+    {
+        RsiPeriod          = Math.Clamp(RsiPeriod,          7,    21),
+        RsiOverbought      = Math.Clamp(RsiOverbought,      68.0, 80.0),
+        BosCandlesWait     = Math.Clamp(BosCandlesWait,     1,    5),
+        GridStepAtrMult    = atrMode
+                             ? Math.Clamp(GridStepAtrMult,  0.6,  5.0)
+                             : Math.Clamp(GridStepAtrMult,  0.6,  1.8),
+        DcaTriggerAtrMult  = atrMode
+                             ? Math.Clamp(DcaTriggerAtrMult, 0.3, 8.0)
+                             : Math.Clamp(DcaTriggerAtrMult, 0.3, 3.0),
+        EmaPeriod          = Math.Clamp(EmaPeriod,          10,   50),
+        BreakEvenAtrMult   = Math.Clamp(BreakEvenAtrMult,   0.0,  2.0),
+        MaxDcaLevels       = Math.Clamp(MaxDcaLevels,       0,    5),
+        BosThreshold       = Math.Clamp(BosThreshold,       0.990, 0.999),
+        VolumeMultiplier   = Math.Clamp(VolumeMultiplier,   1.0,  2.5),
+        RegimeAdxPeriod    = Math.Clamp(RegimeAdxPeriod,    7,    21),
+        RegimeAdxThreshold = Math.Clamp(RegimeAdxThreshold, 15.0, 35.0),
+        Fitness            = Fitness,
+    };
 
     public string ToString(bool atrMode) =>
         $"RSI({RsiPeriod},OB={RsiOverbought:F1}) Bwait={BosCandlesWait} " +

@@ -210,14 +210,19 @@ class KnowledgeBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self) -> None:
-        if GUILD_ID:
-            guild = discord.Object(id=GUILD_ID)
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-            print(f"[knowledge] slash commands synced to guild {GUILD_ID}")
-        else:
-            await self.tree.sync()
-            print("[knowledge] slash commands synced globally (up to 1h)")
+        try:
+            if GUILD_ID:
+                guild = discord.Object(id=GUILD_ID)
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+                print(f"[knowledge] slash commands synced to guild {GUILD_ID}")
+            else:
+                await self.tree.sync()
+                print("[knowledge] slash commands synced globally (up to 1h)")
+        except discord.Forbidden:
+            print("[knowledge] WARNING: slash command sync failed (403) — "
+                  "re-invite the bot with the applications.commands scope. "
+                  "Teacher channel messages still work.")
         daily_post.start()
 
 client = KnowledgeBot()

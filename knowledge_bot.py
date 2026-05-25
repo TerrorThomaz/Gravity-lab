@@ -2,7 +2,9 @@
 """
 Gravity Knowledge Bot
 
-Two channels, one bot:
+Two channels, one bot process — uses the same `claude -p` CLI as the trading bot,
+so no separate API key or extra billing is needed.
+
   KNOWLEDGE — daily post at KNOWLEDGE_POST_HOUR UTC:
                 · On This Day in history/science
                 · Science concept of the day
@@ -16,8 +18,7 @@ Two channels, one bot:
                 plain messages → answered by Claude as teacher
 
 Env vars (add to .env):
-  DISCORD_TOKEN_KNOWLEDGE   bot token — must be a SEPARATE application from the trading bot
-  ANTHROPIC_API_KEY         Anthropic API key
+  DISCORD_TOKEN_KNOWLEDGE   bot token (separate Discord application from the trading bot)
   DISCORD_KNOWLEDGE_CHANNEL channel ID for daily posts
   DISCORD_TEACHER_CHANNEL   channel ID for teacher chat
   DISCORD_GUILD_ID          (shared) for instant slash command sync
@@ -40,79 +41,87 @@ except ImportError:
     pass
 
 import aiohttp
-import anthropic
 import discord
 from discord import app_commands
 from discord.ext import tasks
 
 # ── Config ────────────────────────────────────────────────────────────────────
-DISCORD_TOKEN      = os.environ.get("DISCORD_TOKEN_KNOWLEDGE") or os.environ["DISCORD_TOKEN"]
-KNOWLEDGE_CH_ID    = int(os.environ["DISCORD_KNOWLEDGE_CHANNEL"])
-TEACHER_CH_ID      = int(os.environ["DISCORD_TEACHER_CHANNEL"])
-GUILD_ID           = int(os.environ["DISCORD_GUILD_ID"]) if os.environ.get("DISCORD_GUILD_ID") else None
-ANTHROPIC_API_KEY  = os.environ["ANTHROPIC_API_KEY"]
-POST_HOUR          = int(os.environ.get("KNOWLEDGE_POST_HOUR", "8"))
+DISCORD_TOKEN   = os.environ.get("DISCORD_TOKEN_KNOWLEDGE") or os.environ["DISCORD_TOKEN"]
+KNOWLEDGE_CH_ID = int(os.environ["DISCORD_KNOWLEDGE_CHANNEL"])
+TEACHER_CH_ID   = int(os.environ["DISCORD_TEACHER_CHANNEL"])
+GUILD_ID        = int(os.environ["DISCORD_GUILD_ID"]) if os.environ.get("DISCORD_GUILD_ID") else None
+POST_HOUR       = int(os.environ.get("KNOWLEDGE_POST_HOUR", "8"))
 
-# Use Sonnet for teacher (fast + cheap), can bump to Opus for richer content
-TEACHER_MODEL  = "claude-sonnet-4-6"
-DAILY_MODEL    = "claude-sonnet-4-6"
-
-SCIENCE_RSS    = "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml"
-
-claude = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+SCIENCE_RSS     = "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml"
+MAX_HISTORY     = 16   # message turns kept per channel (8 back-and-forth exchanges)
 
 # ── Teacher state (per channel) ───────────────────────────────────────────────
-# topic:   current subject being taught in the channel
-# history: list of {"role": "user"/"assistant", "content": "..."} — last 20 msgs
-teacher_topic:   dict[int, str]        = {}
-teacher_history: dict[int, deque]      = {}
+teacher_topic:   dict[int, str]   = {}
+teacher_history: dict[int, deque] = {}   # deque of (role, text) tuples
 
-MAX_HISTORY = 20  # message pairs kept in memory
-
-def get_history(ch_id: int) -> list[dict]:
+def get_history(ch_id: int) -> deque:
     if ch_id not in teacher_history:
         teacher_history[ch_id] = deque(maxlen=MAX_HISTORY)
-    return list(teacher_history[ch_id])
+    return teacher_history[ch_id]
 
-def push_history(ch_id: int, role: str, content: str) -> None:
-    if ch_id not in teacher_history:
-        teacher_history[ch_id] = deque(maxlen=MAX_HISTORY)
-    teacher_history[ch_id].append({"role": role, "content": content})
+def push_history(ch_id: int, role: str, text: str) -> None:
+    get_history(ch_id).append((role, text))
+
+def build_prompt(system: str, history: deque, user_input: str) -> str:
+    """
+    Format a full conversational prompt for `claude -p`.
+    System instructions come first, then the conversation transcript,
+    then the new user message.
+    """
+    parts = [f"[Instructions for Claude]\n{system}\n[End instructions]\n"]
+    for role, text in history:
+        label = "Student" if role == "user" else "Teacher"
+        parts.append(f"{label}: {text}")
+    parts.append(f"Student: {user_input}")
+    parts.append("Teacher:")
+    return "\n\n".join(parts)
 
 def teacher_system(ch_id: int) -> str:
     topic = teacher_topic.get(ch_id)
-    topic_line = f" The current lesson topic is: **{topic}**." if topic else ""
+    topic_line = f" The current lesson topic is: {topic}." if topic else ""
     return (
-        "You are an enthusiastic, patient, and knowledgeable teacher.{topic_line} "
-        "Explain concepts clearly at the student's level — ask a follow-up question "
-        "at the end of your response to check understanding or deepen the discussion. "
-        "When giving a quiz, present 5 numbered questions, then wait for answers before revealing solutions. "
-        "Use concrete examples, analogies, and real-world applications. "
-        "Keep responses focused and under 400 words unless a deep explanation is explicitly requested."
-    ).format(topic_line=topic_line)
+        f"You are an enthusiastic, patient, and knowledgeable teacher.{topic_line} "
+        "Explain concepts clearly at the student's level. Use concrete examples and analogies. "
+        "End responses with a follow-up question to deepen understanding. "
+        "For quizzes: present 5 numbered questions, wait for answers before revealing solutions. "
+        "Keep responses under 350 words unless a deep explanation is explicitly requested. "
+        "Do NOT include a 'Teacher:' label at the start of your reply — just write the response."
+    )
 
-# ── Claude helpers ────────────────────────────────────────────────────────────
-async def ask_claude(system: str, messages: list, model: str = TEACHER_MODEL,
-                     max_tokens: int = 1200) -> str:
+# ── Claude via CLI ────────────────────────────────────────────────────────────
+async def ask_claude(prompt: str, timeout: int = 90) -> str:
+    proc = await asyncio.create_subprocess_exec(
+        "claude", "-p", prompt, "--dangerously-skip-permissions",
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
     try:
-        resp = await claude.messages.create(
-            model=model, max_tokens=max_tokens,
-            system=system, messages=messages,
-        )
-        return resp.content[0].text
-    except Exception as exc:
-        return f"*(Claude error: {exc})*"
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return "*(Claude timed out — try again)*"
+    text = out.decode("utf-8", errors="replace").strip()
+    if not text:
+        err_text = err.decode("utf-8", errors="replace").strip()
+        return f"*(no output — {err_text[:200]})*"
+    return text
 
 def chunk_text(text: str, limit: int = 1900) -> list[str]:
-    paragraphs, current = text.split("\n\n"), ""
-    chunks = []
-    for para in paragraphs:
+    """Split on paragraph boundaries to stay under Discord's 2000-char limit."""
+    chunks, current = [], ""
+    for para in text.split("\n\n"):
         if len(current) + len(para) + 2 > limit:
             if current:
                 chunks.append(current.strip())
             current = para
         else:
-            current = (current + "\n\n" + para).strip() if current else para
+            current = (current + "\n\n" + para) if current else para
     if current:
         chunks.append(current.strip())
     return chunks or ["(empty)"]
@@ -127,7 +136,8 @@ async def fetch_science_headlines() -> list[str]:
         return [item.findtext("title", "").strip()
                 for item in root.findall(".//item")[:5]
                 if item.findtext("title")]
-    except Exception:
+    except Exception as exc:
+        print(f"[knowledge] RSS fetch failed: {exc}")
         return []
 
 # ── Daily knowledge post ──────────────────────────────────────────────────────
@@ -136,29 +146,29 @@ async def build_daily_embed() -> discord.Embed:
     date_str  = today.strftime("%B %d, %Y")
     month_day = today.strftime("%B %d")
     headlines = await fetch_science_headlines()
-    news_ctx  = ("Recent science headlines:\n" + "\n".join(f"• {h}" for h in headlines)
+    news_ctx  = ("\nRecent science headlines for context:\n"
+                 + "\n".join(f"• {h}" for h in headlines)
                  if headlines else "")
 
     prompt = (
-        f"Today is {date_str}. Write a daily knowledge post with exactly three sections.\n\n"
+        f"[Instructions for Claude]\n"
+        f"You are an engaging science communicator and historian. Write accurate, vivid content "
+        f"that makes readers want to learn more. Do NOT include a label or preamble before each section "
+        f"— just use the exact ## headings shown below.\n"
+        f"[End instructions]\n\n"
+        f"Today is {date_str}. Write a daily knowledge post with exactly these three sections:\n\n"
         f"## On This Day — {month_day}\n"
-        f"Two or three notable events that occurred on {month_day} in history (any year). "
-        f"Prioritise science, technology, exploration, and medicine. Include the year for each event.\n\n"
+        f"Two or three notable events on {month_day} in history (any year). "
+        f"Focus on science, technology, exploration, and medicine. Include the year for each.\n\n"
         f"## Science Concept of the Day\n"
-        f"Explain one fascinating scientific concept, discovery, or natural phenomenon in 3–4 engaging sentences. "
+        f"One fascinating concept, discovery, or natural phenomenon — explained in 3–4 sentences. "
         f"Make it surprising or counterintuitive where possible.\n\n"
         f"## Did You Know?\n"
-        f"One unexpected, little-known, or mind-bending scientific fact — one or two sentences.\n\n"
-        f"{news_ctx}\n\n"
-        f"Write the three sections using those exact ## headings. Be accurate, engaging, and specific."
+        f"One unexpected, little-known, or mind-bending scientific fact in 1–2 sentences."
+        f"{news_ctx}"
     )
 
-    raw = await ask_claude(
-        "You are an engaging science communicator and historian. "
-        "Your writing is accurate, vivid, and makes readers want to learn more.",
-        [{"role": "user", "content": prompt}],
-        model=DAILY_MODEL, max_tokens=1000,
-    )
+    raw = await ask_claude(prompt, timeout=120)
 
     embed = discord.Embed(
         title=f"📚 Daily Knowledge — {date_str}",
@@ -187,8 +197,7 @@ async def build_daily_embed() -> discord.Embed:
             value="\n".join(f"• {h}" for h in headlines[:4]),
             inline=False,
         )
-
-    embed.set_footer(text="Use /topic to start a lesson • /quiz for a challenge • /explain <concept>")
+    embed.set_footer(text="/topic to start a lesson • /quiz for a challenge • /explain <concept>")
     return embed
 
 # ── Discord bot ───────────────────────────────────────────────────────────────
@@ -220,10 +229,10 @@ async def daily_post() -> None:
     if ch is None:
         print(f"[knowledge] daily post: channel {KNOWLEDGE_CH_ID} not found")
         return
-    async with ch.typing():
+    async with ch.typing():                     # type: ignore[union-attr]
         embed = await build_daily_embed()
-    await ch.send(embed=embed)  # type: ignore[union-attr]
-    print(f"[knowledge] daily post sent at {datetime.now(timezone.utc):%H:%M UTC}")
+    await ch.send(embed=embed)                  # type: ignore[union-attr]
+    print(f"[knowledge] daily post sent {datetime.now(timezone.utc):%H:%M UTC}")
 
 @daily_post.before_loop
 async def before_daily() -> None:
@@ -245,55 +254,53 @@ async def slash_topic(interaction: discord.Interaction, subject: str) -> None:
 
     await interaction.response.defer(thinking=True)
 
-    prompt = (
-        f"Start an engaging introductory lesson on: **{subject}**.\n\n"
-        f"Structure it as:\n"
-        f"1. A one-sentence hook that makes it immediately interesting\n"
-        f"2. Core concept explained clearly (3–4 sentences)\n"
-        f"3. One real-world example or application\n"
-        f"4. End with a question to check the student's starting understanding"
+    prompt = build_prompt(
+        teacher_system(ch_id),
+        deque(),
+        (
+            f"Start an introductory lesson on: {subject}.\n"
+            "Structure: (1) a one-sentence hook that makes it immediately interesting, "
+            "(2) core concept explained clearly in 3–4 sentences, "
+            "(3) one real-world example or application, "
+            "(4) a question to gauge the student's starting knowledge."
+        )
     )
-    reply = await ask_claude(teacher_system(ch_id),
-                             [{"role": "user", "content": prompt}])
-    push_history(ch_id, "user", prompt)
+    reply = await ask_claude(prompt)
     push_history(ch_id, "assistant", reply)
 
     embed = discord.Embed(
         title=f"📖 Lesson: {subject}",
-        description=reply,
+        description=reply[:4000],
         color=discord.Color.green(),
     )
     embed.set_footer(text="Ask questions freely • /explain <concept> • /quiz to test yourself")
     await interaction.followup.send(embed=embed)
 
 @client.tree.command(name="explain", description="Deep-dive explanation of a concept")
-@app_commands.describe(concept="The concept to explain")
+@app_commands.describe(concept="The concept to explain in depth")
 async def slash_explain(interaction: discord.Interaction, concept: str) -> None:
     ch_id = interaction.channel_id
     await interaction.response.defer(thinking=True)
 
-    prompt = (
-        f"Give a thorough, layered explanation of: **{concept}**\n\n"
-        f"Cover: what it is, why it works that way, a concrete analogy, "
-        f"and one surprising implication or edge case."
+    user_msg = (
+        f"Give a thorough explanation of: {concept}. "
+        "Cover what it is, why it works that way, a concrete analogy, "
+        "and one surprising implication or edge case."
     )
-    messages = get_history(ch_id) + [{"role": "user", "content": prompt}]
-    reply = await ask_claude(teacher_system(ch_id), messages, max_tokens=1500)
-    push_history(ch_id, "user", prompt)
+    prompt = build_prompt(teacher_system(ch_id), get_history(ch_id), user_msg)
+    reply  = await ask_claude(prompt, timeout=120)
+    push_history(ch_id, "user", user_msg)
     push_history(ch_id, "assistant", reply)
 
-    embed = discord.Embed(
-        title=f"🔍 {concept}",
-        color=discord.Color.orange(),
-    )
+    embed = discord.Embed(title=f"🔍 {concept}", color=discord.Color.orange())
     for chunk in chunk_text(reply):
         embed.add_field(name="​", value=chunk, inline=False)
     await interaction.followup.send(embed=embed)
 
-@client.tree.command(name="quiz", description="Get a 5-question quiz on the current topic (or specify one)")
+@client.tree.command(name="quiz", description="5-question quiz on the current topic (or specify one)")
 @app_commands.describe(topic="Topic to quiz on (defaults to current lesson topic)")
 async def slash_quiz(interaction: discord.Interaction, topic: str | None = None) -> None:
-    ch_id     = interaction.channel_id
+    ch_id      = interaction.channel_id
     quiz_topic = topic or teacher_topic.get(ch_id)
     await interaction.response.defer(thinking=True)
 
@@ -302,30 +309,30 @@ async def slash_quiz(interaction: discord.Interaction, topic: str | None = None)
             "No active topic. Use `/topic <subject>` first, or pass a topic to `/quiz`.")
         return
 
-    prompt = (
-        f"Create a 5-question quiz on: **{quiz_topic}**\n\n"
-        f"Mix question types: 2 multiple-choice (A/B/C/D), 2 short-answer, 1 true/false.\n"
-        f"Number them 1–5. Do NOT include the answers yet — wait for the student to respond."
+    user_msg = (
+        f"Create a 5-question quiz on: {quiz_topic}. "
+        "Mix: 2 multiple-choice (A/B/C/D), 2 short-answer, 1 true/false. "
+        "Number them 1–5. Do NOT include answers yet — wait for the student to respond."
     )
-    messages = get_history(ch_id) + [{"role": "user", "content": prompt}]
-    reply = await ask_claude(teacher_system(ch_id), messages, max_tokens=800)
-    push_history(ch_id, "user", prompt)
+    prompt = build_prompt(teacher_system(ch_id), get_history(ch_id), user_msg)
+    reply  = await ask_claude(prompt)
+    push_history(ch_id, "user", user_msg)
     push_history(ch_id, "assistant", reply)
 
     embed = discord.Embed(
         title=f"❓ Quiz — {quiz_topic}",
-        description=reply,
+        description=reply[:4000],
         color=discord.Color.purple(),
     )
     embed.set_footer(text="Answer in chat — I'll score your responses")
     await interaction.followup.send(embed=embed)
 
-# ── Message handler (teacher channel) ────────────────────────────────────────
+# ── Teacher channel: handle plain messages ────────────────────────────────────
 @client.event
 async def on_ready() -> None:
     print(f"[knowledge] logged in as {client.user}")
     print(f"[knowledge] knowledge ch={KNOWLEDGE_CH_ID}  teacher ch={TEACHER_CH_ID}")
-    print(f"[knowledge] daily post scheduled at {POST_HOUR:02d}:00 UTC")
+    print(f"[knowledge] daily post at {POST_HOUR:02d}:00 UTC")
 
 @client.event
 async def on_message(message: discord.Message) -> None:
@@ -333,25 +340,23 @@ async def on_message(message: discord.Message) -> None:
         return
     if message.channel.id != TEACHER_CH_ID:
         return
-
     text = message.content.strip()
     if not text:
         return
 
     ch_id = message.channel.id
-    async with message.channel.typing():
+    async with message.channel.typing():       # type: ignore[union-attr]
+        prompt = build_prompt(teacher_system(ch_id), get_history(ch_id), text)
+        reply  = await ask_claude(prompt)
         push_history(ch_id, "user", text)
-        messages = get_history(ch_id)
-        reply = await ask_claude(teacher_system(ch_id), messages)
         push_history(ch_id, "assistant", reply)
 
-    # Send as plain text chunks (teacher channel feels more conversational than embeds)
     for chunk in chunk_text(reply):
-        await message.channel.send(chunk)  # type: ignore[union-attr]
+        await message.channel.send(chunk)      # type: ignore[union-attr]
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    missing = [v for v in ("ANTHROPIC_API_KEY", "DISCORD_KNOWLEDGE_CHANNEL", "DISCORD_TEACHER_CHANNEL")
+    missing = [v for v in ("DISCORD_KNOWLEDGE_CHANNEL", "DISCORD_TEACHER_CHANNEL")
                if not os.environ.get(v)]
     if not os.environ.get("DISCORD_TOKEN_KNOWLEDGE") and not os.environ.get("DISCORD_TOKEN"):
         missing.append("DISCORD_TOKEN_KNOWLEDGE")

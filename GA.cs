@@ -15,6 +15,7 @@ public class GeneticAlgorithm
     private readonly bool      _useAtr;
     private readonly bool      _verbose;
     private readonly GeneBlock _activeBlock;
+    private readonly double    _maxTradeDensity; // max trades/candle; 0 = disabled
     private readonly Random _rng = new();
 
     public GeneticAlgorithm(
@@ -24,7 +25,8 @@ public class GeneticAlgorithm
         int       migrationInterval = 10,
         bool      useAtr            = true,
         bool      verbose           = true,
-        GeneBlock activeBlock       = GeneBlock.All)
+        GeneBlock activeBlock       = GeneBlock.All,
+        double    maxTradeDensity   = 0.0)
     {
         _populationSize    = populationSize;
         _generations       = generations;
@@ -33,6 +35,7 @@ public class GeneticAlgorithm
         _useAtr            = useAtr;
         _verbose           = verbose;
         _activeBlock       = activeBlock;
+        _maxTradeDensity   = maxTradeDensity;
     }
 
     // Walk-forward temporal cross-validation on full candle series (5 folds).
@@ -42,12 +45,24 @@ public class GeneticAlgorithm
     // Calmar weight capped at 0.1: higher weights reward tight stops + force wide entry gates.
     private const int MinTradesPerFold = 5;
 
-    private static double FoldScore(List<double> returns)
+    private double FoldScore(List<double> returns, int candleCount = 0)
     {
         if (returns.Count < MinTradesPerFold) return -1.0;
         double sharpe = Simulator.SharpeRatio(returns);
         double calmar = Math.Clamp(Simulator.CalmarRatio(returns), -2.0, 3.0);
-        return 0.9 * sharpe + 0.1 * calmar;
+        double score  = 0.9 * sharpe + 0.1 * calmar;
+
+        // Selectivity penalty: if trade density exceeds cap, apply squared penalty.
+        // This strongly discourages "trade everything" regime genes while leaving
+        // exit genes (which don't affect entry frequency) unaffected.
+        if (_maxTradeDensity > 0 && candleCount > 0)
+        {
+            double density = (double)returns.Count / candleCount;
+            if (density > _maxTradeDensity)
+                score *= Math.Pow(_maxTradeDensity / density, 2.0);
+        }
+
+        return score;
     }
 
     private double Fitness(Genotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
@@ -68,7 +83,7 @@ public class GeneticAlgorithm
                 {
                     var returns = Simulator.GetUnifiedReturns(ind, candles, _useAtr)
                                            .Select(t => t.Return).ToList();
-                    coinScore = FoldScore(returns);
+                    coinScore = FoldScore(returns, candles.Length);
                 }
                 else
                 {
@@ -82,7 +97,7 @@ public class GeneticAlgorithm
                         var chunk   = candles[start..end];
                         var returns = Simulator.GetUnifiedReturns(ind, chunk, _useAtr)
                                                .Select(t => t.Return).ToList();
-                        scores[f]   = FoldScore(returns);
+                        scores[f]   = FoldScore(returns, chunk.Length);
                     }
 
                     double mean = scores.Average();

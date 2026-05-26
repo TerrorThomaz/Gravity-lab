@@ -220,14 +220,33 @@ async Task RunTrainBlocks()
         return Simulator.SharpeRatio(allRet);
     }
 
+    // Density cap: ~1 trade per coin per day on 5m candles (288 candles/day).
+    // Squared penalty kicks in above this; 4× density → 6.25% of the raw score.
+    // Prevents regime genes collapsing to "trade everything" during Phase 1.
+    const double SelectivityCap = 1.0 / 288.0; // ≈ 0.00347
+
+    // Compute seed's trade density for reference
+    if (seed != null)
+    {
+        var refReturns = coinData.SelectMany(cd =>
+            Simulator.GetUnifiedReturns(seed, cd.TrainCandles, true).Select(t => t.Return)).ToList();
+        double refDensity = coinData.Sum(cd => cd.TrainCandles.Length) > 0
+            ? (double)refReturns.Count / coinData.Sum(cd => (long)cd.TrainCandles.Length)
+            : 0;
+        Console.WriteLine($"  Seed trade density : {refDensity * 288:F2} trades/coin/day  " +
+            $"(cap = {SelectivityCap * 288:F2}/day)\n");
+    }
+
     // ── Phase 1: Regime / entry-filter genes ──────────────────────────────
     Console.WriteLine("─── Phase 1/3: Regime genes ───");
     Console.WriteLine("  Active : RsiPeriod, RsiOverbought, BosCandlesWait, EmaPeriod,");
     Console.WriteLine("           BosThreshold, VolumeMultiplier, RegimeAdxPeriod, RegimeAdxThreshold");
-    Console.WriteLine("  Frozen : GridStepAtrMult, DcaTriggerAtrMult, BreakEvenAtrMult, MaxDcaLevels\n");
+    Console.WriteLine($"  Frozen : GridStepAtrMult, DcaTriggerAtrMult, BreakEvenAtrMult, MaxDcaLevels");
+    Console.WriteLine($"  Density cap: {SelectivityCap * 288:F2} trades/coin/day (squared penalty above)\n");
 
     var phase1 = new GeneticAlgorithm(50, 50, useAtr: true, verbose: true,
-                                       activeBlock: GeneBlock.Regime)
+                                       activeBlock: GeneBlock.Regime,
+                                       maxTradeDensity: SelectivityCap)
         .Run(coinData, seed);
     Console.WriteLine($"\n  Phase 1 → {phase1}\n");
 
@@ -242,9 +261,10 @@ async Task RunTrainBlocks()
     Console.WriteLine($"\n  Phase 2 → {phase2}\n");
 
     // ── Phase 3: Joint polish ─────────────────────────────────────────────
-    Console.WriteLine("─── Phase 3/3: Joint polish (all genes free) ───");
+    Console.WriteLine("─── Phase 3/3: Joint polish (all genes free, density cap maintained) ───");
     var best = new GeneticAlgorithm(40, 30, useAtr: true, verbose: true,
-                                     activeBlock: GeneBlock.All)
+                                     activeBlock: GeneBlock.All,
+                                     maxTradeDensity: SelectivityCap)
         .Run(coinData, phase2);
     Console.WriteLine($"\n  Phase 3 → {best}\n");
 
@@ -266,11 +286,14 @@ async Task RunTrainBlocks()
     {
         double mut = seedMutations[attempt];
         Console.WriteLine($"\n  ⚠ Holdout Sharpe {holdoutSharpe:F3} < 0.30 — retrying (mutation {mut:F2}, attempt {attempt + 1}/3)");
-        var retryPhase1 = new GeneticAlgorithm(50, 50, useAtr: true, verbose: false, activeBlock: GeneBlock.Regime)
+        var retryPhase1 = new GeneticAlgorithm(50, 50, useAtr: true, verbose: false,
+                                                activeBlock: GeneBlock.Regime, maxTradeDensity: SelectivityCap)
             .Run(coinData, best.Mutate(new Random(), mut, true, GeneBlock.Regime));
-        var retryPhase2 = new GeneticAlgorithm(40, 40, useAtr: true, verbose: false, activeBlock: GeneBlock.Exit)
+        var retryPhase2 = new GeneticAlgorithm(40, 40, useAtr: true, verbose: false,
+                                                activeBlock: GeneBlock.Exit)
             .Run(coinData, retryPhase1);
-        var retryBest   = new GeneticAlgorithm(40, 30, useAtr: true, verbose: false, activeBlock: GeneBlock.All)
+        var retryBest   = new GeneticAlgorithm(40, 30, useAtr: true, verbose: false,
+                                                activeBlock: GeneBlock.All, maxTradeDensity: SelectivityCap)
             .Run(coinData, retryPhase2);
         double retrySh = HoldoutSharpe(retryBest);
         Console.WriteLine($"  Retry holdout Sharpe: {retrySh:F3}  ({retryBest})");

@@ -2,10 +2,12 @@ namespace TradingGA;
 
 public static class Simulator
 {
-    // MaxDcaLevels is now a gene (g.MaxDcaLevels)
+    // Round-trip cost per trade: 2 × (0.055% taker + 0.05% slippage) = 0.21%
+    // Applied inside RunUnified so every consumer (GA, backtest, livetrain) sees net returns.
+    public const double FeeRoundTrip = 0.21;
 
     public static double Simulate(Genotype g, Candle[] segment, bool useAtr = true) =>
-        SharpeRatio(GetReturns(g, segment, useAtr));
+        SharpeRatio(GetReturns(g, segment, useAtr), segment.Length);
 
     public static List<double> GetReturns(Genotype g, Candle[] segment, bool useAtr = true)
     {
@@ -704,9 +706,12 @@ public static class Simulator
         );
     }
 
-    // Sharpe ratio as fitness: mean / stddev * sqrt(n).
+    // Time-normalised Sharpe: mean/std * sqrt(trading_days).
+    // candleCount = number of 5m candles in the evaluation window; 288 candles = 1 day.
+    // Normalising by calendar time rather than trade count removes the bias toward
+    // high-frequency strategies that earn the same edge but in more, smaller bites.
     // Returns 0 if < 5 trades or profit factor < 1.3 (not enough edge to survive fees).
-    public static double SharpeRatio(List<double> returns)
+    public static double SharpeRatio(List<double> returns, int candleCount)
     {
         if (returns.Count < 5) return 0;
         double grossProfit = returns.Where(r => r > 0).Sum();
@@ -714,19 +719,19 @@ public static class Simulator
         if (grossLoss < 1e-10 || grossProfit / grossLoss < 1.3) return 0;
         double mean = returns.Average();
         double std  = Math.Sqrt(returns.Select(r => Math.Pow(r - mean, 2)).Average());
-        return std < 1e-10 ? 0 : mean / std * Math.Sqrt(returns.Count);
+        return std < 1e-10 ? 0 : mean / std * Math.Sqrt(candleCount / 288.0);
     }
 
     // ── Additional KPI metrics ────────────────────────────────────────────────
 
-    public static double SortinoRatio(List<double> returns)
+    public static double SortinoRatio(List<double> returns, int candleCount)
     {
         if (returns.Count < 5) return 0;
         double mean       = returns.Average();
         var    negReturns = returns.Where(r => r < 0).ToList();
         if (negReturns.Count == 0) return mean > 0 ? double.MaxValue : 0;
         double downStd = Math.Sqrt(negReturns.Select(r => r * r).Average());
-        return downStd < 1e-10 ? 0 : mean / downStd * Math.Sqrt(returns.Count);
+        return downStd < 1e-10 ? 0 : mean / downStd * Math.Sqrt(candleCount / 288.0);
     }
 
     public static double ProfitFactor(List<double> returns)
@@ -885,12 +890,12 @@ public static class Simulator
 
                 if (trailActive && price >= trailStop)
                 {
-                    result.Add((candles[i].Time, (pEntry - price) / pEntry * 100.0, "pump"));
+                    result.Add((candles[i].Time, (pEntry - price) / pEntry * 100.0 - FeeRoundTrip, "pump"));
                     pOpen = false;
                 }
                 else if (pBeArmed && price >= pEntry)
                 {
-                    result.Add((candles[i].Time, (pEntry - price) / pEntry * 100.0, "pump"));
+                    result.Add((candles[i].Time, (pEntry - price) / pEntry * 100.0 - FeeRoundTrip, "pump"));
                     pOpen = false;
                 }
                 else
@@ -915,12 +920,12 @@ public static class Simulator
                 {
                     pRecLeg++;
                     if (pRecLeg >= 4)
-                    { result.Add((candles[i].Time, (pEntry - price) / pEntry * 100.0, "pump")); pOpen = false; }
+                    { result.Add((candles[i].Time, (pEntry - price) / pEntry * 100.0 - FeeRoundTrip, "pump")); pOpen = false; }
                     else { pLegE = price; pLegLow = price; }
                 }
                 else if ((price - pLegE) / pLegE * 100.0 >= dcaTrig * 2)
                 {
-                    result.Add((candles[i].Time, (pEntry - price) / pEntry * 100.0, "pump"));
+                    result.Add((candles[i].Time, (pEntry - price) / pEntry * 100.0 - FeeRoundTrip, "pump"));
                     pOpen = false;
                 }
             }
@@ -928,7 +933,7 @@ public static class Simulator
             if (candles[i].High > pLastHi) pLastHi = candles[i].High;
         }
 
-        if (pOpen) result.Add((candles[^1].Time, (pEntry - closes[^1]) / pEntry * 100.0, "pump"));
+        if (pOpen) result.Add((candles[^1].Time, (pEntry - closes[^1]) / pEntry * 100.0 - FeeRoundTrip, "pump"));
 
         var finalState = new UnifiedTradeState(
             PumpOpen: pOpen, PumpEntry: pEntry, PumpDca: pDcaLvl,

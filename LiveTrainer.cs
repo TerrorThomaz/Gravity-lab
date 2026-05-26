@@ -95,7 +95,7 @@ public class LiveTrainer
             var returns  = Simulator.GetUnifiedReturns(g, slice, useAtr: true)
                                     .Select(t => t.Return).ToList();
             if (returns.Count < MinTradesPerCoin) continue;
-            double sharpe = Simulator.SharpeRatio(returns);
+            double sharpe = Simulator.SharpeRatio(returns, slice.Length);
             double calmar = Math.Clamp(Simulator.CalmarRatio(returns), -2.0, 3.0);
             coinShares.Add(0.7 * sharpe + 0.3 * calmar);
         }
@@ -131,7 +131,7 @@ public class LiveTrainer
             var returns = Simulator.GetUnifiedReturns(g, slice, useAtr: true)
                                    .Select(t => t.Return).ToList();
             if (returns.Count < MinHoldOutTrades) continue;
-            double sharpe = Simulator.SharpeRatio(returns);
+            double sharpe = Simulator.SharpeRatio(returns, slice.Length);
             double calmar = Math.Clamp(Simulator.CalmarRatio(returns), -2.0, 3.0);
             coinShares.Add(0.7 * sharpe + 0.3 * calmar);
         }

@@ -48,7 +48,7 @@ public class GeneticAlgorithm
     private double FoldScore(List<double> returns, int candleCount = 0)
     {
         if (returns.Count < MinTradesPerFold) return -1.0;
-        double sharpe = Simulator.SharpeRatio(returns);
+        double sharpe = Simulator.SharpeRatio(returns, candleCount > 0 ? candleCount : returns.Count * 100);
         double calmar = Math.Clamp(Simulator.CalmarRatio(returns), -2.0, 3.0);
         double score  = 0.9 * sharpe + 0.1 * calmar;
 
@@ -109,7 +109,7 @@ public class GeneticAlgorithm
             {
                 var returns = Simulator.GetUnifiedReturns(ind, candles, _useAtr)
                                        .Select(t => t.Return).ToList();
-                coinScore = FoldScore(returns);
+                coinScore = FoldScore(returns, candles.Length);
             }
 
             weightedSum  += coin.Weight * coinScore;

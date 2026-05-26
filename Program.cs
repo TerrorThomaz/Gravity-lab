@@ -74,11 +74,11 @@ async Task RunTrain()
     Console.WriteLine("     Treat it as a sanity check only. Run backtest for the unbiased verdict.\n");
     var tRet = Simulator.GetUnifiedReturns(best, trainArr, true).Select(t => t.Return).ToList();
     var vRet = Simulator.GetUnifiedReturns(best, valArr,   true).Select(t => t.Return).ToList();
-    PrintSplitStats("Train 80%", tRet);
-    PrintSplitStats("Val   20%", vRet);
+    PrintSplitStats("Train 80%", tRet, trainArr.Length);
+    PrintSplitStats("Val   20%", vRet, valArr.Length);
 
-    double tSh = Simulator.SharpeRatio(tRet);
-    double vSh = Simulator.SharpeRatio(vRet);
+    double tSh = Simulator.SharpeRatio(tRet, trainArr.Length);
+    double vSh = Simulator.SharpeRatio(vRet, valArr.Length);
     Console.WriteLine(vSh < tSh * 0.5 || vSh <= 0
         ? "\n  !! Possible overfit — val Sharpe < 50% of train"
         : "\n  OK — val Sharpe within acceptable range (but see bias warning above)");
@@ -211,13 +211,18 @@ async Task RunTrainBlocks()
         Console.WriteLine($"  Seed: {seed}\n");
     }
 
-    // Helper: score a genotype on holdout across all coins
+    // Helper: mean per-coin time-normalised Sharpe on holdout.
+    // Averaging per-coin (not concatenating) avoids the sqrt(N_coins) inflation.
     double HoldoutSharpe(Genotype g)
     {
-        var allRet = holdoutData.Values
-            .SelectMany(arr => Simulator.GetUnifiedReturns(g, arr, true).Select(t => t.Return))
+        var scores = holdoutData
+            .Select(kv =>
+            {
+                var r = Simulator.GetUnifiedReturns(g, kv.Value, true).Select(t => t.Return).ToList();
+                return Simulator.SharpeRatio(r, kv.Value.Length);
+            })
             .ToList();
-        return Simulator.SharpeRatio(allRet);
+        return scores.Count > 0 ? scores.Average() : 0;
     }
 
     // Density cap: ~1 trade per coin per day on 5m candles (288 candles/day).
@@ -277,7 +282,7 @@ async Task RunTrainBlocks()
     foreach (var (sym, arr) in holdoutData.OrderBy(kv => kv.Key))
     {
         var r  = Simulator.GetUnifiedReturns(best, arr, true).Select(t => t.Return).ToList();
-        double sh = Simulator.SharpeRatio(r);
+        double sh = Simulator.SharpeRatio(r, arr.Length);
         Console.WriteLine($"    {sym,-20} Sh={sh:F2}  Tr={r.Count}{(sh < 0.20 ? " ← FAIL" : "")}");
     }
 
@@ -385,8 +390,8 @@ async Task RunBacktest()
         var vTrades = Simulator.GetUnifiedReturns(g, vArr, true);
         var vRet    = vTrades.Select(t => t.Return).ToList();
 
-        double sh   = Simulator.SharpeRatio(vRet);
-        double sort = Simulator.SortinoRatio(vRet);
+        double sh   = Simulator.SharpeRatio(vRet, vArr.Length);
+        double sort = Simulator.SortinoRatio(vRet, vArr.Length);
         double pf   = Simulator.ProfitFactor(vRet);
         double wr   = vRet.Count > 0 ? (double)vRet.Count(r => r > 0) / vRet.Count : 0;
         double avg  = vRet.Count > 0 ? vRet.Average() : 0;
@@ -496,9 +501,7 @@ async Task RunStatus()
     }
     if (g == null) return;
 
-    const double TakerFee  = 0.055;                        // % per side (Bybit perpetuals)
-    const double Slip      = 0.050;                        // % per side (conservative)
-    const double RoundTrip = 2.0 * (TakerFee + Slip);     // 0.21% total per trade
+    const double RoundTrip = Simulator.FeeRoundTrip;      // fees already in net returns from simulator
     const double StartBal  = 1000.0;
     const double MaxPosPct = 0.05;
     const double MaxPosEur = 100.0;
@@ -506,7 +509,7 @@ async Task RunStatus()
 
     Console.WriteLine($"Source:      {src}");
     Console.WriteLine($"Genotype:    {g}");
-    Console.WriteLine($"Fees:        {TakerFee:F3}% taker ×2 + {Slip:F3}% slippage ×2 = {RoundTrip:F3}%/trade");
+    Console.WriteLine($"Fees:        {RoundTrip:F3}% round-trip (0.055% taker ×2 + 0.05% slippage ×2), applied in simulator");
     Console.WriteLine($"Position:    min({MaxPosPct*100:F0}% balance, €{MaxPosEur}) Kelly-scaled");
     Console.WriteLine($"Reinvest:    {Reinvest*100:F0}% of profits compound\n");
 
@@ -530,16 +533,19 @@ async Task RunStatus()
                                 .Select(t => t.Return).ToList();
         double conf  = Simulator.ComputeConfidence(trainRet);
         foreach (var (t, ret, _) in Simulator.GetUnifiedReturns(g, arr, true))
-            allTrades.Add((sym, t, ret - RoundTrip, conf));
+            allTrades.Add((sym, t, ret, conf));
     }
     Console.WriteLine($"{allTrades.Select(t => t.Coin).Distinct().Count()}/{coins.Length} coins\n");
 
     if (allTrades.Count == 0) { Console.WriteLine("No trades in window."); return; }
     allTrades.Sort((a, b) => a.Time.CompareTo(b.Time));
 
-    var    allRet = allTrades.Select(t => t.Return).ToList();
-    double sh     = Simulator.SharpeRatio(allRet);
-    double sort   = Simulator.SortinoRatio(allRet);
+    var    allRet      = allTrades.Select(t => t.Return).ToList();
+    int    periodCandles = allTrades.Count > 1
+        ? (int)((allTrades.Max(t => t.Time) - allTrades.Min(t => t.Time)).TotalDays * 288)
+        : 288;
+    double sh     = Simulator.SharpeRatio(allRet, periodCandles);
+    double sort   = Simulator.SortinoRatio(allRet, periodCandles);
     double pf     = Simulator.ProfitFactor(allRet);
     double cal    = Simulator.CalmarRatio(allRet);
     int    wins   = allRet.Count(r => r > 0);
@@ -872,11 +878,11 @@ Genotype? LoadGenotype()
     return JsonSerializer.Deserialize<GenotypeDto>(File.ReadAllText(GenoFile))!.ToGenotype();
 }
 
-static void PrintSplitStats(string label, List<double> r)
+static void PrintSplitStats(string label, List<double> r, int candleCount)
 {
     if (r.Count == 0) { Console.WriteLine($"  {label,-12} (no trades)"); return; }
-    double sh   = Simulator.SharpeRatio(r);
-    double sort = Simulator.SortinoRatio(r);
+    double sh   = Simulator.SharpeRatio(r, candleCount);
+    double sort = Simulator.SortinoRatio(r, candleCount);
     double pf   = Simulator.ProfitFactor(r);
     double wr   = (double)r.Count(x => x > 0) / r.Count;
     double avg  = r.Average();
@@ -925,8 +931,11 @@ static void PortfolioSim(List<(string Coin, DateTime Time, double Return, double
     double finalTotal = balance + realized;
     int    totalWins  = trades.Count(t => t.Return > 0);
     var    allRet     = trades.Select(t => t.Return).ToList();
-    double portSharpe = Simulator.SharpeRatio(allRet);
-    double portSortino= Simulator.SortinoRatio(allRet);
+    // Daily-bucket Sharpe: sum returns per day, then normalise by trading days.
+    // Avoids both the trade-count bias and the cross-coin concatenation inflation.
+    var    dailyRet   = byDay.Select(d => d.Sum(t => t.Return)).ToList();
+    double portSharpe = Simulator.SharpeRatio(dailyRet, byDay.Count * 288);
+    double portSortino= Simulator.SortinoRatio(dailyRet, byDay.Count * 288);
     double portPf     = Simulator.ProfitFactor(allRet);
     double portCalmar = Simulator.CalmarRatio(allRet);
     int    maxLoss    = Simulator.MaxConsecLosses(allRet);

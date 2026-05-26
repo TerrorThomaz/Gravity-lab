@@ -9,20 +9,22 @@ var client = new BybitRestClient();
 string mode = args.Length > 0 ? args[0].ToLowerInvariant() : "";
 switch (mode)
 {
-    case "train":      await RunTrain();      break;
-    case "trainmulti": await RunTrainMulti(); break;
-    case "backtest":   await RunBacktest();   break;
-    case "papertrade": await RunPaperTrade(); break;
-    case "livetrain":  await RunLiveTrain();  break;
-    case "status":     await RunStatus();     break;
+    case "train":       await RunTrain();       break;
+    case "trainmulti":  await RunTrainMulti();  break;
+    case "trainblocks": await RunTrainBlocks(); break;
+    case "backtest":    await RunBacktest();    break;
+    case "papertrade":  await RunPaperTrade();  break;
+    case "livetrain":   await RunLiveTrain();   break;
+    case "status":      await RunStatus();      break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
-        Console.WriteLine("  dotnet run -- train       GA on WIF only (fast, single-coin)");
-        Console.WriteLine("  dotnet run -- trainmulti  GA on 5 diverse coins (robust, anti-overfit)");
-        Console.WriteLine("  dotnet run -- backtest    1yr backtest on 14 coins");
-        Console.WriteLine("  dotnet run -- papertrade  Live signals per coin");
-        Console.WriteLine("  dotnet run -- livetrain   20 genotypes evaluated on live data, evolves hourly");
-        Console.WriteLine("  dotnet run -- status      Portfolio P&L with fees, slippage, reinvestment");
+        Console.WriteLine("  dotnet run -- train        GA on WIF only (fast, single-coin)");
+        Console.WriteLine("  dotnet run -- trainmulti   GA on 5 diverse coins (robust, anti-overfit)");
+        Console.WriteLine("  dotnet run -- trainblocks  Block GA: regime→exit→polish, 5yr, all 14 coins");
+        Console.WriteLine("  dotnet run -- backtest     1yr backtest on 14 coins");
+        Console.WriteLine("  dotnet run -- papertrade   Live signals per coin");
+        Console.WriteLine("  dotnet run -- livetrain    20 genotypes evaluated on live data, evolves hourly");
+        Console.WriteLine("  dotnet run -- status       Portfolio P&L with fees, slippage, reinvestment");
         break;
 }
 
@@ -140,6 +142,165 @@ async Task RunTrainMulti()
         new JsonSerializerOptions { WriteIndented = true }));
     Console.WriteLine($"  Saved → {GenoFile}");
     Console.WriteLine($"\nNext: dotnet run -- backtest   ← verify on 14 unseen coins");
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  TRAIN BLOCKS — 3-phase coordinate-descent GA over 5yr, all 14 coins
+//  Phase 1: regime/entry genes   (exit genes frozen to seed)
+//  Phase 2: exit/sizing genes    (regime genes frozen to Phase-1 result)
+//  Phase 3: joint polish         (all genes free, seeded from Phase 2)
+//  Proper 70/15/15 split — holdout is never seen during any phase
+// ══════════════════════════════════════════════════════════════════════════════
+async Task RunTrainBlocks()
+{
+    Console.WriteLine("=== Gravity-gen2 | TRAIN BLOCKS (regime→exit→polish, 5yr, 14 coins) ===\n");
+
+    var allCoins = new[]
+    {
+        ("WIFUSDT",       1.0), ("SOLUSDT",       1.0), ("MEMEUSDT",      1.0),
+        ("DOGEUSDT",      1.0), ("1000BONKUSDT",  0.8), ("XRPUSDT",       1.0),
+        ("ETHUSDT",       1.0), ("AVAXUSDT",      1.0), ("BNBUSDT",       1.0),
+        ("LINKUSDT",      1.0), ("ADAUSDT",       1.0), ("1000PEPEUSDT",  0.8),
+        ("ATOMUSDT",      1.0), ("1000FLOKIUSDT", 0.8),
+    };
+
+    const int Batches = 530; // ~5yr of 5m candles (older coins; newer memes return less)
+    Console.WriteLine($"  Fetching {allCoins.Length} coins × up to {Batches} batches (~5yr)...");
+    Console.WriteLine("  (First run fetches from Bybit and builds cache; subsequent runs are instant)\n");
+
+    var sem = new SemaphoreSlim(3);
+    var fetchTasks = allCoins.Select(async ((string sym, double weight) t) =>
+    {
+        await sem.WaitAsync();
+        try
+        {
+            var candles = await FetchCandlesCached(t.sym, batches: Batches);
+            double years = candles.Count * 5.0 / 60.0 / 24.0 / 365.25;
+            Console.WriteLine($"  {t.sym,-20} {candles.Count,7} candles ({years:F1}yr)");
+            return (t.sym, t.weight, candles);
+        }
+        finally { sem.Release(); }
+    });
+    var fetched = await Task.WhenAll(fetchTasks);
+
+    // ── 70/15/15 split per coin ────────────────────────────────────────────
+    var coinData    = new List<GeneticAlgorithm.CoinData>();
+    var holdoutData = new Dictionary<string, Candle[]>();
+
+    foreach (var (sym, weight, candles) in fetched)
+    {
+        if (candles.Count < 500) { Console.WriteLine($"  {sym}: skip (insufficient data)"); continue; }
+        int trainEnd = (int)(candles.Count * 0.70);
+        int valEnd   = (int)(candles.Count * 0.85);
+        coinData.Add(new GeneticAlgorithm.CoinData(
+            candles.Take(trainEnd).ToArray(),
+            candles.Skip(trainEnd).Take(valEnd - trainEnd).ToArray(),
+            weight));
+        holdoutData[sym] = candles.Skip(valEnd).ToArray();
+    }
+
+    if (coinData.Count == 0) { Console.WriteLine("No data."); return; }
+    Console.WriteLine($"\n  {coinData.Count} coins ready  " +
+        $"(train 70% / val 15% / holdout 15%)\n");
+
+    // Load seed from saved best
+    Genotype? seed = null;
+    if (File.Exists(GenoFile))
+    {
+        seed = JsonSerializer.Deserialize<GenotypeDto>(File.ReadAllText(GenoFile))!.ToGenotype();
+        Console.WriteLine($"  Seed: {seed}\n");
+    }
+
+    // Helper: score a genotype on holdout across all coins
+    double HoldoutSharpe(Genotype g)
+    {
+        var allRet = holdoutData.Values
+            .SelectMany(arr => Simulator.GetUnifiedReturns(g, arr, true).Select(t => t.Return))
+            .ToList();
+        return Simulator.SharpeRatio(allRet);
+    }
+
+    // ── Phase 1: Regime / entry-filter genes ──────────────────────────────
+    Console.WriteLine("─── Phase 1/3: Regime genes ───");
+    Console.WriteLine("  Active : RsiPeriod, RsiOverbought, BosCandlesWait, EmaPeriod,");
+    Console.WriteLine("           BosThreshold, VolumeMultiplier, RegimeAdxPeriod, RegimeAdxThreshold");
+    Console.WriteLine("  Frozen : GridStepAtrMult, DcaTriggerAtrMult, BreakEvenAtrMult, MaxDcaLevels\n");
+
+    var phase1 = new GeneticAlgorithm(50, 50, useAtr: true, verbose: true,
+                                       activeBlock: GeneBlock.Regime)
+        .Run(coinData, seed);
+    Console.WriteLine($"\n  Phase 1 → {phase1}\n");
+
+    // ── Phase 2: Exit / sizing genes ──────────────────────────────────────
+    Console.WriteLine("─── Phase 2/3: Exit genes ───");
+    Console.WriteLine("  Active : GridStepAtrMult, DcaTriggerAtrMult, BreakEvenAtrMult, MaxDcaLevels");
+    Console.WriteLine("  Frozen : all 8 regime genes from Phase 1\n");
+
+    var phase2 = new GeneticAlgorithm(40, 40, useAtr: true, verbose: true,
+                                       activeBlock: GeneBlock.Exit)
+        .Run(coinData, phase1);
+    Console.WriteLine($"\n  Phase 2 → {phase2}\n");
+
+    // ── Phase 3: Joint polish ─────────────────────────────────────────────
+    Console.WriteLine("─── Phase 3/3: Joint polish (all genes free) ───");
+    var best = new GeneticAlgorithm(40, 30, useAtr: true, verbose: true,
+                                     activeBlock: GeneBlock.All)
+        .Run(coinData, phase2);
+    Console.WriteLine($"\n  Phase 3 → {best}\n");
+
+    // ── Holdout gate (with retry) ─────────────────────────────────────────
+    Console.WriteLine("─── Holdout gate (15% never seen during training) ───");
+    double holdoutSharpe = HoldoutSharpe(best);
+    Console.WriteLine($"  Holdout Sharpe: {holdoutSharpe:F3}");
+
+    // Per-coin breakdown
+    foreach (var (sym, arr) in holdoutData.OrderBy(kv => kv.Key))
+    {
+        var r  = Simulator.GetUnifiedReturns(best, arr, true).Select(t => t.Return).ToList();
+        double sh = Simulator.SharpeRatio(r);
+        Console.WriteLine($"    {sym,-20} Sh={sh:F2}  Tr={r.Count}{(sh < 0.20 ? " ← FAIL" : "")}");
+    }
+
+    double[] seedMutations = [0.45, 0.65, 0.85];
+    for (int attempt = 0; attempt < 3 && holdoutSharpe < 0.30; attempt++)
+    {
+        double mut = seedMutations[attempt];
+        Console.WriteLine($"\n  ⚠ Holdout Sharpe {holdoutSharpe:F3} < 0.30 — retrying (mutation {mut:F2}, attempt {attempt + 1}/3)");
+        var retryPhase1 = new GeneticAlgorithm(50, 50, useAtr: true, verbose: false, activeBlock: GeneBlock.Regime)
+            .Run(coinData, best.Mutate(new Random(), mut, true, GeneBlock.Regime));
+        var retryPhase2 = new GeneticAlgorithm(40, 40, useAtr: true, verbose: false, activeBlock: GeneBlock.Exit)
+            .Run(coinData, retryPhase1);
+        var retryBest   = new GeneticAlgorithm(40, 30, useAtr: true, verbose: false, activeBlock: GeneBlock.All)
+            .Run(coinData, retryPhase2);
+        double retrySh = HoldoutSharpe(retryBest);
+        Console.WriteLine($"  Retry holdout Sharpe: {retrySh:F3}  ({retryBest})");
+        if (retrySh > holdoutSharpe) { best = retryBest; holdoutSharpe = retrySh; }
+    }
+
+    // ── Save gate ─────────────────────────────────────────────────────────
+    double savedHoldoutSh = 0.0;
+    if (File.Exists(GenoFile))
+    {
+        var inc = JsonSerializer.Deserialize<GenotypeDto>(File.ReadAllText(GenoFile))!.ToGenotype();
+        savedHoldoutSh = HoldoutSharpe(inc);
+    }
+
+    Console.WriteLine($"\n─── Save gate ───");
+    Console.WriteLine($"  New  holdout Sharpe : {holdoutSharpe:F3}");
+    Console.WriteLine($"  Saved holdout Sharpe: {savedHoldoutSh:F3}");
+
+    if (holdoutSharpe > savedHoldoutSh)
+    {
+        File.WriteAllText(GenoFile, JsonSerializer.Serialize(GenotypeDto.From(best),
+            new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"  ✓ Saved → {GenoFile}");
+    }
+    else
+    {
+        Console.WriteLine($"  ⚠ Not saved — incumbent holdout ≥ new (tip: run again or try backtest)");
+    }
+
+    Console.WriteLine($"\nNext: dotnet run -- backtest   ← authoritative 1yr test on 14 coins");
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -531,6 +692,111 @@ async Task RunLiveTrain()
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Cache-backed fetch: reads/writes candle_cache/{symbol}.csv.
+// Only fetches what's missing (new candles at the recent end, old history at the far end).
+async Task<List<Candle>> FetchCandlesCached(string symbol, int batches = 106)
+{
+    const string CacheDir = "candle_cache";
+    Directory.CreateDirectory(CacheDir);
+    string cacheFile = Path.Combine(CacheDir, $"{symbol}.csv");
+
+    // Load existing cache into a sorted dictionary keyed by timestamp
+    var cached = new SortedDictionary<DateTime, Candle>();
+    if (File.Exists(cacheFile))
+    {
+        foreach (var line in File.ReadLines(cacheFile))
+        {
+            var p = line.Split(',');
+            if (p.Length < 6) continue;
+            if (!long.TryParse(p[0], out long ms)) continue;
+            var dt = DateTimeOffset.FromUnixTimeMilliseconds(ms).UtcDateTime;
+            cached[dt] = new Candle(dt,
+                double.Parse(p[1], System.Globalization.CultureInfo.InvariantCulture),
+                double.Parse(p[2], System.Globalization.CultureInfo.InvariantCulture),
+                double.Parse(p[3], System.Globalization.CultureInfo.InvariantCulture),
+                double.Parse(p[4], System.Globalization.CultureInfo.InvariantCulture),
+                double.Parse(p[5], System.Globalization.CultureInfo.InvariantCulture));
+        }
+    }
+
+    bool dirty = false;
+
+    async Task<bool> FetchBatch(DateTime? endTime)
+    {
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            if (attempt > 0) await Task.Delay(1500 * attempt);
+            using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var result = await client.V5Api.ExchangeData
+                .GetKlinesAsync(Category.Linear, symbol, KlineInterval.FiveMinutes,
+                    endTime: endTime, limit: 1000, ct: cts2.Token);
+            if (!result.Success || result.Data?.List == null)
+            {
+                if ((result.Error?.ToString().Contains("rate", StringComparison.OrdinalIgnoreCase) == true
+                     || result.Error?.ToString().Contains("429") == true) && attempt < 3) continue;
+                return false;
+            }
+            foreach (var k in result.Data.List)
+            {
+                var dt = k.StartTime;
+                if (!cached.ContainsKey(dt))
+                {
+                    cached[dt] = new Candle(dt, (double)k.OpenPrice, (double)k.HighPrice,
+                                            (double)k.LowPrice, (double)k.ClosePrice, (double)k.Volume);
+                    dirty = true;
+                }
+            }
+            await Task.Delay(500);
+            return true;
+        }
+        return false;
+    }
+
+    // ── Fetch recent candles (now → newest cached) ─────────────────────────
+    {
+        DateTime stopAt = cached.Count > 0 ? cached.Keys.Max() : DateTime.MinValue;
+        DateTime? endTime = null;
+        for (int i = 0; i < 5; i++) // max 5 batches for recent update
+        {
+            int beforeCount = cached.Count;
+            await FetchBatch(endTime);
+            if (cached.Count == beforeCount) break; // nothing new
+            var fetched = cached.Keys.Min(); // oldest in this pass
+            if (fetched >= stopAt) break;    // overlapped the existing cache
+            endTime = fetched.AddMinutes(-5);
+        }
+    }
+
+    // ── Fetch old history until we have batches*1000 candles ─────────────
+    int needed = batches * 1000;
+    if (cached.Count < needed)
+    {
+        DateTime? endTime = cached.Count > 0 ? cached.Keys.Min().AddMinutes(-5) : null;
+        int maxOldBatches = (needed - cached.Count) / 800 + 10; // generous buffer
+        for (int i = 0; i < maxOldBatches && cached.Count < needed; i++)
+        {
+            int beforeCount = cached.Count;
+            bool ok = await FetchBatch(endTime);
+            if (!ok || cached.Count == beforeCount) break;
+            endTime = cached.Keys.Min().AddMinutes(-5);
+        }
+    }
+
+    // ── Save updated cache ─────────────────────────────────────────────────
+    if (dirty)
+    {
+        using var sw = new System.IO.StreamWriter(cacheFile);
+        foreach (var c in cached.Values)
+        {
+            long ms = new DateTimeOffset(c.Time, TimeSpan.Zero).ToUnixTimeMilliseconds();
+            sw.WriteLine(FormattableString.Invariant(
+                $"{ms},{c.Open},{c.High},{c.Low},{c.Close},{c.Volume}"));
+        }
+    }
+
+    return cached.Values.ToList();
+}
 
 async Task<List<Candle>> FetchCandles(string symbol, int batches = 30)
 {

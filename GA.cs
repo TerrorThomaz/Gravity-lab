@@ -8,21 +8,23 @@ public class GeneticAlgorithm
         Candle[] ValCandles,
         double   Weight = 1.0);
 
-    private readonly int  _populationSize;
-    private readonly int  _generations;
-    private readonly int  _eliteCount;
-    private readonly int  _migrationInterval;
-    private readonly bool _useAtr;
-    private readonly bool _verbose;
+    private readonly int       _populationSize;
+    private readonly int       _generations;
+    private readonly int       _eliteCount;
+    private readonly int       _migrationInterval;
+    private readonly bool      _useAtr;
+    private readonly bool      _verbose;
+    private readonly GeneBlock _activeBlock;
     private readonly Random _rng = new();
 
     public GeneticAlgorithm(
-        int  populationSize    = 60,
-        int  generations       = 80,
-        int  eliteCount        = 20,
-        int  migrationInterval = 10,
-        bool useAtr            = true,
-        bool verbose           = true)
+        int       populationSize    = 60,
+        int       generations       = 80,
+        int       eliteCount        = 20,
+        int       migrationInterval = 10,
+        bool      useAtr            = true,
+        bool      verbose           = true,
+        GeneBlock activeBlock       = GeneBlock.All)
     {
         _populationSize    = populationSize;
         _generations       = generations;
@@ -30,6 +32,7 @@ public class GeneticAlgorithm
         _migrationInterval = migrationInterval;
         _useAtr            = useAtr;
         _verbose           = verbose;
+        _activeBlock       = activeBlock;
     }
 
     // Walk-forward temporal cross-validation on full candle series (5 folds).
@@ -114,9 +117,10 @@ public class GeneticAlgorithm
             if (seed != null) Console.WriteLine($"  Seeding population from: {seed.ToString(_useAtr)}");
         }
 
+        // When a block is active, seed acts as anchor for frozen genes too.
         var population = Enumerable
             .Range(0, _populationSize)
-            .Select(_ => Genotype.Random(_rng, _useAtr))
+            .Select(_ => Genotype.Random(_rng, _useAtr, seed, _activeBlock))
             .ToList();
 
         // Inject seed into 20% of initial population as mutated variants + one clamped copy.
@@ -127,7 +131,7 @@ public class GeneticAlgorithm
             population[0] = clampedSeed;
             int seedCount = Math.Min(_populationSize / 5, _populationSize - 1);
             for (int s = 1; s <= seedCount; s++)
-                population[s] = clampedSeed.Mutate(_rng, 0.25, _useAtr);
+                population[s] = clampedSeed.Mutate(_rng, 0.25, _useAtr, _activeBlock);
         }
 
         List<Genotype> eliteIsland    = new();
@@ -174,8 +178,8 @@ public class GeneticAlgorithm
             nextGen.AddRange(eliteIsland.Take(5));
             while (nextGen.Count < _populationSize)
             {
-                var child = Genotype.Crossover(TournamentSelect(population), TournamentSelect(population), _rng)
-                                    .Mutate(_rng, mutationRate, _useAtr);
+                var child = Genotype.Crossover(TournamentSelect(population), TournamentSelect(population), _rng, _activeBlock)
+                                    .Mutate(_rng, mutationRate, _useAtr, _activeBlock);
                 nextGen.Add(child);
             }
             population = nextGen;

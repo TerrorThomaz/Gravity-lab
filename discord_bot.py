@@ -165,8 +165,11 @@ async def start_mode(mode: str | None = None) -> None:
         status_message = None   # new mode → new persistent message
         score_history.clear()
     current_cycle = []
+    cmd = (["dotnet", "exec", DOTNET_DLL, current_mode]
+           if os.path.exists(DOTNET_DLL)
+           else ["dotnet", "run", "--", current_mode])
     trade_proc = await asyncio.create_subprocess_exec(
-        "dotnet", "run", "--", current_mode,
+        *cmd,
         cwd=PROJECT_DIR,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,

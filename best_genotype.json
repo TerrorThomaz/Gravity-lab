@@ -1,17 +1,15 @@
 {
   "RsiPeriod": 7,
-  "RsiOverbought": 65,
+  "RsiOverbought": 68,
   "BosCandlesWait": 1,
-  "GridStepAtrMult": 0.31825877315689477,
-  "DcaTriggerAtrMult": 8,
+  "GridStepAtrMult": 0.6,
+  "DcaTriggerAtrMult": 6.6611676206752035,
   "EmaPeriod": 12,
-  "TimeframeBlend": 1,
-  "BreakEvenAtrMult": 1.1657032135562937,
-  "PumpThresholdIdx": 0,
-  "MaxDcaLevels": 4,
-  "BosThreshold": 0.996530413845616,
-  "VolumeMultiplier": 1.0138857663596244,
-  "RegimeAdxPeriod": 14,
-  "RegimeAdxThreshold": 16.00979439767137,
-  "Fitness": 6.059123667178922
+  "BreakEvenAtrMult": 1.7544226063096742,
+  "MaxDcaLevels": 5,
+  "BosThreshold": 0.999,
+  "VolumeMultiplier": 1.0333774770699804,
+  "RegimeAdxPeriod": 9,
+  "RegimeAdxThreshold": 15.237925883799226,
+  "Fitness": 4.044037200815213
 }

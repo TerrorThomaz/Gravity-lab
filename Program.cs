@@ -1822,19 +1822,18 @@ async Task RunSwingTrain()
     });
     var fetched = await Task.WhenAll(fetchTasks);
 
-    var coinData = new List<SwingGeneticAlgorithm.CoinData>();
+    var namedCoins = new List<(string Sym, SwingGeneticAlgorithm.CoinData Cd)>();
     foreach (var (sym, weight, candles) in fetched)
     {
         if (candles.Count < 150) { Console.WriteLine($"  {sym}: skip (insufficient data)"); continue; }
         int split = (int)(candles.Count * 0.8);
-        coinData.Add(new SwingGeneticAlgorithm.CoinData(
+        namedCoins.Add((sym, new SwingGeneticAlgorithm.CoinData(
             candles.Take(split).ToArray(),
             candles.Skip(split).ToArray(),
-            weight));
+            weight)));
     }
 
-    if (coinData.Count == 0) { Console.WriteLine("No data."); return; }
-    Console.WriteLine($"\n  Training on {coinData.Count} coins simultaneously\n");
+    if (namedCoins.Count == 0) { Console.WriteLine("No data."); return; }
 
     SwingGenotype? seed = null;
     if (File.Exists(SwingGenoFile))
@@ -1848,6 +1847,37 @@ async Task RunSwingTrain()
         else
             Console.WriteLine($"  Skipping seed (fitness ≤ 0 — previous run failed)");
     }
+
+    // Auto-screen: keep only coins where the seed shows positive expectancy on training data.
+    // Mirrors the main strategy's Sharpe-based screen; expectancy is the swing fitness currency.
+    // Coins with negative expectancy under the seed dilute the GA's fitness gradient.
+    if (seed != null)
+    {
+        Console.WriteLine("\n  Screening coins (seed expectancy on train data):");
+        int before = namedCoins.Count;
+        var screened = namedCoins
+            .Where(nc =>
+            {
+                var returns = SwingSimulator.GetSwingReturns(seed, nc.Cd.TrainCandles)
+                                           .Select(t => t.Return).ToList();
+                double exp = returns.Count >= 5 ? returns.Average() : double.NegativeInfinity;
+                bool pass  = exp > 0;
+                Console.WriteLine($"    {(pass ? "✓" : "✗")} {nc.Sym,-20} Exp={exp:+0.00;-0.00}%  Tr={returns.Count}");
+                return pass;
+            })
+            .ToList();
+
+        if (screened.Count >= 4)
+        {
+            namedCoins = screened;
+            Console.WriteLine($"  → {screened.Count}/{before} coins pass\n");
+        }
+        else
+            Console.WriteLine($"  ⚠ Only {screened.Count}/{before} passed — keeping all {before} to avoid data starvation\n");
+    }
+
+    var coinData = namedCoins.Select(nc => nc.Cd).ToList();
+    Console.WriteLine($"\n  Training on {coinData.Count} coins simultaneously\n");
 
     Console.WriteLine("─── Swing GA training ───");
     var best = new SwingGeneticAlgorithm(50, 80, verbose: true).Run(coinData, seed);

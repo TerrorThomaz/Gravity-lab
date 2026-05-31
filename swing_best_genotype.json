@@ -1,0 +1,16 @@
+{
+  "EmaPeriod": 23,
+  "RsiPeriod": 8,
+  "AdxPeriod": 10,
+  "AdxThreshold": 29.235103103283013,
+  "LookbackCandles": 47,
+  "RsiOverbought": 61.85941899043577,
+  "RsiDivThreshold": 2,
+  "MinRallyAtrMult": 7.633000965089434,
+  "StopLossAtrMult": 1.5,
+  "TakeProfitAtrMult": 9.970373109108019,
+  "TrailingActivationAtrMult": 7.1641899526392745,
+  "TrailingStopAtrMult": 2.4389238729581098,
+  "MaxHoldCandles": 46,
+  "Fitness": 4.412125601906591
+}

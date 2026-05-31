@@ -26,9 +26,8 @@ public class SwingGenotype
     // ── Entry signal genes ────────────────────────────────────────────────────────
     public int    LookbackCandles  { get; set; }   // 12–60   window to locate the swing high (12=2d, 60=10d)
     public double RsiOverbought    { get; set; }   // 60–80   RSI floor the swing high must clear
-    public double RsiDivThreshold  { get; set; }   // 2–20    RSI must be this many pts below swing-high RSI
-    public double MinRallyAtrMult  { get; set; }   // 2–12    min rally (ATR units) from recent low to high
-    public double VolumeMultiplier { get; set; }   // 1.0–4.0 volume spike; 1.0 = no filter
+    public double RsiDivThreshold  { get; set; }   // 2–15    RSI must be this many pts below swing-high RSI
+    public double MinRallyAtrMult  { get; set; }   // 2–8     min rally (ATR units) from recent low to high
 
     // ── Exit genes ────────────────────────────────────────────────────────────────
     public double StopLossAtrMult           { get; set; }   // 1.5–6.0   (4h ATR≈3%; 1.5A≈4.5% clears wick noise)
@@ -50,9 +49,8 @@ public class SwingGenotype
             AdxThreshold   = Seed(22.0 + rng.NextDouble() * 23.0,         seed?.AdxThreshold ?? 27.0),
             LookbackCandles  = Seed(rng.Next(12, 61),                     seed?.LookbackCandles  ?? 20),
             RsiOverbought    = Seed(60.0 + rng.NextDouble() * 20.0,       seed?.RsiOverbought    ?? 68.0),
-            RsiDivThreshold  = Seed(2.0  + rng.NextDouble() * 18.0,       seed?.RsiDivThreshold  ?? 8.0),
-            MinRallyAtrMult  = Seed(2.0  + rng.NextDouble() * 10.0,       seed?.MinRallyAtrMult  ?? 5.0),
-            VolumeMultiplier = Seed(1.0  + rng.NextDouble() * 3.0,        seed?.VolumeMultiplier ?? 1.5),
+            RsiDivThreshold  = Seed(2.0  + rng.NextDouble() * 13.0,       seed?.RsiDivThreshold  ?? 5.0),
+            MinRallyAtrMult  = Seed(2.0  + rng.NextDouble() * 6.0,        seed?.MinRallyAtrMult  ?? 4.0),
             StopLossAtrMult           = Seed(1.5 + rng.NextDouble() * 4.5,  seed?.StopLossAtrMult           ?? 2.5),
             TakeProfitAtrMult         = Seed(2.0 + rng.NextDouble() * 18.0, seed?.TakeProfitAtrMult         ?? 6.0),
             TrailingActivationAtrMult = Seed(1.0 + rng.NextDouble() * 7.0,  seed?.TrailingActivationAtrMult ?? 3.0),
@@ -74,7 +72,6 @@ public class SwingGenotype
             RsiOverbought    = Pick(a.RsiOverbought,    b.RsiOverbought),
             RsiDivThreshold  = Pick(a.RsiDivThreshold,  b.RsiDivThreshold),
             MinRallyAtrMult  = Pick(a.MinRallyAtrMult,  b.MinRallyAtrMult),
-            VolumeMultiplier = Pick(a.VolumeMultiplier, b.VolumeMultiplier),
             StopLossAtrMult           = Pick(a.StopLossAtrMult,           b.StopLossAtrMult),
             TakeProfitAtrMult         = Pick(a.TakeProfitAtrMult,         b.TakeProfitAtrMult),
             TrailingActivationAtrMult = Pick(a.TrailingActivationAtrMult, b.TrailingActivationAtrMult),
@@ -103,9 +100,8 @@ public class SwingGenotype
             AdxThreshold   = Nudge(AdxThreshold,      22.0, 45.0, 4.0),
             LookbackCandles  = NudgeInt(LookbackCandles, 12, 60, 6),
             RsiOverbought    = Nudge(RsiOverbought,   60.0, 80.0, 4.0),
-            RsiDivThreshold  = Nudge(RsiDivThreshold,  2.0, 20.0, 3.0),
-            MinRallyAtrMult  = Nudge(MinRallyAtrMult,  2.0, 12.0, 1.5),
-            VolumeMultiplier = Nudge(VolumeMultiplier, 1.0,  4.0, 0.4),
+            RsiDivThreshold  = Nudge(RsiDivThreshold,  2.0, 15.0, 2.0),
+            MinRallyAtrMult  = Nudge(MinRallyAtrMult,  2.0,  8.0, 1.0),
             StopLossAtrMult           = Nudge(StopLossAtrMult,           1.5,  6.0, 0.75),
             TakeProfitAtrMult         = Nudge(TakeProfitAtrMult,         2.0, 20.0, 2.0),
             TrailingActivationAtrMult = Nudge(TrailingActivationAtrMult, 1.0,  8.0, 1.0),
@@ -122,9 +118,8 @@ public class SwingGenotype
         AdxThreshold   = Math.Clamp(AdxThreshold,  22.0, 45.0),
         LookbackCandles  = Math.Clamp(LookbackCandles,  12,   60),
         RsiOverbought    = Math.Clamp(RsiOverbought,   60.0, 80.0),
-        RsiDivThreshold  = Math.Clamp(RsiDivThreshold,  2.0, 20.0),
-        MinRallyAtrMult  = Math.Clamp(MinRallyAtrMult,  2.0, 12.0),
-        VolumeMultiplier = Math.Clamp(VolumeMultiplier, 1.0,  4.0),
+        RsiDivThreshold  = Math.Clamp(RsiDivThreshold,  2.0, 15.0),
+        MinRallyAtrMult  = Math.Clamp(MinRallyAtrMult,  2.0,  8.0),
         StopLossAtrMult           = Math.Clamp(StopLossAtrMult,            1.5,  6.0),
         TakeProfitAtrMult         = Math.Clamp(TakeProfitAtrMult,          2.0, 20.0),
         TrailingActivationAtrMult = Math.Clamp(TrailingActivationAtrMult,  1.0,  8.0),
@@ -136,7 +131,7 @@ public class SwingGenotype
     public override string ToString() =>
         $"EMA{EmaPeriod} RSI({RsiPeriod},OB={RsiOverbought:F0},div≥{RsiDivThreshold:F0}pts) " +
         $"ADX({AdxPeriod},{AdxThreshold:F0}) Look={LookbackCandles} Rally≥{MinRallyAtrMult:F1}A " +
-        $"Vol≥{VolumeMultiplier:F1}x SL={StopLossAtrMult:F2}A TP={TakeProfitAtrMult:F2}A " +
+        $"SL={StopLossAtrMult:F2}A TP={TakeProfitAtrMult:F2}A " +
         $"Trail({TrailingActivationAtrMult:F2}A/{TrailingStopAtrMult:F2}A) " +
         $"MaxH={MaxHoldCandles}bars F={Fitness:F4}";
 }

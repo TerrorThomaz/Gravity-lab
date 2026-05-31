@@ -9,16 +9,13 @@ namespace TradingGA;
 //   3. RSI divergence    — RSI at the current candle is ≥ RsiDivThreshold below the RSI
 //                          at the most recent swing high, AND that swing-high RSI cleared
 //                          RsiOverbought (buyers were exhausted at the top)
-//   4. Volume spike      — current volume ≥ VolumeMultiplier × 20-period rolling avg
-//                          (distribution: institutional profit-taking is high-volume)
-//   5. Structure break   — close below the previous candle's low (market committed to reversal)
+//   4. Structure break   — close below the previous candle's low (market committed to reversal)
 //
 // Exit: hard ATR stop · fixed ATR target · trailing stop once armed · max-hold timeout.
 // ATR multiples use the 14-period ATR fixed at entry for the life of the trade.
 public static class SwingSimulator
 {
     private const int AtrPeriod    = 14;
-    private const int VolAvgPeriod = 20;
     public  const double FeeRoundTrip = 0.21;   // same as pump-short (0.055% taker ×2 + 0.05% slip ×2)
 
     public static List<(DateTime Time, double Return, string Kind)> GetSwingReturns(
@@ -47,14 +44,13 @@ public static class SwingSimulator
         RunSwing(SwingGenotype g, Candle[] candles)
     {
         int warmup = Math.Max(Math.Max(g.EmaPeriod, g.RsiPeriod), g.AdxPeriod * 2 + 1)
-                   + g.LookbackCandles + VolAvgPeriod;
+                   + g.LookbackCandles;
         if (candles.Length <= warmup + 10)
             return ([], new SwingTradeState(false, 0, 0, 0, false, 0, 0));
 
         var closes  = candles.Select(c => c.Close).ToArray();
         var highs   = candles.Select(c => c.High).ToArray();
         var lows    = candles.Select(c => c.Low).ToArray();
-        var volumes = candles.Select(c => c.Volume).ToArray();
 
         var ema = ComputeEma(closes, g.EmaPeriod);
         var rsi = ComputeRsi(closes, g.RsiPeriod);
@@ -105,14 +101,6 @@ public static class SwingSimulator
                 bool diverging   = rsiAtHigh >= g.RsiOverbought
                                 && rsi[i] <= rsiAtHigh - g.RsiDivThreshold;
                 if (!diverging) continue;
-
-                // ── Volume spike (20-period rolling avg) ──────────────────────────
-                double avgVol = 0;
-                int    vStart = Math.Max(0, i - VolAvgPeriod);
-                for (int j = vStart; j < i; j++) avgVol += volumes[j];
-                avgVol /= Math.Max(1, i - vStart);
-                bool volumeOk = volumes[i] >= avgVol * g.VolumeMultiplier;
-                if (!volumeOk) continue;
 
                 // ── Structure break: close below previous candle's low ────────────
                 bool bos = closes[i] < lows[i - 1];

@@ -1793,7 +1793,7 @@ async Task RunLiveTrain()
 // ══════════════════════════════════════════════════════════════════════════════
 async Task RunSwingTrain()
 {
-    Console.WriteLine("=== Gravity-gen2 | SWING TRAIN (4h candles, 12 coins, ~3yr) ===\n");
+    Console.WriteLine("=== Gravity-gen2 | SWING TRAIN (4h candles, 18 coins, ~3yr) ===\n");
 
     // Diverse set: large caps for reliable trend structure + volatile alts for swing amplitude.
     // Weighted down: coins with shorter history or noisier signals.
@@ -1805,12 +1805,18 @@ async Task RunSwingTrain()
         ("XRPUSDT",       1.0),
         ("DOGEUSDT",      1.0),
         ("AVAXUSDT",      1.0),
+        ("WIFUSDT",       1.0),
+        ("ADAUSDT",       1.0),
         ("LINKUSDT",      1.0),
         ("ATOMUSDT",      0.9),
         ("NEARUSDT",      0.9),
+        ("1000PEPEUSDT",  0.9),
+        ("APTUSDT",       0.9),
         ("INJUSDT",       0.8),
         ("OPUSDT",        0.8),
         ("ARBUSDT",       0.8),
+        ("TIAUSDT",       0.8),
+        ("SEIUSDT",       0.8),
     };
 
     Console.WriteLine($"  Fetching {trainCoins.Length} coins (4h candles, ~3yr)...");
@@ -1880,7 +1886,7 @@ async Task RunSwingTrain()
     Console.WriteLine($"\n  Training on {coinData.Count} coins simultaneously\n");
 
     Console.WriteLine("─── Swing GA training ───");
-    var best = new SwingGeneticAlgorithm(50, 80, verbose: true).Run(coinData, seed);
+    var best = new SwingGeneticAlgorithm(80, 150, verbose: true).Run(coinData, seed);
 
     Console.WriteLine($"\nFrozen genotype:\n  {best}\n");
     File.WriteAllText(SwingGenoFile, JsonSerializer.Serialize(SwingGenotypeDto.From(best),
@@ -2512,7 +2518,6 @@ class SwingGenotypeDto
     public double RsiOverbought    { get; set; }
     public double RsiDivThreshold  { get; set; }
     public double MinRallyAtrMult  { get; set; }
-    public double VolumeMultiplier { get; set; }
     public double StopLossAtrMult           { get; set; }
     public double TakeProfitAtrMult         { get; set; }
     public double TrailingActivationAtrMult { get; set; }
@@ -2530,7 +2535,6 @@ class SwingGenotypeDto
         RsiOverbought    = g.RsiOverbought,
         RsiDivThreshold  = g.RsiDivThreshold,
         MinRallyAtrMult  = g.MinRallyAtrMult,
-        VolumeMultiplier = g.VolumeMultiplier,
         StopLossAtrMult           = g.StopLossAtrMult,
         TakeProfitAtrMult         = g.TakeProfitAtrMult,
         TrailingActivationAtrMult = g.TrailingActivationAtrMult,
@@ -2549,7 +2553,6 @@ class SwingGenotypeDto
         RsiOverbought    = RsiOverbought    > 0 ? RsiOverbought    : 68.0,
         RsiDivThreshold  = RsiDivThreshold  > 0 ? RsiDivThreshold  : 8.0,
         MinRallyAtrMult  = MinRallyAtrMult  > 0 ? MinRallyAtrMult  : 5.0,
-        VolumeMultiplier = VolumeMultiplier > 0 ? VolumeMultiplier : 1.5,
         StopLossAtrMult           = StopLossAtrMult           > 0 ? StopLossAtrMult           : 1.5,
         TakeProfitAtrMult         = TakeProfitAtrMult         > 0 ? TakeProfitAtrMult         : 4.0,
         TrailingActivationAtrMult = TrailingActivationAtrMult > 0 ? TrailingActivationAtrMult : 3.0,

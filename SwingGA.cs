@@ -24,7 +24,7 @@ public class SwingGeneticAlgorithm
     private readonly bool   _verbose;
     private readonly Random _rng = new();
 
-    private const int MinTradesPerFold = 5;   // 4h candles: reject dead params; fold penalty (0.75×std) handles consistency
+    private const int MinTradesPerFold = 15;  // 4h candles: 18 pooled coins should easily hit 15/fold; hard floor forces the GA away from ultra-selective params
 
     public SwingGeneticAlgorithm(
         int  populationSize    = 50,
@@ -54,9 +54,12 @@ public class SwingGeneticAlgorithm
 
         if (expectancy <= 0) return expectancy;   // losing strategy → raw negative expectancy
 
+        double freqBonus = 0.3 * Math.Log(Math.Max(1.0, returns.Count / (double)MinTradesPerFold));
+
         return expectancy
              + 0.4 * Math.Log(Math.Clamp(pf, 0.2, 8.0))
-             + 0.2 * (wr - 0.45);
+             + 0.2 * (wr - 0.45)
+             + freqBonus;
     }
 
     // Pool returns across ALL coins within each fold time-slot.

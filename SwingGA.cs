@@ -12,7 +12,7 @@ namespace TradingGA;
 //           + 0.4 × ln(profit_factor)    — quality modifier, log-scaled to avoid dominating
 //           + 0.2 × (win_rate − 0.45)    — mild bias toward >45% WR
 //
-// Fitness  = mean(fold_scores) − 0.6 × std(fold_scores)   — penalises time-period fragility
+// Fitness  = mean(fold_scores) − 0.75 × std(fold_scores)  — penalises time-period fragility
 public class SwingGeneticAlgorithm
 {
     public record CoinData(Candle[] TrainCandles, Candle[] ValCandles, double Weight = 1.0);
@@ -24,7 +24,7 @@ public class SwingGeneticAlgorithm
     private readonly bool   _verbose;
     private readonly Random _rng = new();
 
-    private const int MinTradesPerFold = 5;   // 4h candles: ~7-15 swing trades per fold is realistic
+    private const int MinTradesPerFold = 10;  // 4h candles: enforce enough signal before trusting expectancy
 
     public SwingGeneticAlgorithm(
         int  populationSize    = 50,
@@ -94,7 +94,7 @@ public class SwingGeneticAlgorithm
                     }
                     double mean = scores.Average();
                     double std  = Math.Sqrt(scores.Select(s => (s - mean) * (s - mean)).Average());
-                    coinScore   = mean - 0.60 * std;
+                    coinScore   = mean - 0.75 * std;
                 }
             }
             else

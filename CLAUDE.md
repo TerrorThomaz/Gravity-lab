@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build
 dotnet build -c Release
 
-# Run modes
+# Run modes — day-trading (5m candles)
 dotnet run -- train         # GA on WIF only (fast, ~2 min)
 dotnet run -- trainmulti    # GA on 5 diverse coins (robust, ~5 min)
 dotnet run -- backtest      # 1yr out-of-sample on 14 coins (~15 min)
@@ -16,11 +16,16 @@ dotnet run -- papertrade    # live signals, refreshes every 5 min
 dotnet run -- livetrain     # 20-genotype population on rolling live data, evolves hourly
 dotnet run -- status        # portfolio P&L with fees (0.21%/trade) + reinvestment
 
+# Run modes — swing trading (daily candles)
+dotnet run -- swingtrain       # Swing GA: daily candles, 5 coins, ~3yr history
+dotnet run -- swingbacktest    # Swing backtest: 14 coins, daily candles, val 20%
+dotnet run -- swingpapertrade  # Live swing signals, refreshes every hour
+
 # Discord bot (requires .env)
 .venv/bin/python discord_bot.py
 ```
 
-No test suite. Validation is done by running `backtest` after any change to `Simulator.cs` or `Genotype.cs`.
+No test suite. Validation is done by running `backtest` after any change to `Simulator.cs` or `Genotype.cs`. Run `swingbacktest` after changes to `SwingSimulator.cs` or `SwingGenotype.cs`.
 
 ## Architecture
 
@@ -79,3 +84,18 @@ GRAVITY_MODE=              # papertrade (default) or livetrain
 
 - `best_genotype.json` — output of `train` / `trainmulti`, used by backtest + papertrade + status
 - `live_best_genotype.json` — written by `livetrain` when session best exceeds saved fitness; `status` prefers this file if present
+- `swing_best_genotype.json` — output of `swingtrain`, used by swingbacktest + swingpapertrade
+
+### Swing trading (daily candles)
+
+`SwingSimulator.cs` operates on daily OHLCV candles. Two strategies, regime-gated:
+- **Swing Long** (moderate uptrend): RSI bounces from oversold zone (< RsiOversold then > RsiOversold) while ADX ≥ threshold×0.6 and price > EMA.
+- **Swing Short** (strong uptrend extended): same RSI-overbought fade + daily BoS as day-trade bot, but on daily candles for bigger moves.
+
+Exit uses three layers: hard ATR stop · fixed ATR profit target · trailing ATR stop (armed after price moves `TrailingActivationAtrMult` × ATR). `MaxHoldCandles` forces close after N daily candles regardless.
+
+All ATR multiples are in absolute price units (14-period ATR at entry time), not percentage. This naturally scales to whatever volatility the coin shows.
+
+`SwingGA.cs` is a simplified genetic algorithm for daily data — same 5-fold CV structure as `GA.cs`, but minimum 3 trades per fold (vs 5) since daily candles produce fewer trades.
+
+`FetchDailyCandles(symbol, batches)` fetches `KlineInterval.OneDay` from Bybit. `batches: 3` ≈ 3000 daily candles (~8yr, most coins have 3–6yr of history).

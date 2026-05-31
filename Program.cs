@@ -3,28 +3,35 @@ using Bybit.Net.Clients;
 using Bybit.Net.Enums;
 using System.Text.Json;
 
-const string GenoFile = "best_genotype.json";
+const string GenoFile      = "best_genotype.json";
+const string SwingGenoFile = "swing_best_genotype.json";
 var client = new BybitRestClient();
 
 string mode = args.Length > 0 ? args[0].ToLowerInvariant() : "";
 switch (mode)
 {
-    case "train":       await RunTrain();       break;
-    case "trainmulti":  await RunTrainMulti();  break;
-    case "trainblocks": await RunTrainBlocks(); break;
-    case "backtest":    await RunBacktest();    break;
-    case "papertrade":  await RunPaperTrade();  break;
-    case "livetrain":   await RunLiveTrain();   break;
-    case "status":      await RunStatus();      break;
+    case "train":           await RunTrain();           break;
+    case "trainmulti":      await RunTrainMulti();      break;
+    case "trainblocks":     await RunTrainBlocks();     break;
+    case "backtest":        await RunBacktest();        break;
+    case "papertrade":      await RunPaperTrade();      break;
+    case "livetrain":       await RunLiveTrain();       break;
+    case "status":          await RunStatus();          break;
+    case "swingtrain":      await RunSwingTrain();      break;
+    case "swingbacktest":   await RunSwingBacktest();   break;
+    case "swingpapertrade": await RunSwingPaperTrade(); break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
-        Console.WriteLine("  dotnet run -- train        GA on WIF only (fast, single-coin)");
-        Console.WriteLine("  dotnet run -- trainmulti   GA on 5 diverse coins (robust, anti-overfit)");
-        Console.WriteLine("  dotnet run -- trainblocks  Block GA: regime→exit→polish, 5yr, all 14 coins");
-        Console.WriteLine("  dotnet run -- backtest     1yr backtest on 14 coins");
-        Console.WriteLine("  dotnet run -- papertrade   Live signals per coin");
-        Console.WriteLine("  dotnet run -- livetrain    20 genotypes evaluated on live data, evolves hourly");
-        Console.WriteLine("  dotnet run -- status       Portfolio P&L with fees, slippage, reinvestment");
+        Console.WriteLine("  dotnet run -- train            GA on WIF only (fast, single-coin)");
+        Console.WriteLine("  dotnet run -- trainmulti       GA on 5 diverse coins (robust, anti-overfit)");
+        Console.WriteLine("  dotnet run -- trainblocks      Block GA: regime→exit→polish, 5yr, all 14 coins");
+        Console.WriteLine("  dotnet run -- backtest         1yr backtest on 14 coins");
+        Console.WriteLine("  dotnet run -- papertrade       Live signals per coin");
+        Console.WriteLine("  dotnet run -- livetrain        20 genotypes evaluated on live data, evolves hourly");
+        Console.WriteLine("  dotnet run -- status           Portfolio P&L with fees, slippage, reinvestment");
+        Console.WriteLine("  dotnet run -- swingtrain       Swing GA on daily candles, 5 coins (~3yr)");
+        Console.WriteLine("  dotnet run -- swingbacktest    Swing backtest on 14 coins, daily candles");
+        Console.WriteLine("  dotnet run -- swingpapertrade  Live swing signals, refreshes every hour");
         break;
 }
 
@@ -714,7 +721,311 @@ async Task RunLiveTrain()
         Console.WriteLine($"  Session best: {trainer.SessionBest}");
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  SWING TRAIN — GA on daily candles, 5 diverse coins (~3yr)
+// ══════════════════════════════════════════════════════════════════════════════
+async Task RunSwingTrain()
+{
+    Console.WriteLine("=== Gravity-gen2 | SWING TRAIN (daily candles, 5 coins, ~3yr) ===\n");
+
+    var trainCoins = new[]
+    {
+        ("WIFUSDT",      1.0),
+        ("SOLUSDT",      1.0),
+        ("DOGEUSDT",     1.0),
+        ("ETHUSDT",      1.0),
+        ("1000BONKUSDT", 0.8),
+    };
+
+    Console.WriteLine($"  Fetching {trainCoins.Length} coins (daily candles, ~3yr)...");
+    var fetchTasks = trainCoins.Select(async ((string sym, double weight) t) =>
+    {
+        var candles = await FetchDailyCandles(t.sym, batches: 3);
+        Console.WriteLine($"  {t.sym}: {candles.Count} daily candles");
+        return (t.sym, t.weight, candles);
+    });
+    var fetched = await Task.WhenAll(fetchTasks);
+
+    var coinData = new List<SwingGeneticAlgorithm.CoinData>();
+    foreach (var (sym, weight, candles) in fetched)
+    {
+        if (candles.Count < 150) { Console.WriteLine($"  {sym}: skip (insufficient data)"); continue; }
+        int split = (int)(candles.Count * 0.8);
+        coinData.Add(new SwingGeneticAlgorithm.CoinData(
+            candles.Take(split).ToArray(),
+            candles.Skip(split).ToArray(),
+            weight));
+    }
+
+    if (coinData.Count == 0) { Console.WriteLine("No data."); return; }
+    Console.WriteLine($"\n  Training on {coinData.Count} coins simultaneously\n");
+
+    SwingGenotype? seed = null;
+    if (File.Exists(SwingGenoFile))
+    {
+        seed = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(SwingGenoFile))!.ToGenotype();
+        Console.WriteLine($"  Seeding from {SwingGenoFile}: {seed}");
+    }
+
+    Console.WriteLine("─── Swing GA training ───");
+    var best = new SwingGeneticAlgorithm(50, 60, verbose: true).Run(coinData, seed);
+
+    Console.WriteLine($"\nFrozen genotype:\n  {best}\n");
+    File.WriteAllText(SwingGenoFile, JsonSerializer.Serialize(SwingGenotypeDto.From(best),
+        new JsonSerializerOptions { WriteIndented = true }));
+    Console.WriteLine($"  Saved → {SwingGenoFile}");
+
+    // Overfit check
+    Console.WriteLine("\n─── Overfit check (train 80% vs val 20%) ───");
+    var tRet = coinData.SelectMany(cd =>
+        SwingSimulator.GetSwingReturns(best, cd.TrainCandles).Select(t => t.Return)).ToList();
+    var vRet = coinData.SelectMany(cd =>
+        SwingSimulator.GetSwingReturns(best, cd.ValCandles).Select(t => t.Return)).ToList();
+
+    PrintSwingSplitStats("Train 80%", tRet);
+    PrintSwingSplitStats("Val   20%", vRet);
+
+    double vSh = Simulator.SharpeRatio(vRet);
+    double tSh = Simulator.SharpeRatio(tRet);
+    Console.WriteLine(vSh < tSh * 0.5 || vSh <= 0
+        ? "\n  !! Possible overfit — val Sharpe < 50% of train"
+        : "\n  OK — val Sharpe within acceptable range");
+
+    Console.WriteLine($"\nNext: dotnet run -- swingbacktest   ← verify on 14 coins");
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SWING BACKTEST — daily candles, 14 coins
+// ══════════════════════════════════════════════════════════════════════════════
+async Task RunSwingBacktest()
+{
+    Console.WriteLine("=== Gravity-gen2 | SWING BACKTEST (~3yr, 14 coins, daily candles) ===\n");
+
+    if (!File.Exists(SwingGenoFile))
+    {
+        Console.WriteLine($"No swing genotype at '{SwingGenoFile}'. Run 'dotnet run -- swingtrain' first.");
+        return;
+    }
+    var g = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(SwingGenoFile))!.ToGenotype();
+    Console.WriteLine($"Genotype: {g}\n");
+
+    var testCoins = new[]
+    {
+        "WIFUSDT", "SOLUSDT",  "MEMEUSDT",    "ATOMUSDT",    "DOGEUSDT",
+        "1000BONKUSDT", "XRPUSDT", "ETHUSDT", "AVAXUSDT",    "BNBUSDT",
+        "LINKUSDT", "ADAUSDT", "1000PEPEUSDT", "1000FLOKIUSDT",
+    };
+
+    Console.WriteLine($"  Fetching {testCoins.Length} coins in parallel...");
+    var sem = new SemaphoreSlim(4);
+    var fetchTasks = testCoins.Select(async sym =>
+    {
+        await sem.WaitAsync();
+        try
+        {
+            var candles = await FetchDailyCandles(sym, batches: 3);
+            Console.WriteLine($"  {sym}: {candles.Count} daily candles");
+            return (sym, candles);
+        }
+        finally { sem.Release(); }
+    });
+    var fetchedArr = await Task.WhenAll(fetchTasks);
+    Console.WriteLine();
+
+    var allTrades = new List<(string Coin, DateTime Time, double Return, string Kind)>();
+    var coinStats = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, int Longs, int Shorts)>();
+
+    Console.WriteLine($"{"Coin",-18} {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}  {"Longs",6}  {"Shorts",6}");
+    Console.WriteLine(new string('-', 82));
+
+    foreach (var (sym, candles) in fetchedArr)
+    {
+        if (candles.Count < 150) { Console.WriteLine($"  {sym,-16}  skip (no data)"); continue; }
+
+        var arr   = candles.ToArray();
+        int split = (int)(arr.Length * 0.8);
+        var vArr  = arr[split..];
+
+        var vTrades = SwingSimulator.GetSwingReturns(g, vArr);
+        var vRet    = vTrades.Select(t => t.Return).ToList();
+
+        double sh   = Simulator.SharpeRatio(vRet);
+        double sort = Simulator.SortinoRatio(vRet);
+        double pf   = Simulator.ProfitFactor(vRet);
+        double wr   = vRet.Count > 0 ? (double)vRet.Count(r => r > 0) / vRet.Count : 0;
+        double avg  = vRet.Count > 0 ? vRet.Average() : 0;
+        int longs   = vTrades.Count(t => t.Kind == "swing_long");
+        int shorts  = vTrades.Count(t => t.Kind == "swing_short");
+
+        foreach (var (t, ret, kind) in vTrades)
+            allTrades.Add((sym, t, ret, kind));
+
+        Console.WriteLine($"  {sym,-16} {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%  {longs,6}  {shorts,6}");
+        coinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, longs, shorts));
+    }
+
+    if (allTrades.Count == 0) { Console.WriteLine("No trades."); return; }
+
+    // Portfolio summary
+    allTrades.Sort((a, b) => a.Time.CompareTo(b.Time));
+    var allRet = allTrades.Select(t => t.Return).ToList();
+    double portSharpe  = Simulator.SharpeRatio(allRet);
+    double portSortino = Simulator.SortinoRatio(allRet);
+    double portPf      = Simulator.ProfitFactor(allRet);
+    double portCalmar  = Simulator.CalmarRatio(allRet);
+    int    totalWins   = allRet.Count(r => r > 0);
+
+    Console.WriteLine($"\n{new string('═', 70)}");
+    Console.WriteLine($"  SWING BACKTEST SUMMARY  (all coins, val 20%)");
+    Console.WriteLine($"{new string('═', 70)}");
+    Console.WriteLine($"  Total trades: {allRet.Count}  ({totalWins}W / {allRet.Count - totalWins}L)");
+    Console.WriteLine($"  Win rate:     {(allRet.Count > 0 ? (double)totalWins / allRet.Count : 0):P1}");
+    Console.WriteLine($"  Avg return:   {(allRet.Count > 0 ? allRet.Average() : 0):+0.00}%");
+    Console.WriteLine($"  Sharpe:       {portSharpe:F2}");
+    Console.WriteLine($"  Sortino:      {portSortino:F2}");
+    Console.WriteLine($"  Profit factor:{portPf:F2}");
+    Console.WriteLine($"  Calmar:       {portCalmar:F2}");
+    Console.WriteLine($"  Longs:        {allTrades.Count(t => t.Kind == "swing_long")}");
+    Console.WriteLine($"  Shorts:       {allTrades.Count(t => t.Kind == "swing_short")}");
+    Console.WriteLine();
+
+    Console.WriteLine($"  Per-coin (sorted by Sharpe):");
+    Console.WriteLine($"  {"Coin",-18} {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+    Console.WriteLine($"  {new string('-', 66)}");
+    foreach (var r in coinStats.OrderByDescending(c => c.Sharpe))
+        Console.WriteLine($"  {r.Coin,-18} {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SWING PAPER TRADE — live signals on daily candles, refreshes hourly
+// ══════════════════════════════════════════════════════════════════════════════
+async Task RunSwingPaperTrade()
+{
+    Console.WriteLine("=== Gravity-gen2 | SWING PAPER TRADE (daily candles) — Ctrl+C to stop ===\n");
+
+    if (!File.Exists(SwingGenoFile))
+    {
+        Console.WriteLine($"No swing genotype at '{SwingGenoFile}'. Run 'dotnet run -- swingtrain' first.");
+        return;
+    }
+    var g = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(SwingGenoFile))!.ToGenotype();
+    Console.WriteLine($"Genotype: {g}\n");
+
+    var coins = new[]
+    {
+        "WIFUSDT", "SOLUSDT",  "MEMEUSDT",    "DOGEUSDT",    "1000BONKUSDT",
+        "XRPUSDT", "ETHUSDT",  "AVAXUSDT",    "BNBUSDT",     "LINKUSDT",
+        "ADAUSDT", "1000PEPEUSDT", "ATOMUSDT", "1000FLOKIUSDT",
+    };
+
+    // Daily signals change once per day; refresh every hour to catch intraday state
+    const int RefreshSeconds = 3600;
+
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+
+    while (!cts.Token.IsCancellationRequested)
+    {
+        Console.Clear();
+        Console.WriteLine($"=== Gravity-gen2 | SWING PAPER TRADE  [{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC]  Ctrl+C to stop ===\n");
+        Console.WriteLine($"{"Coin",-18}  {"Side",-6} {"State",-14} {"Entry",12}  {"Current",12}  {"Unrealised",11}  {"Days",5}  {"Stop",12}  {"Target",12}");
+        Console.WriteLine(new string('-', 110));
+
+        foreach (var sym in coins)
+        {
+            if (cts.Token.IsCancellationRequested) break;
+
+            // Fetch ~200 daily candles to ensure enough history for indicators
+            var candles = await FetchDailyCandles(sym, batches: 1);
+            if (candles.Count < 100) { Console.WriteLine($"  {sym,-18}  (no data)"); continue; }
+
+            double px = candles[^1].Close;
+            var    st = SwingSimulator.GetSwingTradeState(g, candles.ToArray());
+
+            string sideStr  = st.InTrade ? st.Side.ToUpper() : "—";
+            string stateStr = st.InTrade
+                ? (st.TrailArmed ? "TRAIL ARMED" : $"OPEN d{st.HoldCount}")
+                : "watching";
+            string entryStr = st.InTrade ? $"{st.Entry:F4}" : "—";
+            string unreal   = st.InTrade
+                ? (st.Side == "long"
+                    ? $"{(px - st.Entry) / st.Entry * 100.0:+0.00}%"
+                    : $"{(st.Entry - px) / st.Entry * 100.0:+0.00}%")
+                : "—";
+            string stopStr   = st.InTrade ? $"{st.HardStop:F4}" : "—";
+            string targetStr = st.InTrade ? $"{st.Target:F4}" : "—";
+            string daysStr   = st.InTrade ? $"{st.HoldCount}d" : "—";
+
+            Console.WriteLine($"  {sym,-18}  {sideStr,-6} {stateStr,-14} {entryStr,12}  {px,12:F4}  {unreal,11}  {daysStr,5}  {stopStr,12}  {targetStr,12}");
+        }
+
+        if (cts.Token.IsCancellationRequested) break;
+
+        for (int s = RefreshSeconds; s > 0; s--)
+        {
+            if (cts.Token.IsCancellationRequested) break;
+            Console.Write($"\r  Next refresh in {s / 60}m {s % 60:00}s  ");
+            await Task.Delay(1000, cts.Token).ContinueWith(_ => { });
+        }
+    }
+
+    Console.WriteLine("\n\n  Swing paper trade stopped.");
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Fetch daily candles from Bybit (for swing trading).
+// batches × 1000 days ≈ batches × 2.7yr. batches=3 → ~8yr (most coins have ~3–6yr history).
+async Task<List<Candle>> FetchDailyCandles(string symbol, int batches = 3)
+{
+    var all = new List<Candle>();
+    DateTime? endTime = null;
+    for (int batch = 0; batch < batches; batch++)
+    {
+        bool success = false;
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            if (attempt > 0) await Task.Delay(1500 * attempt);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var result = await client.V5Api.ExchangeData
+                .GetKlinesAsync(Category.Linear, symbol, KlineInterval.OneDay,
+                    endTime: endTime, limit: 1000, ct: cts.Token);
+
+            if (!result.Success || result.Data?.List == null)
+            {
+                bool rateLimit = result.Error?.ToString().Contains("rate", StringComparison.OrdinalIgnoreCase) == true
+                              || result.Error?.ToString().Contains("429") == true;
+                if (rateLimit && attempt < 3) { Console.Write("↺"); continue; }
+                Console.WriteLine($"\n  [{symbol}] daily batch {batch + 1} failed: {result.Error}");
+                break;
+            }
+
+            var bc = result.Data.List
+                .Select(k => new Candle(k.StartTime, (double)k.OpenPrice, (double)k.HighPrice,
+                                        (double)k.LowPrice, (double)k.ClosePrice, (double)k.Volume))
+                .ToList();
+            if (!bc.Any()) { success = true; break; }
+            all.AddRange(bc);
+            endTime = bc.Min(c => c.Time).AddDays(-1);
+            success = true;
+            break;
+        }
+        if (!success) break;
+        await Task.Delay(300);
+    }
+    return all.GroupBy(c => c.Time).Select(g => g.First()).OrderBy(c => c.Time).ToList();
+}
+
+static void PrintSwingSplitStats(string label, List<double> r)
+{
+    if (r.Count == 0) { Console.WriteLine($"  {label,-12} (no trades)"); return; }
+    double sh   = Simulator.SharpeRatio(r);
+    double sort = Simulator.SortinoRatio(r);
+    double pf   = Simulator.ProfitFactor(r);
+    double wr   = (double)r.Count(x => x > 0) / r.Count;
+    double avg  = r.Average();
+    Console.WriteLine($"  {label,-12} Sh={sh:F2}  Sort={sort:F2}  PF={pf:F2}  WR={wr:P0}  Tr={r.Count}  Avg={avg:+0.00}%");
+}
 
 // Cache-backed fetch: reads/writes candle_cache/{symbol}.csv.
 // Only fetches what's missing (new candles at the recent end, old history at the far end).
@@ -950,6 +1261,60 @@ static void PortfolioSim(List<(string Coin, DateTime Time, double Return, double
 }
 
 // ── Type declarations ─────────────────────────────────────────────────────────
+
+class SwingGenotypeDto
+{
+    public int    EmaPeriod                 { get; set; }
+    public int    RsiPeriod                 { get; set; }
+    public int    AdxPeriod                 { get; set; }
+    public double AdxThreshold              { get; set; }
+    public double RsiOversold               { get; set; }
+    public double RsiOverbought             { get; set; }
+    public double BosThreshold              { get; set; }
+    public int    BosCandlesWait            { get; set; }
+    public double StopLossAtrMult           { get; set; }
+    public double TakeProfitAtrMult         { get; set; }
+    public double TrailingActivationAtrMult { get; set; }
+    public double TrailingStopAtrMult       { get; set; }
+    public int    MaxHoldCandles            { get; set; }
+    public double Fitness                   { get; set; }
+
+    public static SwingGenotypeDto From(SwingGenotype g) => new()
+    {
+        EmaPeriod                 = g.EmaPeriod,
+        RsiPeriod                 = g.RsiPeriod,
+        AdxPeriod                 = g.AdxPeriod,
+        AdxThreshold              = g.AdxThreshold,
+        RsiOversold               = g.RsiOversold,
+        RsiOverbought             = g.RsiOverbought,
+        BosThreshold              = g.BosThreshold,
+        BosCandlesWait            = g.BosCandlesWait,
+        StopLossAtrMult           = g.StopLossAtrMult,
+        TakeProfitAtrMult         = g.TakeProfitAtrMult,
+        TrailingActivationAtrMult = g.TrailingActivationAtrMult,
+        TrailingStopAtrMult       = g.TrailingStopAtrMult,
+        MaxHoldCandles            = g.MaxHoldCandles,
+        Fitness                   = g.Fitness,
+    };
+
+    public SwingGenotype ToGenotype() => new()
+    {
+        EmaPeriod                 = EmaPeriod,
+        RsiPeriod                 = RsiPeriod,
+        AdxPeriod                 = AdxPeriod,
+        AdxThreshold              = AdxThreshold,
+        RsiOversold               = RsiOversold,
+        RsiOverbought             = RsiOverbought,
+        BosThreshold              = BosThreshold,
+        BosCandlesWait            = BosCandlesWait,
+        StopLossAtrMult           = StopLossAtrMult,
+        TakeProfitAtrMult         = TakeProfitAtrMult,
+        TrailingActivationAtrMult = TrailingActivationAtrMult,
+        TrailingStopAtrMult       = TrailingStopAtrMult,
+        MaxHoldCandles            = MaxHoldCandles,
+        Fitness                   = Fitness,
+    };
+}
 
 record CoinResult(
     string Coin,

@@ -5,6 +5,21 @@ using System.Text.Json;
 
 const string GenoFile      = "best_genotype.json";
 const string SwingGenoFile = "swing_best_genotype.json";
+
+// 12 training coins + 14 unseen coins — used by both swingbacktest and swingpapertrade
+string[] SwingBacktestCoins =
+[
+    // training coins
+    "SOLUSDT",  "ETHUSDT",  "BNBUSDT",     "XRPUSDT",  "DOGEUSDT",
+    "AVAXUSDT", "LINKUSDT", "ATOMUSDT",    "NEARUSDT", "INJUSDT",
+    "OPUSDT",   "ARBUSDT",
+    // unseen (OOS) coins
+    "WIFUSDT",       "MEMEUSDT",     "1000BONKUSDT", "1000PEPEUSDT",
+    "ADAUSDT",       "1000FLOKIUSDT","SUIUSDT",      "APTUSDT",
+    "LDOUSDT",       "FETUSDT",      "RNDRUSDT",     "TIAUSDT",
+    "SEIUSDT",       "BTCUSDT",
+];
+
 var client = new BybitRestClient();
 
 string mode = args.Length > 0 ? args[0].ToLowerInvariant() : "";
@@ -1778,22 +1793,31 @@ async Task RunLiveTrain()
 // ══════════════════════════════════════════════════════════════════════════════
 async Task RunSwingTrain()
 {
-    Console.WriteLine("=== Gravity-gen2 | SWING TRAIN (daily candles, 5 coins, ~3yr) ===\n");
+    Console.WriteLine("=== Gravity-gen2 | SWING TRAIN (4h candles, 12 coins, ~3yr) ===\n");
 
+    // Diverse set: large caps for reliable trend structure + volatile alts for swing amplitude.
+    // Weighted down: coins with shorter history or noisier signals.
     var trainCoins = new[]
     {
-        ("WIFUSDT",      1.0),
-        ("SOLUSDT",      1.0),
-        ("DOGEUSDT",     1.0),
-        ("ETHUSDT",      1.0),
-        ("1000BONKUSDT", 0.8),
+        ("SOLUSDT",       1.0),
+        ("ETHUSDT",       1.0),
+        ("BNBUSDT",       1.0),
+        ("XRPUSDT",       1.0),
+        ("DOGEUSDT",      1.0),
+        ("AVAXUSDT",      1.0),
+        ("LINKUSDT",      1.0),
+        ("ATOMUSDT",      0.9),
+        ("NEARUSDT",      0.9),
+        ("INJUSDT",       0.8),
+        ("OPUSDT",        0.8),
+        ("ARBUSDT",       0.8),
     };
 
-    Console.WriteLine($"  Fetching {trainCoins.Length} coins (daily candles, ~3yr)...");
+    Console.WriteLine($"  Fetching {trainCoins.Length} coins (4h candles, ~3yr)...");
     var fetchTasks = trainCoins.Select(async ((string sym, double weight) t) =>
     {
-        var candles = await FetchDailyCandles(t.sym, batches: 3);
-        Console.WriteLine($"  {t.sym}: {candles.Count} daily candles");
+        var candles = await FetchSwingCandles(t.sym, batches: 7);
+        Console.WriteLine($"  {t.sym}: {candles.Count} 4h candles (~{candles.Count / 6.0:F0}d)");
         return (t.sym, t.weight, candles);
     });
     var fetched = await Task.WhenAll(fetchTasks);
@@ -1820,7 +1844,7 @@ async Task RunSwingTrain()
     }
 
     Console.WriteLine("─── Swing GA training ───");
-    var best = new SwingGeneticAlgorithm(50, 60, verbose: true).Run(coinData, seed);
+    var best = new SwingGeneticAlgorithm(50, 80, verbose: true).Run(coinData, seed);
 
     Console.WriteLine($"\nFrozen genotype:\n  {best}\n");
     File.WriteAllText(SwingGenoFile, JsonSerializer.Serialize(SwingGenotypeDto.From(best),
@@ -1834,24 +1858,26 @@ async Task RunSwingTrain()
     var vRet = coinData.SelectMany(cd =>
         SwingSimulator.GetSwingReturns(best, cd.ValCandles).Select(t => t.Return)).ToList();
 
-    PrintSwingSplitStats("Train 80%", tRet);
-    PrintSwingSplitStats("Val   20%", vRet);
+    int tCC = coinData.Sum(cd => cd.TrainCandles.Length) * 48;
+    int vCC = coinData.Sum(cd => cd.ValCandles.Length) * 48;
+    PrintSwingSplitStats("Train 80%", tRet, tCC);
+    PrintSwingSplitStats("Val   20%", vRet, vCC);
 
-    double vSh = Simulator.SharpeRatio(vRet);
-    double tSh = Simulator.SharpeRatio(tRet);
-    Console.WriteLine(vSh < tSh * 0.5 || vSh <= 0
-        ? "\n  !! Possible overfit — val Sharpe < 50% of train"
-        : "\n  OK — val Sharpe within acceptable range");
+    double vExp = vRet.Count > 0 ? vRet.Average() : 0;
+    double tExp = tRet.Count > 0 ? tRet.Average() : 0;
+    Console.WriteLine(vExp < tExp * 0.4 || vExp <= 0
+        ? "\n  !! Possible overfit — val expectancy < 40% of train"
+        : "\n  OK — val expectancy within acceptable range");
 
-    Console.WriteLine($"\nNext: dotnet run -- swingbacktest   ← verify on 14 coins");
+    Console.WriteLine($"\nNext: dotnet run -- swingbacktest   ← verify on {SwingBacktestCoins.Length} coins");
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  SWING BACKTEST — daily candles, 14 coins
+//  SWING BACKTEST — 4h candles, 26 coins
 // ══════════════════════════════════════════════════════════════════════════════
 async Task RunSwingBacktest()
 {
-    Console.WriteLine("=== Gravity-gen2 | SWING BACKTEST (~3yr, 14 coins, daily candles) ===\n");
+    Console.WriteLine("=== Gravity-gen2 | SWING BACKTEST (~3yr, 26 coins, 4h candles) ===\n");
 
     if (!File.Exists(SwingGenoFile))
     {
@@ -1861,22 +1887,18 @@ async Task RunSwingBacktest()
     var g = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(SwingGenoFile))!.ToGenotype();
     Console.WriteLine($"Genotype: {g}\n");
 
-    var testCoins = new[]
-    {
-        "WIFUSDT", "SOLUSDT",  "MEMEUSDT",    "ATOMUSDT",    "DOGEUSDT",
-        "1000BONKUSDT", "XRPUSDT", "ETHUSDT", "AVAXUSDT",    "BNBUSDT",
-        "LINKUSDT", "ADAUSDT", "1000PEPEUSDT", "1000FLOKIUSDT",
-    };
+    // 12 training coins + 14 unseen coins for true OOS test
+    var testCoins = SwingBacktestCoins;
 
-    Console.WriteLine($"  Fetching {testCoins.Length} coins in parallel...");
+    Console.WriteLine($"  Fetching {testCoins.Length} coins in parallel (~3yr 4h candles)...");
     var sem = new SemaphoreSlim(4);
     var fetchTasks = testCoins.Select(async sym =>
     {
         await sem.WaitAsync();
         try
         {
-            var candles = await FetchDailyCandles(sym, batches: 3);
-            Console.WriteLine($"  {sym}: {candles.Count} daily candles");
+            var candles = await FetchSwingCandles(sym, batches: 7);
+            Console.WriteLine($"  {sym}: {candles.Count} 4h candles (~{candles.Count / 6.0:F0}d)");
             return (sym, candles);
         }
         finally { sem.Release(); }
@@ -1885,10 +1907,11 @@ async Task RunSwingBacktest()
     Console.WriteLine();
 
     var allTrades = new List<(string Coin, DateTime Time, double Return, string Kind)>();
-    var coinStats = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, int Longs, int Shorts)>();
+    var coinStats = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet)>();
+    int totalVCandleCount = 0;
 
-    Console.WriteLine($"{"Coin",-18} {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}  {"Longs",6}  {"Shorts",6}");
-    Console.WriteLine(new string('-', 82));
+    Console.WriteLine($"{"Coin",-18} {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+    Console.WriteLine(new string('-', 70));
 
     foreach (var (sym, candles) in fetchedArr)
     {
@@ -1901,19 +1924,21 @@ async Task RunSwingBacktest()
         var vTrades = SwingSimulator.GetSwingReturns(g, vArr);
         var vRet    = vTrades.Select(t => t.Return).ToList();
 
-        double sh   = Simulator.SharpeRatio(vRet);
-        double sort = Simulator.SortinoRatio(vRet);
+        // 4h bars × 48 converts to 5m-candle units for Sharpe annualization
+        int vCC = vArr.Length * 48;
+        totalVCandleCount += vCC;
+
+        double sh   = Simulator.SharpeRatio(vRet, vCC);
+        double sort = Simulator.SortinoRatio(vRet, vCC);
         double pf   = Simulator.ProfitFactor(vRet);
         double wr   = vRet.Count > 0 ? (double)vRet.Count(r => r > 0) / vRet.Count : 0;
         double avg  = vRet.Count > 0 ? vRet.Average() : 0;
-        int longs   = vTrades.Count(t => t.Kind == "swing_long");
-        int shorts  = vTrades.Count(t => t.Kind == "swing_short");
 
         foreach (var (t, ret, kind) in vTrades)
             allTrades.Add((sym, t, ret, kind));
 
-        Console.WriteLine($"  {sym,-16} {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%  {longs,6}  {shorts,6}");
-        coinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, longs, shorts));
+        Console.WriteLine($"  {sym,-16} {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%");
+        coinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg));
     }
 
     if (allTrades.Count == 0) { Console.WriteLine("No trades."); return; }
@@ -1921,8 +1946,8 @@ async Task RunSwingBacktest()
     // Portfolio summary
     allTrades.Sort((a, b) => a.Time.CompareTo(b.Time));
     var allRet = allTrades.Select(t => t.Return).ToList();
-    double portSharpe  = Simulator.SharpeRatio(allRet);
-    double portSortino = Simulator.SortinoRatio(allRet);
+    double portSharpe  = Simulator.SharpeRatio(allRet, totalVCandleCount);
+    double portSortino = Simulator.SortinoRatio(allRet, totalVCandleCount);
     double portPf      = Simulator.ProfitFactor(allRet);
     double portCalmar  = Simulator.CalmarRatio(allRet);
     int    totalWins   = allRet.Count(r => r > 0);
@@ -1937,8 +1962,7 @@ async Task RunSwingBacktest()
     Console.WriteLine($"  Sortino:      {portSortino:F2}");
     Console.WriteLine($"  Profit factor:{portPf:F2}");
     Console.WriteLine($"  Calmar:       {portCalmar:F2}");
-    Console.WriteLine($"  Longs:        {allTrades.Count(t => t.Kind == "swing_long")}");
-    Console.WriteLine($"  Shorts:       {allTrades.Count(t => t.Kind == "swing_short")}");
+    Console.WriteLine($"  Shorts:       {allTrades.Count}");
     Console.WriteLine();
 
     Console.WriteLine($"  Per-coin (sorted by Sharpe):");
@@ -1949,11 +1973,11 @@ async Task RunSwingBacktest()
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  SWING PAPER TRADE — live signals on daily candles, refreshes hourly
+//  SWING PAPER TRADE — live signals on 4h candles, refreshes every 4h
 // ══════════════════════════════════════════════════════════════════════════════
 async Task RunSwingPaperTrade()
 {
-    Console.WriteLine("=== Gravity-gen2 | SWING PAPER TRADE (daily candles) — Ctrl+C to stop ===\n");
+    Console.WriteLine("=== Gravity-gen2 | SWING PAPER TRADE (4h candles) — Ctrl+C to stop ===\n");
 
     if (!File.Exists(SwingGenoFile))
     {
@@ -1963,15 +1987,10 @@ async Task RunSwingPaperTrade()
     var g = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(SwingGenoFile))!.ToGenotype();
     Console.WriteLine($"Genotype: {g}\n");
 
-    var coins = new[]
-    {
-        "WIFUSDT", "SOLUSDT",  "MEMEUSDT",    "DOGEUSDT",    "1000BONKUSDT",
-        "XRPUSDT", "ETHUSDT",  "AVAXUSDT",    "BNBUSDT",     "LINKUSDT",
-        "ADAUSDT", "1000PEPEUSDT", "ATOMUSDT", "1000FLOKIUSDT",
-    };
+    var coins = SwingBacktestCoins;
 
-    // Daily signals change once per day; refresh every hour to catch intraday state
-    const int RefreshSeconds = 3600;
+    // New 4h candles close every 4h; refresh on the same cadence
+    const int RefreshSeconds = 14400;
 
     using var cts = new CancellationTokenSource();
     Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
@@ -1980,35 +1999,32 @@ async Task RunSwingPaperTrade()
     {
         Console.Clear();
         Console.WriteLine($"=== Gravity-gen2 | SWING PAPER TRADE  [{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC]  Ctrl+C to stop ===\n");
-        Console.WriteLine($"{"Coin",-18}  {"Side",-6} {"State",-14} {"Entry",12}  {"Current",12}  {"Unrealised",11}  {"Days",5}  {"Stop",12}  {"Target",12}");
-        Console.WriteLine(new string('-', 110));
+        Console.WriteLine($"{"Coin",-18}  {"State",-14} {"Entry",12}  {"Current",12}  {"Unrealised",11}  {"Bars",5}  {"Stop",12}  {"Target",12}");
+        Console.WriteLine(new string('-', 105));
 
         foreach (var sym in coins)
         {
             if (cts.Token.IsCancellationRequested) break;
 
-            // Fetch ~200 daily candles to ensure enough history for indicators
-            var candles = await FetchDailyCandles(sym, batches: 1);
+            // 1 batch = ~1000 4h bars (~166d) — enough for all indicators + warmup
+            var candles = await FetchSwingCandles(sym, batches: 1);
             if (candles.Count < 100) { Console.WriteLine($"  {sym,-18}  (no data)"); continue; }
 
             double px = candles[^1].Close;
             var    st = SwingSimulator.GetSwingTradeState(g, candles.ToArray());
 
-            string sideStr  = st.InTrade ? st.Side.ToUpper() : "—";
-            string stateStr = st.InTrade
-                ? (st.TrailArmed ? "TRAIL ARMED" : $"OPEN d{st.HoldCount}")
+            string stateStr  = st.InTrade
+                ? (st.TrailArmed ? "TRAIL ARMED" : $"SHORT b{st.HoldCount}")
                 : "watching";
-            string entryStr = st.InTrade ? $"{st.Entry:F4}" : "—";
-            string unreal   = st.InTrade
-                ? (st.Side == "long"
-                    ? $"{(px - st.Entry) / st.Entry * 100.0:+0.00}%"
-                    : $"{(st.Entry - px) / st.Entry * 100.0:+0.00}%")
+            string entryStr  = st.InTrade ? $"{st.Entry:F4}" : "—";
+            string unreal    = st.InTrade
+                ? $"{(st.Entry - px) / st.Entry * 100.0:+0.00}%"
                 : "—";
             string stopStr   = st.InTrade ? $"{st.HardStop:F4}" : "—";
             string targetStr = st.InTrade ? $"{st.Target:F4}" : "—";
-            string daysStr   = st.InTrade ? $"{st.HoldCount}d" : "—";
+            string barsStr   = st.InTrade ? $"{st.HoldCount}" : "—";
 
-            Console.WriteLine($"  {sym,-18}  {sideStr,-6} {stateStr,-14} {entryStr,12}  {px,12:F4}  {unreal,11}  {daysStr,5}  {stopStr,12}  {targetStr,12}");
+            Console.WriteLine($"  {sym,-18}  {stateStr,-14} {entryStr,12}  {px,12:F4}  {unreal,11}  {barsStr,5}  {stopStr,12}  {targetStr,12}");
         }
 
         if (cts.Token.IsCancellationRequested) break;
@@ -2016,7 +2032,7 @@ async Task RunSwingPaperTrade()
         for (int s = RefreshSeconds; s > 0; s--)
         {
             if (cts.Token.IsCancellationRequested) break;
-            Console.Write($"\r  Next refresh in {s / 60}m {s % 60:00}s  ");
+            Console.Write($"\r  Next refresh in {s / 3600}h {s % 3600 / 60}m {s % 60:00}s  ");
             await Task.Delay(1000, cts.Token).ContinueWith(_ => { });
         }
     }
@@ -2026,9 +2042,10 @@ async Task RunSwingPaperTrade()
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// Fetch daily candles from Bybit (for swing trading).
-// batches × 1000 days ≈ batches × 2.7yr. batches=3 → ~8yr (most coins have ~3–6yr history).
-async Task<List<Candle>> FetchDailyCandles(string symbol, int batches = 3)
+// Fetch 4h candles from Bybit (for swing trading).
+// Each batch = 1000 × 4h bars ≈ 166 days. batches=7 → ~3.2yr.
+// For papertrade warmup (need ~200 bars for indicators), 1 batch is sufficient.
+async Task<List<Candle>> FetchSwingCandles(string symbol, int batches = 7)
 {
     var all = new List<Candle>();
     DateTime? endTime = null;
@@ -2040,7 +2057,7 @@ async Task<List<Candle>> FetchDailyCandles(string symbol, int batches = 3)
             if (attempt > 0) await Task.Delay(1500 * attempt);
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             var result = await client.V5Api.ExchangeData
-                .GetKlinesAsync(Category.Linear, symbol, KlineInterval.OneDay,
+                .GetKlinesAsync(Category.Linear, symbol, KlineInterval.FourHours,
                     endTime: endTime, limit: 1000, ct: cts.Token);
 
             if (!result.Success || result.Data?.List == null)
@@ -2048,7 +2065,7 @@ async Task<List<Candle>> FetchDailyCandles(string symbol, int batches = 3)
                 bool rateLimit = result.Error?.ToString().Contains("rate", StringComparison.OrdinalIgnoreCase) == true
                               || result.Error?.ToString().Contains("429") == true;
                 if (rateLimit && attempt < 3) { Console.Write("↺"); continue; }
-                Console.WriteLine($"\n  [{symbol}] daily batch {batch + 1} failed: {result.Error}");
+                Console.WriteLine($"\n  [{symbol}] 4h batch {batch + 1} failed: {result.Error}");
                 break;
             }
 
@@ -2058,7 +2075,7 @@ async Task<List<Candle>> FetchDailyCandles(string symbol, int batches = 3)
                 .ToList();
             if (!bc.Any()) { success = true; break; }
             all.AddRange(bc);
-            endTime = bc.Min(c => c.Time).AddDays(-1);
+            endTime = bc.Min(c => c.Time).AddHours(-4);
             success = true;
             break;
         }
@@ -2068,11 +2085,12 @@ async Task<List<Candle>> FetchDailyCandles(string symbol, int batches = 3)
     return all.GroupBy(c => c.Time).Select(g => g.First()).OrderBy(c => c.Time).ToList();
 }
 
-static void PrintSwingSplitStats(string label, List<double> r)
+
+static void PrintSwingSplitStats(string label, List<double> r, int candleCount)
 {
     if (r.Count == 0) { Console.WriteLine($"  {label,-12} (no trades)"); return; }
-    double sh   = Simulator.SharpeRatio(r);
-    double sort = Simulator.SortinoRatio(r);
+    double sh   = Simulator.SharpeRatio(r, candleCount);
+    double sort = Simulator.SortinoRatio(r, candleCount);
     double pf   = Simulator.ProfitFactor(r);
     double wr   = (double)r.Count(x => x > 0) / r.Count;
     double avg  = r.Average();
@@ -2406,14 +2424,15 @@ static void PortfolioSim(List<(string Coin, DateTime Time, double Return, double
 
 class SwingGenotypeDto
 {
-    public int    EmaPeriod                 { get; set; }
-    public int    RsiPeriod                 { get; set; }
-    public int    AdxPeriod                 { get; set; }
-    public double AdxThreshold              { get; set; }
-    public double RsiOversold               { get; set; }
-    public double RsiOverbought             { get; set; }
-    public double BosThreshold              { get; set; }
-    public int    BosCandlesWait            { get; set; }
+    public int    EmaPeriod      { get; set; }
+    public int    RsiPeriod      { get; set; }
+    public int    AdxPeriod      { get; set; }
+    public double AdxThreshold   { get; set; }
+    public int    LookbackCandles  { get; set; }
+    public double RsiOverbought    { get; set; }
+    public double RsiDivThreshold  { get; set; }
+    public double MinRallyAtrMult  { get; set; }
+    public double VolumeMultiplier { get; set; }
     public double StopLossAtrMult           { get; set; }
     public double TakeProfitAtrMult         { get; set; }
     public double TrailingActivationAtrMult { get; set; }
@@ -2423,14 +2442,15 @@ class SwingGenotypeDto
 
     public static SwingGenotypeDto From(SwingGenotype g) => new()
     {
-        EmaPeriod                 = g.EmaPeriod,
-        RsiPeriod                 = g.RsiPeriod,
-        AdxPeriod                 = g.AdxPeriod,
-        AdxThreshold              = g.AdxThreshold,
-        RsiOversold               = g.RsiOversold,
-        RsiOverbought             = g.RsiOverbought,
-        BosThreshold              = g.BosThreshold,
-        BosCandlesWait            = g.BosCandlesWait,
+        EmaPeriod      = g.EmaPeriod,
+        RsiPeriod      = g.RsiPeriod,
+        AdxPeriod      = g.AdxPeriod,
+        AdxThreshold   = g.AdxThreshold,
+        LookbackCandles  = g.LookbackCandles,
+        RsiOverbought    = g.RsiOverbought,
+        RsiDivThreshold  = g.RsiDivThreshold,
+        MinRallyAtrMult  = g.MinRallyAtrMult,
+        VolumeMultiplier = g.VolumeMultiplier,
         StopLossAtrMult           = g.StopLossAtrMult,
         TakeProfitAtrMult         = g.TakeProfitAtrMult,
         TrailingActivationAtrMult = g.TrailingActivationAtrMult,
@@ -2439,23 +2459,24 @@ class SwingGenotypeDto
         Fitness                   = g.Fitness,
     };
 
-    public SwingGenotype ToGenotype() => new()
+    public SwingGenotype ToGenotype() => new SwingGenotype
     {
-        EmaPeriod                 = EmaPeriod,
-        RsiPeriod                 = RsiPeriod,
-        AdxPeriod                 = AdxPeriod,
-        AdxThreshold              = AdxThreshold,
-        RsiOversold               = RsiOversold,
-        RsiOverbought             = RsiOverbought,
-        BosThreshold              = BosThreshold,
-        BosCandlesWait            = BosCandlesWait,
-        StopLossAtrMult           = StopLossAtrMult,
-        TakeProfitAtrMult         = TakeProfitAtrMult,
-        TrailingActivationAtrMult = TrailingActivationAtrMult,
-        TrailingStopAtrMult       = TrailingStopAtrMult,
-        MaxHoldCandles            = MaxHoldCandles,
+        EmaPeriod      = EmaPeriod,
+        RsiPeriod      = RsiPeriod,
+        AdxPeriod      = AdxPeriod,
+        AdxThreshold   = AdxThreshold,
+        LookbackCandles  = LookbackCandles  > 0 ? LookbackCandles  : 15,
+        RsiOverbought    = RsiOverbought    > 0 ? RsiOverbought    : 68.0,
+        RsiDivThreshold  = RsiDivThreshold  > 0 ? RsiDivThreshold  : 8.0,
+        MinRallyAtrMult  = MinRallyAtrMult  > 0 ? MinRallyAtrMult  : 5.0,
+        VolumeMultiplier = VolumeMultiplier > 0 ? VolumeMultiplier : 1.5,
+        StopLossAtrMult           = StopLossAtrMult           > 0 ? StopLossAtrMult           : 1.5,
+        TakeProfitAtrMult         = TakeProfitAtrMult         > 0 ? TakeProfitAtrMult         : 4.0,
+        TrailingActivationAtrMult = TrailingActivationAtrMult > 0 ? TrailingActivationAtrMult : 3.0,
+        TrailingStopAtrMult       = TrailingStopAtrMult       > 0 ? TrailingStopAtrMult       : 1.5,
+        MaxHoldCandles            = MaxHoldCandles            > 0 ? MaxHoldCandles            : 42,
         Fitness                   = Fitness,
-    };
+    }.ClampToBounds();
 }
 
 record CoinResult(

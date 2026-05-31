@@ -1,8 +1,18 @@
 namespace TradingGA;
 
-// Genetic algorithm for swing trading on daily candles.
-// Uses 5-fold walk-forward CV; min 3 trades per fold (lower than 5m GA due to fewer daily trades).
-// Fitness = weighted mean across coins of (mean_fold_score − 0.75 × std_fold_score).
+// Genetic algorithm for swing trading on 4h candles.
+// Uses 5-fold walk-forward CV; fitness is expectancy + profit factor (not Sharpe).
+//
+// Why not Sharpe?  Swing trades are infrequent with high per-trade variance — that variance
+// is the goal (big winners), not a defect.  Sharpe penalises it.  Expectancy (avg % per
+// trade) directly rewards "bigger profits per trade."  Profit factor (gross wins / gross
+// losses) rewards "more sure" by penalising strategies that rely on a lucky outlier win.
+//
+// FoldScore = expectancy
+//           + 0.4 × ln(profit_factor)    — quality modifier, log-scaled to avoid dominating
+//           + 0.2 × (win_rate − 0.45)    — mild bias toward >45% WR
+//
+// Fitness  = mean(fold_scores) − 0.6 × std(fold_scores)   — penalises time-period fragility
 public class SwingGeneticAlgorithm
 {
     public record CoinData(Candle[] TrainCandles, Candle[] ValCandles, double Weight = 1.0);
@@ -14,11 +24,11 @@ public class SwingGeneticAlgorithm
     private readonly bool   _verbose;
     private readonly Random _rng = new();
 
-    private const int MinTradesPerFold = 3;   // daily candles produce fewer trades
+    private const int MinTradesPerFold = 5;   // 4h candles: ~7-15 swing trades per fold is realistic
 
     public SwingGeneticAlgorithm(
         int  populationSize    = 50,
-        int  generations       = 60,
+        int  generations       = 80,
         int  eliteCount        = 15,
         int  migrationInterval = 10,
         bool verbose           = true)
@@ -30,13 +40,23 @@ public class SwingGeneticAlgorithm
         _verbose           = verbose;
     }
 
-    // Per-fold score: 0.9×Sharpe + 0.1×Calmar (same weighting as day-trade GA).
+    // Expectancy-based fold score — rewards bigger per-trade profit and consistency.
     private static double FoldScore(List<double> returns)
     {
         if (returns.Count < MinTradesPerFold) return -1.0;
-        double sharpe = Simulator.SharpeRatio(returns);
-        double calmar = Math.Clamp(Simulator.CalmarRatio(returns), -2.0, 3.0);
-        return 0.9 * sharpe + 0.1 * calmar;
+
+        double expectancy = returns.Average();
+        double grossWins  = returns.Where(r => r > 0).DefaultIfEmpty(0).Sum();
+        double grossLoss  = Math.Abs(returns.Where(r => r <= 0).DefaultIfEmpty(0).Sum());
+        double pf         = grossLoss > 1e-10 ? grossWins / grossLoss
+                          : (grossWins > 0    ? 5.0 : 0.0);
+        double wr         = (double)returns.Count(r => r > 0) / returns.Count;
+
+        if (expectancy <= 0) return expectancy;   // losing strategy → raw negative expectancy
+
+        return expectancy
+             + 0.4 * Math.Log(Math.Clamp(pf, 0.2, 8.0))
+             + 0.2 * (wr - 0.45);
     }
 
     private double Fitness(SwingGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
@@ -74,7 +94,7 @@ public class SwingGeneticAlgorithm
                     }
                     double mean = scores.Average();
                     double std  = Math.Sqrt(scores.Select(s => (s - mean) * (s - mean)).Average());
-                    coinScore   = mean - 0.75 * std;
+                    coinScore   = mean - 0.60 * std;
                 }
             }
             else

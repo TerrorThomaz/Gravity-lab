@@ -1,0 +1,15 @@
+{
+  "RsiPeriod": 15,
+  "RsiOverbought": 68.2,
+  "BosCandlesWait": 1,
+  "GridStepAtrMult": 0.60,
+  "DcaTriggerAtrMult": 7.58,
+  "EmaPeriod": 10,
+  "BreakEvenAtrMult": 1.79,
+  "MaxDcaLevels": 5,
+  "BosThreshold": 0.999,
+  "VolumeMultiplier": 2.50,
+  "RegimeAdxPeriod": 21,
+  "RegimeAdxThreshold": 32.0,
+  "Fitness": 3.0286
+}

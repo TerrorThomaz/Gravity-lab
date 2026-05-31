@@ -555,7 +555,7 @@ public static class Simulator
 
         double segAtrPct     = useAtr ? SegmentAtrPct(highs, lows, closes, startIdx) : 0.5;
         double gridStep      = g.GridStepAtrMult    * segAtrPct;  // trailing drop from high to exit
-        double dcaTrigger    = g.DcaTriggerAtrMult  * segAtrPct;  // drop% that triggers entry / DCA
+        double dcaTrigger    = g.GridDcaAtrMult     * segAtrPct;  // drop% that triggers entry / DCA
         double breakEvenDist = g.BreakEvenAtrMult   * segAtrPct;  // gain% needed to arm break-even
 
         var result = new List<(DateTime, double)>();
@@ -786,6 +786,7 @@ public static class Simulator
 
     public record UnifiedTradeState(
         bool   PumpOpen, double PumpEntry, int PumpDca, bool PumpInRecovery, int PumpRecoveryLeg,
+        bool   GridOpen, double GridEntry, int GridDca,
         string Regime);
 
     public static UnifiedTradeState GetUnifiedTradeState(Genotype g, Candle[] candles, bool useAtr = true)
@@ -800,7 +801,7 @@ public static class Simulator
         int adxWarmup = g.RegimeAdxPeriod * 2 + 1;
         int startIdx  = Math.Max(Math.Max(g.RsiPeriod, g.EmaPeriod), adxWarmup);
         if (candles.Length <= startIdx + 10)
-            return ([], new UnifiedTradeState(false, 0, 0, false, 0, "Ranging"));
+            return ([], new UnifiedTradeState(false, 0, 0, false, 0, false, 0, 0, "Ranging"));
 
         var closes  = candles.Select(c => c.Close).ToArray();
         var highs   = candles.Select(c => c.High).ToArray();
@@ -821,10 +822,18 @@ public static class Simulator
         double BlendRsi(int i) => (1 - w) * rsi5m[i] + w * rsi15m[Math.Min(i / 3, rsi15m.Length - 1)];
         double BlendEma(int i) => (1 - w) * ema5m[i] + w * ema15m[Math.Min(i / 3, ema15m.Length - 1)];
 
-        double atrPct    = useAtr ? SegmentAtrPct(highs, lows, closes, startIdx) : 1.0;
-        double gridStep  = g.GridStepAtrMult    * atrPct;
-        double dcaTrig   = g.DcaTriggerAtrMult  * atrPct;
-        double beAtr     = g.BreakEvenAtrMult   * atrPct;
+        double atrPct      = useAtr ? SegmentAtrPct(highs, lows, closes, startIdx) : 1.0;
+        double gridStep    = g.GridStepAtrMult    * atrPct;  // pump trailing stop width
+        double dcaTrig     = g.DcaTriggerAtrMult  * atrPct;  // pump DCA trigger (min 2×ATR)
+        double gridDcaTrig = g.GridDcaAtrMult     * atrPct;  // pump recovery-leg exit trigger
+        double beAtr       = g.BreakEvenAtrMult   * atrPct;  // pump break-even arm
+        double hardStop    = g.HardStopAtrMult    * atrPct;  // pump/grid hard stop
+
+        // Ranging / grid-long genes — decoupled from pump parameters
+        double rangeStep    = g.RangeGridStep  > 0 ? g.RangeGridStep  * atrPct : atrPct;
+        double rangeBeAtr   = g.RangeBreakEven * atrPct;
+        double rangeDcaTrig = g.RangeDcaStep   > 0 ? g.RangeDcaStep   * atrPct : atrPct;
+        int    rangeMaxDca  = g.RangeMaxDca    > 0 ? g.RangeMaxDca    : 3;
 
         var result = new List<(DateTime, double, string)>();
 
@@ -834,6 +843,14 @@ public static class Simulator
         int    pBosWait = 0,   pDcaLvl  = 0,  pRecLeg = 0;
         double pEntry  = 0,    pUnits   = 0,   pHigh   = 0, pLow = 0;
         double pLegE   = 0,    pLegLow  = 0,   pLastHi = 0;
+        int    pCandlesOpen = 0;
+
+        // ── Grid long state ───────────────────────────────────────────────────
+        bool   gOpen = false, gBeArmed = false;
+        double gAvgEntry = 0, gUnits = 0, gTradeHigh = 0, gDcaRef = 0;
+        int    gDcaLvl = 0;
+        double gLocalHigh = closes[startIdx];
+        int    gCandlesOpen = 0;
 
         string lastRegime = "Ranging";
 
@@ -850,7 +867,7 @@ public static class Simulator
             // ── PUMP SHORT ────────────────────────────────────────────────────
             if (!pOpen)
             {
-                if (trendUp)
+                if (trendUp && !gOpen)  // no pump entry while grid trade is running
                 {
                     if (rsi >= g.RsiOverbought) pRsiOB = true;
                     if (candles[i].High < pLastHi * g.BosThreshold && !pBosFound)
@@ -869,78 +886,284 @@ public static class Simulator
                             pDcaLvl = 0;   pHigh  = price; pLow   = price;
                             pBeArmed = false; pInRec = false; pRecLeg = 0;
                             pBosFound = false; pBosWait = 0; pRsiOB = false;
+                            pCandlesOpen = 0;
                         }
                     }
                 }
-                else
+                else if (!trendUp)
                 {
                     pBosFound = false; pBosWait = 0; pRsiOB = false;
                 }
             }
-            else if (!pInRec)
+            else  // pOpen == true (normal or recovery)
             {
-                if (price < pLow) pLow = price;
-                if (price > pHigh) pHigh = price;
+                pCandlesOpen++;
 
-                double bestDrop = (pEntry - pLow) / pEntry * 100.0;
-                if (!pBeArmed && beAtr > 0 && bestDrop >= beAtr) pBeArmed = true;
-
-                bool   trailActive = pLow < pEntry;
-                double trailStop   = pLow * (1.0 + gridStep / 100.0);
-
-                if (trailActive && price >= trailStop)
+                // Hard stop + time exit: applied before normal exit logic
+                bool pHardStop = (price - pEntry) / pEntry * 100.0 >= hardStop;
+                bool pTimeOut  = pCandlesOpen > 288;  // 24h at 5m candles
+                if (pHardStop || pTimeOut)
                 {
                     result.Add((candles[i].Time, (pEntry - price) / pEntry * 100.0 - FeeRoundTrip, "pump"));
-                    pOpen = false;
+                    pOpen = false; pInRec = false; pCandlesOpen = 0;
                 }
-                else if (pBeArmed && price >= pEntry)
+                else if (!pInRec)
                 {
-                    result.Add((candles[i].Time, (pEntry - price) / pEntry * 100.0 - FeeRoundTrip, "pump"));
-                    pOpen = false;
-                }
-                else
-                {
-                    bool dcaBos = pHigh > pEntry && (pHigh - price) / pHigh * 100.0 >= dcaTrig;
-                    if (dcaBos)
+                    if (price < pLow) pLow = price;
+                    if (price > pHigh) pHigh = price;
+
+                    double bestDrop = (pEntry - pLow) / pEntry * 100.0;
+                    if (!pBeArmed && beAtr > 0 && bestDrop >= beAtr) pBeArmed = true;
+
+                    bool   trailActive = pLow < pEntry;
+                    double trailStop   = pLow * (1.0 + gridStep / 100.0);
+
+                    if (trailActive && price >= trailStop)
                     {
-                        if (pDcaLvl < g.MaxDcaLevels)
-                        { pEntry = (pEntry * pUnits + price) / (pUnits + 1); pUnits++; pDcaLvl++; pHigh = price; }
-                        else
-                        { pInRec = true; pRecLeg = 0; pLegE = price; pLegLow = price; }
+                        result.Add((candles[i].Time, (pEntry - price) / pEntry * 100.0 - FeeRoundTrip, "pump"));
+                        pOpen = false; pCandlesOpen = 0;
+                    }
+                    else if (pBeArmed)
+                    {
+                        // Trailing profit lock: once up 2×beAtr, lock in 50% of max gain
+                        double lockLevel = bestDrop >= 2.0 * beAtr
+                            ? pEntry * (1.0 - 0.5 * bestDrop / 100.0)
+                            : pEntry;  // plain break-even
+                        if (price >= lockLevel)
+                        {
+                            result.Add((candles[i].Time, (pEntry - price) / pEntry * 100.0 - FeeRoundTrip, "pump"));
+                            pOpen = false; pCandlesOpen = 0;
+                        }
+                    }
+                    else
+                    {
+                        bool dcaBos = pHigh > pEntry && (pHigh - price) / pHigh * 100.0 >= dcaTrig;
+                        if (dcaBos)
+                        {
+                            if (pDcaLvl < g.MaxDcaLevels)
+                            { pEntry = (pEntry * pUnits + price) / (pUnits + 1); pUnits++; pDcaLvl++; pHigh = price; }
+                            else
+                            { pInRec = true; pRecLeg = 0; pLegE = price; pLegLow = price; }
+                        }
                     }
                 }
-            }
-            else  // pump recovery legs
-            {
-                if (price < pLegLow) pLegLow = price;
-                bool   legActive = pLegLow < pLegE;
-                double legStop   = pLegLow * (1.0 + gridStep / 100.0);
+                else  // pump recovery legs
+                {
+                    if (price < pLegLow) pLegLow = price;
+                    bool   legActive = pLegLow < pLegE;
+                    double legStop   = pLegLow * (1.0 + gridStep / 100.0);
 
-                if (legActive && price >= legStop)
-                {
-                    pRecLeg++;
-                    if (pRecLeg >= 4)
-                    { result.Add((candles[i].Time, (pEntry - price) / pEntry * 100.0 - FeeRoundTrip, "pump")); pOpen = false; }
-                    else { pLegE = price; pLegLow = price; }
-                }
-                else if ((price - pLegE) / pLegE * 100.0 >= dcaTrig * 2)
-                {
-                    result.Add((candles[i].Time, (pEntry - price) / pEntry * 100.0 - FeeRoundTrip, "pump"));
-                    pOpen = false;
+                    if (legActive && price >= legStop)
+                    {
+                        pRecLeg++;
+                        if (pRecLeg >= 4)
+                        { result.Add((candles[i].Time, (pEntry - price) / pEntry * 100.0 - FeeRoundTrip, "pump")); pOpen = false; pCandlesOpen = 0; }
+                        else { pLegE = price; pLegLow = price; }
+                    }
+                    else if ((price - pLegE) / pLegE * 100.0 >= dcaTrig * 2)
+                    {
+                        result.Add((candles[i].Time, (pEntry - price) / pEntry * 100.0 - FeeRoundTrip, "pump"));
+                        pOpen = false; pCandlesOpen = 0;
+                    }
                 }
             }
 
             if (candles[i].High > pLastHi) pLastHi = candles[i].High;
+
+            // ── GRID LONG (ranging regime, no pump trade open) ────────────────
+            if (!pOpen)
+            {
+                if (!gOpen)
+                {
+                    if (ranging)
+                    {
+                        if (price > gLocalHigh) gLocalHigh = price;
+                        if ((gLocalHigh - price) / gLocalHigh * 100.0 >= rangeDcaTrig)
+                        {
+                            gOpen = true; gAvgEntry = price; gUnits = 1;
+                            gDcaLvl = 0;  gDcaRef = price;  gTradeHigh = price; gBeArmed = false;
+                            gCandlesOpen = 0;
+                        }
+                    }
+                    else
+                    {
+                        gLocalHigh = price;  // reset anchor when regime exits ranging
+                    }
+                }
+                else  // grid trade management
+                {
+                    gCandlesOpen++;
+
+                    // Hard floor + time exit
+                    bool gHardFloor = (gAvgEntry - price) / gAvgEntry * 100.0 >= hardStop;
+                    bool gTimeOut   = gCandlesOpen > 576;  // 48h at 5m candles
+                    if (gHardFloor || gTimeOut)
+                    {
+                        result.Add((candles[i].Time, (price - gAvgEntry) / gAvgEntry * 100.0 - FeeRoundTrip, "grid"));
+                        gOpen = false; gLocalHigh = price; gCandlesOpen = 0;
+                    }
+                    else
+                    {
+                        if (price > gTradeHigh) gTradeHigh = price;
+
+                        double bestGain = (gTradeHigh - gAvgEntry) / gAvgEntry * 100.0;
+                        if (!gBeArmed && rangeBeAtr > 0 && bestGain >= rangeBeAtr) gBeArmed = true;
+
+                        bool   trailActive = gTradeHigh > gAvgEntry;
+                        double trailStop   = gTradeHigh * (1.0 - rangeStep / 100.0);
+
+                        if (trailActive && price <= trailStop)
+                        {
+                            result.Add((candles[i].Time, (price - gAvgEntry) / gAvgEntry * 100.0 - FeeRoundTrip, "grid"));
+                            gOpen = false; gLocalHigh = price; gCandlesOpen = 0;
+                        }
+                        else if (gBeArmed)
+                        {
+                            // Trailing profit lock: once up 2×rangeBeAtr, lock in 50% of max gain
+                            double lockLevel = bestGain >= 2.0 * rangeBeAtr
+                                ? gAvgEntry * (1.0 + 0.5 * bestGain / 100.0)
+                                : gAvgEntry;
+                            if (price <= lockLevel)
+                            {
+                                result.Add((candles[i].Time, (price - gAvgEntry) / gAvgEntry * 100.0 - FeeRoundTrip, "grid"));
+                                gOpen = false; gLocalHigh = price; gCandlesOpen = 0;
+                            }
+                        }
+                        else if ((gDcaRef - price) / gDcaRef * 100.0 >= rangeDcaTrig && gDcaLvl < rangeMaxDca)
+                        {
+                            gAvgEntry = (gAvgEntry * gUnits + price) / (gUnits + 1);
+                            gUnits++;
+                            gDcaLvl++;
+                            gDcaRef = price;
+                        }
+                    }
+                }
+            }
         }
 
         if (pOpen) result.Add((candles[^1].Time, (pEntry - closes[^1]) / pEntry * 100.0 - FeeRoundTrip, "pump"));
+        if (gOpen) result.Add((candles[^1].Time, (closes[^1] - gAvgEntry) / gAvgEntry * 100.0 - FeeRoundTrip, "grid"));
 
         var finalState = new UnifiedTradeState(
             PumpOpen: pOpen, PumpEntry: pEntry, PumpDca: pDcaLvl,
             PumpInRecovery: pInRec, PumpRecoveryLeg: pRecLeg,
+            GridOpen: gOpen, GridEntry: gAvgEntry, GridDca: gDcaLvl,
             Regime: lastRegime);
 
         return (result, finalState);
+    }
+
+    // ── Permutation test ─────────────────────────────────────────────────────
+    // Tests whether entry timing adds value vs randomly-timed short entries using
+    // the same exit parameters (trailing stop, DCA, break-even).
+    // p-value = fraction of random-entry strategies that match or beat real Sharpe.
+    // Low p-value (< 0.05) means real entry detection is statistically significant.
+
+    public record PermTestResult(
+        double RealSharpe, double PValue, double Percentile,
+        double MeanNull, double StdNull, int Permutations, int RealTrades);
+
+    public static PermTestResult PermutationTest(
+        Genotype g, Candle[] candles, int permutations = 1000, bool useAtr = true, int? seed = null)
+    {
+        var real       = GetUnifiedReturns(g, candles, useAtr).Select(t => t.Return).ToList();
+        double realSh  = SharpeRatio(real, candles.Length);
+        int nTrades    = real.Count;
+
+        if (nTrades < 3)
+            return new PermTestResult(realSh, 1.0, 0.0, 0.0, 0.0, 0, nTrades);
+
+        int startIdx   = Math.Max(Math.Max(g.RsiPeriod, g.EmaPeriod), g.RegimeAdxPeriod * 2 + 1);
+        var closes     = candles.Select(c => c.Close).ToArray();
+        var highs      = candles.Select(c => c.High).ToArray();
+        var lows       = candles.Select(c => c.Low).ToArray();
+        double atrPct  = useAtr ? SegmentAtrPct(highs, lows, closes, startIdx) : 1.0;
+        double grid    = g.GridStepAtrMult   * atrPct;
+        double dca     = g.DcaTriggerAtrMult * atrPct;
+        double be      = g.BreakEvenAtrMult  * atrPct;
+
+        int masterSeed     = seed ?? Environment.TickCount;
+        var nullSharpes    = new double[permutations];
+
+        Parallel.For(0, permutations, i =>
+        {
+            var rng = new Random(masterSeed ^ (i * 1013904223));
+            var r   = RandShortReturns(closes, nTrades, startIdx, grid, dca, be, g.MaxDcaLevels, rng);
+            nullSharpes[i] = SharpeRatio(r, candles.Length);
+        });
+
+        int    beats = nullSharpes.Count(s => s >= realSh);
+        double mean  = nullSharpes.Average();
+        double std   = Math.Sqrt(nullSharpes.Select(s => (s - mean) * (s - mean)).Average());
+        double pct   = (double)nullSharpes.Count(s => s < realSh) / permutations * 100.0;
+
+        return new PermTestResult(realSh, (double)beats / permutations, pct, mean, std, permutations, nTrades);
+    }
+
+    private static List<double> RandShortReturns(
+        double[] closes, int nTrades, int startIdx,
+        double grid, double dca, double be, int maxDca, Random rng)
+    {
+        int n = closes.Length;
+
+        // Pick nTrades random entry indices from a 4× pool with min 20-candle spacing
+        var pool = new int[Math.Min(nTrades * 4, n - startIdx - 1)];
+        for (int k = 0; k < pool.Length; k++) pool[k] = startIdx + rng.Next(n - startIdx - 1);
+        Array.Sort(pool);
+
+        var entries = new List<int>(nTrades);
+        int last    = int.MinValue;
+        foreach (int idx in pool)
+        {
+            if (idx - last >= 20) { entries.Add(idx); last = idx; }
+            if (entries.Count == nTrades) break;
+        }
+
+        var returns = new List<double>(entries.Count);
+        foreach (int ei in entries)
+        {
+            double avgE  = closes[ei], units = 1, high = closes[ei], low = closes[ei];
+            int dcaLvl   = 0; bool beArmed = false, inRec = false;
+            int recLeg   = 0; double legE  = closes[ei], legLow = closes[ei];
+            bool closed  = false;
+
+            for (int i = ei + 1; i < n && !closed; i++)
+            {
+                double p = closes[i];
+                if (!inRec)
+                {
+                    if (p < low)  low  = p;
+                    if (p > high) high = p;
+                    if (!beArmed && be > 0 && (avgE - low) / avgE * 100.0 >= be) beArmed = true;
+
+                    if (low < avgE && p >= low * (1 + grid / 100.0))
+                    { returns.Add((avgE - p) / avgE * 100.0 - FeeRoundTrip); closed = true; }
+                    else if (beArmed && p >= avgE)
+                    { returns.Add((avgE - p) / avgE * 100.0 - FeeRoundTrip); closed = true; }
+                    else if (high > avgE && (high - p) / high * 100.0 >= dca)
+                    {
+                        if (dcaLvl < maxDca) { avgE = (avgE * units + p) / (units + 1); units++; dcaLvl++; high = p; }
+                        else                 { inRec = true; recLeg = 0; legE = p; legLow = p; }
+                    }
+                }
+                else
+                {
+                    if (p < legLow) legLow = p;
+                    if (legLow < legE && p >= legLow * (1 + grid / 100.0))
+                    {
+                        recLeg++;
+                        if (recLeg >= 4) { returns.Add((avgE - p) / avgE * 100.0 - FeeRoundTrip); closed = true; }
+                        else             { legE = p; legLow = p; }
+                    }
+                    else if ((p - legE) / legE * 100.0 >= dca * 2)
+                    { returns.Add((avgE - p) / avgE * 100.0 - FeeRoundTrip); closed = true; }
+                }
+
+                if (!closed && i == n - 1)
+                    returns.Add((avgE - p) / avgE * 100.0 - FeeRoundTrip);
+            }
+        }
+        return returns;
     }
 
     private static Candle[] AggregateSegment(Candle[] segment, int factor)
@@ -960,7 +1183,16 @@ public static class Simulator
         return result.ToArray();
     }
 
-    private static double SegmentAtrPct(double[] highs, double[] lows, double[] closes, int startIdx, int atrPeriod = 14)
+    public static double CoinAtrPct(Candle[] candles, int atrPeriod = 14)
+    {
+        if (candles.Length < atrPeriod + 1) return 0.30;
+        var h = candles.Select(c => c.High).ToArray();
+        var l = candles.Select(c => c.Low).ToArray();
+        var c = candles.Select(x => x.Close).ToArray();
+        return SegmentAtrPct(h, l, c, atrPeriod, atrPeriod);
+    }
+
+    public static double SegmentAtrPct(double[] highs, double[] lows, double[] closes, int startIdx, int atrPeriod = 14)
     {
         var atr = ComputeAtr(highs, lows, closes, atrPeriod);
         double sum = 0; int count = 0;

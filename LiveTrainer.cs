@@ -95,9 +95,12 @@ public class LiveTrainer
             var returns  = Simulator.GetUnifiedReturns(g, slice, useAtr: true)
                                     .Select(t => t.Return).ToList();
             if (returns.Count < MinTradesPerCoin) continue;
-            double sharpe = Simulator.SharpeRatio(returns, slice.Length);
-            double calmar = Math.Clamp(Simulator.CalmarRatio(returns), -2.0, 3.0);
-            coinShares.Add(0.7 * sharpe + 0.3 * calmar);
+            double sharpe    = Simulator.SharpeRatio(returns, slice.Length);
+            double calmar    = Math.Clamp(Simulator.CalmarRatio(returns), -2.0, 3.0);
+            double days      = slice.Length * 5.0 / 60.0 / 24.0;
+            double annReturn = days > 0 ? returns.Sum() * (365.25 / days) : 0;
+            double retComp   = Math.Tanh(annReturn / 5.0);
+            coinShares.Add(0.40 * sharpe + 0.10 * calmar + 0.50 * retComp);
         }
         if (coinShares.Count == 0) return 0;
 
@@ -131,9 +134,12 @@ public class LiveTrainer
             var returns = Simulator.GetUnifiedReturns(g, slice, useAtr: true)
                                    .Select(t => t.Return).ToList();
             if (returns.Count < MinHoldOutTrades) continue;
-            double sharpe = Simulator.SharpeRatio(returns, slice.Length);
-            double calmar = Math.Clamp(Simulator.CalmarRatio(returns), -2.0, 3.0);
-            coinShares.Add(0.7 * sharpe + 0.3 * calmar);
+            double sharpe    = Simulator.SharpeRatio(returns, slice.Length);
+            double calmar    = Math.Clamp(Simulator.CalmarRatio(returns), -2.0, 3.0);
+            double days      = slice.Length * 5.0 / 60.0 / 24.0;
+            double annReturn = days > 0 ? returns.Sum() * (365.25 / days) : 0;
+            double retComp   = Math.Tanh(annReturn / 5.0);
+            coinShares.Add(0.40 * sharpe + 0.10 * calmar + 0.50 * retComp);
         }
         if (coinShares.Count == 0) return (0, 0);
         double mean = coinShares.Average();

@@ -45,19 +45,25 @@ public class GeneticAlgorithm
     // Calmar weight capped at 0.1: higher weights reward tight stops + force wide entry gates.
     private const int MinTradesPerFold = 5;
 
-    private double FoldScore(List<double> returns, int candleCount = 0)
+    // pumpCount: number of pump trades only — density cap applies to pump entries, not grid.
+    // Grid trades in ranging are by design frequent; capping them would neuter the strategy.
+    private double FoldScore(List<double> returns, int candleCount = 0, int pumpCount = -1)
     {
         if (returns.Count < MinTradesPerFold) return -1.0;
-        double sharpe = Simulator.SharpeRatio(returns, candleCount > 0 ? candleCount : returns.Count * 100);
+        int    cc     = candleCount > 0 ? candleCount : returns.Count * 100;
+        double sharpe = Simulator.SharpeRatio(returns, cc);
         double calmar = Math.Clamp(Simulator.CalmarRatio(returns), -2.0, 3.0);
-        double score  = 0.9 * sharpe + 0.1 * calmar;
+        double days      = cc * 5.0 / 60.0 / 24.0;
+        double annReturn = days > 0 ? returns.Sum() * (365.25 / days) : 0;
+        double retComp   = Math.Tanh(annReturn / 100.0);
+        double score     = 0.35 * sharpe + 0.15 * calmar + 0.50 * retComp;
 
-        // Selectivity penalty: if trade density exceeds cap, apply squared penalty.
-        // This strongly discourages "trade everything" regime genes while leaving
-        // exit genes (which don't affect entry frequency) unaffected.
+        // Selectivity penalty on pump trades only — discourages "trade everything" regime
+        // genes without penalising legitimate high-frequency grid ranging activity.
         if (_maxTradeDensity > 0 && candleCount > 0)
         {
-            double density = (double)returns.Count / candleCount;
+            int    dc      = pumpCount >= 0 ? pumpCount : returns.Count;
+            double density = (double)dc / candleCount;
             if (density > _maxTradeDensity)
                 score *= Math.Pow(_maxTradeDensity / density, 2.0);
         }
@@ -81,9 +87,10 @@ public class GeneticAlgorithm
                 int k        = Math.Min(folds, candles.Length / 200);
                 if (k < 2)
                 {
-                    var returns = Simulator.GetUnifiedReturns(ind, candles, _useAtr)
-                                           .Select(t => t.Return).ToList();
-                    coinScore = FoldScore(returns, candles.Length);
+                    var trades  = Simulator.GetUnifiedReturns(ind, candles, _useAtr);
+                    var returns = trades.Select(t => t.Return).ToList();
+                    int pumps   = trades.Count(t => t.Kind == "pump");
+                    coinScore   = FoldScore(returns, candles.Length, pumps);
                 }
                 else
                 {
@@ -95,9 +102,10 @@ public class GeneticAlgorithm
                         int start   = f * foldSize;
                         int end     = f == k - 1 ? candles.Length : start + foldSize;
                         var chunk   = candles[start..end];
-                        var returns = Simulator.GetUnifiedReturns(ind, chunk, _useAtr)
-                                               .Select(t => t.Return).ToList();
-                        scores[f]   = FoldScore(returns, chunk.Length);
+                        var trades  = Simulator.GetUnifiedReturns(ind, chunk, _useAtr);
+                        var returns = trades.Select(t => t.Return).ToList();
+                        int pumps   = trades.Count(t => t.Kind == "pump");
+                        scores[f]   = FoldScore(returns, chunk.Length, pumps);
                     }
 
                     double mean = scores.Average();
@@ -107,9 +115,10 @@ public class GeneticAlgorithm
             }
             else
             {
-                var returns = Simulator.GetUnifiedReturns(ind, candles, _useAtr)
-                                       .Select(t => t.Return).ToList();
-                coinScore = FoldScore(returns, candles.Length);
+                var trades  = Simulator.GetUnifiedReturns(ind, candles, _useAtr);
+                var returns = trades.Select(t => t.Return).ToList();
+                int pumps   = trades.Count(t => t.Kind == "pump");
+                coinScore   = FoldScore(returns, candles.Length, pumps);
             }
 
             weightedSum  += coin.Weight * coinScore;

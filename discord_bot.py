@@ -342,10 +342,10 @@ ROW_RE       = re.compile(
     r"\s{2}(\w+USDT)\s{2,}(\S+)\s{2,}(\S+)\s{2,}(\S+)\s{2,}(\S+)\s{2,}(\S+)\s{2,}(\S+)"
 )
 
-def build_summary(lines: list[str]) -> str:
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+def build_summary(lines: list[str]) -> discord.Embed:
     geno_str, fitness = "", ""
-    active, watching = [], []
+    active: list[tuple] = []
+    watching: list[str] = []
     unrealised_vals: list[float] = []
 
     for line in lines:
@@ -363,45 +363,64 @@ def build_summary(lines: list[str]) -> str:
         if state.lower() == "watching":
             watching.append(coin)
         else:
-            active.append(f"  `{coin:<18}` {state:<14} entry {entry}  now {current}  **{unrealised}**  [{regime}]")
+            active.append((coin, regime, state, entry, current, unrealised))
             try:
                 unrealised_vals.append(float(unrealised.replace("%", "")))
             except (ValueError, AttributeError):
                 pass
 
-    parts = [f"**Gravity-gen2 | Papertrade — {ts}**"]
-    if fitness:
-        parts.append(f"**Fitness:** `{fitness}`")
+    total_unreal = sum(unrealised_vals)
+    if active:
+        color = discord.Color.green() if total_unreal >= 0 else discord.Color.red()
+    else:
+        color = discord.Color.blurple()
+
+    embed = discord.Embed(color=color, timestamp=datetime.now(timezone.utc))
+    embed.set_author(name="Gravity-gen2 | Papertrade")
+
     if geno_str:
         short = re.sub(r"F=[-\d.]+", "", geno_str).strip().rstrip(",")
-        parts.append(f"**Genotype:** `{short}`")
-    parts.append("")
+        f_str = f"  •  fitness `{fitness}`" if fitness else ""
+        embed.description = f"`{short}`{f_str}"
+
     if active:
-        total_unreal = sum(unrealised_vals)
-        parts.append(f"**Open trades ({len(active)}) — total unrealised: `{total_unreal:+.2f}%`:**")
-        parts.extend(active)
+        pos_lines = []
+        for coin, regime, state, entry, current, unrealised in active[:12]:
+            arrow = "▲" if not unrealised.startswith("-") else "▼"
+            pos_lines.append(f"{arrow} `{coin:<16}` **{unrealised}**  {entry} → {current}")
+        embed.add_field(
+            name=f"Open ({len(active)})  —  {total_unreal:+.2f}% unrealised",
+            value="\n".join(pos_lines),
+            inline=False,
+        )
     else:
-        parts.append("**No open trades.**")
+        embed.add_field(name="Positions", value="*No open trades*", inline=True)
 
     stats = compute_live_stats()
-    if stats.get("n", 0) >= 5:
-        parts.append(
-            f"\n📊 **Live journal:** {stats['n']} trades | WR {stats['wr']:.0f}% | "
-            f"avg {stats['avg_ret']:+.2f}% | total {stats['total_pnl']:+.2f}€"
+    n = stats.get("n", 0)
+    if n > 0:
+        wins = stats["wins"]
+        embed.add_field(
+            name=f"Journal  ({n} trade{'s' if n > 1 else ''})",
+            value=(
+                f"WR **{stats['wr']:.0f}%** ({wins}W / {n - wins}L)\n"
+                f"Avg **{stats['avg_ret']:+.2f}%**  •  Total **{stats['total_pnl']:+.2f} €**"
+            ),
+            inline=True,
         )
 
-    autoevolve_note = " | 🔄 autoevolve ON" if (autoevolve_task and not autoevolve_task.done()) else ""
-    parts.append(f"\n*Watching {len(watching)} coins{autoevolve_note} • `/info` for full output*")
-    return "\n".join(parts)
+    evo = "  •  🔄 evolving" if (autoevolve_task and not autoevolve_task.done()) else ""
+    embed.set_footer(text=f"Watching {len(watching)} coins{evo}  •  /info for raw output")
+    return embed
 
 # ── Live-train summary ────────────────────────────────────────────────────────
 RANK_ROW_RE     = re.compile(r"^\s+[★ ]\s+(\d+)\s+([-\d.]+)\s+(.+)")
 CYCLE_INFO_RE   = re.compile(r"Cycle (\d+)\s+\|.+?Next evolution in (\d+) cycle")
 AUTO_PROMOTE_RE = re.compile(r"=== AUTO-PROMOTE ===")
 
-def build_livetrain_summary(lines: list[str]) -> str:
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    cycle_num, next_evo, rows = "", "", []
+def build_livetrain_summary(lines: list[str]) -> discord.Embed:
+    cycle_num, next_evo = "", ""
+    rows: list[tuple] = []
 
     for line in lines:
         cm = CYCLE_INFO_RE.search(line)
@@ -421,24 +440,31 @@ def build_livetrain_summary(lines: list[str]) -> str:
         diff = score_history[-1] - score_history[-2]
         trend = " ↑" if diff > 0.001 else (" ↓" if diff < -0.001 else " →")
 
-    parts = [f"**Gravity-gen2 | Live Train — {ts}**"]
+    color = (discord.Color.green() if (top1 and top1[1] > 0) else discord.Color.orange())
+    embed = discord.Embed(color=color, timestamp=datetime.now(timezone.utc))
+    embed.set_author(name="Gravity-gen2 | Live Train")
+
+    desc_parts = []
     if cycle_num:
-        parts.append(f"Cycle **{cycle_num}** • next evolution in **{next_evo}** cycles (~{int(next_evo)*5} min)")
+        desc_parts.append(f"Cycle **{cycle_num}**  •  next evo in **{next_evo}** cycles (~{int(next_evo)*5} min)")
     if top1:
-        parts.append(f"**Top score:** `{top1[1]:+.3f}`{trend}")
+        desc_parts.append(f"Top score **{top1[1]:+.3f}**{trend}")
     if len(score_history) >= 2:
-        hist_str = "  ".join(f"{s:+.3f}" for s in score_history)
-        parts.append(f"**Trend:** `{hist_str}`")
-    parts.append("")
+        hist = "  ".join(f"`{s:+.3f}`" for s in list(score_history)[-6:])
+        desc_parts.append(f"Trend {hist}")
+    embed.description = "\n".join(desc_parts)
+
     top5 = [r for r in rows if r[0] <= 5]
     if top5:
-        parts.append("**Top 5 genotypes:**")
+        rank_lines = []
         for rank, score, geno in top5:
-            star = "★" if rank == 1 else " "
-            short = re.sub(r"F=[-\d.]+", "", geno).strip()[:80]
-            parts.append(f"`{star} #{rank}` score={score:+.3f}  `{short}`")
-    parts.append("\n*`/info` for full ranking*")
-    return "\n".join(parts)
+            tag  = "★" if rank == 1 else f"#{rank}"
+            short = re.sub(r"F=[-\d.]+", "", geno).strip()[:72]
+            rank_lines.append(f"`{tag}` **{score:+.3f}**  {short}")
+        embed.add_field(name="Top 5", value="\n".join(rank_lines), inline=False)
+
+    embed.set_footer(text="/info for full ranking")
+    return embed
 
 # ── Compare summary ───────────────────────────────────────────────────────────
 CAND_ROW_RE   = re.compile(r"^\s{2}(\S+)\s+([-+\d.]+)\s+(\d+)\s+(\d+)/(\d+)")
@@ -447,9 +473,7 @@ CAND_POS_RE   = re.compile(
     r"^\s{4}(\w+USDT)\s+(\S+)\s+entry=([\d.]+)\s+now=([\d.]+)\s+([+-][\d.]+%)"
 )
 
-def build_compare_summary(lines: list[str]) -> str:
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-
+def build_compare_summary(lines: list[str]) -> discord.Embed:
     candidates: list[dict] = []
     for line in lines:
         m = CAND_ROW_RE.match(line)
@@ -469,34 +493,41 @@ def build_compare_summary(lines: list[str]) -> str:
             continue
         pm = CAND_POS_RE.match(line)
         if pm and cur_label:
+            arrow = "▲" if not pm.group(5).startswith("-") else "▼"
             positions[cur_label].append(
-                f"  `{pm.group(1)}`  {pm.group(2)}  {pm.group(3)} → {pm.group(4)}  **{pm.group(5)}**"
+                f"{arrow} `{pm.group(1):<16}` **{pm.group(5)}**  {pm.group(3)} → {pm.group(4)}  [{pm.group(2)}]"
             )
 
-    best_sh = max((c["sharpe"] for c in candidates), default=0)
+    best_sh = max((c["sharpe"] for c in candidates), default=0.0)
+    color   = discord.Color.green() if best_sh > 0 else discord.Color.red()
 
-    parts = [f"**Gravity-gen2 | Compare — {ts}**", ""]
+    embed = discord.Embed(color=color, timestamp=datetime.now(timezone.utc))
+    embed.set_author(name="Gravity-gen2 | Compare")
+
     if candidates:
-        parts.append("**Candidates — live 20d Sharpe:**")
-        for c in candidates:
-            star = "★" if c["sharpe"] == best_sh else " "
-            parts.append(
-                f"`{star} {c['label']:<34}` Sh=`{c['sharpe']:+.2f}`  "
-                f"Open={c['open']}  Trend={c['trend']}/{c['total']}"
+        cand_lines = []
+        for c in candidates[:8]:
+            star  = "★" if c["sharpe"] == best_sh else "◦"
+            label = c["label"][:22]
+            cand_lines.append(
+                f"`{star}` `{label:<22}` Sh **{c['sharpe']:+.2f}**  open `{c['open']}`  up `{c['trend']}/{c['total']}`"
             )
+        embed.add_field(name="Candidates — 20d Sharpe", value="\n".join(cand_lines), inline=False)
 
     any_open = any(v for v in positions.values())
-    parts.append("")
     if any_open:
         for c in candidates:
             trades = positions.get(c["label"], [])
             if trades:
-                parts.append(f"**[{c['label']}] — {len(trades)} open:**")
-                parts.extend(trades)
+                label = c["label"][:28]
+                embed.add_field(
+                    name=f"{label}  —  {len(trades)} open",
+                    value="\n".join(trades[:8]),
+                    inline=False,
+                )
     else:
-        parts.append("*No open trades across any candidate.*")
-
-    return "\n".join(parts)
+        embed.set_footer(text="No open trades across any candidate")
+    return embed
 
 # ── Process management ────────────────────────────────────────────────────────
 async def start_mode(mode: str | None = None) -> None:
@@ -568,14 +599,14 @@ async def read_stdout() -> None:
                         sent = False
                         if status_message is not None:
                             try:
-                                await status_message.edit(content=summary)
+                                await status_message.edit(content=None, embed=summary)
                                 sent = True
                             except discord.NotFound:
                                 status_message = None
                             except Exception as exc:
                                 print(f"[bot] edit failed: {exc}")
                         if not sent:
-                            status_message = await output_channel.send(summary)
+                            status_message = await output_channel.send(embed=summary)
                 current_cycle = [line]
             else:
                 current_cycle.append(line)
@@ -630,35 +661,35 @@ def format_status_embed(raw: str) -> discord.Embed:
     color = discord.Color.green() if is_profit else discord.Color.red()
 
     embed = discord.Embed(
-        title="Gravity-gen2 — Portfolio Status",
-        description=(
-            f"**Period:** {period} ({days}d) • **Fitness:** `{fitness}`\n"
-            f"**Source:** `{source}`\n"
-            f"Fees: 0.055% taker ×2 + 0.050% slippage ×2 = **0.21%/trade**"
-        ),
         color=color,
         timestamp=datetime.now(timezone.utc),
     )
+    embed.set_author(name="Gravity-gen2 | Portfolio Status")
+    embed.description = (
+        f"Period **{period}** ({days}d)  •  fitness `{fitness}`\n"
+        f"Source `{source}`"
+    )
     embed.add_field(
-        name="Strategy (net of fees)",
+        name="Returns",
         value=(
-            f"Sharpe: **{sharpe}** | Sortino: **{sortino}**\n"
-            f"PF: **{pf}** | Calmar: **{calmar}**\n"
-            f"Win rate: **{wr}** ({wl})\n"
-            f"Trades: **{trades}** | Avg: **{avg}%**\n"
-            f"Max consec. loss: **{maxl}**"
+            f"Sharpe **{sharpe}**  •  Sortino **{sortino}**\n"
+            f"Calmar **{calmar}**  •  PF **{pf}**\n"
+            f"Win rate **{wr}** ({wl})\n"
+            f"Trades **{trades}**  •  Avg **{avg}%**\n"
+            f"Max consec. loss **{maxl}**"
         ),
         inline=True,
     )
     embed.add_field(
-        name="Portfolio (€1000 start)",
+        name="Portfolio  (€1 000 start)",
         value=(
-            f"Balance: **€{balance}**\n"
-            f"Total: **€{total_e}** (**{total_r}**)\n"
-            f"Max drawdown: **{max_dd}**"
+            f"Balance **€{balance}**\n"
+            f"Total **{total_r}**  (€{total_e})\n"
+            f"Max drawdown **{max_dd}**"
         ),
         inline=True,
     )
+    embed.set_footer(text="Fees: 0.055% taker ×2 + 0.050% slippage ×2 = 0.21%/trade")
     return embed
 
 # ── Claude invocation ─────────────────────────────────────────────────────────
@@ -788,27 +819,22 @@ async def slash_journal(interaction: discord.Interaction) -> None:
     n = stats.get("n", 0)
 
     color = (discord.Color.green() if stats.get("total_pnl", 0) >= 0 else discord.Color.red()) if n else discord.Color.greyple()
-    embed = discord.Embed(
-        title="Gravity-gen2 — Live Journal",
-        color=color,
-        timestamp=datetime.now(timezone.utc),
-    )
+    embed = discord.Embed(color=color, timestamp=datetime.now(timezone.utc))
+    embed.set_author(name="Gravity-gen2 | Live Journal")
 
     if n == 0:
-        embed.description = "No trades in live journal yet — close positions will appear here automatically."
+        embed.description = "*No trades yet — closed positions appear here automatically.*"
     else:
-        wins    = stats["wins"]
-        wr      = stats["wr"]
-        avg     = stats["avg_ret"]
-        total   = stats["total_pnl"]
-        sharpe  = stats["sharpe"]
+        wins   = stats["wins"]
+        avg    = stats["avg_ret"]
+        total  = stats["total_pnl"]
+        sharpe = stats["sharpe"]
         embed.add_field(
-            name=f"Live trades ({n})",
+            name=f"Live  ({n} trade{'s' if n > 1 else ''})",
             value=(
-                f"Win rate: **{wr:.0f}%** ({wins}W / {n - wins}L)\n"
-                f"Avg return: **{avg:+.2f}%**\n"
-                f"Total P&L: **{total:+.2f}€**\n"
-                f"Trade Sharpe: **{sharpe:.2f}**"
+                f"WR **{stats['wr']:.0f}%** ({wins}W / {n - wins}L)\n"
+                f"Avg **{avg:+.2f}%**  •  Total **{total:+.2f} €**\n"
+                f"Sharpe **{sharpe:.2f}**"
             ),
             inline=True,
         )
@@ -820,27 +846,27 @@ async def slash_journal(interaction: discord.Interaction) -> None:
             bt_wr  = backtest_baseline.get("win_rate", "—")
             bt_avg = backtest_baseline.get("avg_ret",  "—")
             embed.add_field(
-                name=f"Backtest baseline ({bt_ts})",
+                name=f"Backtest  ({bt_ts})",
                 value=(
-                    f"Sharpe: **{bt_sh:.2f}** | Trades: **{bt_tr}**\n"
-                    f"Win rate: **{bt_wr}**\n"
-                    f"Avg return: **{bt_avg}**"
+                    f"Sharpe **{bt_sh:.2f}**  •  Trades **{bt_tr}**\n"
+                    f"WR **{bt_wr}**  •  Avg **{bt_avg}**"
                 ),
                 inline=True,
             )
         else:
             embed.add_field(
-                name="Backtest baseline",
-                value="No baseline saved — run `/backtest` to create one.",
+                name="Backtest",
+                value="*No baseline — run `/backtest` first.*",
                 inline=True,
             )
 
-        # Last 10 trades table
         recent = live_journal[-10:]
         rows = []
         for e in recent:
-            sym = "✓" if e["win"] else "✗"
-            rows.append(f"`{sym} {e['open_time']} {e['coin']:<12} {e['ret_pct']:+.2f}%  {e['pnl_eur']:+.2f}€`")
+            icon = "✓" if e["win"] else "✗"
+            rows.append(
+                f"`{icon}` `{e['open_time']}` `{e['coin']:<16}` **{e['ret_pct']:+.2f}%**  {e['pnl_eur']:+.2f} €"
+            )
         embed.add_field(
             name=f"Last {len(recent)} trades",
             value="\n".join(rows),

@@ -1916,8 +1916,8 @@ async Task RunSwingBacktest()
     var coinStats = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet)>();
     int totalVCandleCount = 0;
 
-    Console.WriteLine($"{"Coin",-18} {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
-    Console.WriteLine(new string('-', 70));
+    Console.WriteLine($"{"Coin",-18} {"ATR%",5}  {"Vol$M",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+    Console.WriteLine(new string('-', 85));
 
     foreach (var (sym, candles) in fetchedArr)
     {
@@ -1926,6 +1926,14 @@ async Task RunSwingBacktest()
         var arr   = candles.ToArray();
         int split = (int)(arr.Length * 0.8);
         var vArr  = arr[split..];
+
+        // Filter on the val period so ATR% reflects the actual backtest window, not just today
+        var (passes, atrPct, volM) = CheckSwingCriteria(vArr);
+        if (!passes)
+        {
+            Console.WriteLine($"  {sym,-16} {atrPct,4:F1}%  ${volM,5:F0}M  skip (low vol/ATR)");
+            continue;
+        }
 
         var vTrades = SwingSimulator.GetSwingReturns(g, vArr);
         var vRet    = vTrades.Select(t => t.Return).ToList();
@@ -1943,7 +1951,7 @@ async Task RunSwingBacktest()
         foreach (var (t, ret, kind) in vTrades)
             allTrades.Add((sym, t, ret, kind));
 
-        Console.WriteLine($"  {sym,-16} {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%");
+        Console.WriteLine($"  {sym,-16} {atrPct,4:F1}%  ${volM,5:F0}M  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%");
         coinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg));
     }
 
@@ -2015,6 +2023,14 @@ async Task RunSwingPaperTrade()
             // 1 batch = ~1000 4h bars (~166d) — enough for all indicators + warmup
             var candles = await FetchSwingCandles(sym, batches: 1);
             if (candles.Count < 100) { Console.WriteLine($"  {sym,-18}  (no data)"); continue; }
+
+            // Skip coins that fail the volatility/volume filter
+            var (passes, atrPct, volM) = CheckSwingCriteria(candles);
+            if (!passes)
+            {
+                Console.WriteLine($"  {sym,-18}  skip  ATR={atrPct:F1}% vol=${volM:F0}M");
+                continue;
+            }
 
             double px = candles[^1].Close;
             var    st = SwingSimulator.GetSwingTradeState(g, candles.ToArray());
@@ -2091,6 +2107,34 @@ async Task<List<Candle>> FetchSwingCandles(string symbol, int batches = 7)
     return all.GroupBy(c => c.Time).Select(g => g.First()).OrderBy(c => c.Time).ToList();
 }
 
+
+// Algorithmic coin filter for swing trading.
+// Pass the specific candle window to check (e.g. val set for backtest, recent batch for papertrade).
+// minAtrPct : median true-range as % of close — filters coins too smooth for ATR-based stops
+// minVolUsdM: median USD volume per 4h bar in millions — filters illiquid coins
+static (bool Passes, double AtrPct, double VolUsdM) CheckSwingCriteria(
+    IReadOnlyList<Candle> candles, double minAtrPct = 1.5, double minVolUsdM = 1.0)
+{
+    if (candles.Count < 50) return (false, 0, 0);
+
+    var recent = candles.ToArray();
+
+    var trPcts = new List<double>(recent.Length);
+    for (int i = 1; i < recent.Length; i++)
+    {
+        double tr = Math.Max(recent[i].High - recent[i].Low,
+                    Math.Max(Math.Abs(recent[i].High - recent[i - 1].Close),
+                             Math.Abs(recent[i].Low  - recent[i - 1].Close)));
+        if (recent[i].Close > 0) trPcts.Add(tr / recent[i].Close * 100.0);
+    }
+    trPcts.Sort();
+    double medAtrPct = trPcts.Count > 0 ? trPcts[trPcts.Count / 2] : 0;
+
+    var volUsd = recent.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(x => x).ToList();
+    double medVolM = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
+
+    return (medAtrPct >= minAtrPct && medVolM >= minVolUsdM, medAtrPct, medVolM);
+}
 
 static void PrintSwingSplitStats(string label, List<double> r, int candleCount)
 {

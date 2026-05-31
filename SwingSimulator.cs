@@ -11,7 +11,10 @@ namespace TradingGA;
 //                          RsiOverbought (buyers were exhausted at the top)
 //   4. Structure break   — close below the previous candle's low (market committed to reversal)
 //
-// Exit: hard ATR stop · fixed ATR target · trailing stop once armed · max-hold timeout.
+// Exit: swing-high stop · fixed ATR target · trailing stop once armed · max-hold timeout.
+//   Stop = swingHigh + StopLossAtrMult × ATR: invalidates the thesis (new high printed).
+//   Wider than a fixed-from-entry stop but correct — wick noise below the swing high is
+//   noise; price exceeding the swing high means the fade was wrong.
 // ATR multiples use the 14-period ATR fixed at entry for the life of the trade.
 public static class SwingSimulator
 {
@@ -110,7 +113,8 @@ public static class SwingSimulator
                 inTrade    = true;
                 entry      = price;
                 atrEntry   = atrNow;
-                hardStop   = entry + g.StopLossAtrMult   * atrEntry;
+                // Stop above the swing high: if price exceeds that level the fade thesis is wrong.
+                hardStop   = swingHigh + g.StopLossAtrMult * atrEntry;
                 target     = entry - g.TakeProfitAtrMult * atrEntry;
                 trailLow   = price;
                 trailArmed = false;

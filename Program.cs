@@ -2553,7 +2553,7 @@ class SwingGenotypeDto
         RsiOverbought    = RsiOverbought    > 0 ? RsiOverbought    : 68.0,
         RsiDivThreshold  = RsiDivThreshold  > 0 ? RsiDivThreshold  : 8.0,
         MinRallyAtrMult  = MinRallyAtrMult  > 0 ? MinRallyAtrMult  : 5.0,
-        StopLossAtrMult           = StopLossAtrMult           > 0 ? StopLossAtrMult           : 1.5,
+        StopLossAtrMult           = StopLossAtrMult           > 0 ? Math.Min(StopLossAtrMult, 2.0) : 0.8,
         TakeProfitAtrMult         = TakeProfitAtrMult         > 0 ? TakeProfitAtrMult         : 4.0,
         TrailingActivationAtrMult = TrailingActivationAtrMult > 0 ? TrailingActivationAtrMult : 3.0,
         TrailingStopAtrMult       = TrailingStopAtrMult       > 0 ? TrailingStopAtrMult       : 1.5,

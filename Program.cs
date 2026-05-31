@@ -9,15 +9,20 @@ const string SwingGenoFile = "swing_best_genotype.json";
 // 12 training coins + 14 unseen coins — used by both swingbacktest and swingpapertrade
 string[] SwingBacktestCoins =
 [
-    // training coins
-    "SOLUSDT",  "ETHUSDT",  "BNBUSDT",     "XRPUSDT",  "DOGEUSDT",
-    "AVAXUSDT", "LINKUSDT", "ATOMUSDT",    "NEARUSDT", "INJUSDT",
-    "OPUSDT",   "ARBUSDT",
-    // unseen (OOS) coins
+    // large caps / training coins
+    "SOLUSDT",  "ETHUSDT",   "BNBUSDT",   "XRPUSDT",    "DOGEUSDT",
+    "AVAXUSDT", "LINKUSDT",  "ATOMUSDT",  "NEARUSDT",   "INJUSDT",
+    "OPUSDT",   "ARBUSDT",   "ADAUSDT",   "DOTUSDT",    "MATICUSDT",
+    "UNIUSDT",  "AAVEUSDT",  "RUNEUSDT",  "STXUSDT",    "FILUSDT",
+    // mid-caps / memes
     "WIFUSDT",       "MEMEUSDT",     "1000BONKUSDT", "1000PEPEUSDT",
-    "ADAUSDT",       "1000FLOKIUSDT","SUIUSDT",      "APTUSDT",
-    "LDOUSDT",       "FETUSDT",      "RNDRUSDT",     "TIAUSDT",
-    "SEIUSDT",       "BTCUSDT",
+    "1000FLOKIUSDT", "SUIUSDT",      "APTUSDT",      "LDOUSDT",
+    "TIAUSDT",       "SEIUSDT",      "WLDUSDT",      "JUPUSDT",
+    "ENAUSDT",       "EIGENUSDT",    "ONDOUSDT",     "PYTHUSDT",
+    "GMXUSDT",       "DYDXUSDT",     "SANDUSDT",     "MANAUSDT",
+    "GALAUSDT",      "APEUSDT",
+    // large/safe
+    "BTCUSDT",       "LTCUSDT",      "BCHUSDT",
 ];
 
 var client = new BybitRestClient();
@@ -1793,7 +1798,7 @@ async Task RunLiveTrain()
 // ══════════════════════════════════════════════════════════════════════════════
 async Task RunSwingTrain()
 {
-    Console.WriteLine("=== Gravity-gen2 | SWING TRAIN (4h candles, 18 coins, ~3yr) ===\n");
+    Console.WriteLine("=== Gravity-gen2 | SWING TRAIN (4h candles, 26 coins, ~3yr) ===\n");
 
     // Diverse set: large caps for reliable trend structure + volatile alts for swing amplitude.
     // Weighted down: coins with shorter history or noisier signals.
@@ -1805,18 +1810,26 @@ async Task RunSwingTrain()
         ("XRPUSDT",       1.0),
         ("DOGEUSDT",      1.0),
         ("AVAXUSDT",      1.0),
-        ("WIFUSDT",       1.0),
         ("ADAUSDT",       1.0),
         ("LINKUSDT",      1.0),
+        ("DOTUSDT",       1.0),
+        ("MATICUSDT",     1.0),
         ("ATOMUSDT",      0.9),
         ("NEARUSDT",      0.9),
-        ("1000PEPEUSDT",  0.9),
-        ("APTUSDT",       0.9),
-        ("INJUSDT",       0.8),
-        ("OPUSDT",        0.8),
-        ("ARBUSDT",       0.8),
+        ("INJUSDT",       0.9),
+        ("OPUSDT",        0.9),
+        ("ARBUSDT",       0.9),
+        ("UNIUSDT",       0.9),
+        ("AAVEUSDT",      0.9),
+        ("RUNEUSDT",      0.9),
+        ("WIFUSDT",       0.8),
+        ("1000PEPEUSDT",  0.8),
+        ("APTUSDT",       0.8),
+        ("SUIUSDT",       0.8),
         ("TIAUSDT",       0.8),
         ("SEIUSDT",       0.8),
+        ("STXUSDT",       0.8),
+        ("JUPUSDT",       0.8),
     };
 
     Console.WriteLine($"  Fetching {trainCoins.Length} coins (4h candles, ~3yr)...");
@@ -1919,7 +1932,7 @@ async Task RunSwingTrain()
 // ══════════════════════════════════════════════════════════════════════════════
 async Task RunSwingBacktest()
 {
-    Console.WriteLine("=== Gravity-gen2 | SWING BACKTEST (~3yr, 26 coins, 4h candles) ===\n");
+    Console.WriteLine($"=== Gravity-gen2 | SWING BACKTEST (~3yr, {SwingBacktestCoins.Length} coins, 4h candles) ===\n");
 
     if (!File.Exists(SwingGenoFile))
     {
@@ -1961,6 +1974,7 @@ async Task RunSwingBacktest()
 
         var arr   = candles.ToArray();
         int split = (int)(arr.Length * 0.8);
+        var tArr  = arr[..split];
         var vArr  = arr[split..];
 
         // Filter on the val period so ATR% reflects the actual backtest window, not just today
@@ -1968,6 +1982,18 @@ async Task RunSwingBacktest()
         if (!passes)
         {
             Console.WriteLine($"  {sym,-16} {atrPct,4:F1}%  ${volM,5:F0}M  skip (low vol/ATR)");
+            continue;
+        }
+
+        // Algorithmic coin screen: run genotype on train period (first 80%).
+        // Drop coins with negative train expectancy or negative Sortino — the strategy
+        // has no historical edge there and live trading them would be guesswork.
+        var tRet = SwingSimulator.GetSwingReturns(g, tArr).Select(t => t.Return).ToList();
+        double tExp   = tRet.Count >= 3 ? tRet.Average() : double.NegativeInfinity;
+        double tSort  = tRet.Count >= 3 ? Simulator.SortinoRatio(tRet, tArr.Length * 48) : double.NegativeInfinity;
+        if (tExp <= 0 || tSort < 0)
+        {
+            Console.WriteLine($"  {sym,-16} {atrPct,4:F1}%  ${volM,5:F0}M  skip (train exp={tExp:+0.00;-0.00}% sort={tSort:F2})");
             continue;
         }
 

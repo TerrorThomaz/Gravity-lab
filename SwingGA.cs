@@ -24,7 +24,7 @@ public class SwingGeneticAlgorithm
     private readonly bool   _verbose;
     private readonly Random _rng = new();
 
-    private const int MinTradesPerFold = 10;  // 4h candles: enforce enough signal before trusting expectancy
+    private const int MinTradesPerFold = 5;   // 4h candles: reject dead params; fold penalty (0.75×std) handles consistency
 
     public SwingGeneticAlgorithm(
         int  populationSize    = 50,
@@ -59,56 +59,56 @@ public class SwingGeneticAlgorithm
              + 0.2 * (wr - 0.45);
     }
 
+    // Pool returns across ALL coins within each fold time-slot.
+    // Per-coin fitness was flat (-1 everywhere) because each coin individually
+    // produced too few trades per fold. Pooling 12 coins gives ~12× more trades
+    // per fold while fold-to-fold std still guards temporal overfitting.
     private double Fitness(SwingGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
     {
-        double weightedSum = 0, totalWeight = 0;
+        var validCoins = coins
+            .Select(c => (c, arr: useValidation ? c.ValCandles : c.TrainCandles))
+            .Where(x => x.arr.Length >= 100)
+            .ToList();
+        if (validCoins.Count == 0) return 0;
 
-        foreach (var coin in coins)
+        if (useValidation || folds <= 1)
         {
-            var candles = useValidation ? coin.ValCandles : coin.TrainCandles;
-            if (candles.Length < 100) continue;
-
-            double coinScore;
-
-            if (!useValidation && folds > 1)
-            {
-                int k = Math.Min(folds, candles.Length / 40);
-                if (k < 2)
-                {
-                    var returns = SwingSimulator.GetSwingReturns(ind, candles)
-                                               .Select(t => t.Return).ToList();
-                    coinScore = FoldScore(returns);
-                }
-                else
-                {
-                    int foldSize = candles.Length / k;
-                    var scores   = new double[k];
-                    for (int f = 0; f < k; f++)
-                    {
-                        int start   = f * foldSize;
-                        int end     = f == k - 1 ? candles.Length : start + foldSize;
-                        var chunk   = candles[start..end];
-                        var returns = SwingSimulator.GetSwingReturns(ind, chunk)
-                                                   .Select(t => t.Return).ToList();
-                        scores[f]   = FoldScore(returns);
-                    }
-                    double mean = scores.Average();
-                    double std  = Math.Sqrt(scores.Select(s => (s - mean) * (s - mean)).Average());
-                    coinScore   = mean - 0.75 * std;
-                }
-            }
-            else
-            {
-                var returns = SwingSimulator.GetSwingReturns(ind, candles)
-                                           .Select(t => t.Return).ToList();
-                coinScore = FoldScore(returns);
-            }
-
-            weightedSum += coin.Weight * coinScore;
-            totalWeight += coin.Weight;
+            var all = validCoins
+                .SelectMany(x => SwingSimulator.GetSwingReturns(ind, x.arr).Select(t => t.Return))
+                .ToList();
+            return FoldScore(all);
         }
 
-        return totalWeight > 0 ? weightedSum / totalWeight : 0;
+        int minLen   = validCoins.Min(x => x.arr.Length);
+        int k        = Math.Min(folds, minLen / 40);
+
+        if (k < 2)
+        {
+            var all = validCoins
+                .SelectMany(x => SwingSimulator.GetSwingReturns(ind, x.arr).Select(t => t.Return))
+                .ToList();
+            return FoldScore(all);
+        }
+
+        int      foldSize = minLen / k;
+        double[] scores   = new double[k];
+        for (int f = 0; f < k; f++)
+        {
+            int start       = f * foldSize;
+            int end         = f == k - 1 ? minLen : start + foldSize;
+            var foldReturns = new List<double>();
+            foreach (var (coin, arr) in validCoins)
+            {
+                if (arr.Length < end) continue;
+                foldReturns.AddRange(
+                    SwingSimulator.GetSwingReturns(ind, arr[start..end]).Select(t => t.Return));
+            }
+            scores[f] = FoldScore(foldReturns);
+        }
+
+        double mean = scores.Average();
+        double std  = Math.Sqrt(scores.Select(s => (s - mean) * (s - mean)).Average());
+        return mean - 0.75 * std;
     }
 
     public SwingGenotype Run(IReadOnlyList<CoinData> coins, SwingGenotype? seed = null)

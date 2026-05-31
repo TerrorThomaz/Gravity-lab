@@ -1839,8 +1839,14 @@ async Task RunSwingTrain()
     SwingGenotype? seed = null;
     if (File.Exists(SwingGenoFile))
     {
-        seed = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(SwingGenoFile))!.ToGenotype();
-        Console.WriteLine($"  Seeding from {SwingGenoFile}: {seed}");
+        var candidate = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(SwingGenoFile))!.ToGenotype();
+        if (candidate.Fitness > 0)
+        {
+            seed = candidate;
+            Console.WriteLine($"  Seeding from {SwingGenoFile}: {seed}");
+        }
+        else
+            Console.WriteLine($"  Skipping seed (fitness ≤ 0 — previous run failed)");
     }
 
     Console.WriteLine("─── Swing GA training ───");

@@ -1,18 +1,17 @@
 namespace TradingGA;
 
-// Genetic algorithm for swing trading (1h setup + 15m entry/exit).
-// Uses 5-fold walk-forward CV; fitness directly optimises portfolio outcomes.
+// Genetic algorithm for grid trading (ranging-market long grid, 1h candles).
+// Structure mirrors SwingGeneticAlgorithm.
 //
-// FoldScore simulates a portfolio at a fixed 3% position size through each fold:
-//   - Main signal  : compounded portfolio gain (not per-trade expectancy)
-//   - Win rate     : multiplier — linearly penalises WR < 40%, bonus above 40%
-//   - Drawdown     : divisor   — sharply penalises peak-to-trough drawdown
-//   - Frequency    : log bonus — mild incentive to generate more trades
+// FoldScore operates on per-SESSION returns (mean of all level fills per activation),
+// not per-fill returns. This prevents inflating WR and trade count when GridLevels > 1.
 //
-// FoldScore = (port_gain × 100) × wr_mult × freq_bonus / dd_div
-//
-// Fitness  = mean(fold_scores) − 0.75 × std(fold_scores)  — penalises time-period fragility
-public class SwingGeneticAlgorithm
+// FoldScore weights:
+//   portfolio gain (compounded 3% per session) × win-rate multiplier
+//   divided by drawdown penalty (2× stronger than swing to penalise stop-loss tails)
+//   No frequency bonus — trade count is driven by coin volatility, not strategy quality.
+// Fitness = mean(fold_scores) − 0.75 × std(fold_scores)
+public class GridGeneticAlgorithm
 {
     public record CoinData(Candle[] TrainCandles, Candle[] ValCandles, double Weight = 1.0);
 
@@ -23,12 +22,12 @@ public class SwingGeneticAlgorithm
     private readonly bool   _verbose;
     private readonly Random _rng = new();
 
-    private const int    MinTradesPerFold = 15;
-    private const double FitPosFrac       = 0.03;  // fixed 3% per trade in fold portfolio sim
+    private const int    MinTradesPerFold = 10;
+    private const double FitPosFrac       = 0.03;
 
-    public SwingGeneticAlgorithm(
-        int  populationSize    = 50,
-        int  generations       = 80,
+    public GridGeneticAlgorithm(
+        int  populationSize    = 60,
+        int  generations       = 100,
         int  eliteCount        = 15,
         int  migrationInterval = 10,
         bool verbose           = true)
@@ -40,21 +39,17 @@ public class SwingGeneticAlgorithm
         _verbose           = verbose;
     }
 
-    // Portfolio-based fold score: simulate a fixed 3% position through the fold,
-    // then weight by win rate and divide by drawdown.
     private static double FoldScore(List<double> returns)
     {
         if (returns.Count < MinTradesPerFold) return -1.0;
 
-        double wr = (double)returns.Count(r => r > 0) / returns.Count;
+        double wr       = (double)returns.Count(r => r > 0) / returns.Count;
+        double grossWin = returns.Where(r => r > 0).DefaultIfEmpty(0).Sum();
+        double grossLoss= Math.Abs(returns.Where(r => r <= 0).DefaultIfEmpty(0).Sum());
+        double pf       = grossLoss > 1e-10 ? grossWin / grossLoss : (grossWin > 0 ? 5.0 : 0.0);
 
-        double grossWins = returns.Where(r => r > 0).DefaultIfEmpty(0).Sum();
-        double grossLoss = Math.Abs(returns.Where(r => r <= 0).DefaultIfEmpty(0).Sum());
-        double pf        = grossLoss > 1e-10 ? grossWins / grossLoss : (grossWins > 0 ? 5.0 : 0.0);
+        if (pf < 1.0) return pf - 2.0;
 
-        if (pf < 1.0) return pf - 2.0;  // continuous negative signal for losing folds
-
-        // Simulate portfolio at fixed 3% per trade (no fold-Kelly lookahead bias)
         double balance = 1.0, peak = 1.0, maxDd = 0.0;
         foreach (var r in returns)
         {
@@ -67,23 +62,13 @@ public class SwingGeneticAlgorithm
         double gain = balance - 1.0;
         if (gain <= 0) return gain * 100 - 0.5;
 
-        // Win rate: ramps from 0 at WR=0 to 1.0 at WR=40%, bonus above 40%
-        double wrMult = wr < 0.40 ? wr / 0.40 : 1.0 + (wr - 0.40) * 3.0;
+        double wrMult = wr < 0.40 ? wr / 0.40 : 1.0 + (wr - 0.40) * 0.5;
+        double ddDiv  = 1.0 + maxDd * 20.0;
 
-        // Drawdown penalty: 5% max DD halves the score
-        double ddDiv = 1.0 + maxDd * 10.0;
-
-        // Frequency bonus: mild log incentive for more trades
-        double freqBonus = 1.0 + 0.15 * Math.Log(Math.Max(1.0, returns.Count / (double)MinTradesPerFold));
-
-        return gain * 100.0 * wrMult * freqBonus / ddDiv;
+        return gain * 100.0 * wrMult / ddDiv;
     }
 
-    // Pool returns across ALL coins within each fold time-slot.
-    // Per-coin fitness was flat (-1 everywhere) because each coin individually
-    // produced too few trades per fold. Pooling 12 coins gives ~12× more trades
-    // per fold while fold-to-fold std still guards temporal overfitting.
-    private double Fitness(SwingGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
+    private double Fitness(GridGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
     {
         var validCoins = coins
             .Select(c => (c, arr: useValidation ? c.ValCandles : c.TrainCandles))
@@ -94,18 +79,18 @@ public class SwingGeneticAlgorithm
         if (useValidation || folds <= 1)
         {
             var all = validCoins
-                .SelectMany(x => SwingSimulator.GetSwingReturns(ind, x.arr).Select(t => t.Return))
+                .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr).Select(t => t.Return))
                 .ToList();
             return FoldScore(all);
         }
 
-        int minLen   = validCoins.Min(x => x.arr.Length);
-        int k        = Math.Min(folds, minLen / 40);
+        int minLen  = validCoins.Min(x => x.arr.Length);
+        int k       = Math.Min(folds, minLen / 40);
 
         if (k < 2)
         {
             var all = validCoins
-                .SelectMany(x => SwingSimulator.GetSwingReturns(ind, x.arr).Select(t => t.Return))
+                .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr).Select(t => t.Return))
                 .ToList();
             return FoldScore(all);
         }
@@ -121,7 +106,7 @@ public class SwingGeneticAlgorithm
             {
                 if (arr.Length < end) continue;
                 foldReturns.AddRange(
-                    SwingSimulator.GetSwingReturns(ind, arr[start..end]).Select(t => t.Return));
+                    GridSimulator.GetGridSessionReturns(ind, arr[start..end]).Select(t => t.Return));
             }
             scores[f] = FoldScore(foldReturns);
         }
@@ -131,7 +116,7 @@ public class SwingGeneticAlgorithm
         return mean - 0.75 * std;
     }
 
-    public SwingGenotype Run(IReadOnlyList<CoinData> coins, SwingGenotype? seed = null)
+    public GridGenotype Run(IReadOnlyList<CoinData> coins, GridGenotype? seed = null, double adxCeiling = 20.0)
     {
         if (coins.Count == 0 || coins.All(c => c.TrainCandles.Length == 0))
             throw new ArgumentException("No training candles found.");
@@ -146,22 +131,21 @@ public class SwingGeneticAlgorithm
 
         var population = Enumerable
             .Range(0, _populationSize)
-            .Select(_ => SwingGenotype.Random(_rng, seed))
+            .Select(_ => GridGenotype.Random(_rng, seed, adxCeiling))
             .ToList();
 
-        // Inject seed variants into first 20% of population
         if (seed != null)
         {
-            var clamped = seed.ClampToBounds();
+            var clamped = seed.ClampToBounds(adxCeiling);
             population[0] = clamped;
             int seedCount = Math.Min(_populationSize / 5, _populationSize - 1);
             for (int s = 1; s <= seedCount; s++)
-                population[s] = clamped.Mutate(_rng, 0.25);
+                population[s] = clamped.Mutate(_rng, 0.25, adxCeiling);
         }
 
-        List<SwingGenotype> eliteIsland = new();
-        double bestFitnessSeen = double.MinValue;
-        int    stagnantGens    = 0;
+        List<GridGenotype> eliteIsland    = new();
+        double             bestFitness    = double.MinValue;
+        int                stagnantGens   = 0;
 
         for (int gen = 0; gen < _generations; gen++)
         {
@@ -175,7 +159,7 @@ public class SwingGeneticAlgorithm
             eliteIsland = population.Take(_eliteCount).ToList();
 
             double topFitness = eliteIsland.First().Fitness;
-            if (topFitness > bestFitnessSeen + 1e-6) { bestFitnessSeen = topFitness; stagnantGens = 0; }
+            if (topFitness > bestFitness + 1e-6) { bestFitness = topFitness; stagnantGens = 0; }
             else stagnantGens++;
 
             if (_verbose && (gen + 1) % _migrationInterval == 0)
@@ -184,20 +168,19 @@ public class SwingGeneticAlgorithm
                 Console.WriteLine($"Gen {gen + 1,3} — elite: {eliteIsland.First()}{tag}");
             }
 
-            var nextGen = new List<SwingGenotype>();
+            var nextGen = new List<GridGenotype>();
             nextGen.AddRange(eliteIsland.Take(5));
             while (nextGen.Count < _populationSize)
             {
-                var child = SwingGenotype.Crossover(
+                var child = GridGenotype.Crossover(
                                 TournamentSelect(population),
                                 TournamentSelect(population), _rng)
-                            .Mutate(_rng, mutationRate);
+                            .Mutate(_rng, mutationRate, adxCeiling);
                 nextGen.Add(child);
             }
             population = nextGen;
         }
 
-        // Re-score elite on held-out validation candles
         if (_verbose) Console.WriteLine("\n=== Held-out validation ===");
         Parallel.ForEach(eliteIsland, ind =>
             ind.Fitness = Fitness(ind, coins, useValidation: true));
@@ -207,7 +190,7 @@ public class SwingGeneticAlgorithm
         return best;
     }
 
-    private SwingGenotype TournamentSelect(List<SwingGenotype> pop, int k = 4) =>
+    private GridGenotype TournamentSelect(List<GridGenotype> pop, int k = 4) =>
         Enumerable.Range(0, k)
             .Select(_ => pop[_rng.Next(pop.Count)])
             .OrderByDescending(g => g.Fitness)

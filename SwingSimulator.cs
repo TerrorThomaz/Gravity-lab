@@ -19,6 +19,8 @@ namespace TradingGA;
 public static class SwingSimulator
 {
     private const int AtrPeriod    = 14;
+    private const int RsiPeriod    = 7;   // fixed — not a gene; GA always converges here
+    private const int AdxPeriod    = 7;   // fixed — not a gene; GA always converges here (faster ADX, more reactive to trend onset)
     public  const double FeeRoundTrip = 0.21;   // same as pump-short (0.055% taker ×2 + 0.05% slip ×2)
 
     public static List<(DateTime Time, double Return, string Kind)> GetSwingReturns(
@@ -46,7 +48,7 @@ public static class SwingSimulator
     private static (List<(DateTime, double, string)> Trades, SwingTradeState FinalState)
         RunSwing(SwingGenotype g, Candle[] candles)
     {
-        int warmup = Math.Max(Math.Max(g.EmaPeriod, g.RsiPeriod), g.AdxPeriod * 2 + 1)
+        int warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
                    + g.LookbackCandles;
         if (candles.Length <= warmup + 10)
             return ([], new SwingTradeState(false, 0, 0, 0, false, 0, 0));
@@ -56,8 +58,8 @@ public static class SwingSimulator
         var lows    = candles.Select(c => c.Low).ToArray();
 
         var ema = ComputeEma(closes, g.EmaPeriod);
-        var rsi = ComputeRsi(closes, g.RsiPeriod);
-        var adx = ComputeAdx(highs, lows, closes, g.AdxPeriod);
+        var rsi = ComputeRsi(closes, RsiPeriod);
+        var adx = ComputeAdx(highs, lows, closes, AdxPeriod);
         var atr = ComputeAtr(highs, lows, closes, AtrPeriod);
 
         var result = new List<(DateTime, double, string)>();
@@ -155,6 +157,192 @@ public static class SwingSimulator
         var finalState = new SwingTradeState(inTrade, entry, hardStop, target,
             trailArmed, trailLow, holdCount);
         return (result, finalState);
+    }
+
+    // ── Multi-timeframe: 1h setup + 15m entry + h4 exit sizing ──────────────────
+    // h1  = 1h candles  — EMA/RSI/ADX regime gate, swing-high lookback, RSI divergence
+    //                     MinRallyAtrMult uses h1 ATR (right scale for h1 rally detection)
+    // m15 = 15m candles — BoS entry trigger, trailing stop tick-by-tick, timeout
+    // h4  = aggregated from h1 (factor 4) — ATR reference for all EXIT sizing
+    //       (stop, TP, trail activation, trail distance) so distances match holding TF
+    // LookbackCandles and MaxHoldCandles are h1 bars.
+
+    public static Candle[] AggregateCandles(Candle[] candles, int factor)
+    {
+        var result = new List<Candle>(candles.Length / factor + 1);
+        for (int i = 0; i + factor <= candles.Length; i += factor)
+        {
+            double high = candles[i].High, low = candles[i].Low, vol = 0;
+            for (int j = i; j < i + factor; j++)
+            {
+                if (candles[j].High > high) high = candles[j].High;
+                if (candles[j].Low  < low)  low  = candles[j].Low;
+                vol += candles[j].Volume;
+            }
+            result.Add(new Candle(candles[i].Time, candles[i].Open, high, low, candles[i + factor - 1].Close, vol));
+        }
+        return result.ToArray();
+    }
+
+    public static List<(DateTime Time, double Return, string Kind)> GetSwingReturns(
+        SwingGenotype g, Candle[] h1, Candle[] m15)
+    {
+        var (trades, _) = RunSwingMultiTF(g, h1, m15);
+        return trades;
+    }
+
+    public static SwingTradeState GetSwingTradeState(SwingGenotype g, Candle[] h1, Candle[] m15)
+    {
+        var (_, state) = RunSwingMultiTF(g, h1, m15);
+        return state;
+    }
+
+    private static (List<(DateTime, double, string)> Trades, SwingTradeState FinalState)
+        RunSwingMultiTF(SwingGenotype g, Candle[] h1, Candle[] m15)
+    {
+        int h1Warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
+                       + g.LookbackCandles + 2;
+
+        if (h1.Length <= h1Warmup + 2 || m15.Length < (h1Warmup + 2) * 4)
+            return ([], new SwingTradeState(false, 0, 0, 0, false, 0, 0));
+
+        var h1Closes = h1.Select(c => c.Close).ToArray();
+        var h1Highs  = h1.Select(c => c.High).ToArray();
+        var h1Lows   = h1.Select(c => c.Low).ToArray();
+
+        var h1Ema = ComputeEma(h1Closes, g.EmaPeriod);
+        var h1Rsi = ComputeRsi(h1Closes, RsiPeriod);
+        var h1Adx = ComputeAdx(h1Highs, h1Lows, h1Closes, AdxPeriod);
+        var h1Atr = ComputeAtr(h1Highs, h1Lows, h1Closes, AtrPeriod);
+
+        // h4 ATR — exit sizing scaled to holding timeframe, not entry precision
+        var h4      = AggregateCandles(h1, 4);
+        var h4Highs = h4.Select(c => c.High).ToArray();
+        var h4Lows  = h4.Select(c => c.Low).ToArray();
+        var h4Cls   = h4.Select(c => c.Close).ToArray();
+        var h4Atr   = ComputeAtr(h4Highs, h4Lows, h4Cls, AtrPeriod);
+
+        var m15Closes = m15.Select(c => c.Close).ToArray();
+        var m15Lows   = m15.Select(c => c.Low).ToArray();
+
+        var result = new List<(DateTime, double, string)>();
+
+        bool   inTrade    = false;
+        double entry      = 0;
+        double hardStop   = 0;
+        double target     = 0;
+        double trailLow   = 0;
+        double atrEntry   = 0;
+        bool   trailArmed = false;
+        int    entryIH1   = 0;
+
+        // Cache h1 setup result — only recomputed when h1Ref changes (every 4 m15 bars)
+        int    cachedH1Ref     = -1;
+        bool   cachedSetupMet  = false;
+        double cachedSwingHigh = 0;
+        double cachedAtrRef    = 0;
+
+        int m15Start = (h1Warmup + 1) * 4;
+        int m15Limit = h1.Length * 4;
+
+        for (int im15 = m15Start; im15 < Math.Min(m15.Length, m15Limit); im15++)
+        {
+            int ih1   = im15 / 4;
+            int h1Ref = ih1 - 1;   // last fully-closed h1 bar — no look-ahead
+
+            if (h1Ref < h1Warmup || h1Ref >= h1.Length) continue;
+
+            double m15Price = m15Closes[im15];
+
+            if (!inTrade)
+            {
+                // Recompute h1 setup only when h1Ref advances (4 m15 bars per h1 bar)
+                if (h1Ref != cachedH1Ref)
+                {
+                    cachedH1Ref    = h1Ref;
+                    cachedSetupMet = false;
+
+                    // h1 ATR: rally qualification (right scale for h1 price structure)
+                    double atrH1 = h1Atr[h1Ref] > 1e-10 ? h1Atr[h1Ref] : h1Closes[h1Ref] * 0.02;
+
+                    // h4 ATR: exit sizing (matches the multi-day holding timeframe)
+                    int h4Ref = h1Ref / 4;
+                    double atrH4 = h4Ref < h4Atr.Length && h4Atr[h4Ref] > 1e-10
+                                 ? h4Atr[h4Ref]
+                                 : atrH1 * 4;
+
+                    if (h1Adx[h1Ref] >= g.AdxThreshold && h1Closes[h1Ref] > h1Ema[h1Ref])
+                    {
+                        int    lb        = g.LookbackCandles;
+                        int    lbStart   = Math.Max(0, h1Ref - lb);
+                        double swingHigh = h1Closes[lbStart];
+                        int    highIdx   = lbStart;
+                        double recentLow = h1Lows[lbStart];
+
+                        for (int j = lbStart; j < h1Ref; j++)
+                        {
+                            if (h1Closes[j] > swingHigh) { swingHigh = h1Closes[j]; highIdx = j; }
+                            if (h1Lows[j]   < recentLow)   recentLow = h1Lows[j];
+                        }
+
+                        double rsiAtHigh = h1Rsi[highIdx];
+                        if ((swingHigh - recentLow) >= g.MinRallyAtrMult * atrH1
+                            && rsiAtHigh >= g.RsiOverbought
+                            && h1Rsi[h1Ref] <= rsiAtHigh - g.RsiDivThreshold)
+                        {
+                            cachedSetupMet  = true;
+                            cachedSwingHigh = swingHigh;
+                            cachedAtrRef    = atrH4;   // exits use h4 ATR
+                        }
+                    }
+                }
+
+                // BoS on 15m: close below the previous 15m candle's low
+                if (cachedSetupMet && m15Closes[im15] < m15Lows[im15 - 1])
+                {
+                    inTrade    = true;
+                    entry      = m15Price;
+                    atrEntry   = cachedAtrRef;
+                    hardStop   = cachedSwingHigh + g.StopLossAtrMult * atrEntry;
+                    target     = entry - g.TakeProfitAtrMult * atrEntry;
+                    trailLow   = m15Price;
+                    trailArmed = false;
+                    entryIH1   = ih1;
+                }
+            }
+            else
+            {
+                if (m15Price < trailLow) trailLow = m15Price;
+                if (!trailArmed && entry - trailLow >= g.TrailingActivationAtrMult * atrEntry)
+                    trailArmed = true;
+
+                int holdH1 = ih1 - entryIH1;   // elapsed h1 bars since entry
+
+                bool hitStop   = m15Price >= hardStop;
+                bool hitTarget = m15Price <= target;
+                bool hitTrail  = trailArmed && m15Price > trailLow + g.TrailingStopAtrMult * atrEntry;
+                bool timedOut  = holdH1 >= g.MaxHoldCandles;
+
+                if (hitStop || hitTarget || hitTrail || timedOut)
+                {
+                    double exitPx = hitStop   ? hardStop :
+                                    hitTarget ? target   : m15Price;
+                    double ret = (entry - exitPx) / entry * 100.0 - FeeRoundTrip;
+                    result.Add((m15[im15].Time, ret, "swing_short"));
+                    inTrade = false;
+                }
+            }
+        }
+
+        if (inTrade)
+        {
+            double finalPx = m15Closes[^1];
+            double ret = (entry - finalPx) / entry * 100.0 - FeeRoundTrip;
+            result.Add((m15[^1].Time, ret, "swing_short"));
+        }
+
+        int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;
+        return (result, new SwingTradeState(inTrade, entry, hardStop, target, trailArmed, trailLow, finalHold));
     }
 
     // ── Indicators ────────────────────────────────────────────────────────────────

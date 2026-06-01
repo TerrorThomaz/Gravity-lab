@@ -647,6 +647,49 @@ async Task RunTest()
 
     if (sg != null && gg != null && swingRet.Count >= 5 && gridRet.Count >= 5)
         StrategyStats.Compare("Swing", swingRet, "Grid", gridRet, candleCount);
+
+    // ── Crash stress test ─────────────────────────────────────────────────────
+    Console.WriteLine("\n  Building full-history trade list for crash analysis...");
+
+    var crashTrades = new List<(DateTime Open, DateTime Close, double Return, double HalfKelly, string Strategy)>();
+
+    foreach (var (sym, m15List) in fetched)
+    {
+        if (m15List.Count < 600) continue;
+        var m15   = m15List.ToArray();
+        var h1    = SwingSimulator.AggregateCandles(m15, 4);
+        int split = (int)(h1.Length * 0.8);
+        var h1Train  = h1[..split];
+        var m15Train = m15[..(split * 4)];
+
+        if (sg != null)
+        {
+            var trainRets = SwingSimulator.GetSwingReturns(sg, h1Train, m15Train).Select(t => t.Return).ToList();
+            var (_, hk) = StrategyStats.KellyFraction(trainRets);
+            double swingHk = Math.Min(hk, 0.05);
+            foreach (var (t, ret, _) in SwingSimulator.GetSwingReturns(sg, h1, m15))
+                crashTrades.Add((t - TimeSpan.FromHours(sg.MaxHoldCandles), t, ret, swingHk, "swing"));
+        }
+
+        if (gg != null)
+        {
+            var trainRets = GridSimulator.GetGridReturns(gg, h1Train).Select(t => t.Return).ToList();
+            var (_, hk) = StrategyStats.KellyFraction(trainRets);
+            double gridHk = Math.Min(hk, 0.05);
+            foreach (var (t, ret, _) in GridSimulator.GetGridReturns(gg, h1))
+                crashTrades.Add((t - TimeSpan.FromHours(gg.MaxHoldCandles), t, ret, gridHk, "grid"));
+        }
+    }
+
+    Console.WriteLine($"  Total trades for crash analysis: {crashTrades.Count}  (swing + grid, full history)");
+
+    Console.WriteLine("  Fetching BTCUSDT for crash detection...");
+    var btcM15 = await FetchFifteenMinCandlesCached("BTCUSDT", batches: 113);
+    var btcH1  = SwingSimulator.AggregateCandles(btcM15.ToArray(), 4);
+
+    var crashes = CrashAnalyser.DetectCrashes(btcH1);
+    CrashAnalyser.Report(crashes, crashTrades);
+    CrashAnalyser.SyntheticWorstCase(crashTrades);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

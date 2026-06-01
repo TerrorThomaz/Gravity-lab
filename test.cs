@@ -1,637 +1,515 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 
 namespace TradingGA;
 
-public static class PerformanceEvaluator
+// Statistical validation for trading strategy returns.
+// Answers: "Is this edge real, or could it be luck?"
+//
+// Usage:
+//   StrategyStats.Report("Swing", swingReturns, candleCount);
+//   StrategyStats.Compare("Grid", gridReturns, "Swing", swingReturns, candleCount);
+public static class StrategyStats
 {
-    // ============================================================
-    // 1. TRADING PERFORMANCE METRICS
-    // ============================================================
-    
-    public static double TotalReturnPct(List<double> returns)
+    // ── Result records ────────────────────────────────────────────────────────────
+
+    public record TTestResult(double Mean, double StdErr, double T, double PValue)
     {
-        if (returns.Count == 0) return 0;
-        double total = returns.Sum();
-        // Total Return (%) = cumulative return percentage
-        // For log returns would be exp(sum)-1, but these are already % returns
-        return total;
+        public bool Sig95 => PValue < 0.05;
+        public bool Sig99 => PValue < 0.01;
+        public override string ToString() =>
+            $"μ={Mean:+0.000;-0.000}%  SE={StdErr:F3}  t={T:F2}  p={PValue:F4}{(Sig99 ? " ***" : Sig95 ? " *" : "")}";
     }
-    
-    public static double AnnualizedReturnPct(List<double> returns, int totalCandles, double candlesPerYear = 252 * 6) // 6 periods per day for 4h? Actually depends on TF
+
+    public record BootstrapResult(double Mean, double Lo95, double Hi95, double ProbPositive)
     {
-        if (returns.Count == 0) return 0;
-        double totalRet = returns.Sum() / 100.0; // Convert to decimal
-        double years = totalCandles / candlesPerYear;
-        if (years <= 0) return 0;
-        double annualized = Math.Pow(1 + totalRet, 1.0 / years) - 1;
-        return annualized * 100;
+        public override string ToString() =>
+            $"μ={Mean:+0.000;-0.000}%  95%CI [{Lo95:+0.000;-0.000}%, {Hi95:+0.000;-0.000}%]  P(μ>0)={ProbPositive:P1}";
     }
-    
-    public static double SharpeRatio(List<double> returns, int candleCount, double riskFreeRate = 0)
+
+    public record DistStats(double Skewness, double ExKurtosis, double CVaR5, double TailRatio)
     {
-        if (returns.Count < 5) return 0;
-        double mean = returns.Average() / 100.0; // Convert to decimal
-        double std = Math.Sqrt(returns.Select(r => Math.Pow(r / 100.0 - mean, 2)).Average());
-        if (std < 1e-10) return 0;
-        
-        double years = candleCount / (252.0 * 6.0); // Assuming 4h candles (6 per day)
-        double sharpe = (mean - riskFreeRate) / std * Math.Sqrt(1.0 / years);
-        return sharpe;
+        public override string ToString() =>
+            $"Skew={Skewness:+0.00;-0.00}  ExKurt={ExKurtosis:+0.00;-0.00}  CVaR(5%)={CVaR5:+0.00;-0.00}%  TailRatio={TailRatio:F2}";
     }
-    
-    public static double SortinoRatio(List<double> returns, int candleCount, double riskFreeRate = 0)
+
+    public record MannWhitneyResult(double U, double Z, double PValue)
     {
-        if (returns.Count < 5) return 0;
-        double mean = returns.Average() / 100.0;
-        var negReturns = returns.Where(r => r < 0).Select(r => r / 100.0).ToList();
-        if (negReturns.Count == 0) return mean > 0 ? double.MaxValue : 0;
-        
-        double downStd = Math.Sqrt(negReturns.Select(r => r * r).Average());
-        if (downStd < 1e-10) return 0;
-        
-        double years = candleCount / (252.0 * 6.0);
-        double sortino = (mean - riskFreeRate) / downStd * Math.Sqrt(1.0 / years);
-        return sortino;
+        public bool Sig95 => PValue < 0.05;
+        public override string ToString() =>
+            $"U={U:F0}  z={Z:F2}  p={PValue:F4}{(Sig95 ? " *" : "")}";
     }
-    
-    public static double MaxDrawdownPct(List<double> returns)
+
+    // ── 1. One-sample t-test: H₀: mean return = 0 ────────────────────────────────
+    // Tests whether the average trade return is significantly different from zero.
+    // Uses normal approximation for the p-value (accurate for n > 20).
+    public static TTestResult OneSampleT(List<double> returns)
     {
-        double cumulative = 0, peak = 0, maxDd = 0;
-        foreach (var r in returns)
+        if (returns.Count < 5) return new(0, 0, 0, 1);
+        double mean = returns.Average();
+        double var  = returns.Select(r => (r - mean) * (r - mean)).Average();
+        double se   = Math.Sqrt(var / returns.Count);
+        double t    = se > 1e-12 ? mean / se : 0;
+        double p    = TwoTailedP(t);
+        return new(mean, se, t, p);
+    }
+
+    // ── 2. Bootstrap 95% CI for mean return ──────────────────────────────────────
+    // Non-parametric: no assumption about return distribution shape.
+    // P(μ>0) = fraction of bootstrap samples with positive mean.
+    public static BootstrapResult Bootstrap(List<double> returns, int n = 5000, int seed = 42)
+    {
+        if (returns.Count < 5) return new(0, 0, 0, 0);
+        var arr = returns.ToArray();
+        var rng = new Random(seed);
+        var means = new double[n];
+        for (int i = 0; i < n; i++)
         {
-            cumulative += r;
-            if (cumulative > peak) peak = cumulative;
-            double dd = peak - cumulative;
-            if (dd > maxDd) maxDd = dd;
+            double s = 0;
+            for (int j = 0; j < arr.Length; j++)
+                s += arr[rng.Next(arr.Length)];
+            means[i] = s / arr.Length;
         }
-        return maxDd;
+        Array.Sort(means);
+        double probPos = (double)means.Count(m => m > 0) / n;
+        return new(
+            returns.Average(),
+            means[(int)(0.025 * n)],
+            means[(int)(0.975 * n)],
+            probPos);
     }
-    
-    public static double CalmarRatio(List<double> returns, int totalCandles)
+
+    // ── 3. Return distribution statistics ────────────────────────────────────────
+    // Skewness: positive = right-tail fat (big wins more common than big losses) — good.
+    // Excess kurtosis: > 0 = fat tails (more extreme outcomes than normal).
+    // CVaR 5%: average loss in the worst 5% of trades (expected shortfall).
+    // Tail ratio: |P95| / |P5| — how big wins are relative to losses at extremes.
+    public static DistStats Distribution(List<double> returns)
     {
-        if (returns.Count < 5) return 0;
-        double totalRet = returns.Sum() / 100.0;
-        double maxDd = MaxDrawdownPct(returns) / 100.0;
-        if (maxDd < 1e-10) return totalRet > 0 ? double.MaxValue : 0;
-        
-        double years = totalCandles / (252.0 * 6.0);
-        double annualRet = Math.Pow(1 + totalRet, 1.0 / years) - 1;
-        return annualRet / maxDd;
+        if (returns.Count < 5) return new(0, 0, 0, 0);
+        double mean = returns.Average();
+        double n    = returns.Count;
+        double m2   = returns.Select(r => Math.Pow(r - mean, 2)).Sum() / n;
+        double m3   = returns.Select(r => Math.Pow(r - mean, 3)).Sum() / n;
+        double m4   = returns.Select(r => Math.Pow(r - mean, 4)).Sum() / n;
+        double std  = Math.Sqrt(m2);
+
+        double skew     = std > 1e-10 ? m3 / Math.Pow(std, 3) : 0;
+        double exKurt   = std > 1e-10 ? m4 / (m2 * m2) - 3.0 : 0;
+
+        var sorted = returns.OrderBy(r => r).ToList();
+        int tail5  = Math.Max(1, (int)(0.05 * returns.Count));
+        double cvar = sorted.Take(tail5).Average();
+
+        // P95 / |P5| — values above 1 mean wins at the 95th pct outsize losses at 5th
+        double p5   = sorted[(int)(0.05 * (sorted.Count - 1))];
+        double p95  = sorted[(int)(0.95 * (sorted.Count - 1))];
+        double tail = Math.Abs(p5) > 1e-10 ? p95 / Math.Abs(p5) : 0;
+
+        return new(skew, exKurt, cvar, tail);
     }
-    
-    public static double WinRate(List<double> returns)
+
+    // ── 4. Kelly fraction ─────────────────────────────────────────────────────────
+    // Optimal fraction of capital per trade given observed win rate and W/L ratio.
+    // Half-Kelly is the standard risk-adjusted recommendation.
+    public static (double Kelly, double HalfKelly) KellyFraction(List<double> returns)
     {
-        if (returns.Count == 0) return 0;
-        return (double)returns.Count(r => r > 0) / returns.Count * 100;
+        if (returns.Count < 5) return (0, 0);
+        var wins   = returns.Where(r => r > 0).ToList();
+        var losses = returns.Where(r => r <= 0).ToList();
+        if (wins.Count == 0 || losses.Count == 0) return (0, 0);
+        double p    = (double)wins.Count / returns.Count;
+        double b    = wins.Average() / Math.Abs(losses.Average());
+        double k    = Math.Max(0, (p * b - (1 - p)) / b);
+        return (k, k / 2.0);
     }
-    
-    public static double ProfitFactor(List<double> returns)
+
+    // ── 5. Mann-Whitney U test: do the two return distributions differ? ──────────
+    // Non-parametric: does not assume normality.
+    // Tests H₀: returns from A and B come from the same distribution.
+    public static MannWhitneyResult MannWhitneyU(List<double> a, List<double> b)
     {
-        double grossProfit = returns.Where(r => r > 0).Sum();
-        double grossLoss = Math.Abs(returns.Where(r => r <= 0).Sum());
-        if (grossLoss < 1e-10) return grossProfit > 0 ? 999.99 : 0;
-        return grossProfit / grossLoss;
-    }
-    
-    public static double AverageTradeReturn(List<double> returns)
-    {
-        return returns.Count > 0 ? returns.Average() : 0;
-    }
-    
-    public static double Expectancy(List<double> returns, double positionSizePct = 0.05)
-    {
-        // Expected return per trade as % of account
-        double avgRetPct = returns.Average();
-        return avgRetPct * (positionSizePct / 100.0);
-    }
-    
-    public static int MaxConsecutiveLosses(List<double> returns)
-    {
-        int max = 0, curr = 0;
-        foreach (var r in returns)
+        int n1 = a.Count, n2 = b.Count;
+        if (n1 < 5 || n2 < 5) return new(0, 0, 1);
+
+        // Rank all values, handling ties with average rank
+        var ranked = a.Select(v => (v, grp: 0))
+                      .Concat(b.Select(v => (v, grp: 1)))
+                      .OrderBy(x => x.v)
+                      .ToList();
+
+        double[] ranks = new double[ranked.Count];
+        int i = 0;
+        while (i < ranked.Count)
         {
-            if (r <= 0) { curr++; if (curr > max) max = curr; }
-            else curr = 0;
+            int j = i;
+            while (j < ranked.Count && ranked[j].v == ranked[i].v) j++;
+            double avgRank = (i + 1 + j) / 2.0;
+            for (int k = i; k < j; k++) ranks[k] = avgRank;
+            i = j;
         }
-        return max;
+
+        double r1 = ranked.Select((x, idx) => x.grp == 0 ? ranks[idx] : 0).Sum();
+        double u1 = r1 - n1 * (n1 + 1.0) / 2.0;
+        double u  = Math.Min(u1, n1 * n2 - u1);
+
+        // Tie correction for normal approximation
+        var tieGroups = ranks.GroupBy(r => r).Select(g => (double)g.Count()).ToList();
+        double tieCorr = tieGroups.Select(t => t * t * t - t).Sum();
+        int N = n1 + n2;
+        double stdU = Math.Sqrt((n1 * n2 / 12.0) * (N + 1 - tieCorr / (N * (N - 1))));
+
+        double z = stdU > 1e-10 ? (u - n1 * n2 / 2.0) / stdU : 0;
+        double p = TwoTailedP(z);
+        return new(u, z, p);
     }
-    
-    public static int MaxConsecutiveWins(List<double> returns)
+
+    // ── 6. Deflated Sharpe ratio ──────────────────────────────────────────────────
+    // Adjusts the Sharpe downward to account for selection bias from GA search.
+    // nTrials = effective number of parameter combinations tested (GA pop × gens ≈ 1000).
+    // DSR < 0 means the edge is likely not significant after correcting for search.
+    public static double DeflatedSharpe(List<double> returns, int candleCount, int nTrials = 1000)
     {
-        int max = 0, curr = 0;
-        foreach (var r in returns)
+        double sr = Simulator.SharpeRatio(returns, candleCount);
+        if (sr <= 0) return 0;
+        // Expected max Sharpe under null via extreme value theory
+        double expectedMax = Math.Sqrt(2 * Math.Log(nTrials)) -
+                             (Math.Log(Math.Log(nTrials)) + Math.Log(4 * Math.PI)) /
+                             (2 * Math.Sqrt(2 * Math.Log(nTrials)));
+        double sdSharpe = Math.Sqrt((1 + 0.5 * sr * sr) / (returns.Count - 1));
+        return NormalCDF((sr - expectedMax) / sdSharpe);
+    }
+
+    // ── 7. Full strategy report ────────────────────────────────────────────────────
+    public static void Report(string name, List<double> returns, int candleCount)
+    {
+        Console.WriteLine($"\n── Statistical report: {name} ({returns.Count} trades) ──");
+        if (returns.Count < 10) { Console.WriteLine("  Insufficient trades for statistics."); return; }
+
+        var t    = OneSampleT(returns);
+        var boot = Bootstrap(returns);
+        var dist = Distribution(returns);
+        var (kelly, halfKelly) = KellyFraction(returns);
+        double dsr = DeflatedSharpe(returns, candleCount);
+
+        Console.WriteLine($"  t-test:      {t}");
+        Console.WriteLine($"  Bootstrap:   {boot}");
+        Console.WriteLine($"  Dist:        {dist}");
+        Console.WriteLine($"  Kelly:       full={kelly:P1}  half={halfKelly:P1}  (using 5% cap)");
+        Console.WriteLine($"  DSR:         {dsr:F3}  {(dsr > 0.95 ? "✓ strong" : dsr > 0.5 ? "~ moderate" : "✗ weak after GA search bias")}");
+
+        if (!t.Sig95 && boot.ProbPositive < 0.9)
+            Console.WriteLine("  ⚠  Edge not statistically significant — could be luck");
+        if (dist.Skewness < -0.5)
+            Console.WriteLine("  ⚠  Negative skew — losses heavier than wins at extremes");
+        if (dist.CVaR5 < -3.0)
+            Console.WriteLine($"  ⚠  CVaR(5%) = {dist.CVaR5:F1}% — worst 5% of trades average this loss");
+    }
+
+    // ── 8. Bayesian bootstrap: P(A beats B) on mean and Sharpe ───────────────────
+    // Uses Dirichlet(1,…,1) reweighting — the posterior under a flat prior.
+    // Each draw samples a different weight vector over the observed data points
+    // rather than resampling with replacement, giving a proper Bayesian posterior.
+    public record BayesResult(double ProbMeanA, double ProbSharpeA, double ProbPFA)
+    {
+        public override string ToString() =>
+            $"P(μ_A>μ_B)={ProbMeanA:P1}  P(Sh_A>Sh_B)={ProbSharpeA:P1}  P(PF_A>PF_B)={ProbPFA:P1}";
+    }
+
+    public static BayesResult BayesianComparison(
+        List<double> a, List<double> b,
+        int candleCount, int nDraws = 5000, int seed = 42)
+    {
+        if (a.Count < 5 || b.Count < 5) return new(0.5, 0.5, 0.5);
+        var arrA = a.ToArray();
+        var arrB = b.ToArray();
+        var rng  = new Random(seed);
+
+        int meanWins = 0, sharpeWins = 0, pfWins = 0;
+
+        for (int d = 0; d < nDraws; d++)
         {
-            if (r > 0) { curr++; if (curr > max) max = curr; }
-            else curr = 0;
+            // Dirichlet(1,…,1) weights = normalised Exponential(1) draws
+            double[] wA = DirichletWeights(arrA.Length, rng);
+            double[] wB = DirichletWeights(arrB.Length, rng);
+
+            double mA = WeightedMean(arrA, wA);
+            double mB = WeightedMean(arrB, wB);
+            double vA = WeightedVariance(arrA, wA, mA);
+            double vB = WeightedVariance(arrB, wB, mB);
+
+            double srA = vA > 1e-12 ? mA / Math.Sqrt(vA) * Math.Sqrt(candleCount / 288.0) : 0;
+            double srB = vB > 1e-12 ? mB / Math.Sqrt(vB) * Math.Sqrt(candleCount / 288.0) : 0;
+
+            double gWA = 0, lWA = 0, gWB = 0, lWB = 0;
+            for (int i = 0; i < arrA.Length; i++) { if (arrA[i] > 0) gWA += arrA[i] * wA[i]; else lWA += Math.Abs(arrA[i]) * wA[i]; }
+            for (int i = 0; i < arrB.Length; i++) { if (arrB[i] > 0) gWB += arrB[i] * wB[i]; else lWB += Math.Abs(arrB[i]) * wB[i]; }
+            double pfA = lWA > 1e-12 ? gWA / lWA : 0;
+            double pfB = lWB > 1e-12 ? gWB / lWB : 0;
+
+            if (mA  > mB)  meanWins++;
+            if (srA > srB) sharpeWins++;
+            if (pfA > pfB) pfWins++;
         }
-        return max;
+
+        return new(
+            (double)meanWins   / nDraws,
+            (double)sharpeWins / nDraws,
+            (double)pfWins     / nDraws);
     }
-    
-    public static double RecoveryFactor(List<double> returns)
+
+    private static double[] DirichletWeights(int n, Random rng)
     {
-        double totalRet = returns.Sum() / 100.0;
-        double maxDd = MaxDrawdownPct(returns) / 100.0;
-        if (maxDd < 1e-10) return totalRet > 0 ? double.MaxValue : 0;
-        return totalRet / maxDd;
+        var w = new double[n];
+        double sum = 0;
+        for (int i = 0; i < n; i++) { w[i] = -Math.Log(rng.NextDouble() + 1e-300); sum += w[i]; }
+        for (int i = 0; i < n; i++) w[i] /= sum;
+        return w;
     }
-    
-    // ============================================================
-    // 2. MACHINE LEARNING / ROBUSTNESS METRICS
-    // ============================================================
-    
-    public class WalkForwardResult
+
+    private static double WeightedMean(double[] arr, double[] w)
     {
-        public double InSampleSharpe { get; set; }
-        public double OutOfSampleSharpe { get; set; }
-        public double WalkForwardRatio { get; set; }
-        public double PerformanceDegradation { get; set; }
-        public bool IsOverfit => WalkForwardRatio > 1.5;
+        double s = 0;
+        for (int i = 0; i < arr.Length; i++) s += arr[i] * w[i];
+        return s;
     }
-    
-    public static WalkForwardResult WalkForwardAnalysis(
-        List<double> allReturns,
-        int inSamplePct = 70,
-        int nFolds = 3)
+
+    private static double WeightedVariance(double[] arr, double[] w, double mean)
     {
-        var result = new WalkForwardResult();
-        
-        int foldSize = allReturns.Count / nFolds;
-        var isSharpeList = new List<double>();
-        var oosSharpeList = new List<double>();
-        
-        for (int fold = 0; fold < nFolds; fold++)
+        double s = 0;
+        for (int i = 0; i < arr.Length; i++) s += w[i] * (arr[i] - mean) * (arr[i] - mean);
+        return s;
+    }
+
+    // ── 9. Compare two strategies ─────────────────────────────────────────────────
+    public static void Compare(
+        string nameA, List<double> a,
+        string nameB, List<double> b,
+        int candleCount)
+    {
+        Console.WriteLine($"\n── Comparison: {nameA} vs {nameB} ──");
+
+        var tA   = OneSampleT(a);
+        var tB   = OneSampleT(b);
+        var mw   = MannWhitneyU(a, b);
+        var bA   = Bootstrap(a);
+        var bB   = Bootstrap(b);
+        var bay  = BayesianComparison(a, b, candleCount);
+
+        double srA = Simulator.SharpeRatio(a, candleCount);
+        double srB = Simulator.SharpeRatio(b, candleCount);
+        double pfA = Simulator.ProfitFactor(a);
+        double pfB = Simulator.ProfitFactor(b);
+
+        Console.WriteLine($"  {"Metric",-24} {nameA,12} {nameB,12}");
+        Console.WriteLine($"  {"Trades",-24} {a.Count,12} {b.Count,12}");
+        Console.WriteLine($"  {"Mean return",-24} {tA.Mean,+11:F3}% {tB.Mean,+11:F3}%");
+        Console.WriteLine($"  {"t (vs 0)",-24} {tA.T,12:F2} {tB.T,12:F2}");
+        Console.WriteLine($"  {"p-value",-24} {tA.PValue,12:F4} {tB.PValue,12:F4}");
+        Console.WriteLine($"  {"P(μ>0) bootstrap",-24} {bA.ProbPositive,12:P1} {bB.ProbPositive,12:P1}");
+        Console.WriteLine($"  {"Sharpe",-24} {srA,12:F3} {srB,12:F3}");
+        Console.WriteLine($"  {"Profit factor",-24} {pfA,12:F3} {pfB,12:F3}");
+
+        Console.WriteLine($"\n  Frequentist — Mann-Whitney: {mw}");
+        if (mw.Sig95)
+            Console.WriteLine($"  → Distributions are significantly different (p<0.05)");
+        else
+            Console.WriteLine($"  → No significant difference in distributions");
+
+        Console.WriteLine($"\n  Bayesian — {bay}");
+        string winner = bay.ProbSharpeA > 0.5 ? nameA : nameB;
+        double conf   = Math.Max(bay.ProbSharpeA, 1 - bay.ProbSharpeA);
+        Console.WriteLine($"  → Posterior favours {winner} on risk-adjusted return ({conf:P0} credibility)");
+    }
+
+    // ── Internal: normal CDF (Zelen & Severo 1964, max error ~7.5×10⁻⁸) ─────────
+    private static double NormalCDF(double x)
+    {
+        double t    = 1.0 / (1.0 + 0.2316419 * Math.Abs(x));
+        double poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 +
+                      t * (-1.821255978 + t * 1.330274429))));
+        double cdf  = 1.0 - (1.0 / Math.Sqrt(2 * Math.PI)) * Math.Exp(-0.5 * x * x) * poly;
+        return x >= 0 ? cdf : 1.0 - cdf;
+    }
+
+    private static double TwoTailedP(double z) => 2.0 * (1.0 - NormalCDF(Math.Abs(z)));
+}
+
+// ── Crash / stress-test analyser ─────────────────────────────────────────────────────────
+// Identifies historical crash windows from BTC price action, then for each window shows
+// which positions were open, total concurrent exposure, and realised outcome.
+// Also computes a synthetic "all stops hit simultaneously" worst-case scenario.
+public static class CrashAnalyser
+{
+    public record CrashEvent(string Label, DateTime Start, DateTime End, double BtcDropPct, int DurationH);
+
+    // Rolling-peak drawdown: crash = BTC close > minDropPct below its high over peakLookbackH bars.
+    public static List<CrashEvent> DetectCrashes(
+        Candle[] btcH1, double minDropPct = 0.15, int peakLookbackH = 168)
+    {
+        if (btcH1.Length <= peakLookbackH) return [];
+
+        var inCrash = new bool[btcH1.Length];
+        for (int i = peakLookbackH; i < btcH1.Length; i++)
         {
-            int oosStart = fold * foldSize;
-            int oosEnd = Math.Min((fold + 1) * foldSize, allReturns.Count);
-            
-            var isReturns = allReturns.Take(oosStart).Concat(allReturns.Skip(oosEnd)).ToList();
-            var oosReturns = allReturns.Skip(oosStart).Take(foldSize).ToList();
-            
-            if (isReturns.Count >= 5 && oosReturns.Count >= 5)
+            double peak = 0;
+            for (int j = i - peakLookbackH; j < i; j++)
+                if (btcH1[j].Close > peak) peak = btcH1[j].Close;
+            inCrash[i] = (btcH1[i].Close - peak) / peak < -minDropPct;
+        }
+
+        var raw = new List<CrashEvent>();
+        int start = -1;
+        for (int i = peakLookbackH; i <= btcH1.Length; i++)
+        {
+            bool flag = i < btcH1.Length && inCrash[i];
+            if (flag && start < 0) start = i;
+            else if (!flag && start >= 0)
             {
-                isSharpeList.Add(SharpeRatio(isReturns, isReturns.Count));
-                oosSharpeList.Add(SharpeRatio(oosReturns, oosReturns.Count));
+                int dur = i - start;
+                if (dur >= 12)
+                {
+                    double peakClose = 0;
+                    for (int j = Math.Max(0, start - peakLookbackH); j < start; j++)
+                        if (btcH1[j].Close > peakClose) peakClose = btcH1[j].Close;
+                    double trough  = btcH1.Skip(start).Take(dur).Min(c => c.Close);
+                    double dropPct = (trough - peakClose) / peakClose * 100.0;
+                    raw.Add(new(btcH1[start].Time.ToString("yyyy-MM-dd"),
+                                btcH1[start].Time, btcH1[i - 1].Time, dropPct, dur));
+                }
+                start = -1;
             }
         }
-        
-        if (isSharpeList.Count > 0)
-        {
-            result.InSampleSharpe = isSharpeList.Average();
-            result.OutOfSampleSharpe = oosSharpeList.Average();
-            result.WalkForwardRatio = result.OutOfSampleSharpe > 0 
-                ? result.InSampleSharpe / result.OutOfSampleSharpe 
-                : double.MaxValue;
-            result.PerformanceDegradation = result.InSampleSharpe - result.OutOfSampleSharpe;
-        }
-        
-        return result;
+        return MergeEvents(raw, mergeGapH: 72);
     }
-    
-    public static double FitnessStabilityIndex(List<double> fitnessHistory)
+
+    private static List<CrashEvent> MergeEvents(List<CrashEvent> events, int mergeGapH)
     {
-        if (fitnessHistory.Count < 2) return 0;
-        double sumRelChange = 0;
-        for (int i = 1; i < fitnessHistory.Count; i++)
+        if (events.Count == 0) return events;
+        var merged = new List<CrashEvent> { events[0] };
+        for (int i = 1; i < events.Count; i++)
         {
-            if (Math.Abs(fitnessHistory[i - 1]) > 1e-10)
+            var prev = merged[^1];
+            if ((events[i].Start - prev.End).TotalHours <= mergeGapH)
+                merged[^1] = prev with
+                {
+                    End        = events[i].End,
+                    BtcDropPct = Math.Min(prev.BtcDropPct, events[i].BtcDropPct),
+                    DurationH  = (int)(events[i].End - prev.Start).TotalHours
+                };
+            else merged.Add(events[i]);
+        }
+        return merged;
+    }
+
+    // For each detected crash window: show which trades were open, total exposure, realised outcome.
+    public static void Report(
+        List<CrashEvent> crashes,
+        List<(DateTime Open, DateTime Close, double Return, double HalfKelly, string Strategy)> trades)
+    {
+        Console.WriteLine("\n═══════════════════════════════════════════════════════════════════");
+        Console.WriteLine("  CRASH STRESS TEST  (historical BTC ≥ 15% drawdown windows)");
+        Console.WriteLine("═══════════════════════════════════════════════════════════════════");
+
+        if (crashes.Count == 0)
+        {
+            Console.WriteLine("\n  No crash windows detected in this data range.");
+            Console.WriteLine("  Classic crashes outside the 3yr window:");
+            PrintHistoricCrashes();
+            return;
+        }
+
+        Console.WriteLine($"\n  {"Window",-14} {"BTC",8} {"Dur",6} {"Open pos",9} {"Exposure",9} {"W/L",6} {"Avg ret",8} {"Portfolio hit",14}");
+        Console.WriteLine($"  {new string('─', 80)}");
+
+        double totalPortHit = 0;
+        foreach (var crash in crashes)
+        {
+            var active = trades
+                .Where(t => t.Open <= crash.Start && t.Close >= crash.Start)
+                .ToList();
+
+            if (active.Count == 0)
             {
-                sumRelChange += Math.Abs(fitnessHistory[i] - fitnessHistory[i - 1]) / Math.Abs(fitnessHistory[i - 1]);
+                Console.WriteLine($"  {crash.Label,-14} {crash.BtcDropPct,+7:F1}% {crash.DurationH,5}h  (no open positions)");
+                continue;
+            }
+
+            double exposure = active.Sum(t => t.HalfKelly) * 100.0;
+
+            // Trades that closed within the crash window — we know their actual outcome
+            var resolved = trades
+                .Where(t => t.Open <= crash.Start && t.Close >= crash.Start && t.Close <= crash.End.AddHours(24))
+                .ToList();
+
+            int wins   = resolved.Count(t => t.Return > 0);
+            int losses = resolved.Count(t => t.Return <= 0);
+            double avgRet = resolved.Count > 0 ? resolved.Average(t => t.Return) : double.NaN;
+
+            // Rough portfolio hit: sum of (halfKelly × return) for resolved trades
+            double portHit = resolved.Sum(t => t.HalfKelly * t.Return / 100.0) * 100.0;
+            totalPortHit += portHit;
+
+            string wl     = $"{wins}W/{losses}L";
+            string avgStr = double.IsNaN(avgRet) ? "    n/a" : $"{avgRet,+7:F2}%";
+            Console.WriteLine($"  {crash.Label,-14} {crash.BtcDropPct,+7:F1}% {crash.DurationH,5}h  {active.Count,8}  {exposure,8:F1}%  {wl,6}  {avgStr}  {portHit,+12:F2}€/100");
+        }
+        Console.WriteLine($"  {new string('─', 80)}");
+        Console.WriteLine($"  {"Total across all crashes",-50} {totalPortHit,+12:F2}€/100");
+
+        Console.WriteLine("\n  Classic crashes NOT in this dataset (3yr window ≈ 2023-2026):");
+        PrintHistoricCrashes();
+    }
+
+    // Find the moment of maximum concurrent half-Kelly exposure and compute all-stop-out scenario.
+    public static void SyntheticWorstCase(
+        List<(DateTime Open, DateTime Close, double Return, double HalfKelly, string Strategy)> trades,
+        double gridStopPct  = 1.5,   // 1.5 ATR × avg h1 ATR ~1%   → ~1.5% per grid position
+        double swingStopPct = 4.9)   // 1.64 ATR × avg h4 ATR ~3%  → ~4.9% per swing position
+    {
+        if (trades.Count == 0) return;
+
+        // Sweep line to find the peak concurrent total half-Kelly
+        var events = new List<(DateTime T, double D, bool IsGrid)>();
+        foreach (var t in trades)
+        {
+            bool grid = t.Strategy == "grid";
+            events.Add((t.Open,  +t.HalfKelly, grid));
+            events.Add((t.Close, -t.HalfKelly, grid));
+        }
+        events.Sort((a, b) => a.T.CompareTo(b.T));
+
+        double total = 0, gridExp = 0, swingExp = 0;
+        double peakTotal = 0, peakGrid = 0, peakSwing = 0;
+        DateTime peakTime = events[0].T;
+
+        foreach (var (t, d, isGrid) in events)
+        {
+            total += d;
+            if (isGrid) gridExp += d; else swingExp += d;
+            if (total > peakTotal)
+            {
+                peakTotal = total; peakGrid = gridExp; peakSwing = swingExp; peakTime = t;
             }
         }
-        return sumRelChange / (fitnessHistory.Count - 1);
+
+        double maxLossEur = (peakGrid  * gridStopPct + peakSwing * swingStopPct);
+
+        Console.WriteLine("\n  ── Synthetic worst case: all concurrent positions stop out at once ──");
+        Console.WriteLine($"  Peak moment:      {peakTime:yyyy-MM-dd HH:mm UTC}");
+        Console.WriteLine($"  Total exposure:   {peakTotal * 100:F1}%  (grid {peakGrid * 100:F1}%  swing {peakSwing * 100:F1}%)");
+        Console.WriteLine($"  Grid stop loss:   {gridStopPct:F1}% avg per position  (1.5 ATR × h1 ATR ≈ 1%)");
+        Console.WriteLine($"  Swing stop loss:  {swingStopPct:F1}% avg per position (1.64 ATR × h4 ATR ≈ 3%)");
+        Console.WriteLine($"  Max portfolio hit (clean stops):  -{maxLossEur:F2}€  on €100  ({-maxLossEur:F1}%)");
+        Console.WriteLine($"  With 3× ATR expansion (crash):   -{maxLossEur * 3:F2}€  on €100  ({-maxLossEur * 3:F1}%)");
     }
-    
-    public static double RollingSharpeStdDev(List<double> returns, int windowSize = 20)
+
+    private static void PrintHistoricCrashes()
     {
-        if (returns.Count < windowSize) return 0;
-        
-        var rollingSharpe = new List<double>();
-        for (int i = windowSize; i <= returns.Count; i++)
-        {
-            var window = returns.GetRange(i - windowSize, windowSize);
-            rollingSharpe.Add(SharpeRatio(window, windowSize));
-        }
-        
-        if (rollingSharpe.Count < 2) return 0;
-        double mean = rollingSharpe.Average();
-        double variance = rollingSharpe.Select(s => Math.Pow(s - mean, 2)).Average();
-        return Math.Sqrt(variance);
-    }
-    
-    public static double ParameterSensitivity(Dictionary<string, List<double>> paramPerformance)
-    {
-        // paramPerformance: param name -> list of returns for different param values
-        // Returns average coefficient of variation across parameters
-        if (paramPerformance.Count == 0) return 0;
-        
-        double totalCV = 0;
-        foreach (var kvp in paramPerformance)
-        {
-            var perf = kvp.Value;
-            if (perf.Count < 2) continue;
-            
-            double mean = perf.Average();
-            double std = Math.Sqrt(perf.Select(p => Math.Pow(p - mean, 2)).Average());
-            if (Math.Abs(mean) > 1e-10)
-                totalCV += std / Math.Abs(mean);
-        }
-        
-        return totalCV / paramPerformance.Count;
-    }
-    
-    public static double TrainTestCorrelation(List<double> trainReturns, List<double> testReturns)
-    {
-        // Correlation of rolling Sharpe or daily returns
-        int minLen = Math.Min(trainReturns.Count, testReturns.Count);
-        if (minLen < 5) return 0;
-        
-        var trainSubset = trainReturns.Take(minLen).ToList();
-        var testSubset = testReturns.Take(minLen).ToList();
-        
-        double trainMean = trainSubset.Average();
-        double testMean = testSubset.Average();
-        
-        double numerator = 0, trainVar = 0, testVar = 0;
-        for (int i = 0; i < minLen; i++)
-        {
-            double trainDiff = trainSubset[i] - trainMean;
-            double testDiff = testSubset[i] - testMean;
-            numerator += trainDiff * testDiff;
-            trainVar += trainDiff * trainDiff;
-            testVar += testDiff * testDiff;
-        }
-        
-        if (trainVar < 1e-10 || testVar < 1e-10) return 0;
-        return numerator / Math.Sqrt(trainVar * testVar);
-    }
-    
-    public static double ProbabilityOfOutperformance(List<double> returnsA, List<double> returnsB, int nSamples = 10000)
-    {
-        // Bayesian bootstrap: P(Sharpe_A > Sharpe_B | data)
-        if (returnsA.Count < 5 || returnsB.Count < 5) return 0.5;
-        
-        int n = Math.Min(returnsA.Count, returnsB.Count);
-        var sharpeDiff = new List<double>();
-        
-        var rand = new Random(42);
-        for (int sample = 0; sample < nSamples; sample++)
-        {
-            // Dirichlet(1,...,1) weights = exponential(1)
-            var weightsA = Enumerable.Range(0, n).Select(_ => -Math.Log(rand.NextDouble())).ToArray();
-            var weightsB = Enumerable.Range(0, n).Select(_ => -Math.Log(rand.NextDouble())).ToArray();
-            
-            double sumWtA = weightsA.Sum();
-            double sumWtB = weightsB.Sum();
-            
-            double meanA = returnsA.Take(n).Zip(weightsA, (r, w) => r * w / sumWtA).Sum() / 100.0;
-            double meanB = returnsB.Take(n).Zip(weightsB, (r, w) => r * w / sumWtB).Sum() / 100.0;
-            
-            double varA = returnsA.Take(n).Zip(weightsA, (r, w) => Math.Pow(r / 100.0 - meanA, 2) * w / sumWtA).Sum();
-            double varB = returnsB.Take(n).Zip(weightsB, (r, w) => Math.Pow(r / 100.0 - meanB, 2) * w / sumWtB).Sum();
-            
-            double sharpeA = varA > 0 ? meanA / Math.Sqrt(varA) : 0;
-            double sharpeB = varB > 0 ? meanB / Math.Sqrt(varB) : 0;
-            
-            sharpeDiff.Add(sharpeA - sharpeB);
-        }
-        
-        return (double)sharpeDiff.Count(d => d > 0) / nSamples;
-    }
-    
-    public static double DeflatedSharpeRatio(List<double> returns, int nTrials = 1000)
-    {
-        // Adjust Sharpe for multiple testing / GA search
-        double rawSharpe = SharpeRatio(returns, returns.Count);
-        if (rawSharpe <= 0) return 0;
-        
-        // Estimate variance of maximum Sharpe under null
-        double expectedMaxSharpe = Math.Sqrt(2 * Math.Log(nTrials)) / Math.Sqrt(returns.Count);
-        double adjustedSharpe = rawSharpe - expectedMaxSharpe;
-        
-        return Math.Max(0, adjustedSharpe);
-    }
-    
-    // ============================================================
-    // 3. STATISTICAL COMPARISON TESTS
-    // ============================================================
-    
-    public class StatisticalTestResult
-    {
-        public string TestName { get; set; }
-        public double Statistic { get; set; }
-        public double PValue { get; set; }
-        public bool SignificantAt95 => PValue < 0.05;
-        public string Interpretation { get; set; }
-    }
-    
-    public static StatisticalTestResult PairedTTest(List<double> returnsA, List<double> returnsB)
-    {
-        int n = Math.Min(returnsA.Count, returnsB.Count);
-        var differences = Enumerable.Range(0, n).Select(i => returnsA[i] - returnsB[i]).ToList();
-        
-        double meanDiff = differences.Average();
-        double stdDiff = Math.Sqrt(differences.Select(d => Math.Pow(d - meanDiff, 2)).Average());
-        
-        double tStat = stdDiff > 0 ? meanDiff / (stdDiff / Math.Sqrt(n)) : 0;
-        
-        // Approximate p-value using t-distribution (simplified)
-        double pValue = 2 * (1 - StudentsTCDF(Math.Abs(tStat), n - 1));
-        
-        return new StatisticalTestResult
-        {
-            TestName = "Paired t-test",
-            Statistic = tStat,
-            PValue = pValue,
-            Interpretation = pValue < 0.05 ? "Significant difference" : "No significant difference"
-        };
-    }
-    
-    public static StatisticalTestResult MannWhitneyUTest(List<double> returnsA, List<double> returnsB)
-    {
-        var combined = returnsA.Select(r => new { Value = r, Group = "A" })
-            .Concat(returnsB.Select(r => new { Value = r, Group = "B" }))
-            .OrderBy(x => x.Value)
-            .ToList();
-        
-        int n1 = returnsA.Count, n2 = returnsB.Count;
-        double rankSumA = combined.Select((x, i) => new { x.Group, Rank = i + 1 })
-            .Where(x => x.Group == "A")
-            .Sum(x => x.Rank);
-        
-        double u = rankSumA - (n1 * (n1 + 1.0) / 2);
-        double expectedU = n1 * n2 / 2.0;
-        double stdU = Math.Sqrt(n1 * n2 * (n1 + n2 + 1.0) / 12.0);
-        
-        double z = (u - expectedU) / stdU;
-        double pValue = 2 * (1 - StudentsTCDF(Math.Abs(z), 1000)); // Approx normal
-        
-        return new StatisticalTestResult
-        {
-            TestName = "Mann-Whitney U",
-            Statistic = u,
-            PValue = pValue,
-            Interpretation = pValue < 0.05 ? "Different distributions" : "Same distribution"
-        };
-    }
-    
-    private static double StudentsTCDF(double t, int df)
-    {
-        // Approximation for two-tailed p-value
-        double x = df / (df + t * t);
-        double p = 1 - 0.5 * (1 + Math.Sign(t) * Math.Sqrt(1 - x));
-        return p * 2; // Two-tailed
-    }
-    
-    // ============================================================
-    // 4. COMPREHENSIVE EVALUATION
-    // ============================================================
-    
-    public class StrategyPerformance
-    {
-        public string Name { get; set; }
-        
-        // Trading metrics
-        public int TotalTrades { get; set; }
-        public double TotalReturn { get; set; }
-        public double AnnualizedReturn { get; set; }
-        public double Sharpe { get; set; }
-        public double Sortino { get; set; }
-        public double MaxDrawdown { get; set; }
-        public double Calmar { get; set; }
-        public double WinRate { get; set; }
-        public double ProfitFactor { get; set; }
-        public double AvgTradeReturn { get; set; }
-        public double ExpectancyPerTrade { get; set; }
-        public int MaxConsecutiveLosses { get; set; }
-        public int MaxConsecutiveWins { get; set; }
-        public double RecoveryFactor { get; set; }
-        
-        // ML metrics
-        public WalkForwardResult WalkForward { get; set; }
-        public double RollingSharpeStability { get; set; }
-        public double TrainTestCorrelation { get; set; }
-        public double DeflatedSharpe { get; set; }
-        
-        // Composite score
-        public double OverallScore { get; set; }
-    }
-    
-    public static StrategyPerformance EvaluateStrategy(
-        string name,
-        List<double> returns,
-        int totalCandles,
-        List<double> fitnessHistory = null,
-        List<double> trainReturns = null,
-        List<double> testReturns = null)
-    {
-        var perf = new StrategyPerformance { Name = name };
-        
-        // Trading metrics
-        perf.TotalTrades = returns.Count;
-        perf.TotalReturn = TotalReturnPct(returns);
-        perf.AnnualizedReturn = AnnualizedReturnPct(returns, totalCandles);
-        perf.Sharpe = SharpeRatio(returns, totalCandles);
-        perf.Sortino = SortinoRatio(returns, totalCandles);
-        perf.MaxDrawdown = MaxDrawdownPct(returns);
-        perf.Calmar = CalmarRatio(returns, totalCandles);
-        perf.WinRate = WinRate(returns);
-        perf.ProfitFactor = ProfitFactor(returns);
-        perf.AvgTradeReturn = AverageTradeReturn(returns);
-        perf.ExpectancyPerTrade = Expectancy(returns);
-        perf.MaxConsecutiveLosses = MaxConsecutiveLosses(returns);
-        perf.MaxConsecutiveWins = MaxConsecutiveWins(returns);
-        perf.RecoveryFactor = RecoveryFactor(returns);
-        
-        // ML metrics
-        perf.WalkForward = WalkForwardAnalysis(returns);
-        perf.RollingSharpeStability = RollingSharpeStdDev(returns);
-        perf.TrainTestCorrelation = (trainReturns != null && testReturns != null) 
-            ? TrainTestCorrelation(trainReturns, testReturns) 
-            : 0;
-        perf.DeflatedSharpe = DeflatedSharpeRatio(returns);
-        
-        // Composite score (normalized 0-100)
-        double score = 0;
-        score += Math.Min(100, Math.Max(0, perf.Sharpe * 20)) * 0.20;
-        score += Math.Min(100, Math.Max(0, (perf.WinRate - 50) * 2)) * 0.15;
-        score += Math.Min(100, Math.Max(0, (perf.ProfitFactor - 1) * 50)) * 0.15;
-        score += (100 - Math.Min(100, perf.MaxDrawdown)) * 0.10;
-        score += (100 - Math.Min(100, perf.RollingSharpeStability * 50)) * 0.10;
-        score += (perf.DeflatedSharpe / 3.0 * 100) * 0.15;
-        score += (perf.WalkForward?.IsOverfit == false ? 100 : 50) * 0.15;
-        
-        perf.OverallScore = score;
-        
-        return perf;
-    }
-    
-    // ============================================================
-    // 5. MAIN TEST HARNESS
-    // ============================================================
-    
-    public static void RunComparison(
-        List<double> gridReturns,
-        List<double> swingReturns,
-        int totalCandles,
-        string gridName = "Grid Trading",
-        string swingName = "Swing Trading",
-        List<double> gridFitnessHistory = null,
-        List<double> swingFitnessHistory = null)
-    {
-        Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine("\n╔════════════════════════════════════════════════════════════════════╗");
-        Console.WriteLine("║                    TRADING ALGORITHM COMPARISON                     ║");
-        Console.WriteLine("╚════════════════════════════════════════════════════════════════════╝");
-        Console.ResetColor();
-        
-        // Evaluate both strategies
-        var gridPerf = EvaluateStrategy(gridName, gridReturns, totalCandles, gridFitnessHistory);
-        var swingPerf = EvaluateStrategy(swingName, swingReturns, totalCandles, swingFitnessHistory);
-        
-        // Print trading metrics table
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine("\n┌──────────────────────────────────────────────────────────────────┐");
-        Console.WriteLine("│                    TRADING PERFORMANCE METRICS                      │");
-        Console.WriteLine("├────────────────────────────────┬─────────────────┬─────────────────┤");
-        Console.WriteLine("│ Metric                         │ Grid            │ Swing           │");
-        Console.WriteLine("├────────────────────────────────┼─────────────────┼─────────────────┤");
-        Console.ResetColor();
-        
-        PrintMetricRow("Total Trades", gridPerf.TotalTrades, swingPerf.TotalTrades);
-        PrintMetricRow("Total Return %", gridPerf.TotalReturn, swingPerf.TotalReturn, "F2", true);
-        PrintMetricRow("Annualized Return %", gridPerf.AnnualizedReturn, swingPerf.AnnualizedReturn, "F2", true);
-        PrintMetricRow("Sharpe Ratio", gridPerf.Sharpe, swingPerf.Sharpe, "F3");
-        PrintMetricRow("Sortino Ratio", gridPerf.Sortino, swingPerf.Sortino, "F3");
-        PrintMetricRow("Max Drawdown %", gridPerf.MaxDrawdown, swingPerf.MaxDrawdown, "F2", false);
-        PrintMetricRow("Calmar Ratio", gridPerf.Calmar, swingPerf.Calmar, "F3");
-        PrintMetricRow("Win Rate %", gridPerf.WinRate, swingPerf.WinRate, "F1");
-        PrintMetricRow("Profit Factor", gridPerf.ProfitFactor, swingPerf.ProfitFactor, "F3");
-        PrintMetricRow("Avg Trade Return %", gridPerf.AvgTradeReturn, swingPerf.AvgTradeReturn, "F3", true);
-        PrintMetricRow("Expectancy (% of acc)", gridPerf.ExpectancyPerTrade * 100, swingPerf.ExpectancyPerTrade * 100, "F4");
-        PrintMetricRow("Max Cons Losses", gridPerf.MaxConsecutiveLosses, swingPerf.MaxConsecutiveLosses);
-        PrintMetricRow("Max Cons Wins", gridPerf.MaxConsecutiveWins, swingPerf.MaxConsecutiveWins);
-        PrintMetricRow("Recovery Factor", gridPerf.RecoveryFactor, swingPerf.RecoveryFactor, "F3");
-        
-        // Print ML metrics table
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine("├────────────────────────────────┼─────────────────┼─────────────────┤");
-        Console.WriteLine("│               MACHINE LEARNING / ROBUSTNESS METRICS                 │");
-        Console.WriteLine("├────────────────────────────────┼─────────────────┼─────────────────┤");
-        Console.ResetColor();
-        
-        PrintMetricRow("Walk-Forward Ratio", gridPerf.WalkForward?.WalkForwardRatio ?? 0, 
-                       swingPerf.WalkForward?.WalkForwardRatio ?? 0, "F3", false);
-        PrintMetricRow("IS Sharpe", gridPerf.WalkForward?.InSampleSharpe ?? 0, 
-                       swingPerf.WalkForward?.InSampleSharpe ?? 0, "F3");
-        PrintMetricRow("OOS Sharpe", gridPerf.WalkForward?.OutOfSampleSharpe ?? 0, 
-                       swingPerf.WalkForward?.OutOfSampleSharpe ?? 0, "F3");
-        PrintMetricRow("Perf Degradation", gridPerf.WalkForward?.PerformanceDegradation ?? 0, 
-                       swingPerf.WalkForward?.PerformanceDegradation ?? 0, "F3", false);
-        PrintMetricRow("Overfit Risk", gridPerf.WalkForward?.IsOverfit == true ? "HIGH" : "LOW",
-                       swingPerf.WalkForward?.IsOverfit == true ? "HIGH" : "LOW");
-        PrintMetricRow("Rolling Sharpe σ", gridPerf.RollingSharpeStability, swingPerf.RollingSharpeStability, "F4", false);
-        PrintMetricRow("Train-Test ρ", gridPerf.TrainTestCorrelation, swingPerf.TrainTestCorrelation, "F3");
-        PrintMetricRow("Deflated Sharpe", gridPerf.DeflatedSharpe, swingPerf.DeflatedSharpe, "F3");
-        
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine("├────────────────────────────────┼─────────────────┼─────────────────┤");
-        Console.WriteLine("│                    COMPOSITE & STATISTICAL                         │");
-        Console.WriteLine("├────────────────────────────────┼─────────────────┼─────────────────┤");
-        Console.ResetColor();
-        
-        PrintMetricRow("Overall Score (0-100)", gridPerf.OverallScore, swingPerf.OverallScore, "F1");
-        
-        // Statistical tests
-        Console.WriteLine("├────────────────────────────────┴─────────────────┴─────────────────┤");
-        Console.ForegroundColor = ConsoleColor.Magenta;
-        Console.WriteLine("│                      STATISTICAL SIGNIFICANCE TESTS                 │");
-        Console.ResetColor();
-        
-        var tTest = PairedTTest(gridReturns, swingReturns);
-        var mwTest = MannWhitneyUTest(gridReturns, swingReturns);
-        var pob = ProbabilityOfOutperformance(swingReturns, gridReturns); // P(swing better than grid)
-        
-        Console.WriteLine($"│  Paired t-test:        t = {tTest.Statistic:F4}, p = {tTest.PValue:F4}  {(tTest.SignificantAt95 ? "✓ SIGNIFICANT" : "✗ not significant")}");
-        Console.WriteLine($"│  Mann-Whitney U:       U = {mwTest.Statistic:F1}, p = {mwTest.PValue:F4}  {(mwTest.SignificantAt95 ? "✓ SIGNIFICANT" : "✗ not significant")}");
-        Console.WriteLine($"│  P(swing > grid):      {pob * 100:F1}%  {(pob > 0.95 ? "✓ SWING STRONGLY PREFERRED" : pob > 0.8 ? "✓ Swing preferred" : "↺ Too close")}");
-        
-        // Winner determination
-        Console.WriteLine("├────────────────────────────────────────────────────────────────────┤");
-        Console.ForegroundColor = ConsoleColor.Green;
-        string winner = gridPerf.OverallScore > swingPerf.OverallScore ? gridName : swingName;
-        string winnerColor = gridPerf.OverallScore > swingPerf.OverallScore ? "Green" : "Cyan";
-        Console.ForegroundColor = winnerColor == "Green" ? ConsoleColor.Green : ConsoleColor.Cyan;
-        Console.WriteLine($"│  🏆 WINNER: {winner} (Score: {Math.Max(gridPerf.OverallScore, swingPerf.OverallScore):F1})");
-        Console.ResetColor();
-        
-        // Risk warnings
-        if (gridPerf.MaxDrawdown > 30 || swingPerf.MaxDrawdown > 30)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine("│  ⚠ WARNING: Max drawdown exceeds 30% - reduce position sizing");
-        }
-        if (gridPerf.WalkForward?.IsOverfit == true || swingPerf.WalkForward?.IsOverfit == true)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine("│  ⚠ WARNING: Strategy shows overfitting - retune with more data");
-        }
-        
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine("└────────────────────────────────────────────────────────────────────┘");
-        Console.ResetColor();
-    }
-    
-    private static void PrintMetricRow(string metric, double gridVal, double swingVal, string format = "F2", bool higherBetter = true)
-    {
-        string gridStr = gridVal.ToString(format);
-        string swingStr = swingVal.ToString(format);
-        
-        Console.Write($"│ {metric,-30} │ ");
-        
-        // Color code better value
-        bool gridBetter = higherBetter ? gridVal > swingVal : gridVal < swingVal;
-        
-        if (gridBetter)
-            Console.ForegroundColor = ConsoleColor.Green;
-        Console.Write($"{gridStr,15}");
-        Console.ResetColor();
-        
-        Console.Write(" │ ");
-        
-        if (!gridBetter)
-            Console.ForegroundColor = ConsoleColor.Green;
-        Console.Write($"{swingStr,15}");
-        Console.ResetColor();
-        
-        Console.WriteLine(" │");
-    }
-    
-    private static void PrintMetricRow(string metric, int gridVal, int swingVal)
-    {
-        Console.WriteLine($"│ {metric,-30} │ {gridVal,15} │ {swingVal,15} │");
-    }
-    
-    private static void PrintMetricRow(string metric, string gridVal, string swingVal)
-    {
-        Console.WriteLine($"│ {metric,-30} │ {gridVal,15} │ {swingVal,15} │");
-    }
-    
-    // ============================================================
-    // 6. QUICK TEST EXAMPLE
-    // ============================================================
-    
-    public static void QuickTest()
-    {
-        // Example usage with simulated returns
-        Console.WriteLine("PERFORMANCE EVALUATOR - READY");
-        Console.WriteLine("Usage: RunComparison(gridReturns, swingReturns, totalCandles)");
-        Console.WriteLine("\nExpected workflow:");
-        Console.WriteLine("1. Run GA training on in-sample data");
-        Console.WriteLine("2. Get trade returns from GridSimulator.GetGridSessionReturns()");
-        Console.WriteLine("3. Get trade returns from SwingSimulator.GetSwingReturns()");
-        Console.WriteLine("4. Call PerformanceEvaluator.RunComparison()");
+        Console.WriteLine("    COVID  Mar 2020: BTC -50% in 48h  → all grid longs stop-out, ATR expanded 5-8×");
+        Console.WriteLine("    LUNA   May 2022: BTC -40% in 7d   → sustained cascade, multiple waves of stops");
+        Console.WriteLine("    FTX    Nov 2022: BTC -30% in 5d   → correlated stop-out, thin liquidity on alts");
+        Console.WriteLine("  In these events: synthetic loss above × 3-5× due to gap slippage on ATR expansion.");
     }
 }

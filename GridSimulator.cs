@@ -22,8 +22,25 @@ public static class GridSimulator
 {
     private const int    AtrPeriod    = 14;
     private const int    AdxPeriod    = 14;  // fixed — not a gene; regime splice with swing uses AdxThreshold only
-    public  const double FeeRoundTrip = 0.21;
     private const int    MaxLevels    = 5;   // hard cap matching GridLevels gene upper bound
+
+    // Grid entries are limit orders (price comes to you) → entry slip ≈ zero.
+    // TP exits are limit sells → near-zero slip. Stop exits gap through the stop level.
+    private const double FeeExchange = 0.11;   // 0.055% taker × 2 sides
+    private const double SlipTpK     = 0.01;   // TP exits (maker-style): k × (atr/price × 100)
+    private const double SlipMarketK = 0.03;   // regime-change / timeout exits
+    private const double SlipStopGap = 0.18;   // stop exits: gap risk = k × (atr/price × 100)
+
+    // isStop=true applies gap premium (hard stop blown through in a fast move).
+    // isTp=true uses the minimal maker-side cost.
+    private static double TradeCost(double atrAtStart, double entryPx, bool isStop, bool isTp = false)
+    {
+        double atrPct = atrAtStart / entryPx * 100.0;
+        double slip   = isStop ? SlipStopGap * atrPct
+                       : isTp  ? SlipTpK     * atrPct
+                               : SlipMarketK * atrPct;
+        return FeeExchange + slip;
+    }
 
     // Per-fill returns — used for backtest display (trade count, per-trade stats).
     public static List<(DateTime Time, double Return, string Kind)> GetGridReturns(
@@ -96,12 +113,13 @@ public static class GridSimulator
             sessionFills.Clear();
         }
 
-        void CloseAllFilled(int i, double exitPx)
+        void CloseAllFilled(int i, double exitPx, bool isStop = false)
         {
             for (int n = 0; n < levels; n++)
             {
                 if (!filled[n]) continue;
-                double ret = (exitPx - entryPrice[n]) / entryPrice[n] * 100.0 - FeeRoundTrip;
+                double ret = (exitPx - entryPrice[n]) / entryPrice[n] * 100.0
+                           - TradeCost(atrAtStart, entryPrice[n], isStop);
                 AddReturn(i, ret, "grid_long");
                 filled[n] = false;
             }
@@ -119,7 +137,7 @@ public static class GridSimulator
                 // Hard stop: range broke to the downside — close all
                 if (lows[i] <= hardStop)
                 {
-                    CloseAllFilled(i, hardStop);
+                    CloseAllFilled(i, hardStop, isStop: true);
                     gridActive = false;
                     FlushSession(i);
                     continue;
@@ -150,7 +168,8 @@ public static class GridSimulator
                     double tp = entryPrice[n] + g.TakeProfitAtrMult * atrAtStart;
                     if (highs[i] >= tp)
                     {
-                        double ret = (tp - entryPrice[n]) / entryPrice[n] * 100.0 - FeeRoundTrip;
+                        double ret = (tp - entryPrice[n]) / entryPrice[n] * 100.0
+                                   - TradeCost(atrAtStart, entryPrice[n], isStop: false, isTp: true);
                         AddReturn(i, ret, "grid_long");
                         filled[n] = false;
                     }
@@ -217,7 +236,8 @@ public static class GridSimulator
             for (int n = 0; n < levels; n++)
             {
                 if (!filled[n]) continue;
-                double ret = (finalPx - entryPrice[n]) / entryPrice[n] * 100.0 - FeeRoundTrip;
+                double ret = (finalPx - entryPrice[n]) / entryPrice[n] * 100.0
+                           - TradeCost(atrAtStart, entryPrice[n], isStop: false);
                 AddReturn(candles.Length - 1, ret, "grid_long");
             }
             FlushSession(candles.Length - 1);

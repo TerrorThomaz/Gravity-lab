@@ -21,7 +21,16 @@ public static class SwingSimulator
     private const int AtrPeriod    = 14;
     private const int RsiPeriod    = 7;   // fixed — not a gene; GA always converges here
     private const int AdxPeriod    = 7;   // fixed — not a gene; GA always converges here (faster ADX, more reactive to trend onset)
-    public  const double FeeRoundTrip = 0.21;   // same as pump-short (0.055% taker ×2 + 0.05% slip ×2)
+    // Fee model: exchange taker fee + ATR-proportional slippage.
+    // Execution is on 15m bars; ATR reference is h4. Calibrated so the average round-trip
+    // stays ~0.21% for liquid coins (h4 ATR ≈ 2-3% of price), while volatile coins
+    // (memes, h4 ATR ≈ 5-8%) pay proportionally more, especially on stop exits.
+    //   SlipK       = 0.025 → slip per side = 0.025 × atrPct  (at 3% ATR → 0.075% each side)
+    //   SlipStopGap = 0.015 → extra gap on stops               (at 3% ATR → +0.045% extra)
+    // Liquid coin TP ≈ 0.185%, Stop ≈ 0.23%. Meme TP ≈ 0.26%, Stop ≈ 0.35%.
+    private const double FeeExchange = 0.11;   // 0.055% taker × 2 sides
+    private const double SlipK       = 0.025;  // entry + normal-exit slip = k × (atr/price × 100)
+    private const double SlipStopGap = 0.015;  // stop gap premium = k × (atr/price × 100)
 
     public static List<(DateTime Time, double Return, string Kind)> GetSwingReturns(
         SwingGenotype g, Candle[] candles)
@@ -139,7 +148,7 @@ public static class SwingSimulator
                 {
                     double exitPx = hitStop   ? hardStop :
                                     hitTarget ? target   : price;
-                    double ret = (entry - exitPx) / entry * 100.0 - FeeRoundTrip;
+                    double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry);
                     result.Add((candles[i].Time, ret, "swing_short"));
                     inTrade = false;
                 }
@@ -150,7 +159,7 @@ public static class SwingSimulator
         if (inTrade)
         {
             double finalPx = closes[^1];
-            double ret = (entry - finalPx) / entry * 100.0 - FeeRoundTrip;
+            double ret = (entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry);
             result.Add((candles[^1].Time, ret, "swing_short"));
         }
 
@@ -327,7 +336,7 @@ public static class SwingSimulator
                 {
                     double exitPx = hitStop   ? hardStop :
                                     hitTarget ? target   : m15Price;
-                    double ret = (entry - exitPx) / entry * 100.0 - FeeRoundTrip;
+                    double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry);
                     result.Add((m15[im15].Time, ret, "swing_short"));
                     inTrade = false;
                 }
@@ -337,12 +346,23 @@ public static class SwingSimulator
         if (inTrade)
         {
             double finalPx = m15Closes[^1];
-            double ret = (entry - finalPx) / entry * 100.0 - FeeRoundTrip;
+            double ret = (entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry);
             result.Add((m15[^1].Time, ret, "swing_short"));
         }
 
         int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;
         return (result, new SwingTradeState(inTrade, entry, hardStop, target, trailArmed, trailLow, finalHold));
+    }
+
+    // ── Cost model ────────────────────────────────────────────────────────────────
+
+    // Total round-trip cost for one trade.
+    // isStop=true adds gap-risk premium: price often blows through the stop level in a volatile bar.
+    private static double TradeCost(bool isStop, double atrEntry, double entryPx)
+    {
+        double atrPct  = atrEntry / entryPx * 100.0;
+        double slip    = SlipK * atrPct + (isStop ? SlipStopGap * atrPct : 0.0);
+        return FeeExchange + slip;
     }
 
     // ── Indicators ────────────────────────────────────────────────────────────────

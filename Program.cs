@@ -5,6 +5,7 @@ using System.Text.Json;
 
 const string GenoFile     = "swing_best_genotype.json";
 const string GridGenoFile = "grid_best_genotype.json";
+const double MaxTotalExposurePct = 0.40;   // max % of capital deployed simultaneously across all open positions
 
 // 45 coins used by both backtest and papertrade
 string[] BacktestCoins =
@@ -36,6 +37,7 @@ switch (mode)
     case "gridtrain":       await RunGridTrain();       break;
     case "gridbacktest":    await RunGridBacktest();    break;
     case "combinedbacktest":await RunCombinedBacktest();break;
+    case "test":            await RunTest();            break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
         Console.WriteLine("  dotnet run -- train             Swing GA: 26 coins, 1h/15m dual-TF, ~3yr");
@@ -44,6 +46,7 @@ switch (mode)
         Console.WriteLine("  dotnet run -- gridtrain         Grid GA: ranging-market long grid, 1h candles");
         Console.WriteLine("  dotnet run -- gridbacktest      Grid backtest: 45 coins, val 20%");
         Console.WriteLine("  dotnet run -- combinedbacktest  Swing + grid simultaneous, shared capital");
+        Console.WriteLine("  dotnet run -- test              Statistical edge validation (both strategies)");
         break;
 }
 
@@ -247,7 +250,7 @@ async Task RunBacktest()
         double tExp  = tRet.Count >= 5 ? tRet.Average() : double.NegativeInfinity;
         double tSort = tRet.Count >= 5 ? Simulator.SortinoRatio(tRet, screenH1.Length * 12) : double.NegativeInfinity;
         double tPF   = tRet.Count >= 5 ? Simulator.ProfitFactor(tRet) : 0;
-        if (tExp <= 0 || tSort < 0.3 || tPF < 1.2)
+        if (tExp <= 0 || tSort < 0.3 || tPF < 1.1)
         {
             Console.WriteLine($"  {sym,-16}  skip (exp={tExp:+0.00;-0.00}% sort={tSort:F2} pf={tPF:F2})");
             continue;
@@ -571,6 +574,82 @@ static void PrintSplitStats(string label, List<double> r, int candleCount)
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+//  TEST — statistical edge validation for both strategies on training coins
+// ══════════════════════════════════════════════════════════════════════════════
+async Task RunTest()
+{
+    Console.WriteLine("=== Gravity-gen2 | STATISTICAL TEST (swing + grid, 26 training coins, val 20%) ===\n");
+
+    // Load genotypes
+    SwingGenotype? sg = null;
+    GridGenotype?  gg = null;
+    if (File.Exists(GenoFile))
+        sg = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(GenoFile))!.ToGenotype();
+    if (File.Exists(GridGenoFile))
+        gg = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(GridGenoFile))!.ToGenotype();
+
+    if (sg == null && gg == null) { Console.WriteLine("No genotypes found. Run train and gridtrain first."); return; }
+
+    var trainCoinSyms = new[]
+    {
+        "SOLUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT",
+        "AVAXUSDT", "ADAUSDT", "LINKUSDT", "DOTUSDT", "MATICUSDT",
+        "ATOMUSDT", "NEARUSDT", "INJUSDT", "OPUSDT", "ARBUSDT",
+        "UNIUSDT", "AAVEUSDT", "RUNEUSDT", "WIFUSDT", "1000PEPEUSDT",
+        "APTUSDT", "SUIUSDT", "TIAUSDT", "SEIUSDT", "STXUSDT", "JUPUSDT",
+    };
+
+    Console.WriteLine($"  Fetching {trainCoinSyms.Length} coins (15m candles, reading from cache)...");
+    var sem = new SemaphoreSlim(4);
+    var tasks = trainCoinSyms.Select(async sym =>
+    {
+        await sem.WaitAsync();
+        try { return (sym, await FetchFifteenMinCandlesCached(sym, batches: 113)); }
+        finally { sem.Release(); }
+    });
+    var fetched = await Task.WhenAll(tasks);
+    Console.WriteLine();
+
+    var swingRet = new List<double>();
+    var gridRet  = new List<double>();
+    int totalH1Val = 0;
+
+    foreach (var (sym, m15List) in fetched)
+    {
+        if (m15List.Count < 600) continue;
+        var m15  = m15List.ToArray();
+        var h1   = SwingSimulator.AggregateCandles(m15, 4);
+        int split = (int)(h1.Length * 0.8);
+        int m15Split = split * 4;
+        var h1Val  = h1[split..];
+        var m15Val = m15[m15Split..];
+        totalH1Val += h1Val.Length;
+
+        if (sg != null)
+            swingRet.AddRange(SwingSimulator.GetSwingReturns(sg, h1Val, m15Val).Select(t => t.Return));
+        if (gg != null)
+            gridRet.AddRange(GridSimulator.GetGridReturns(gg, h1Val).Select(t => t.Return));
+    }
+
+    int candleCount = totalH1Val * 12; // convert h1 to 5m-equivalent for Sharpe normalisation
+
+    if (sg != null)
+    {
+        Console.WriteLine($"Swing genotype: {sg}");
+        StrategyStats.Report("Swing", swingRet, candleCount);
+    }
+
+    if (gg != null)
+    {
+        Console.WriteLine($"\nGrid genotype: {gg}");
+        StrategyStats.Report("Grid", gridRet, candleCount);
+    }
+
+    if (sg != null && gg != null && swingRet.Count >= 5 && gridRet.Count >= 5)
+        StrategyStats.Compare("Swing", swingRet, "Grid", gridRet, candleCount);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  GRID TRAIN — ranging-market long grid, 1h candles, 26 coins
 // ══════════════════════════════════════════════════════════════════════════════
 async Task RunGridTrain()
@@ -734,8 +813,14 @@ async Task RunGridBacktest()
     var allRet = allTrades.Select(t => t.Return).ToList();
     int totalWins = allRet.Count(r => r > 0);
 
-    var tradesWithConf = allTrades.Select(t => (t.Return, t.CoinConf)).ToList();
-    var port = Simulator.SimulatePortfolio(tradesWithConf);
+    var tradesWithConf     = allTrades.Select(t => (t.Return, t.CoinConf)).ToList();
+    var tradesForExposure  = allTrades
+        .Select(t => (t.Time, t.Return, t.CoinConf, TimeSpan.FromHours(g.MaxHoldCandles)))
+        .ToList();
+
+    var port5pct     = Simulator.SimulatePortfolio(tradesWithConf, maxPositionPct: 0.05);
+    var portHalfKel  = Simulator.SimulatePortfolio(tradesWithConf, maxPositionPct: 1.0);
+    var portExposure = Simulator.SimulatePortfolioExposureCapped(tradesForExposure, MaxTotalExposurePct);
 
     Console.WriteLine($"\n{new string('═', 70)}");
     Console.WriteLine($"  GRID BACKTEST SUMMARY  (val 20%, 1h candles)");
@@ -748,11 +833,20 @@ async Task RunGridBacktest()
     Console.WriteLine($"  Profit factor:{Simulator.ProfitFactor(allRet):F2}");
     Console.WriteLine($"  Calmar:       {Simulator.CalmarRatio(allRet):F2}");
     Console.WriteLine();
-    Console.WriteLine($"  ── Portfolio sim (€100 start · per-coin half-Kelly · 5% max) ──");
-    Console.WriteLine($"    End balance:   €{port.EndBalance:F2}");
-    Console.WriteLine($"    Return:        {(port.EndBalance - port.StartBalance) / port.StartBalance * 100:+0.0;-0.0}%");
-    Console.WriteLine($"    Avg position:  €{port.AvgPositionEur:F2}");
-    Console.WriteLine($"    Max drawdown:  {port.MaxDrawdownPct:F1}%");
+
+    void PrintPortSim(string label, Simulator.PortfolioResult p)
+    {
+        double ret = (p.EndBalance - p.StartBalance) / p.StartBalance * 100;
+        Console.WriteLine($"  ── {label} ──");
+        Console.WriteLine($"    End balance:   €{p.EndBalance:F2}  ({ret:+0.0;-0.0}%)");
+        Console.WriteLine($"    Avg position:  €{p.AvgPositionEur:F2}");
+        Console.WriteLine($"    Max drawdown:  {p.MaxDrawdownPct:F1}%");
+        Console.WriteLine();
+    }
+
+    PrintPortSim("5% cap (conservative)", port5pct);
+    PrintPortSim($"half-Kelly, uncapped", portHalfKel);
+    PrintPortSim($"half-Kelly, {MaxTotalExposurePct:P0} max total exposure (hard concurrent cap)", portExposure);
     Console.WriteLine();
     Console.WriteLine($"  Per-coin (sorted by Sharpe):");
     Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
@@ -825,7 +919,7 @@ async Task RunCombinedBacktest()
         double tExp  = tRet.Count >= 5 ? tRet.Average() : double.NegativeInfinity;
         double tSort = tRet.Count >= 5 ? Simulator.SortinoRatio(tRet, screenH1.Length * 12) : double.NegativeInfinity;
         double tPF   = tRet.Count >= 5 ? Simulator.ProfitFactor(tRet) : 0;
-        if (tExp <= 0 || tSort < 0.3 || tPF < 1.2)
+        if (tExp <= 0 || tSort < 0.3 || tPF < 1.1)
         {
             Console.WriteLine($"  {sym,-16}  skip (exp={tExp:+0.00;-0.00}% sort={tSort:F2} pf={tPF:F2})");
             continue;
@@ -962,9 +1056,23 @@ async Task RunCombinedBacktest()
         Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
 
     // ── Combined portfolio ─────────────────────────────────────────────────────
-    var port      = Simulator.SimulatePortfolio(allTrades.Select(t => (t.Return, t.Conf)).ToList());
     int totalWins = allRet.Count(r => r > 0);
     int totalVCC  = Math.Max(swingTotalVCC, gridTotalVCC);
+
+    // Build trades lists with hold durations for exposure-capped sim
+    var allTradesForExposure = allTrades
+        .Select(t => (
+            t.Time,
+            t.Return,
+            t.Conf,
+            t.Strategy == "swing"
+                ? TimeSpan.FromHours(swingG.MaxHoldCandles)
+                : TimeSpan.FromHours(gridG.MaxHoldCandles)))
+        .ToList();
+
+    var port5pct     = Simulator.SimulatePortfolio(allTrades.Select(t => (t.Return, t.Conf)).ToList());
+    var portHalfKel  = Simulator.SimulatePortfolio(allTrades.Select(t => (t.Return, t.Conf)).ToList(), maxPositionPct: 1.0);
+    var portExposure = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, MaxTotalExposurePct);
 
     Console.WriteLine($"\n{new string('═', 70)}");
     Console.WriteLine($"  COMBINED SUMMARY  (swing + grid, {allRet.Count} trades total)");
@@ -982,24 +1090,30 @@ async Task RunCombinedBacktest()
     Console.WriteLine($"  Sharpe (combined):  {Simulator.SharpeRatio(allRet, totalVCC):F2}");
     Console.WriteLine($"  Sortino (combined): {Simulator.SortinoRatio(allRet, totalVCC):F2}");
     Console.WriteLine($"  Calmar (combined):  {Simulator.CalmarRatio(allRet):F2}");
-    Console.WriteLine();
-    Console.WriteLine($"  ── Portfolio sim (€100 start · per-strategy half-Kelly · 5% max) ──");
-    Console.WriteLine($"    End balance:   €{port.EndBalance:F2}");
-    Console.WriteLine($"    Return:        {(port.EndBalance - port.StartBalance) / port.StartBalance * 100:+0.0;-0.0}%");
-    Console.WriteLine($"    Avg position:  €{port.AvgPositionEur:F2}");
-    Console.WriteLine($"    Max drawdown:  {port.MaxDrawdownPct:F1}%");
-    if (port.TradesToTenPct > 0)
-        Console.WriteLine($"    Trades to +10%:{port.TradesToTenPct}");
+
+    void PrintCombinedPort(string label, Simulator.PortfolioResult p)
+    {
+        double ret = (p.EndBalance - p.StartBalance) / p.StartBalance * 100;
+        Console.WriteLine($"\n  ── {label} ──");
+        Console.WriteLine($"    End balance:   €{p.EndBalance:F2}  ({ret:+0.0;-0.0}%)");
+        Console.WriteLine($"    Avg position:  €{p.AvgPositionEur:F2}");
+        Console.WriteLine($"    Max drawdown:  {p.MaxDrawdownPct:F1}%");
+        if (p.TradesToTenPct > 0) Console.WriteLine($"    Trades to +10%:{p.TradesToTenPct}");
+    }
+
+    PrintCombinedPort("5% cap (conservative)", port5pct);
+    PrintCombinedPort("half-Kelly, uncapped", portHalfKel);
+    PrintCombinedPort($"half-Kelly, {MaxTotalExposurePct:P0} max total exposure (hard concurrent cap)", portExposure);
 
     if (allTrades.Count >= 2)
     {
-        double valDays  = (allTrades[^1].Time - allTrades[0].Time).TotalDays;
+        double valDays   = (allTrades[^1].Time - allTrades[0].Time).TotalDays;
         double annFactor = valDays > 0 ? 365.0 / valDays : 1.0;
-        double totalRet = (port.EndBalance - port.StartBalance) / port.StartBalance * 100;
-        double annRet   = (Math.Pow(1 + totalRet / 100.0, annFactor) - 1) * 100;
-        double perDay   = (Math.Pow(1 + totalRet / 100.0, 1.0 / Math.Max(valDays, 1)) - 1) * 100;
+        double totalRet  = (portExposure.EndBalance - portExposure.StartBalance) / portExposure.StartBalance * 100;
+        double annRet    = (Math.Pow(1 + totalRet / 100.0, annFactor) - 1) * 100;
+        double perDay    = (Math.Pow(1 + totalRet / 100.0, 1.0 / Math.Max(valDays, 1)) - 1) * 100;
         Console.WriteLine();
-        Console.WriteLine($"  Val window: {valDays:F0} days  →  annualised {annRet:+0.0;-0.0}%  ({perDay:+0.000;-0.000}%/day)");
+        Console.WriteLine($"  Val window: {valDays:F0} days  →  annualised {annRet:+0.0;-0.0}%  ({perDay:+0.000;-0.000}%/day)  [exposure-capped]");
     }
 }
 

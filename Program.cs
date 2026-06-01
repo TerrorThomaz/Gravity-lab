@@ -689,6 +689,10 @@ async Task RunTest()
 
     var crashes = CrashAnalyser.DetectCrashes(btcH1);
     CrashAnalyser.Report(crashes, crashTrades);
+
+    var rallies = CrashAnalyser.DetectRallies(btcH1);
+    CrashAnalyser.ReportRallies(rallies, crashTrades);
+
     CrashAnalyser.SyntheticWorstCase(crashTrades);
 }
 

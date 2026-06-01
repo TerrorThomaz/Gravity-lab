@@ -505,6 +505,97 @@ public static class CrashAnalyser
         Console.WriteLine($"  With 3× ATR expansion (crash):   -{maxLossEur * 3:F2}€  on €100  ({-maxLossEur * 3:F1}%)");
     }
 
+    // Rolling-trough rally: rally = BTC close > minRisePct above its low over troughLookbackH bars.
+    public static List<CrashEvent> DetectRallies(
+        Candle[] btcH1, double minRisePct = 0.15, int troughLookbackH = 168)
+    {
+        if (btcH1.Length <= troughLookbackH) return [];
+
+        var inRally = new bool[btcH1.Length];
+        for (int i = troughLookbackH; i < btcH1.Length; i++)
+        {
+            double trough = double.MaxValue;
+            for (int j = i - troughLookbackH; j < i; j++)
+                if (btcH1[j].Close < trough) trough = btcH1[j].Close;
+            inRally[i] = (btcH1[i].Close - trough) / trough > minRisePct;
+        }
+
+        var raw = new List<CrashEvent>();
+        int start = -1;
+        for (int i = troughLookbackH; i <= btcH1.Length; i++)
+        {
+            bool flag = i < btcH1.Length && inRally[i];
+            if (flag && start < 0) start = i;
+            else if (!flag && start >= 0)
+            {
+                int dur = i - start;
+                if (dur >= 12)
+                {
+                    double troughClose = double.MaxValue;
+                    for (int j = Math.Max(0, start - troughLookbackH); j < start; j++)
+                        if (btcH1[j].Close < troughClose) troughClose = btcH1[j].Close;
+                    double peak    = btcH1.Skip(start).Take(dur).Max(c => c.Close);
+                    double risePct = (peak - troughClose) / troughClose * 100.0;
+                    raw.Add(new(btcH1[start].Time.ToString("yyyy-MM-dd"),
+                                btcH1[start].Time, btcH1[i - 1].Time, risePct, dur));
+                }
+                start = -1;
+            }
+        }
+        return MergeEvents(raw, mergeGapH: 72);
+    }
+
+    // Same table format as Report() but for upward rally windows.
+    public static void ReportRallies(
+        List<CrashEvent> rallies,
+        List<(DateTime Open, DateTime Close, double Return, double HalfKelly, string Strategy)> trades)
+    {
+        Console.WriteLine("\n═══════════════════════════════════════════════════════════════════");
+        Console.WriteLine("  RALLY STRESS TEST  (historical BTC ≥ 15% rise from 7d trough)");
+        Console.WriteLine("═══════════════════════════════════════════════════════════════════");
+
+        if (rallies.Count == 0)
+        {
+            Console.WriteLine("\n  No rally windows detected in this data range.");
+            return;
+        }
+
+        Console.WriteLine($"\n  {"Window",-14} {"BTC",8} {"Dur",6} {"Open pos",9} {"Exposure",9} {"W/L",6} {"Avg ret",8} {"Portfolio hit",14}");
+        Console.WriteLine($"  {new string('─', 80)}");
+
+        double totalPortHit = 0;
+        foreach (var rally in rallies)
+        {
+            var active = trades
+                .Where(t => t.Open <= rally.Start && t.Close >= rally.Start)
+                .ToList();
+
+            if (active.Count == 0)
+            {
+                Console.WriteLine($"  {rally.Label,-14} {rally.BtcDropPct,+7:F1}% {rally.DurationH,5}h  (no open positions)");
+                continue;
+            }
+
+            double exposure = active.Sum(t => t.HalfKelly) * 100.0;
+
+            var resolved = trades
+                .Where(t => t.Open <= rally.Start && t.Close >= rally.Start && t.Close <= rally.End.AddHours(24))
+                .ToList();
+
+            int wins   = resolved.Count(t => t.Return > 0);
+            int losses = resolved.Count(t => t.Return <= 0);
+            double avgRet  = resolved.Count > 0 ? resolved.Average(t => t.Return) : double.NaN;
+            double portHit = resolved.Sum(t => t.HalfKelly * t.Return / 100.0) * 100.0;
+            totalPortHit  += portHit;
+
+            string wl     = $"{wins}W/{losses}L";
+            string avgStr = double.IsNaN(avgRet) ? "    n/a" : $"{avgRet,+7:F2}%";
+            Console.WriteLine($"  {rally.Label,-14} {rally.BtcDropPct,+7:F1}% {rally.DurationH,5}h  {active.Count,8}  {exposure,8:F1}%  {wl,6}  {avgStr}  {portHit,+12:F2}€/100");
+        }
+        Console.WriteLine($"  {new string('─', 80)}");
+        Console.WriteLine($"  {"Total across all rallies",-50} {totalPortHit,+12:F2}€/100");
+    }
+
     private static void PrintHistoricCrashes()
     {
         Console.WriteLine("    COVID  Mar 2020: BTC -50% in 48h  → all grid longs stop-out, ATR expanded 5-8×");

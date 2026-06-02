@@ -182,7 +182,7 @@ async Task RunTrain()
                                            .Select(t => t.Return).ToList();
                 double exp = returns.Count >= 10 ? returns.Average() : double.NegativeInfinity;
                 double pf  = returns.Count >= 10 ? Simulator.ProfitFactor(returns) : 0;
-                bool pass  = exp > 0 && pf >= 1.1;
+                bool pass  = exp > 0 && pf >= 1.2;
                 Console.WriteLine($"    {(pass ? "✓" : "✗")} {nc.Sym,-20} Exp={exp:+0.00;-0.00}%  PF={pf:F2}  Tr={returns.Count}");
                 return pass;
             })

@@ -38,6 +38,7 @@ switch (mode)
     case "gridtrain":       await RunGridTrain();       break;
     case "gridbacktest":    await RunGridBacktest();    break;
     case "combinedbacktest":await RunCombinedBacktest();break;
+    case "rankedbacktest":  await RunRankedBacktest();  break;
     case "test":            await RunTest();            break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
@@ -47,6 +48,7 @@ switch (mode)
         Console.WriteLine("  dotnet run -- gridtrain         Grid GA: ranging-market long grid, 1h candles");
         Console.WriteLine("  dotnet run -- gridbacktest      Grid backtest: 45 coins, val 20%");
         Console.WriteLine("  dotnet run -- combinedbacktest  Swing + grid simultaneous, shared capital");
+        Console.WriteLine("  dotnet run -- rankedbacktest    Ranked portfolio: top-N signals by quality, fixed 5% sizing");
         Console.WriteLine("  dotnet run -- test              Statistical edge validation (both strategies)");
         break;
 }
@@ -1291,6 +1293,160 @@ async Task RunCombinedBacktest()
         Console.WriteLine();
         Console.WriteLine($"  Val window: {valDays:F0} days  →  annualised {annRet:+0.0;-0.0}%  ({perDay:+0.000;-0.000}%/day)  [exposure-capped]");
     }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  RANKED BACKTEST — top-N signal selection by quality, fixed 5% sizing
+// ══════════════════════════════════════════════════════════════════════════════
+async Task RunRankedBacktest()
+{
+    const int MaxSwing = 5;
+    const int MaxGrid  = 5;
+    const double PosSizePct = 0.05;
+
+    Console.WriteLine($"=== Gravity-gen2 | RANKED BACKTEST (max {MaxSwing} swing · {MaxGrid} grid · {PosSizePct:P0}/pos) ===\n");
+
+    if (!File.Exists(GenoFile))     { Console.WriteLine("Missing swing genotype — run 'train' first.");     return; }
+    if (!File.Exists(GridGenoFile)) { Console.WriteLine("Missing grid genotype — run 'gridtrain' first."); return; }
+
+    var swingG = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(GenoFile))!.ToGenotype();
+    var gridG  = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(GridGenoFile))!.ToGenotype();
+    Console.WriteLine($"Swing: {swingG}");
+    Console.WriteLine($"Grid:  {gridG}\n");
+
+    Console.WriteLine($"  Fetching {BacktestCoins.Length} coins (15m → 1h, ~3yr)...");
+    var sem = new SemaphoreSlim(4);
+    var fetchTasks = BacktestCoins.Select(async sym =>
+    {
+        await sem.WaitAsync();
+        try
+        {
+            var m15 = await FetchFifteenMinCandlesCached(sym, batches: 113);
+            var h1  = SwingSimulator.AggregateCandles(m15.ToArray(), 4);
+            return (sym, m15: m15.ToArray(), h1);
+        }
+        finally { sem.Release(); }
+    });
+    var fetched = (await Task.WhenAll(fetchTasks))
+        .Where(f => f.h1.Length >= 300)
+        .ToArray();
+    Console.WriteLine($"  Done.\n");
+
+    var allCandidates = new List<ScoredTrade>();
+    int swingCoins = 0, gridCoins = 0;
+
+    Console.WriteLine($"  Qualifying coins and generating scored trades...\n");
+    Console.WriteLine($"  {"Coin",-16} {"Strategy",-8} {"Candidates",10}  {"AvgScore",9}  {"Screen"}");
+    Console.WriteLine($"  {new string('-', 68)}");
+
+    foreach (var (sym, m15, h1) in fetched)
+    {
+        // Volume filter
+        {
+            var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
+            double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
+            if (medVol < MinMedianVolUsdM) continue;
+        }
+
+        int h1Split  = (int)(h1.Length * 0.8);
+        int m15Split = h1Split * 4;
+        var h1Train  = h1[..h1Split];
+        var h1Val    = h1[h1Split..];
+        var m15Train = m15[..m15Split];
+        var m15Val   = m15[m15Split..];
+
+        // ── Swing ─────────────────────────────────────────────────────────────
+        {
+            var screenH1  = h1Train.Length >= 4380 ? h1Train : h1;
+            var screenM15 = screenH1.Length == h1.Length ? m15 : m15Train;
+            var tRet  = SwingSimulator.GetSwingReturns(swingG, screenH1, screenM15).Select(t => t.Return).ToList();
+            double tExp  = tRet.Count >= 5 ? tRet.Average()                                      : double.NegativeInfinity;
+            double tSort = tRet.Count >= 5 ? Simulator.SortinoRatio(tRet, screenH1.Length * 12)  : double.NegativeInfinity;
+            double tPF   = tRet.Count >= 5 ? Simulator.ProfitFactor(tRet)                        : 0;
+
+            if (tExp > 0 && tSort >= 0.3 && tPF >= 1.1)
+            {
+                var scored = SwingSimulator.GetScoredSwingTrades(sym, swingG, h1Val, m15Val);
+                if (scored.Count > 0)
+                {
+                    allCandidates.AddRange(scored);
+                    swingCoins++;
+                    double avgSc = scored.Average(t => t.Score);
+                    Console.WriteLine($"  {sym,-16} {"swing",-8} {scored.Count,10}  {avgSc,9:F2}  pass (exp={tExp:+0.00}% sort={tSort:F2} pf={tPF:F2})");
+                }
+            }
+        }
+
+        // ── Grid ──────────────────────────────────────────────────────────────
+        {
+            var tRet = GridSimulator.GetGridSessionReturns(gridG, h1Train).Select(t => t.Return).ToList();
+            double tExp = tRet.Count >= 5 ? tRet.Average()           : double.NegativeInfinity;
+            double tPF  = tRet.Count >= 5 ? Simulator.ProfitFactor(tRet) : 0;
+
+            if (tExp > 0 && tPF >= 1.15)
+            {
+                var scored = GridSimulator.GetScoredGridTrades(sym, gridG, h1Val);
+                if (scored.Count > 0)
+                {
+                    allCandidates.AddRange(scored);
+                    gridCoins++;
+                    double avgSc = scored.Average(t => t.Score);
+                    Console.WriteLine($"  {sym,-16} {"grid",-8} {scored.Count,10}  {avgSc,9:F4}  pass (exp={tExp:+0.00}% pf={tPF:F2})");
+                }
+            }
+        }
+    }
+
+    if (allCandidates.Count == 0) { Console.WriteLine("\nNo candidates."); return; }
+
+    var swingCands = allCandidates.Where(t => t.Strategy == "swing").ToList();
+    var gridCands  = allCandidates.Where(t => t.Strategy == "grid").ToList();
+
+    Console.WriteLine();
+    Console.WriteLine($"  Total candidates — swing: {swingCands.Count} ({swingCoins} coins)  grid: {gridCands.Count} ({gridCoins} coins)");
+    if (swingCands.Count > 0)
+        Console.WriteLine($"  Swing score  — min: {swingCands.Min(t => t.Score):F2}  median: {swingCands.OrderBy(t=>t.Score).ToList()[swingCands.Count/2].Score:F2}  max: {swingCands.Max(t => t.Score):F2}");
+    if (gridCands.Count > 0)
+        Console.WriteLine($"  Grid  score  — min: {gridCands.Min(t => t.Score):F4}  median: {gridCands.OrderBy(t=>t.Score).ToList()[gridCands.Count/2].Score:F4}  max: {gridCands.Max(t => t.Score):F4}");
+
+    Console.WriteLine();
+
+    // Val window for annualisation
+    var sortedCands  = allCandidates.OrderBy(t => t.Entry).ToList();
+    double valDays   = allCandidates.Count >= 2
+                     ? (sortedCands[^1].Exit - sortedCands[0].Entry).TotalDays
+                     : 1;
+    double annFactor = valDays > 0 ? 365.0 / valDays : 1.0;
+    int    valH1     = (int)(valDays * 24);  // approximate h1 candles for Sharpe normalisation
+
+    void PrintPort(string label, RankedPortfolioSim.SimResult r)
+    {
+        int taken   = r.SwingTaken  + r.GridTaken;
+        int skipped = r.SwingSkipped + r.GridSkipped;
+        var allRet  = r.SwingReturns.Concat(r.GridReturns).ToList();
+        double annRet = (Math.Pow(1 + r.ReturnPct / 100.0, annFactor) - 1) * 100;
+        double pf     = Simulator.ProfitFactor(allRet);
+        double sort   = allRet.Count > 0 ? Simulator.SortinoRatio(allRet, valH1) : 0;
+        double wr     = allRet.Count > 0 ? (double)allRet.Count(x => x > 0) / allRet.Count : 0;
+        Console.WriteLine($"  ── {label} ──");
+        Console.WriteLine($"    Taken / skipped:  {taken} / {skipped}  ({100.0*taken/(taken+skipped):F0}% taken)");
+        Console.WriteLine($"    Win rate:         {wr:P1}  |  Avg: {(allRet.Count>0?allRet.Average():0):+0.000;-0.000}%  |  PF: {pf:F2}  |  Sortino: {sort:F2}");
+        Console.WriteLine($"    End balance:      €{r.EndBalance:F2}  ({r.ReturnPct:+0.0;-0.0}%  →  {annRet:+0.0;-0.0}% ann.)");
+        Console.WriteLine($"    Max drawdown:     {r.MaxDD:F1}%");
+        Console.WriteLine();
+    }
+
+    // Unranked baseline: all signals, unlimited concurrent, same 5% fixed sizing
+    var unranked = RankedPortfolioSim.Run(allCandidates, maxSwing: 9999, maxGrid: 9999, PosSizePct);
+    // Ranked: capacity-gated
+    var ranked   = RankedPortfolioSim.Run(allCandidates, MaxSwing, MaxGrid, PosSizePct);
+
+    Console.WriteLine($"══════════════════════════════════════════════════════════════════════");
+    Console.WriteLine($"  RANKED BACKTEST SUMMARY  (val 20% · {PosSizePct:P0} fixed per position · {valDays:F0} val days)");
+    Console.WriteLine($"══════════════════════════════════════════════════════════════════════");
+    Console.WriteLine();
+    PrintPort($"Unranked baseline (all {allCandidates.Count} signals, unlimited concurrent)", unranked);
+    PrintPort($"Ranked (max {MaxSwing} swing + {MaxGrid} grid concurrent)", ranked);
 }
 
 // ── Type declarations ─────────────────────────────────────────────────────────

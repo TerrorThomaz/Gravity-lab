@@ -59,6 +59,15 @@ public static class GridSimulator
         return trades;
     }
 
+    // Returns scored session trades — one per grid activation — for ranked portfolio sim.
+    // Score = adxMargin × bbMargin: both factors in [0,1], higher = more clearly ranging.
+    public static List<ScoredTrade> GetScoredGridTrades(string coin, GridGenotype g, Candle[] h1)
+    {
+        var scored = new List<ScoredTrade>();
+        RunGrid(g, h1, sessionLevel: true, coin: coin, scoredOut: scored);
+        return scored;
+    }
+
     public record GridTradeState(
         bool   Active,
         int    FilledLevels,
@@ -73,7 +82,8 @@ public static class GridSimulator
     }
 
     private static (List<(DateTime, double, string)> Trades, GridTradeState FinalState)
-        RunGrid(GridGenotype g, Candle[] candles, bool sessionLevel)
+        RunGrid(GridGenotype g, Candle[] candles, bool sessionLevel,
+                string? coin = null, List<ScoredTrade>? scoredOut = null)
     {
         int warmup = Math.Max(Math.Max(Math.Max(g.EmaPeriod, AtrPeriod), AdxPeriod * 2 + 1), g.BbPeriod) + 2;
         if (candles.Length <= warmup + 5)
@@ -91,14 +101,16 @@ public static class GridSimulator
         var result       = new List<(DateTime, double, string)>();
         var sessionFills = new List<double>();
 
-        bool   gridActive   = false;
-        double anchor       = 0;
-        double atrAtStart   = 0;
-        double hardStop     = 0;
-        int    holdCount    = 0;
-        int    levels       = Math.Clamp(g.GridLevels, 1, MaxLevels);
-        var    filled       = new bool[MaxLevels];
-        var    entryPrice   = new double[MaxLevels];
+        bool     gridActive        = false;
+        double   anchor            = 0;
+        double   atrAtStart        = 0;
+        double   hardStop          = 0;
+        int      holdCount         = 0;
+        int      levels            = Math.Clamp(g.GridLevels, 1, MaxLevels);
+        var      filled            = new bool[MaxLevels];
+        var      entryPrice        = new double[MaxLevels];
+        double   sessionScore      = 0;    // signal quality at grid activation
+        DateTime sessionEntryTime  = default;
 
         void AddReturn(int i, double ret, string kind)
         {
@@ -109,7 +121,9 @@ public static class GridSimulator
         void FlushSession(int i)
         {
             if (!sessionLevel || sessionFills.Count == 0) return;
-            result.Add((candles[i].Time, sessionFills.Average(), "grid_session"));
+            double avg = sessionFills.Average();
+            result.Add((candles[i].Time, avg, "grid_session"));
+            scoredOut?.Add(new ScoredTrade(coin!, "grid", sessionEntryTime, candles[i].Time, avg, sessionScore));
             sessionFills.Clear();
         }
 
@@ -227,10 +241,15 @@ public static class GridSimulator
                 // Only start a grid when price actually dips to level 1
                 if (level1Price <= proposedStop || lows[i] > level1Price) continue;
 
-                anchor     = proposedAnchor;
-                atrAtStart = proposedAtr;
-                hardStop   = proposedStop;
-                holdCount  = 0;
+                anchor            = proposedAnchor;
+                atrAtStart        = proposedAtr;
+                hardStop          = proposedStop;
+                holdCount         = 0;
+                sessionEntryTime  = candles[i].Time;
+                // Signal quality: both factors in [0,1]; higher = more clearly ranging/compressed.
+                double adxMargin = g.AdxThreshold > 1e-10 ? (g.AdxThreshold - adxNow) / g.AdxThreshold : 0;
+                double bbMargin  = g.BbWidthMaxPct > 1e-10 ? (g.BbWidthMaxPct - bbWidth[i]) / g.BbWidthMaxPct : 0;
+                sessionScore     = Math.Max(0, adxMargin * bbMargin);
                 Array.Clear(filled);
                 sessionFills.Clear();
 

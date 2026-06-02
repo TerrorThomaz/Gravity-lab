@@ -213,8 +213,18 @@ public static class SwingSimulator
         return state;
     }
 
+    // Returns scored trades — entry+exit times and signal quality score — for ranked portfolio sim.
+    // Score = rsiExcess × adxRatio × rallyRatio (all > 1 at entry → higher = stronger signal).
+    public static List<ScoredTrade> GetScoredSwingTrades(string coin, SwingGenotype g, Candle[] h1, Candle[] m15)
+    {
+        var scored = new List<ScoredTrade>();
+        RunSwingMultiTF(g, h1, m15, coin, scored);
+        return scored;
+    }
+
     private static (List<(DateTime, double, string)> Trades, SwingTradeState FinalState)
-        RunSwingMultiTF(SwingGenotype g, Candle[] h1, Candle[] m15)
+        RunSwingMultiTF(SwingGenotype g, Candle[] h1, Candle[] m15,
+                        string? coin = null, List<ScoredTrade>? scoredOut = null)
     {
         int h1Warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
                        + g.LookbackCandles + 2;
@@ -258,6 +268,10 @@ public static class SwingSimulator
         bool   cachedSetupMet  = false;
         double cachedSwingHigh = 0;
         double cachedAtrRef    = 0;
+        double cachedScore     = 0;   // signal quality at setup candle (used by ranked sim)
+
+        double   entryScore = 0;
+        DateTime entryTime  = default;
 
         int m15Start = (h1Warmup + 1) * 4;
         int m15Limit = h1.Length * 4;
@@ -310,6 +324,13 @@ public static class SwingSimulator
                             cachedSetupMet  = true;
                             cachedSwingHigh = swingHigh;
                             cachedAtrRef    = atrH4;   // exits use h4 ATR
+
+                            // Signal quality: product of three independent strengths.
+                            // Each factor > 1 at entry (threshold is the floor, not the target).
+                            double rsiExcess  = rsiAtHigh - g.RsiOverbought;
+                            double adxRatio   = h1Adx[h1Ref] / g.AdxThreshold;
+                            double rallyRatio  = (swingHigh - recentLow) / (g.MinRallyAtrMult * atrH1);
+                            cachedScore = rsiExcess * adxRatio * rallyRatio;
                         }
                     }
                 }
@@ -326,6 +347,8 @@ public static class SwingSimulator
                     trailLow   = m15Price;
                     trailArmed = false;
                     entryIH1   = ih1;
+                    entryScore = cachedScore;
+                    entryTime  = m15[im15].Time;
                 }
             }
             else
@@ -350,6 +373,7 @@ public static class SwingSimulator
                                     hitTarget   ? target   : m15Price;
                     double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry);
                     result.Add((m15[im15].Time, ret, "swing_short"));
+                    scoredOut?.Add(new ScoredTrade(coin!, "swing", entryTime, m15[im15].Time, ret, entryScore));
                     inTrade = false;
                 }
             }
@@ -360,6 +384,7 @@ public static class SwingSimulator
             double finalPx = m15Closes[^1];
             double ret = (entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry);
             result.Add((m15[^1].Time, ret, "swing_short"));
+            scoredOut?.Add(new ScoredTrade(coin!, "swing", entryTime, m15[^1].Time, ret, entryScore));
         }
 
         int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;

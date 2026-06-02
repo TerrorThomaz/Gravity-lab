@@ -31,6 +31,7 @@ public class SwingGenotype
 
     // ── Exit genes ────────────────────────────────────────────────────────────────
     public double StopLossAtrMult           { get; set; }   // 0.3–2.0   ATR buffer above the swing high (stop = swingHigh + mult×ATR; invalidates thesis if exceeded)
+    public double MaeAtrMult                { get; set; }   // 1.5–4.0   max adverse excursion ceiling = entry + mult×ATR; caps slow-grind rally losses
     public double TakeProfitAtrMult         { get; set; }   // 2.0–10.0  realistic target in an 8-day hold (~10–20% move)
     public double TrailingActivationAtrMult { get; set; }   // 1.0–4.0   arm trail after this profit (was 1–8; 8A=15% almost never fired)
     public double TrailingStopAtrMult       { get; set; }   // 1.0–5.0   trail distance from peak (1.0A min to breathe)
@@ -50,6 +51,7 @@ public class SwingGenotype
             RsiDivThreshold  = Seed(5.0  + rng.NextDouble() * 10.0,       seed?.RsiDivThreshold  ?? 8.0),
             MinRallyAtrMult  = Seed(5.0  + rng.NextDouble() * 7.0,        seed?.MinRallyAtrMult  ?? 7.0),
             StopLossAtrMult           = Seed(0.3 + rng.NextDouble() * 1.7,  seed?.StopLossAtrMult           ?? 0.8),
+            MaeAtrMult                = Seed(1.5 + rng.NextDouble() * 2.5,  seed?.MaeAtrMult                ?? 2.5),
             TakeProfitAtrMult         = Seed(2.0 + rng.NextDouble() * 8.0,  seed?.TakeProfitAtrMult         ?? 5.0),
             TrailingActivationAtrMult = Seed(1.0 + rng.NextDouble() * 3.0,  seed?.TrailingActivationAtrMult ?? 2.0),
             TrailingStopAtrMult       = Seed(1.0 + rng.NextDouble() * 4.0,  seed?.TrailingStopAtrMult       ?? 2.0),
@@ -69,6 +71,7 @@ public class SwingGenotype
             RsiDivThreshold  = Pick(a.RsiDivThreshold, b.RsiDivThreshold),
             MinRallyAtrMult  = Pick(a.MinRallyAtrMult, b.MinRallyAtrMult),
             StopLossAtrMult           = Pick(a.StopLossAtrMult,           b.StopLossAtrMult),
+            MaeAtrMult                = Pick(a.MaeAtrMult,                b.MaeAtrMult),
             TakeProfitAtrMult         = Pick(a.TakeProfitAtrMult,         b.TakeProfitAtrMult),
             TrailingActivationAtrMult = Pick(a.TrailingActivationAtrMult, b.TrailingActivationAtrMult),
             TrailingStopAtrMult       = Pick(a.TrailingStopAtrMult,       b.TrailingStopAtrMult),
@@ -97,6 +100,7 @@ public class SwingGenotype
             RsiDivThreshold  = Nudge(RsiDivThreshold,   5.0, 15.0, 2.0),
             MinRallyAtrMult  = Nudge(MinRallyAtrMult,   5.0, 12.0, 1.0),
             StopLossAtrMult           = Nudge(StopLossAtrMult,           0.3,  2.0, 0.3),
+            MaeAtrMult                = Nudge(MaeAtrMult,                1.5,  4.0, 0.4),
             TakeProfitAtrMult         = Nudge(TakeProfitAtrMult,         2.0, 10.0, 1.5),
             TrailingActivationAtrMult = Nudge(TrailingActivationAtrMult, 1.0,  4.0, 0.5),
             TrailingStopAtrMult       = Nudge(TrailingStopAtrMult,       1.0,  5.0, 0.5),
@@ -113,6 +117,7 @@ public class SwingGenotype
         RsiDivThreshold  = Math.Clamp(RsiDivThreshold, 5.0, 15.0),
         MinRallyAtrMult  = Math.Clamp(MinRallyAtrMult,  5.0, 12.0),
         StopLossAtrMult           = Math.Clamp(StopLossAtrMult,           0.3,  2.0),
+        MaeAtrMult                = Math.Clamp(MaeAtrMult,                1.5,  4.0),
         TakeProfitAtrMult         = Math.Clamp(TakeProfitAtrMult,         2.0, 10.0),
         TrailingActivationAtrMult = Math.Clamp(TrailingActivationAtrMult, 1.0,  4.0),
         TrailingStopAtrMult       = Math.Clamp(TrailingStopAtrMult,       1.0,  5.0),
@@ -123,7 +128,7 @@ public class SwingGenotype
     public override string ToString() =>
         $"EMA{EmaPeriod} RSI(7,OB={RsiOverbought:F0},div≥{RsiDivThreshold:F0}pts) " +
         $"ADX(7,{AdxThreshold:F0}) Look={LookbackCandles} Rally≥{MinRallyAtrMult:F1}A " +
-        $"SL={StopLossAtrMult:F2}A TP={TakeProfitAtrMult:F2}A " +
+        $"SL={StopLossAtrMult:F2}A MAE={MaeAtrMult:F2}A TP={TakeProfitAtrMult:F2}A " +
         $"Trail({TrailingActivationAtrMult:F2}A/{TrailingStopAtrMult:F2}A) " +
         $"MaxH={MaxHoldCandles}bars F={Fitness:F4}";
 }

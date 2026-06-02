@@ -143,6 +143,26 @@ public static class GridSimulator
                     continue;
                 }
 
+                // Bail-out: close all when price falls too far below the lowest filled level.
+                // Cuts slow-grind losses before adding more levels — each new fill would
+                // just DCA deeper into a directional move.
+                {
+                    double lowestFill = double.MaxValue;
+                    for (int n = 0; n < levels; n++)
+                        if (filled[n] && entryPrice[n] < lowestFill) lowestFill = entryPrice[n];
+                    if (lowestFill < double.MaxValue)
+                    {
+                        double bailoutPx = lowestFill - g.BailOutAtrMult * atrAtStart;
+                        if (lows[i] <= bailoutPx)
+                        {
+                            CloseAllFilled(i, bailoutPx, isStop: true);
+                            gridActive = false;
+                            FlushSession(i);
+                            continue;
+                        }
+                    }
+                }
+
                 // Regime change: ADX went trending — get out cleanly
                 if (adxNow >= g.AdxThreshold)
                 {

@@ -371,7 +371,8 @@ async Task RunPaperTrade()
             string unreal    = st.InTrade
                 ? $"{(st.Entry - px) / st.Entry * 100.0:+0.00}%"
                 : "—";
-            string stopStr   = st.InTrade ? $"{st.HardStop:F4}" : "—";
+            double effStop   = st.InTrade ? Math.Min(st.HardStop, st.MaeStop) : 0;
+            string stopStr   = st.InTrade ? $"{effStop:F4}" : "—";
             string targetStr = st.InTrade ? $"{st.Target:F4}" : "—";
             string barsStr   = st.InTrade ? $"{st.HoldCount}" : "—";
 

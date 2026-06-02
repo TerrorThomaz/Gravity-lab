@@ -42,11 +42,12 @@ public static class SwingSimulator
     public record SwingTradeState(
         bool   InTrade,
         double Entry,
-        double HardStop,
+        double HardStop,   // swingHigh + SL×ATR
+        double MaeStop,    // entry + MAE×ATR (tighter ceiling on adverse excursion)
         double Target,
         bool   TrailArmed,
-        double TrailLow,    // lowest price seen since entry (trail reference for short)
-        int    HoldCount);  // 4h bars held
+        double TrailLow,   // lowest price seen since entry (trail reference for short)
+        int    HoldCount); // h1 bars held
 
     public static SwingTradeState GetSwingTradeState(SwingGenotype g, Candle[] candles)
     {
@@ -60,7 +61,7 @@ public static class SwingSimulator
         int warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
                    + g.LookbackCandles;
         if (candles.Length <= warmup + 10)
-            return ([], new SwingTradeState(false, 0, 0, 0, false, 0, 0));
+            return ([], new SwingTradeState(false, 0, 0, 0, 0, false, 0, 0));
 
         var closes  = candles.Select(c => c.Close).ToArray();
         var highs   = candles.Select(c => c.High).ToArray();
@@ -76,6 +77,7 @@ public static class SwingSimulator
         bool   inTrade    = false;
         double entry      = 0;
         double hardStop   = 0;
+        double maeStop    = 0;
         double target     = 0;
         double trailLow   = 0;
         double atrEntry   = 0;
@@ -126,6 +128,8 @@ public static class SwingSimulator
                 atrEntry   = atrNow;
                 // Stop above the swing high: if price exceeds that level the fade thesis is wrong.
                 hardStop   = swingHigh + g.StopLossAtrMult * atrEntry;
+                // MAE ceiling: caps loss on slow-grind rallies that stay below swingHigh stop.
+                maeStop    = entry + g.MaeAtrMult * atrEntry;
                 target     = entry - g.TakeProfitAtrMult * atrEntry;
                 trailLow   = price;
                 trailArmed = false;
@@ -139,15 +143,18 @@ public static class SwingSimulator
                 if (!trailArmed && entry - trailLow >= g.TrailingActivationAtrMult * atrEntry)
                     trailArmed = true;
 
-                bool hitStop   = price >= hardStop;
-                bool hitTarget = price <= target;
-                bool hitTrail  = trailArmed && price > trailLow + g.TrailingStopAtrMult * atrEntry;
-                bool timedOut  = holdCount >= g.MaxHoldCandles;
+                bool hitHardStop = price >= hardStop;
+                bool hitMae      = price >= maeStop;
+                bool hitStop     = hitHardStop || hitMae;
+                bool hitTarget   = price <= target;
+                bool hitTrail    = trailArmed && price > trailLow + g.TrailingStopAtrMult * atrEntry;
+                bool timedOut    = holdCount >= g.MaxHoldCandles;
 
                 if (hitStop || hitTarget || hitTrail || timedOut)
                 {
-                    double exitPx = hitStop   ? hardStop :
-                                    hitTarget ? target   : price;
+                    double exitPx = hitHardStop ? hardStop :
+                                    hitMae      ? maeStop  :
+                                    hitTarget   ? target   : price;
                     double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry);
                     result.Add((candles[i].Time, ret, "swing_short"));
                     inTrade = false;
@@ -163,7 +170,7 @@ public static class SwingSimulator
             result.Add((candles[^1].Time, ret, "swing_short"));
         }
 
-        var finalState = new SwingTradeState(inTrade, entry, hardStop, target,
+        var finalState = new SwingTradeState(inTrade, entry, hardStop, maeStop, target,
             trailArmed, trailLow, holdCount);
         return (result, finalState);
     }
@@ -213,7 +220,7 @@ public static class SwingSimulator
                        + g.LookbackCandles + 2;
 
         if (h1.Length <= h1Warmup + 2 || m15.Length < (h1Warmup + 2) * 4)
-            return ([], new SwingTradeState(false, 0, 0, 0, false, 0, 0));
+            return ([], new SwingTradeState(false, 0, 0, 0, 0, false, 0, 0));
 
         var h1Closes = h1.Select(c => c.Close).ToArray();
         var h1Highs  = h1.Select(c => c.High).ToArray();
@@ -239,6 +246,7 @@ public static class SwingSimulator
         bool   inTrade    = false;
         double entry      = 0;
         double hardStop   = 0;
+        double maeStop    = 0;
         double target     = 0;
         double trailLow   = 0;
         double atrEntry   = 0;
@@ -313,6 +321,7 @@ public static class SwingSimulator
                     entry      = m15Price;
                     atrEntry   = cachedAtrRef;
                     hardStop   = cachedSwingHigh + g.StopLossAtrMult * atrEntry;
+                    maeStop    = entry + g.MaeAtrMult * atrEntry;
                     target     = entry - g.TakeProfitAtrMult * atrEntry;
                     trailLow   = m15Price;
                     trailArmed = false;
@@ -327,15 +336,18 @@ public static class SwingSimulator
 
                 int holdH1 = ih1 - entryIH1;   // elapsed h1 bars since entry
 
-                bool hitStop   = m15Price >= hardStop;
-                bool hitTarget = m15Price <= target;
-                bool hitTrail  = trailArmed && m15Price > trailLow + g.TrailingStopAtrMult * atrEntry;
-                bool timedOut  = holdH1 >= g.MaxHoldCandles;
+                bool hitHardStop = m15Price >= hardStop;
+                bool hitMae      = m15Price >= maeStop;
+                bool hitStop     = hitHardStop || hitMae;
+                bool hitTarget   = m15Price <= target;
+                bool hitTrail    = trailArmed && m15Price > trailLow + g.TrailingStopAtrMult * atrEntry;
+                bool timedOut    = holdH1 >= g.MaxHoldCandles;
 
                 if (hitStop || hitTarget || hitTrail || timedOut)
                 {
-                    double exitPx = hitStop   ? hardStop :
-                                    hitTarget ? target   : m15Price;
+                    double exitPx = hitHardStop ? hardStop :
+                                    hitMae      ? maeStop  :
+                                    hitTarget   ? target   : m15Price;
                     double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry);
                     result.Add((m15[im15].Time, ret, "swing_short"));
                     inTrade = false;
@@ -351,7 +363,7 @@ public static class SwingSimulator
         }
 
         int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;
-        return (result, new SwingTradeState(inTrade, entry, hardStop, target, trailArmed, trailLow, finalHold));
+        return (result, new SwingTradeState(inTrade, entry, hardStop, maeStop, target, trailArmed, trailLow, finalHold));
     }
 
     // ── Cost model ────────────────────────────────────────────────────────────────

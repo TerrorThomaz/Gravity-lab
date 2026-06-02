@@ -27,6 +27,7 @@ namespace TradingGA;
 //   GridLevels               — number of buy levels below EMA [1–3]
 //   TakeProfitAtrMult        — per-level profit target above each fill [0.5–3.0]
 //   HardStopAtrMult          — hard stop below EMA anchor [1.5–3.0]
+//   BailOutAtrMult           — close all when price drops this far below lowest filled level [1.0–4.0]
 //   MaxHoldCandles           — h1 bars before force-close [24–200]
 public class GridGenotype
 {
@@ -40,7 +41,8 @@ public class GridGenotype
     public double GridStepAtrMult  { get; set; }  // 0.3–2.0 level spacing
     public int    GridLevels       { get; set; }  // 1–3     buy levels below EMA
     public double TakeProfitAtrMult { get; set; } // 0.5–3.0 per-level TP above fill
-    public double HardStopAtrMult  { get; set; }  // 1.5–3.0 tight stop — limits catastrophic sessions
+    public double HardStopAtrMult  { get; set; }  // 1.5–3.0 hard stop below anchor — catastrophic break
+    public double BailOutAtrMult   { get; set; }  // 1.0–4.0 close all when price drops this far below lowest filled level
     public int    MaxHoldCandles   { get; set; }  // 24–200  h1 bars before force-close
 
     public double Fitness { get; set; } = double.MinValue;
@@ -62,6 +64,7 @@ public class GridGenotype
             GridLevels       = Pick(rng.Next(1, 4),                                seed?.GridLevels        ?? 2),
             TakeProfitAtrMult= Pick(0.5  + rng.NextDouble() * 2.5,                seed?.TakeProfitAtrMult ?? 1.5),
             HardStopAtrMult  = Pick(1.5  + rng.NextDouble() * 1.5,                seed?.HardStopAtrMult   ?? 2.2),
+            BailOutAtrMult   = Pick(1.0  + rng.NextDouble() * 3.0,                seed?.BailOutAtrMult    ?? 2.5),
             MaxHoldCandles   = Pick(rng.Next(24, 201),                             seed?.MaxHoldCandles    ?? 96),
         };
     }
@@ -79,6 +82,7 @@ public class GridGenotype
             GridLevels       = Pick(a.GridLevels,         b.GridLevels),
             TakeProfitAtrMult= Pick(a.TakeProfitAtrMult, b.TakeProfitAtrMult),
             HardStopAtrMult  = Pick(a.HardStopAtrMult,   b.HardStopAtrMult),
+            BailOutAtrMult   = Pick(a.BailOutAtrMult,    b.BailOutAtrMult),
             MaxHoldCandles   = Pick(a.MaxHoldCandles,    b.MaxHoldCandles),
         };
     }
@@ -105,6 +109,7 @@ public class GridGenotype
             GridLevels       = NudgeInt(GridLevels,        1,    3,   1),
             TakeProfitAtrMult= Nudge(TakeProfitAtrMult,  0.5,  3.0, 0.4),
             HardStopAtrMult  = Nudge(HardStopAtrMult,    1.5,  3.0, 0.4),
+            BailOutAtrMult   = Nudge(BailOutAtrMult,     1.0,  4.0, 0.5),
             MaxHoldCandles   = NudgeInt(MaxHoldCandles,  24,  200,  12),
         };
     }
@@ -119,6 +124,7 @@ public class GridGenotype
         GridLevels       = Math.Clamp(GridLevels,         1,    3),
         TakeProfitAtrMult= Math.Clamp(TakeProfitAtrMult, 0.5,  3.0),
         HardStopAtrMult  = Math.Clamp(HardStopAtrMult,   1.5,  3.0),
+        BailOutAtrMult   = Math.Clamp(BailOutAtrMult,    1.0,  4.0),
         MaxHoldCandles   = Math.Clamp(MaxHoldCandles,    24,  200),
         Fitness = Fitness,
     };
@@ -126,5 +132,5 @@ public class GridGenotype
     public override string ToString() =>
         $"ADX(14,{AdxThreshold:F0}) BB({BbPeriod},{BbWidthMaxPct:F1}%) EMA{EmaPeriod} " +
         $"Step={GridStepAtrMult:F2}A Lvl={GridLevels} TP={TakeProfitAtrMult:F2}A " +
-        $"Stop={HardStopAtrMult:F1}A MaxH={MaxHoldCandles}h F={Fitness:F4}";
+        $"Stop={HardStopAtrMult:F1}A Bail={BailOutAtrMult:F1}A MaxH={MaxHoldCandles}h F={Fitness:F4}";
 }

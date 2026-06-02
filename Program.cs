@@ -1062,6 +1062,16 @@ async Task RunCombinedBacktest()
     {
         if (h1.Length < 300) { Console.WriteLine($"  {sym,-16}  skip (no data)"); continue; }
 
+        {
+            var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
+            double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
+            if (medVol < MinMedianVolUsdM)
+            {
+                Console.WriteLine($"  {sym,-16}  skip (vol=${medVol:F2}M/h < ${MinMedianVolUsdM:F1}M)");
+                continue;
+            }
+        }
+
         int h1Split  = (int)(h1.Length * 0.8);
         int m15Split = h1Split * 4;
         var h1Train  = h1[..h1Split];
@@ -1110,6 +1120,16 @@ async Task RunCombinedBacktest()
     foreach (var (sym, _, h1) in fetched)
     {
         if (h1.Length < 300) { Console.WriteLine($"  {sym,-16}  skip (no data)"); continue; }
+
+        {
+            var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
+            double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
+            if (medVol < MinMedianVolUsdM)
+            {
+                Console.WriteLine($"  {sym,-16}  skip (vol=${medVol:F2}M/h < ${MinMedianVolUsdM:F1}M)");
+                continue;
+            }
+        }
 
         int split   = (int)(h1.Length * 0.8);
         var h1Train = h1[..split];

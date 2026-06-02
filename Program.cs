@@ -1251,6 +1251,7 @@ class SwingGenotypeDto
     public double RsiDivThreshold  { get; set; }
     public double MinRallyAtrMult  { get; set; }
     public double StopLossAtrMult           { get; set; }
+    public double MaeAtrMult                { get; set; }
     public double TakeProfitAtrMult         { get; set; }
     public double TrailingActivationAtrMult { get; set; }
     public double TrailingStopAtrMult       { get; set; }
@@ -1268,6 +1269,7 @@ class SwingGenotypeDto
         RsiDivThreshold  = g.RsiDivThreshold,
         MinRallyAtrMult  = g.MinRallyAtrMult,
         StopLossAtrMult           = g.StopLossAtrMult,
+        MaeAtrMult                = g.MaeAtrMult,
         TakeProfitAtrMult         = g.TakeProfitAtrMult,
         TrailingActivationAtrMult = g.TrailingActivationAtrMult,
         TrailingStopAtrMult       = g.TrailingStopAtrMult,
@@ -1285,6 +1287,7 @@ class SwingGenotypeDto
         RsiDivThreshold  = RsiDivThreshold  > 0 ? RsiDivThreshold  : 8.0,
         MinRallyAtrMult  = MinRallyAtrMult  > 0 ? MinRallyAtrMult  : 5.0,
         StopLossAtrMult           = StopLossAtrMult           > 0 ? Math.Min(StopLossAtrMult, 2.0) : 0.8,
+        MaeAtrMult                = MaeAtrMult                > 0 ? MaeAtrMult                : 2.5,
         TakeProfitAtrMult         = TakeProfitAtrMult         > 0 ? TakeProfitAtrMult         : 4.0,
         TrailingActivationAtrMult = TrailingActivationAtrMult > 0 ? TrailingActivationAtrMult : 3.0,
         TrailingStopAtrMult       = TrailingStopAtrMult       > 0 ? TrailingStopAtrMult       : 1.5,

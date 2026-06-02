@@ -7,6 +7,10 @@ secrets.json
 appsettings.Development.json
 *.secrets.json
 
+## Candle cache and Python bytecode
+candle_cache/
+__pycache__/
+
 ## Generated / backup files
 best_genotype_original.json
 *.log

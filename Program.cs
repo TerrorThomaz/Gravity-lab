@@ -40,7 +40,7 @@ switch (mode)
     case "test":            await RunTest();            break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
-        Console.WriteLine("  dotnet run -- train             Swing GA: 26 coins, 1h/15m dual-TF, ~3yr");
+        Console.WriteLine("  dotnet run -- train             Swing GA: 40 coins, 1h/15m dual-TF, ~3yr (5 held-out for coin-level val)");
         Console.WriteLine("  dotnet run -- backtest          Swing backtest: 45 coins, val 20%");
         Console.WriteLine("  dotnet run -- papertrade        Live swing signals, refreshes every 4h");
         Console.WriteLine("  dotnet run -- gridtrain         Grid GA: ranging-market long grid, 1h candles");
@@ -51,47 +51,76 @@ switch (mode)
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  TRAIN — Swing GA on 1h candles (aggregated from 15m), 26 coins, ~3yr
+//  TRAIN — Swing GA on 1h candles (aggregated from 15m), 40 coins, ~3yr
+//
+//  Two-layer validation:
+//    1. Temporal holdout: each training coin split 80% train / 20% val (same as before)
+//    2. Coin-level holdout: 5 coins never shown to the GA, checked after training
 // ══════════════════════════════════════════════════════════════════════════════
 async Task RunTrain()
 {
-    Console.WriteLine("=== Gravity-gen2 | TRAIN (1h setup + 15m entry/exit, 26 coins, ~3yr) ===\n");
+    Console.WriteLine("=== Gravity-gen2 | TRAIN (1h setup + 15m entry/exit, 40 coins, ~3yr) ===\n");
 
-    // Diverse set: large caps for reliable trend structure + volatile alts for swing amplitude.
-    // Weighted down: coins with shorter history or noisier signals.
+    // 5 coins held out at the coin level — never seen during training or fold scoring.
+    // Selected for diversity: large-cap benchmark, legacy alt, storage sector,
+    // DeFi perps, and new synthetic-dollar protocol.
+    string[] heldOutSyms = ["BTCUSDT", "LTCUSDT", "FILUSDT", "DYDXUSDT", "ENAUSDT"];
+
+    // All 45 backtest coins minus the 5 held-out. MATICUSDT has no data and will be
+    // filtered by the length check below.
+    // Weight by data length: ≥1400d → 1.0 · 1000–1400d → 0.9 · <1000d → 0.8
     var trainCoins = new[]
     {
-        ("SOLUSDT",       1.0),
-        ("ETHUSDT",       1.0),
-        ("BNBUSDT",       1.0),
-        ("XRPUSDT",       1.0),
-        ("DOGEUSDT",      1.0),
-        ("AVAXUSDT",      1.0),
-        ("ADAUSDT",       1.0),
-        ("LINKUSDT",      1.0),
-        ("DOTUSDT",       1.0),
-        ("MATICUSDT",     1.0),
-        ("ATOMUSDT",      0.9),
-        ("NEARUSDT",      0.9),
-        ("INJUSDT",       0.9),
-        ("OPUSDT",        0.9),
-        ("ARBUSDT",       0.9),
-        ("UNIUSDT",       0.9),
-        ("AAVEUSDT",      0.9),
-        ("RUNEUSDT",      0.9),
-        ("WIFUSDT",       0.8),
-        ("1000PEPEUSDT",  0.8),
-        ("APTUSDT",       0.8),
-        ("SUIUSDT",       0.8),
-        ("TIAUSDT",       0.8),
-        ("SEIUSDT",       0.8),
-        ("STXUSDT",       0.8),
-        ("JUPUSDT",       0.8),
+        ("SOLUSDT",         1.0),
+        ("ETHUSDT",         1.0),
+        ("BNBUSDT",         1.0),
+        ("XRPUSDT",         1.0),
+        ("DOGEUSDT",        1.0),
+        ("AVAXUSDT",        1.0),
+        ("ADAUSDT",         1.0),
+        ("LINKUSDT",        1.0),
+        ("DOTUSDT",         1.0),
+        ("MATICUSDT",       1.0),
+        ("ATOMUSDT",        1.0),
+        ("NEARUSDT",        1.0),
+        ("INJUSDT",         1.0),
+        ("OPUSDT",          1.0),
+        ("ARBUSDT",         0.9),
+        ("UNIUSDT",         1.0),
+        ("AAVEUSDT",        1.0),
+        ("RUNEUSDT",        1.0),
+        ("STXUSDT",         1.0),
+        ("WIFUSDT",         0.8),
+        ("MEMEUSDT",        0.8),
+        ("1000BONKUSDT",    0.9),
+        ("1000PEPEUSDT",    0.9),
+        ("1000FLOKIUSDT",   0.9),
+        ("SUIUSDT",         0.9),
+        ("APTUSDT",         0.9),
+        ("LDOUSDT",         1.0),
+        ("TIAUSDT",         0.8),
+        ("SEIUSDT",         0.8),
+        ("WLDUSDT",         0.8),
+        ("JUPUSDT",         0.8),
+        ("EIGENUSDT",       0.7),
+        ("ONDOUSDT",        0.8),
+        ("PYTHUSDT",        0.8),
+        ("GMXUSDT",         0.9),
+        ("SANDUSDT",        1.0),
+        ("MANAUSDT",        1.0),
+        ("GALAUSDT",        1.0),
+        ("APEUSDT",         1.0),
+        ("BCHUSDT",         1.0),
     };
 
-    Console.WriteLine($"  Fetching {trainCoins.Length} coins (15m candles → aggregated to 1h, ~3yr)...");
+    // Fetch training coins + held-out coins in one parallel pass.
+    var allSymsToFetch = trainCoins.Select(t => (t.Item1, t.Item2))
+        .Concat(heldOutSyms.Select(s => (s, 0.0)))  // weight 0 = held-out marker
+        .ToArray();
+
+    Console.WriteLine($"  Fetching {trainCoins.Length} training + {heldOutSyms.Length} held-out coins (15m → 1h, ~3yr)...");
     var semTrain = new SemaphoreSlim(4);
-    var fetchTasks = trainCoins.Select(async ((string sym, double weight) t) =>
+    var fetchTasks = allSymsToFetch.Select(async ((string sym, double weight) t) =>
     {
         await semTrain.WaitAsync();
         try
@@ -105,15 +134,25 @@ async Task RunTrain()
     });
     var fetched = await Task.WhenAll(fetchTasks);
 
-    var namedCoins = new List<(string Sym, SwingGeneticAlgorithm.CoinData Cd)>();
+    var namedCoins   = new List<(string Sym, SwingGeneticAlgorithm.CoinData Cd)>();
+    var heldOutCoins = new List<(string Sym, Candle[] H1)>();
+
     foreach (var (sym, weight, h1) in fetched)
     {
         if (h1.Length < 150) { Console.WriteLine($"  {sym}: skip (insufficient data)"); continue; }
-        int split = (int)(h1.Length * 0.8);
-        namedCoins.Add((sym, new SwingGeneticAlgorithm.CoinData(
-            h1[..split],
-            h1[split..],
-            weight)));
+
+        if (heldOutSyms.Contains(sym))
+        {
+            heldOutCoins.Add((sym, h1));   // full candle history, never split
+        }
+        else
+        {
+            int split = (int)(h1.Length * 0.8);
+            namedCoins.Add((sym, new SwingGeneticAlgorithm.CoinData(
+                h1[..split],
+                h1[split..],
+                weight)));
+        }
     }
 
     if (namedCoins.Count == 0) { Console.WriteLine("No data."); return; }
@@ -186,6 +225,40 @@ async Task RunTrain()
     Console.WriteLine(vExp < tExp * 0.4 || vExp <= 0
         ? "\n  !! Possible overfit — val expectancy < 40% of train"
         : "\n  OK — val expectancy within acceptable range");
+
+    // ── Double validation: coin-level holdout ─────────────────────────────────
+    if (heldOutCoins.Count > 0)
+    {
+        Console.WriteLine($"\n─── Double validation ({heldOutCoins.Count} held-out coins — never seen during training) ───");
+        Console.WriteLine($"  {"Coin",-20}  {"Trades",6}  {"WR",5}  {"AvgRet",8}  {"PF",6}  {"Sortino",8}");
+        Console.WriteLine($"  {"────",-20}  {"──────",6}  {"──",5}  {"──────",8}  {"──",6}  {"───────",8}");
+
+        var allHeldRet = new List<double>();
+        int allHeldCC  = 0;
+        foreach (var (sym, h1) in heldOutCoins)
+        {
+            var rets = SwingSimulator.GetSwingReturns(best, h1).Select(t => t.Return).ToList();
+            allHeldRet.AddRange(rets);
+            allHeldCC += h1.Length * 12;
+
+            if (rets.Count == 0) { Console.WriteLine($"  {sym,-20}  no trades"); continue; }
+            double exp  = rets.Average();
+            double pf   = Simulator.ProfitFactor(rets);
+            double wr   = rets.Count(r => r > 0) / (double)rets.Count * 100.0;
+            double sort = Simulator.SortinoRatio(rets, h1.Length * 12);
+            Console.WriteLine($"  {sym,-20}  {rets.Count,6}  {wr,4:F0}%  {exp,+7:F2}%  {pf,6:F2}  {sort,8:F2}");
+        }
+
+        Console.WriteLine();
+        int heldCC = allHeldCC;
+        PrintSplitStats("Held-out coins", allHeldRet, heldCC);
+
+        double hExp = allHeldRet.Count > 0 ? allHeldRet.Average() : 0;
+        bool coinOverfit = hExp < tExp * 0.3 || hExp <= 0;
+        Console.WriteLine(coinOverfit
+            ? "\n  !! Coin-level overfit — held-out expectancy < 30% of train"
+            : "\n  OK — held-out coins show positive expectancy");
+    }
 
     Console.WriteLine($"\nNext: dotnet run -- backtest   ← verify on {BacktestCoins.Length} coins (1h/15m dual-TF)");
 }

@@ -157,6 +157,30 @@ async Task RunTrain()
 
     if (namedCoins.Count == 0) { Console.WriteLine("No data."); return; }
 
+    // Volume filter: drop coins whose median 1h USD volume is below the floor.
+    // Low-volume coins produce clean backtest patterns but won't execute at those
+    // prices in practice — the ATR cost model underestimates slippage in thin books.
+    const double MinMedianVolUsdM = 0.5;   // $0.5M per 1h candle
+    {
+        Console.WriteLine($"\n  Volume filter (min median 1h vol ≥ ${MinMedianVolUsdM:F1}M):");
+        var volFiltered = new List<(string Sym, SwingGeneticAlgorithm.CoinData Cd)>();
+        foreach (var nc in namedCoins)
+        {
+            var volUsd = nc.Cd.TrainCandles
+                .Select(c => c.Close * c.Volume / 1_000_000.0)
+                .OrderBy(v => v)
+                .ToList();
+            double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
+            bool pass = medVol >= MinMedianVolUsdM;
+            Console.WriteLine($"    {(pass ? "✓" : "✗")} {nc.Sym,-20} medVol=${medVol:F2}M/h");
+            if (pass) volFiltered.Add(nc);
+        }
+        namedCoins = volFiltered;
+        Console.WriteLine($"  → {namedCoins.Count} coins pass volume filter\n");
+    }
+
+    if (namedCoins.Count == 0) { Console.WriteLine("No coins passed volume filter."); return; }
+
     SwingGenotype? seed = null;
     if (File.Exists(GenoFile))
     {

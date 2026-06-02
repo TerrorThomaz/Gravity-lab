@@ -5,7 +5,8 @@ using System.Text.Json;
 
 const string GenoFile     = "swing_best_genotype.json";
 const string GridGenoFile = "grid_best_genotype.json";
-const double MaxTotalExposurePct = 0.40;   // max % of capital deployed simultaneously across all open positions
+const double MaxTotalExposurePct  = 0.40;   // max % of capital deployed simultaneously across all open positions
+const double MinMedianVolUsdM     = 0.5;    // $0.5M per 1h candle — thin markets excluded from train + backtest
 
 // 45 coins used by both backtest and papertrade
 string[] BacktestCoins =
@@ -160,7 +161,6 @@ async Task RunTrain()
     // Volume filter: drop coins whose median 1h USD volume is below the floor.
     // Low-volume coins produce clean backtest patterns but won't execute at those
     // prices in practice — the ATR cost model underestimates slippage in thin books.
-    const double MinMedianVolUsdM = 0.5;   // $0.5M per 1h candle
     {
         Console.WriteLine($"\n  Volume filter (min median 1h vol ≥ ${MinMedianVolUsdM:F1}M):");
         var volFiltered = new List<(string Sym, SwingGeneticAlgorithm.CoinData Cd)>();
@@ -333,6 +333,17 @@ async Task RunBacktest()
 
         var m15 = m15List.ToArray();
         var h1  = SwingSimulator.AggregateCandles(m15, 4);
+
+        // Volume filter — same floor as training screen
+        {
+            var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
+            double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
+            if (medVol < MinMedianVolUsdM)
+            {
+                Console.WriteLine($"  {sym,-16}  skip (vol=${medVol:F2}M/h < ${MinMedianVolUsdM:F1}M)");
+                continue;
+            }
+        }
 
         int h1Split  = (int)(h1.Length * 0.8);
         int m15Split = h1Split * 4;

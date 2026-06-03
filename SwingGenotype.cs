@@ -36,6 +36,7 @@ public class SwingGenotype
     public double TrailingActivationAtrMult { get; set; }   // 1.0–4.0   arm trail after this profit (was 1–8; 8A=15% almost never fired)
     public double TrailingStopAtrMult       { get; set; }   // 1.0–5.0   trail distance from peak (1.0A min to breathe)
     public int    MaxHoldCandles            { get; set; }   // 24–120    h1 bars: 24=1d, 48=2d, 120=5d
+    public double PositionSizePct           { get; set; }   // 0.01–0.05 fraction of capital per trade in fitness sim
 
     public double Fitness { get; set; } = double.MinValue;
 
@@ -55,7 +56,8 @@ public class SwingGenotype
             TakeProfitAtrMult         = Seed(2.0 + rng.NextDouble() * 8.0,  seed?.TakeProfitAtrMult         ?? 5.0),
             TrailingActivationAtrMult = Seed(1.0 + rng.NextDouble() * 3.0,  seed?.TrailingActivationAtrMult ?? 2.0),
             TrailingStopAtrMult       = Seed(1.0 + rng.NextDouble() * 4.0,  seed?.TrailingStopAtrMult       ?? 2.0),
-            MaxHoldCandles            = Seed(rng.Next(24, 121),             seed?.MaxHoldCandles            ?? 42),
+            MaxHoldCandles            = Seed(rng.Next(24, 121),              seed?.MaxHoldCandles            ?? 42),
+            PositionSizePct           = Seed(0.01 + rng.NextDouble() * 0.04, seed?.PositionSizePct          ?? 0.03),
         };
     }
 
@@ -76,6 +78,7 @@ public class SwingGenotype
             TrailingActivationAtrMult = Pick(a.TrailingActivationAtrMult, b.TrailingActivationAtrMult),
             TrailingStopAtrMult       = Pick(a.TrailingStopAtrMult,       b.TrailingStopAtrMult),
             MaxHoldCandles            = Pick(a.MaxHoldCandles,            b.MaxHoldCandles),
+            PositionSizePct           = Pick(a.PositionSizePct,           b.PositionSizePct),
         };
     }
 
@@ -105,6 +108,7 @@ public class SwingGenotype
             TrailingActivationAtrMult = Nudge(TrailingActivationAtrMult, 1.0,  4.0, 0.5),
             TrailingStopAtrMult       = Nudge(TrailingStopAtrMult,       1.0,  5.0, 0.5),
             MaxHoldCandles            = NudgeInt(MaxHoldCandles, 24, 120, 12),
+            PositionSizePct           = Nudge(PositionSizePct, 0.01, 0.05, 0.005),
         };
     }
 
@@ -122,6 +126,7 @@ public class SwingGenotype
         TrailingActivationAtrMult = Math.Clamp(TrailingActivationAtrMult, 1.0,  4.0),
         TrailingStopAtrMult       = Math.Clamp(TrailingStopAtrMult,       1.0,  5.0),
         MaxHoldCandles            = Math.Clamp(MaxHoldCandles,             24,  120),
+        PositionSizePct           = Math.Clamp(PositionSizePct,           0.01, 0.05),
         Fitness = Fitness,
     };
 
@@ -130,5 +135,5 @@ public class SwingGenotype
         $"ADX(7,{AdxThreshold:F0}) Look={LookbackCandles} Rally≥{MinRallyAtrMult:F1}A " +
         $"SL={StopLossAtrMult:F2}A MAE={MaeAtrMult:F2}A TP={TakeProfitAtrMult:F2}A " +
         $"Trail({TrailingActivationAtrMult:F2}A/{TrailingStopAtrMult:F2}A) " +
-        $"MaxH={MaxHoldCandles}bars F={Fitness:F4}";
+        $"MaxH={MaxHoldCandles}bars Pos={PositionSizePct:P0} F={Fitness:F4}";
 }

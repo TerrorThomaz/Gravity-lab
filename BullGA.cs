@@ -1,20 +1,11 @@
 namespace TradingGA;
 
-// Genetic algorithm for swing trading (1h setup + 15m entry/exit).
-// Uses 5-fold walk-forward CV; fitness directly optimises portfolio outcomes.
-//
-// FoldScore simulates a portfolio at a fixed 3% position size through each fold:
-//   - Main signal  : compounded portfolio gain (not per-trade expectancy)
-//   - Win rate     : multiplier — linearly penalises WR < 40%, bonus above 40%
-//   - Drawdown     : divisor   — sharply penalises peak-to-trough drawdown
-//   - Frequency    : log bonus — mild incentive to generate more trades
-//
-// FoldScore = (port_gain × 100) × wr_mult × freq_bonus / dd_div
-//
-// Fitness  = mean(fold_scores) − 0.75 × std(fold_scores)  — penalises time-period fragility
-public class SwingGeneticAlgorithm
+// Genetic algorithm for the bull long strategy.
+// Mirrors SwingGeneticAlgorithm exactly — same 5-fold walk-forward CV,
+// same fitness formula (portfolio gain × WR mult × freq bonus / DD div).
+public class BullGeneticAlgorithm
 {
-    public record CoinData(Candle[] TrainCandles, Candle[] ValCandles, double Weight = 1.0);
+    public record CoinData(Candle[] TrainH1, Candle[] ValH1, Candle[] TrainM15, Candle[] ValM15, double Weight = 1.0);
 
     private readonly int    _populationSize;
     private readonly int    _generations;
@@ -25,7 +16,7 @@ public class SwingGeneticAlgorithm
 
     private const int MinTradesPerFold = 15;
 
-    public SwingGeneticAlgorithm(
+    public BullGeneticAlgorithm(
         int  populationSize    = 50,
         int  generations       = 80,
         int  eliteCount        = 15,
@@ -39,21 +30,17 @@ public class SwingGeneticAlgorithm
         _verbose           = verbose;
     }
 
-    // Portfolio-based fold score: simulate a genotype-evolved position size through the fold,
-    // then weight by win rate and divide by drawdown.
     private static double FoldScore(List<double> returns, double posFrac)
     {
         if (returns.Count < MinTradesPerFold) return -1.0;
 
-        double wr = (double)returns.Count(r => r > 0) / returns.Count;
-
+        double wr        = (double)returns.Count(r => r > 0) / returns.Count;
         double grossWins = returns.Where(r => r > 0).DefaultIfEmpty(0).Sum();
         double grossLoss = Math.Abs(returns.Where(r => r <= 0).DefaultIfEmpty(0).Sum());
         double pf        = grossLoss > 1e-10 ? grossWins / grossLoss : (grossWins > 0 ? 5.0 : 0.0);
 
-        if (pf < 1.0) return pf - 2.0;  // continuous negative signal for losing folds
+        if (pf < 1.0) return pf - 2.0;
 
-        // Simulate portfolio at evolved position size per trade (no fold-Kelly lookahead bias)
         double balance = 1.0, peak = 1.0, maxDd = 0.0;
         foreach (var r in returns)
         {
@@ -66,27 +53,19 @@ public class SwingGeneticAlgorithm
         double gain = balance - 1.0;
         if (gain <= 0) return gain * 100 - 0.5;
 
-        // Win rate: ramps from 0 at WR=0 to 1.0 at WR=40%, bonus above 40%
-        double wrMult = wr < 0.40 ? wr / 0.40 : 1.0 + (wr - 0.40) * 3.0;
-
-        // Drawdown penalty: 5% max DD halves the score
-        double ddDiv = 1.0 + maxDd * 10.0;
-
-        // Frequency bonus: mild log incentive for more trades
-        double freqBonus = 1.0 + 0.15 * Math.Log(Math.Max(1.0, returns.Count / (double)MinTradesPerFold));
+        double wrMult   = wr < 0.40 ? wr / 0.40 : 1.0 + (wr - 0.40) * 3.0;
+        double ddDiv    = 1.0 + maxDd * 10.0;
+        double freqBonus= 1.0 + 0.15 * Math.Log(Math.Max(1.0, returns.Count / (double)MinTradesPerFold));
 
         return gain * 100.0 * wrMult * freqBonus / ddDiv;
     }
 
-    // Pool returns across ALL coins within each fold time-slot.
-    // Per-coin fitness was flat (-1 everywhere) because each coin individually
-    // produced too few trades per fold. Pooling 12 coins gives ~12× more trades
-    // per fold while fold-to-fold std still guards temporal overfitting.
-    private double Fitness(SwingGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
+    private double Fitness(BullGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
     {
         var validCoins = coins
-            .Select(c => (c, arr: useValidation ? c.ValCandles : c.TrainCandles))
-            .Where(x => x.arr.Length >= 100)
+            .Select(c => (c, h1: useValidation ? c.ValH1 : c.TrainH1,
+                             m15: useValidation ? c.ValM15 : c.TrainM15))
+            .Where(x => x.h1.Length >= 100 && x.m15.Length >= 400)
             .ToList();
         if (validCoins.Count == 0) return 0;
 
@@ -95,18 +74,18 @@ public class SwingGeneticAlgorithm
         if (useValidation || folds <= 1)
         {
             var all = validCoins
-                .SelectMany(x => SwingSimulator.GetSwingReturns(ind, x.arr).Select(t => t.Return))
+                .SelectMany(x => BullSimulator.GetBullReturns(ind, x.h1, x.m15).Select(t => t.Return))
                 .ToList();
             return FoldScore(all, posFrac);
         }
 
-        int minLen   = validCoins.Min(x => x.arr.Length);
-        int k        = Math.Min(folds, minLen / 40);
+        int minLen = validCoins.Min(x => x.h1.Length);
+        int k      = Math.Min(folds, minLen / 40);
 
         if (k < 2)
         {
             var all = validCoins
-                .SelectMany(x => SwingSimulator.GetSwingReturns(ind, x.arr).Select(t => t.Return))
+                .SelectMany(x => BullSimulator.GetBullReturns(ind, x.h1, x.m15).Select(t => t.Return))
                 .ToList();
             return FoldScore(all, posFrac);
         }
@@ -115,16 +94,19 @@ public class SwingGeneticAlgorithm
         double[] scores   = new double[k];
         for (int f = 0; f < k; f++)
         {
-            int start       = f * foldSize;
-            int end         = f == k - 1 ? minLen : start + foldSize;
-            var foldReturns = new List<double>();
-            foreach (var (coin, arr) in validCoins)
+            int startH1  = f * foldSize;
+            int endH1    = f == k - 1 ? minLen : startH1 + foldSize;
+            int startM15 = startH1 * 4;
+            int endM15   = endH1   * 4;
+            var foldRet  = new List<double>();
+            foreach (var (coin, h1, m15) in validCoins)
             {
-                if (arr.Length < end) continue;
-                foldReturns.AddRange(
-                    SwingSimulator.GetSwingReturns(ind, arr[start..end]).Select(t => t.Return));
+                if (h1.Length < endH1 || m15.Length < endM15) continue;
+                foldRet.AddRange(
+                    BullSimulator.GetBullReturns(ind, h1[startH1..endH1], m15[startM15..endM15])
+                                 .Select(t => t.Return));
             }
-            scores[f] = FoldScore(foldReturns, posFrac);
+            scores[f] = FoldScore(foldRet, posFrac);
         }
 
         double mean = scores.Average();
@@ -132,25 +114,23 @@ public class SwingGeneticAlgorithm
         return mean - 0.75 * std;
     }
 
-    public SwingGenotype Run(IReadOnlyList<CoinData> coins, SwingGenotype? seed = null)
+    public BullGenotype Run(IReadOnlyList<CoinData> coins, BullGenotype? seed = null)
     {
-        if (coins.Count == 0 || coins.All(c => c.TrainCandles.Length == 0))
-            throw new ArgumentException("No training candles found.");
+        if (coins.Count == 0) throw new ArgumentException("No training data.");
 
         if (_verbose)
         {
             foreach (var (coin, i) in coins.Select((c, i) => (c, i)))
                 Console.WriteLine($"  Coin {i} (w={coin.Weight:F1})  " +
-                    $"train={coin.TrainCandles.Length} candles  val={coin.ValCandles.Length} candles");
+                    $"trainH1={coin.TrainH1.Length}  valH1={coin.ValH1.Length}");
             if (seed != null) Console.WriteLine($"  Seeding from: {seed}");
         }
 
         var population = Enumerable
             .Range(0, _populationSize)
-            .Select(_ => SwingGenotype.Random(_rng, seed))
+            .Select(_ => BullGenotype.Random(_rng, seed))
             .ToList();
 
-        // Inject seed variants into first 20% of population
         if (seed != null)
         {
             var clamped = seed.ClampToBounds();
@@ -160,9 +140,9 @@ public class SwingGeneticAlgorithm
                 population[s] = clamped.Mutate(_rng, 0.25);
         }
 
-        List<SwingGenotype> eliteIsland = new();
-        double bestFitnessSeen = double.MinValue;
-        int    stagnantGens    = 0;
+        List<BullGenotype> eliteIsland      = new();
+        double              bestFitnessSeen = double.MinValue;
+        int                 stagnantGens   = 0;
 
         for (int gen = 0; gen < _generations; gen++)
         {
@@ -185,11 +165,11 @@ public class SwingGeneticAlgorithm
                 Console.WriteLine($"Gen {gen + 1,3} — elite: {eliteIsland.First()}{tag}");
             }
 
-            var nextGen = new List<SwingGenotype>();
+            var nextGen = new List<BullGenotype>();
             nextGen.AddRange(eliteIsland.Take(5));
             while (nextGen.Count < _populationSize)
             {
-                var child = SwingGenotype.Crossover(
+                var child = BullGenotype.Crossover(
                                 TournamentSelect(population),
                                 TournamentSelect(population), _rng)
                             .Mutate(_rng, mutationRate);
@@ -198,8 +178,7 @@ public class SwingGeneticAlgorithm
             population = nextGen;
         }
 
-        // Re-score elite on held-out validation candles
-        if (_verbose) Console.WriteLine("\n=== Held-out validation ===");
+        if (_verbose) Console.WriteLine("\n=== Bull held-out validation ===");
         Parallel.ForEach(eliteIsland, ind =>
             ind.Fitness = Fitness(ind, coins, useValidation: true));
 
@@ -208,7 +187,7 @@ public class SwingGeneticAlgorithm
         return best;
     }
 
-    private SwingGenotype TournamentSelect(List<SwingGenotype> pop, int k = 4) =>
+    private BullGenotype TournamentSelect(List<BullGenotype> pop, int k = 4) =>
         Enumerable.Range(0, k)
             .Select(_ => pop[_rng.Next(pop.Count)])
             .OrderByDescending(g => g.Fitness)

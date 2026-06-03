@@ -39,6 +39,8 @@ switch (mode)
     case "gridbacktest":    await RunGridBacktest();    break;
     case "combinedbacktest":await RunCombinedBacktest();break;
     case "rankedbacktest":  await RunRankedBacktest();  break;
+    case "bulltrain":       await RunBullTrain();       break;
+    case "bullbacktest":    await RunBullBacktest();    break;
     case "test":            await RunTest();            break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
@@ -49,6 +51,8 @@ switch (mode)
         Console.WriteLine("  dotnet run -- gridbacktest      Grid backtest: 45 coins, val 20%");
         Console.WriteLine("  dotnet run -- combinedbacktest  Swing + grid simultaneous, shared capital");
         Console.WriteLine("  dotnet run -- rankedbacktest    Ranked portfolio: top-N signals by quality, fixed 5% sizing");
+        Console.WriteLine("  dotnet run -- bulltrain         Bull long GA: pullback-in-uptrend, 1h/15m dual-TF");
+        Console.WriteLine("  dotnet run -- bullbacktest      Bull long backtest: 45 coins, val 20%");
         Console.WriteLine("  dotnet run -- test              Statistical edge validation (both strategies)");
         break;
 }
@@ -226,13 +230,50 @@ async Task RunTrain()
     var coinData = namedCoins.Select(nc => nc.Cd).ToList();
     Console.WriteLine($"\n  Training on {coinData.Count} coins simultaneously\n");
 
-    Console.WriteLine("─── Swing GA training ───");
+    // ── Universal GA (all coins) ──────────────────────────────────────────────────
+    Console.WriteLine("─── Swing GA training (universal — all coins) ───");
     var best = new SwingGeneticAlgorithm(80, 150, verbose: true).Run(coinData, seed);
 
     Console.WriteLine($"\nFrozen genotype:\n  {best}\n");
     File.WriteAllText(GenoFile, JsonSerializer.Serialize(SwingGenotypeDto.From(best),
         new JsonSerializerOptions { WriteIndented = true }));
     Console.WriteLine($"  Saved → {GenoFile}");
+
+    // ── Per-cluster GAs ──────────────────────────────────────────────────────────
+    Console.WriteLine("\n─── Per-cluster GA training ───");
+    var clusterGroups = namedCoins
+        .GroupBy(nc => CoinClusterHelper.Classify(nc.Cd.TrainCandles))
+        .OrderBy(grp => (int)grp.Key)
+        .ToList();
+
+    foreach (var grp in clusterGroups)
+    {
+        var clusterType  = grp.Key;
+        var clusterCoins = grp.Select(nc => nc.Cd).ToList();
+        string clFile    = CoinClusterHelper.GenoFile(clusterType);
+        string clLabel   = CoinClusterHelper.Label(clusterType);
+        Console.WriteLine($"\n  [{clLabel}] {clusterCoins.Count} coins:");
+        foreach (var nc in grp) Console.Write($"    {nc.Sym}");
+        Console.WriteLine();
+
+        if (clusterCoins.Count < 4)
+        {
+            Console.WriteLine($"  ⚠ Too few coins — skipping cluster GA, universal genotype will cover this cluster");
+            File.WriteAllText(clFile, JsonSerializer.Serialize(SwingGenotypeDto.From(best),
+                new JsonSerializerOptions { WriteIndented = true }));
+            continue;
+        }
+
+        SwingGenotype? clusterSeed = File.Exists(clFile)
+            ? JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(clFile))!.ToGenotype() is { Fitness: > 0 } prev ? prev : best
+            : best;   // first run: seed cluster from universal
+
+        var clusterBest = new SwingGeneticAlgorithm(60, 100, verbose: false).Run(clusterCoins, clusterSeed);
+        Console.WriteLine($"  [{clLabel}] best: {clusterBest}");
+        File.WriteAllText(clFile, JsonSerializer.Serialize(SwingGenotypeDto.From(clusterBest),
+            new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"  Saved → {clFile}");
+    }
 
     // Overfit check
     Console.WriteLine("\n─── Overfit check (train 80% vs val 20%) ───");
@@ -301,8 +342,20 @@ async Task RunBacktest()
         Console.WriteLine($"No genotype at '{GenoFile}'. Run 'dotnet run -- train' first.");
         return;
     }
-    var g = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(GenoFile))!.ToGenotype();
-    Console.WriteLine($"Genotype: {g}\n");
+    var gUniversal = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(GenoFile))!.ToGenotype();
+    Console.WriteLine($"Universal genotype: {gUniversal}\n");
+
+    // Load cluster genotypes (fall back to universal if a cluster file is missing or not yet trained)
+    var clusterGenos = new Dictionary<CoinCluster, SwingGenotype>();
+    foreach (CoinCluster cl in Enum.GetValues<CoinCluster>())
+    {
+        string clFile = CoinClusterHelper.GenoFile(cl);
+        clusterGenos[cl] = File.Exists(clFile)
+            ? JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(clFile))!.ToGenotype()
+            : gUniversal;
+        Console.WriteLine($"  [{CoinClusterHelper.Label(cl)}] genotype: {clusterGenos[cl]}");
+    }
+    Console.WriteLine();
 
     var testCoins = BacktestCoins;
 
@@ -347,6 +400,10 @@ async Task RunBacktest()
             }
         }
 
+        // Select the cluster genotype for this coin
+        var coinCluster = CoinClusterHelper.Classify(h1);
+        var g = clusterGenos[coinCluster];
+
         int h1Split  = (int)(h1.Length * 0.8);
         int m15Split = h1Split * 4;
         var h1Train  = h1[..h1Split];
@@ -362,7 +419,7 @@ async Task RunBacktest()
         double tPF   = tRet.Count >= 5 ? Simulator.ProfitFactor(tRet) : 0;
         if (tExp <= 0 || tSort < 0.3 || tPF < 1.1)
         {
-            Console.WriteLine($"  {sym,-16}  skip (exp={tExp:+0.00;-0.00}% sort={tSort:F2} pf={tPF:F2})");
+            Console.WriteLine($"  {sym,-16}  [{CoinClusterHelper.Label(coinCluster)}]  skip (exp={tExp:+0.00;-0.00}% sort={tSort:F2} pf={tPF:F2})");
             continue;
         }
 
@@ -440,8 +497,19 @@ async Task RunPaperTrade()
         Console.WriteLine($"No genotype at '{GenoFile}'. Run 'dotnet run -- train' first.");
         return;
     }
-    var g = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(GenoFile))!.ToGenotype();
-    Console.WriteLine($"Genotype: {g}\n");
+    var gUniversalPt = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(GenoFile))!.ToGenotype();
+    Console.WriteLine($"Universal genotype: {gUniversalPt}");
+
+    var clusterGenosPt = new Dictionary<CoinCluster, SwingGenotype>();
+    foreach (CoinCluster cl in Enum.GetValues<CoinCluster>())
+    {
+        string clFile = CoinClusterHelper.GenoFile(cl);
+        clusterGenosPt[cl] = File.Exists(clFile)
+            ? JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(clFile))!.ToGenotype()
+            : gUniversalPt;
+        Console.WriteLine($"  [{CoinClusterHelper.Label(cl)}] {clusterGenosPt[cl]}");
+    }
+    Console.WriteLine();
 
     var coins = BacktestCoins;
 
@@ -471,8 +539,10 @@ async Task RunPaperTrade()
                 continue;
             }
 
-            double px = candles[^1].Close;
-            var    st = SwingSimulator.GetSwingTradeState(g, candles.ToArray());
+            double px       = candles[^1].Close;
+            var    coinCl   = CoinClusterHelper.ClassifyByName(sym);
+            var    gForCoin = clusterGenosPt[coinCl];
+            var    st       = SwingSimulator.GetSwingTradeState(gForCoin, candles.ToArray());
 
             string stateStr  = st.InTrade
                 ? (st.TrailArmed ? "TRAIL ARMED" : $"SHORT b{st.HoldCount}")
@@ -1449,6 +1519,157 @@ async Task RunRankedBacktest()
     PrintPort($"Ranked (max {MaxSwing} swing + {MaxGrid} grid concurrent)", ranked);
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  BULL TRAIN — Bull long GA on 1h/15m candles, same coin set as swing train
+// ══════════════════════════════════════════════════════════════════════════════
+const string BullGenoFile = "bull_best_genotype.json";
+
+async Task RunBullTrain()
+{
+    Console.WriteLine("=== Gravity-gen2 | BULL TRAIN (1h setup + 15m entry/exit, ~3yr) ===\n");
+
+    var trainCoins = new[]
+    {
+        "SOLUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "AVAXUSDT", "ADAUSDT",
+        "LINKUSDT", "DOTUSDT", "ATOMUSDT", "NEARUSDT", "INJUSDT", "OPUSDT", "ARBUSDT",
+        "UNIUSDT", "AAVEUSDT", "RUNEUSDT", "STXUSDT", "SUIUSDT", "APTUSDT", "LDOUSDT",
+        "GMXUSDT", "SANDUSDT", "MANAUSDT", "GALAUSDT", "APEUSDT", "BCHUSDT",
+    };
+
+    Console.WriteLine($"  Fetching {trainCoins.Length} coins (15m → 1h, ~3yr)...");
+    var sem = new SemaphoreSlim(4);
+    var fetchTasks = trainCoins.Select(async sym =>
+    {
+        await sem.WaitAsync();
+        try
+        {
+            var m15 = await FetchFifteenMinCandlesCached(sym, batches: 113);
+            var h1  = SwingSimulator.AggregateCandles(m15.ToArray(), 4);
+            Console.WriteLine($"  {sym}: {m15.Count} 15m → {h1.Length} h1 candles");
+            return (sym, m15: m15.ToArray(), h1);
+        }
+        finally { sem.Release(); }
+    });
+    var fetched = await Task.WhenAll(fetchTasks);
+
+    var coinData = new List<BullGeneticAlgorithm.CoinData>();
+    foreach (var (sym, m15, h1) in fetched)
+    {
+        if (h1.Length < 200) { Console.WriteLine($"  {sym}: skip (insufficient data)"); continue; }
+        int splitH1  = (int)(h1.Length  * 0.8);
+        int splitM15 = (int)(m15.Length * 0.8);
+        coinData.Add(new BullGeneticAlgorithm.CoinData(
+            h1[..splitH1],  h1[splitH1..],
+            m15[..splitM15], m15[splitM15..]));
+    }
+
+    if (coinData.Count == 0) { Console.WriteLine("No data."); return; }
+
+    BullGenotype? seed = null;
+    if (File.Exists(BullGenoFile))
+    {
+        var candidate = JsonSerializer.Deserialize<BullGenotypeDto>(File.ReadAllText(BullGenoFile))!.ToGenotype();
+        if (candidate.Fitness > 0) { seed = candidate; Console.WriteLine($"  Seeding: {seed}"); }
+    }
+
+    Console.WriteLine($"\n  Training on {coinData.Count} coins\n");
+    Console.WriteLine("─── Bull GA training ───");
+    var best = new BullGeneticAlgorithm(80, 150, verbose: true).Run(coinData, seed);
+
+    Console.WriteLine($"\nFrozen genotype:\n  {best}\n");
+    File.WriteAllText(BullGenoFile, JsonSerializer.Serialize(BullGenotypeDto.From(best),
+        new JsonSerializerOptions { WriteIndented = true }));
+    Console.WriteLine($"  Saved → {BullGenoFile}");
+
+    var tRet = coinData.SelectMany(cd =>
+        BullSimulator.GetBullReturns(best, cd.TrainH1, cd.TrainM15).Select(t => t.Return)).ToList();
+    var vRet = coinData.SelectMany(cd =>
+        BullSimulator.GetBullReturns(best, cd.ValH1, cd.ValM15).Select(t => t.Return)).ToList();
+
+    Console.WriteLine("\n─── Overfit check ───");
+    PrintSplitStats("Train 80%", tRet, coinData.Sum(cd => cd.TrainH1.Length) * 12);
+    PrintSplitStats("Val   20%", vRet, coinData.Sum(cd => cd.ValH1.Length)   * 12);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  BULL BACKTEST — Bull long on 45 coins, val 20%
+// ══════════════════════════════════════════════════════════════════════════════
+async Task RunBullBacktest()
+{
+    Console.WriteLine($"=== Gravity-gen2 | BULL BACKTEST (~3yr, {BacktestCoins.Length} coins) ===\n");
+
+    if (!File.Exists(BullGenoFile))
+    {
+        Console.WriteLine($"No genotype at '{BullGenoFile}'. Run 'dotnet run -- bulltrain' first.");
+        return;
+    }
+    var g = JsonSerializer.Deserialize<BullGenotypeDto>(File.ReadAllText(BullGenoFile))!.ToGenotype();
+    Console.WriteLine($"Genotype: {g}\n");
+
+    var sem = new SemaphoreSlim(4);
+    var fetchTasks = BacktestCoins.Select(async sym =>
+    {
+        await sem.WaitAsync();
+        try { return (sym, m15: await FetchFifteenMinCandlesCached(sym, batches: 113)); }
+        finally { sem.Release(); }
+    });
+    var fetchedArr = await Task.WhenAll(fetchTasks);
+
+    var allTrades = new List<(string Coin, DateTime Time, double Return)>();
+    var coinStats = new List<(string Coin, double Sharpe, double PF, int Trades, double WR, double AvgRet)>();
+    int totalVCC  = 0;
+
+    Console.WriteLine($"{"Coin",-18} {"Sharpe",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+    Console.WriteLine(new string('-', 65));
+
+    foreach (var (sym, m15List) in fetchedArr)
+    {
+        if (m15List.Count < 600) { Console.WriteLine($"  {sym,-16}  skip (no data)"); continue; }
+        var m15 = m15List.ToArray();
+        var h1  = SwingSimulator.AggregateCandles(m15, 4);
+
+        var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
+        double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
+        if (medVol < MinMedianVolUsdM) { Console.WriteLine($"  {sym,-16}  skip (vol=${medVol:F2}M/h)"); continue; }
+
+        int h1Split  = (int)(h1.Length * 0.8);
+        int m15Split = h1Split * 4;
+        var h1Val    = h1[h1Split..];
+        var m15Val   = m15[m15Split..];
+
+        var vTrades = BullSimulator.GetBullReturns(g, h1Val, m15Val);
+        var vRet    = vTrades.Select(t => t.Return).ToList();
+        totalVCC   += h1Val.Length * 12;
+
+        if (vRet.Count == 0) { Console.WriteLine($"  {sym,-16}  no trades"); continue; }
+
+        double sh  = Simulator.SharpeRatio(vRet, h1Val.Length * 12);
+        double pf  = Simulator.ProfitFactor(vRet);
+        double wr  = (double)vRet.Count(r => r > 0) / vRet.Count;
+        double avg = vRet.Average();
+
+        foreach (var (t, ret, _) in vTrades)
+            allTrades.Add((sym, t, ret));
+
+        Console.WriteLine($"  {sym,-16} {sh,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%");
+        coinStats.Add((sym, sh, pf, vRet.Count, wr, avg));
+    }
+
+    if (allTrades.Count == 0) { Console.WriteLine("No trades."); return; }
+
+    allTrades.Sort((a, b) => a.Time.CompareTo(b.Time));
+    var allRet = allTrades.Select(t => t.Return).ToList();
+
+    Console.WriteLine($"\n{new string('═', 60)}");
+    Console.WriteLine($"  BULL BACKTEST SUMMARY (val 20%, 1h setup + 15m exec)");
+    Console.WriteLine($"{new string('═', 60)}");
+    Console.WriteLine($"  Total trades: {allRet.Count}  WR: {(double)allRet.Count(r => r > 0)/allRet.Count:P1}");
+    Console.WriteLine($"  Avg return:   {allRet.Average():+0.00}%");
+    Console.WriteLine($"  Sharpe:       {Simulator.SharpeRatio(allRet, totalVCC):F2}");
+    Console.WriteLine($"  Profit factor:{Simulator.ProfitFactor(allRet):F2}");
+    Console.WriteLine($"  Calmar:       {Simulator.CalmarRatio(allRet):F2}");
+}
+
 // ── Type declarations ─────────────────────────────────────────────────────────
 
 class SwingGenotypeDto
@@ -1467,6 +1688,7 @@ class SwingGenotypeDto
     public double TrailingActivationAtrMult { get; set; }
     public double TrailingStopAtrMult       { get; set; }
     public int    MaxHoldCandles            { get; set; }
+    public double PositionSizePct           { get; set; }
     public double Fitness                   { get; set; }
 
     public static SwingGenotypeDto From(SwingGenotype g) => new()
@@ -1485,6 +1707,7 @@ class SwingGenotypeDto
         TrailingActivationAtrMult = g.TrailingActivationAtrMult,
         TrailingStopAtrMult       = g.TrailingStopAtrMult,
         MaxHoldCandles            = g.MaxHoldCandles,
+        PositionSizePct           = g.PositionSizePct,
         Fitness                   = g.Fitness,
     };
 
@@ -1503,6 +1726,7 @@ class SwingGenotypeDto
         TrailingActivationAtrMult = TrailingActivationAtrMult > 0 ? TrailingActivationAtrMult : 3.0,
         TrailingStopAtrMult       = TrailingStopAtrMult       > 0 ? TrailingStopAtrMult       : 1.5,
         MaxHoldCandles            = MaxHoldCandles            > 0 ? MaxHoldCandles            : 42,
+        PositionSizePct           = PositionSizePct           > 0 ? PositionSizePct           : 0.03,
         Fitness                   = Fitness,
     }.ClampToBounds();
 }
@@ -1546,5 +1770,59 @@ class GridGenotypeDto
         HardStopAtrMult  = HardStopAtrMult  > 0 ? HardStopAtrMult  : 2.2,
         MaxHoldCandles   = MaxHoldCandles   > 0 ? MaxHoldCandles   : 96,
         Fitness          = Fitness,
+    }.ClampToBounds();
+}
+
+class BullGenotypeDto
+{
+    public int    EmaPeriod             { get; set; }
+    public double AdxThreshold          { get; set; }
+    public int    LookbackCandles       { get; set; }
+    public double RsiOversold           { get; set; }
+    public double RsiDivThreshold       { get; set; }
+    public double MinPullbackAtrMult    { get; set; }
+    public double StopLossAtrMult           { get; set; }
+    public double MaeAtrMult                { get; set; }
+    public double TakeProfitAtrMult         { get; set; }
+    public double TrailingActivationAtrMult { get; set; }
+    public double TrailingStopAtrMult       { get; set; }
+    public int    MaxHoldCandles            { get; set; }
+    public double PositionSizePct           { get; set; }
+    public double Fitness                   { get; set; }
+
+    public static BullGenotypeDto From(BullGenotype g) => new()
+    {
+        EmaPeriod             = g.EmaPeriod,
+        AdxThreshold          = g.AdxThreshold,
+        LookbackCandles       = g.LookbackCandles,
+        RsiOversold           = g.RsiOversold,
+        RsiDivThreshold       = g.RsiDivThreshold,
+        MinPullbackAtrMult    = g.MinPullbackAtrMult,
+        StopLossAtrMult           = g.StopLossAtrMult,
+        MaeAtrMult                = g.MaeAtrMult,
+        TakeProfitAtrMult         = g.TakeProfitAtrMult,
+        TrailingActivationAtrMult = g.TrailingActivationAtrMult,
+        TrailingStopAtrMult       = g.TrailingStopAtrMult,
+        MaxHoldCandles            = g.MaxHoldCandles,
+        PositionSizePct           = g.PositionSizePct,
+        Fitness                   = g.Fitness,
+    };
+
+    public BullGenotype ToGenotype() => new BullGenotype
+    {
+        EmaPeriod             = EmaPeriod          > 0 ? EmaPeriod          : 50,
+        AdxThreshold          = AdxThreshold       > 0 ? AdxThreshold       : 22.0,
+        LookbackCandles       = LookbackCandles    > 0 ? LookbackCandles    : 48,
+        RsiOversold           = RsiOversold        > 0 ? RsiOversold        : 35.0,
+        RsiDivThreshold       = RsiDivThreshold    > 0 ? RsiDivThreshold    : 8.0,
+        MinPullbackAtrMult    = MinPullbackAtrMult > 0 ? MinPullbackAtrMult : 5.0,
+        StopLossAtrMult           = StopLossAtrMult           > 0 ? StopLossAtrMult           : 0.8,
+        MaeAtrMult                = MaeAtrMult                > 0 ? MaeAtrMult                : 2.5,
+        TakeProfitAtrMult         = TakeProfitAtrMult         > 0 ? TakeProfitAtrMult         : 5.0,
+        TrailingActivationAtrMult = TrailingActivationAtrMult > 0 ? TrailingActivationAtrMult : 2.0,
+        TrailingStopAtrMult       = TrailingStopAtrMult       > 0 ? TrailingStopAtrMult       : 2.0,
+        MaxHoldCandles            = MaxHoldCandles            > 0 ? MaxHoldCandles            : 42,
+        PositionSizePct           = PositionSizePct           > 0 ? PositionSizePct           : 0.03,
+        Fitness                   = Fitness,
     }.ClampToBounds();
 }

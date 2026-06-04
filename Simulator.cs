@@ -31,10 +31,16 @@ public static class Simulator
         return Math.Clamp(kelly / 2.0, 0.0, 1.0);
     }
 
+    // kellyMultiplier: 1.0 = half-Kelly (default), 2.0 = full Kelly, etc.
+    // drawdownBrakeAt: fraction of peak drawdown at which sizing reaches 20% floor.
+    //   e.g. 0.15 → full size at 0% DD, half size at 7.5% DD, floor (20%) at 15%+ DD.
+    //   Default 1.0 = effectively no brake (brake floor only kicks in at 100% DD = ruin).
     public static PortfolioResult SimulatePortfolio(
         List<(double Return, double CoinConf)> valTrades,
-        double startBalance   = 100.0,
-        double maxPositionPct = 0.05)
+        double startBalance    = 100.0,
+        double maxPositionPct  = 0.05,
+        double kellyMultiplier = 1.0,
+        double drawdownBrakeAt = 1.0)
     {
         double balance         = startBalance;
         double peak            = startBalance;
@@ -44,8 +50,11 @@ public static class Simulator
 
         for (int t = 0; t < valTrades.Count; t++)
         {
-            double posFrac = Math.Min(valTrades[t].CoinConf, maxPositionPct);
-            double posEur  = posFrac * balance;
+            double currentDd = peak > balance ? (peak - balance) / peak : 0.0;
+            double ddScale   = Math.Max(0.20, 1.0 - currentDd / drawdownBrakeAt);
+
+            double posFrac  = Math.Min(valTrades[t].CoinConf * kellyMultiplier, maxPositionPct);
+            double posEur   = posFrac * balance * ddScale;
             totalPosSizeEur += posEur;
             balance += valTrades[t].Return / 100.0 * posEur;
 
@@ -77,20 +86,16 @@ public static class Simulator
     // prevents simultaneous over-deployment across many coins.
     // HoldDuration per trade = strategy's MaxHoldCandles (1h bars for swing, 1h for grid).
     // Exposure-capped portfolio sim with hard real-time concurrent position tracking.
-    // At each trade entry: sum currently open positions (in EUR). If adding the new
-    // position at its half-Kelly size would breach maxTotalExposurePct × balance,
-    // scale it down to fill the remaining headroom. Positions that have held longer
-    // than their HoldDuration are considered closed.
-    // This enforces a strict "max X% of capital deployed at any one time" rule.
-    // drawdownBrakeAt: drawdown fraction at which position scale hits its 20% floor.
-    // e.g. 0.30 → at 0% DD scale=1.0, at 15% DD scale=0.5, at 30%+ DD scale=0.20 (floor).
-    // This models the live trading behaviour of reducing size during losing streaks,
-    // protecting remaining capital and making the path back to peak easier.
+    // kellyMultiplier: 1.0 = half-Kelly as stored in CoinConf, 2.0 = full Kelly.
+    // drawdownBrakeAt: DD fraction where sizing hits 20% floor (0.15 = brake at 15% DD).
+    // Concurrent position tracking: positions that overlapped in time each consume their
+    // share of maxTotalExposurePct; new entries get whatever headroom remains.
     public static PortfolioResult SimulatePortfolioExposureCapped(
         List<(DateTime EntryTime, double Return, double CoinConf, TimeSpan HoldDuration)> trades,
-        double maxTotalExposurePct = 0.20,
+        double maxTotalExposurePct = 0.40,
         double startBalance        = 100.0,
-        double drawdownBrakeAt     = 0.30)
+        double drawdownBrakeAt     = 0.15,
+        double kellyMultiplier     = 1.0)
     {
         if (trades.Count == 0) return new PortfolioResult(startBalance, startBalance, 0, startBalance, 0, 0, 0, 0, -1);
 
@@ -99,27 +104,22 @@ public static class Simulator
         double balance      = startBalance, peak = startBalance, maxDd = 0, totalPosSizeEur = 0;
         int tradesToTenPct  = -1;
 
-        // Track open positions: (estimated close time, EUR allocated)
         var openPos = new List<(DateTime Close, double EurAllocated)>();
 
         for (int i = 0; i < sorted.Count; i++)
         {
             var (entryTime, ret, conf, hold) = sorted[i];
 
-            // Remove positions that have closed by the time this trade opens
             openPos.RemoveAll(p => p.Close <= entryTime);
 
             double currentEurDeployed = openPos.Sum(p => p.EurAllocated);
             double maxEurDeployable   = maxTotalExposurePct * balance;
             double headroomEur        = Math.Max(0, maxEurDeployable - currentEurDeployed);
 
-            // Drawdown brake: scale positions down when in drawdown to protect remaining capital.
-            // Linear from 1.0 at no-DD to 0.20 at drawdownBrakeAt, floored at 0.20.
             double currentDd = peak > balance ? (peak - balance) / peak : 0.0;
             double ddScale   = Math.Max(0.20, 1.0 - currentDd / drawdownBrakeAt);
 
-            // Desired position in EUR at half-Kelly, drawdown-scaled
-            double desiredEur = conf * balance * ddScale;
+            double desiredEur = conf * kellyMultiplier * balance * ddScale;
             double posEur     = Math.Min(desiredEur, headroomEur);
 
             openPos.Add((entryTime + hold, posEur));
@@ -146,6 +146,29 @@ public static class Simulator
             TradesCount:    sorted.Count,
             TradesToTenPct: tradesToTenPct
         );
+    }
+
+    // Risk-capped overload: RiskCapFrac per trade limits effective position size so that
+    // a stop-out at the coin's historical worst-case loss never exceeds the risk budget.
+    // e.g. worstLoss=10%, riskBudget=1% → RiskCapFrac=0.10; at fullKelly conf=6% this
+    // caps to 10%, so it doesn't bind here, but at worstLoss=20% cap=5% beats fullKelly.
+    public static PortfolioResult SimulatePortfolioExposureCapped(
+        List<(DateTime EntryTime, double Return, double CoinConf, double RiskCapFrac, TimeSpan HoldDuration)> trades,
+        double maxTotalExposurePct = 0.40,
+        double startBalance        = 100.0,
+        double drawdownBrakeAt     = 0.15,
+        double kellyMultiplier     = 1.0)
+    {
+        // Fold riskCap into conf upfront: effectiveFrac = min(conf × km, riskCap)
+        var adapted = trades
+            .Select(t =>
+            {
+                double eff = Math.Min(t.CoinConf * kellyMultiplier,
+                                      t.RiskCapFrac > 0 ? t.RiskCapFrac : t.CoinConf * kellyMultiplier);
+                return (t.EntryTime, t.Return, eff, t.HoldDuration);
+            })
+            .ToList();
+        return SimulatePortfolioExposureCapped(adapted, maxTotalExposurePct, startBalance, drawdownBrakeAt, kellyMultiplier: 1.0);
     }
 
     // Time-normalised Sharpe. candleCount = number of 5m-equivalent candles in the window;

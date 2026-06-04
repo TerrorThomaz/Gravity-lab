@@ -3,7 +3,7 @@ using Bybit.Net.Clients;
 using Bybit.Net.Enums;
 using System.Text.Json;
 
-const string GenoFile     = "swing_best_genotype.json";
+const string FadeShortGenoFile = "fade_short_genotype.json";
 const string GridGenoFile = "grid_best_genotype.json";
 const double MaxTotalExposurePct  = 0.40;   // max % of capital deployed simultaneously across all open positions
 const double MinMedianVolUsdM     = 0.5;    // $0.5M per 1h candle — thin markets excluded from train + backtest
@@ -32,39 +32,33 @@ var client = new BybitRestClient();
 string mode = args.Length > 0 ? args[0].ToLowerInvariant() : "";
 switch (mode)
 {
-    case "train":        await RunTrain();        break;
-    case "backtest":     await RunBacktest();     break;
-    case "papertrade":   await RunPaperTrade();   break;
-    case "gridtrain":       await RunGridTrain();       break;
-    case "gridbacktest":    await RunGridBacktest();    break;
-    case "combinedbacktest":await RunCombinedBacktest();break;
-    case "rankedbacktest":  await RunRankedBacktest();  break;
-    case "bulltrain":       await RunBullTrain();       break;
-    case "bullbacktest":    await RunBullBacktest();    break;
-    case "test":            await RunTest();            break;
+    case "train":            await RunFadeShortTrain();    break;
+    case "backtest":         await RunBacktest();          break;
+    case "papertrade":       await RunPaperTrade();        break;
+    case "gridtrain":        await RunGridTrain();         break;
+    case "gridbacktest":     await RunGridBacktest();      break;
+    case "combinedbacktest": await RunCombinedBacktest();  break;
+    case "rankedbacktest":   await RunRankedBacktest();    break;
+    case "test":             await RunTest();              break;
+    case "yearlybreakdown":  await RunYearlyBreakdown();   break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
-        Console.WriteLine("  dotnet run -- train             Swing GA: 40 coins, 1h/15m dual-TF, ~3yr (5 held-out for coin-level val)");
-        Console.WriteLine("  dotnet run -- backtest          Swing backtest: 45 coins, val 20%");
-        Console.WriteLine("  dotnet run -- papertrade        Live swing signals, refreshes every 4h");
-        Console.WriteLine("  dotnet run -- gridtrain         Grid GA: ranging-market long grid, 1h candles");
-        Console.WriteLine("  dotnet run -- gridbacktest      Grid backtest: 45 coins, val 20%");
-        Console.WriteLine("  dotnet run -- combinedbacktest  Swing + grid simultaneous, shared capital");
-        Console.WriteLine("  dotnet run -- rankedbacktest    Ranked portfolio: top-N signals by quality, fixed 5% sizing");
-        Console.WriteLine("  dotnet run -- bulltrain         Bull long GA: pullback-in-uptrend, 1h/15m dual-TF");
-        Console.WriteLine("  dotnet run -- bullbacktest      Bull long backtest: 45 coins, val 20%");
-        Console.WriteLine("  dotnet run -- test              Statistical edge validation (both strategies)");
+        Console.WriteLine("  dotnet run -- train              Train FadeShort GA (~10 min)");
+        Console.WriteLine("  dotnet run -- backtest           FadeShort + grid backtest: 45 coins, val 20%");
+        Console.WriteLine("  dotnet run -- papertrade         Live signals, refreshes every 4h");
+        Console.WriteLine("  dotnet run -- gridtrain          Grid GA: ranging-market long grid");
+        Console.WriteLine("  dotnet run -- gridbacktest       Grid backtest: 45 coins, val 20%");
+        Console.WriteLine("  dotnet run -- combinedbacktest   FadeShort + grid, shared capital");
+        Console.WriteLine("  dotnet run -- rankedbacktest     Ranked portfolio: top-N signals by quality");
+        Console.WriteLine("  dotnet run -- test               Statistical edge validation");
+        Console.WriteLine("  dotnet run -- yearlybreakdown    Per-year portfolio returns (full history)");
         break;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  TRAIN — Swing GA on 1h candles (aggregated from 15m), 40 coins, ~3yr
-//
-//  Two-layer validation:
-//    1. Temporal holdout: each training coin split 80% train / 20% val (same as before)
-//    2. Coin-level holdout: 5 coins never shown to the GA, checked after training
+//  TRAIN — FadeShort GA, 40 coins, ~3yr, with cluster GAs + double validation
 // ══════════════════════════════════════════════════════════════════════════════
-async Task RunTrain()
+async Task RunFadeShortTrain()
 {
     Console.WriteLine("=== Gravity-gen2 | TRAIN (1h setup + 15m entry/exit, 40 coins, ~3yr) ===\n");
 
@@ -133,7 +127,7 @@ async Task RunTrain()
         try
         {
             var m15 = await FetchFifteenMinCandlesCached(t.sym, batches: 113);
-            var h1  = SwingSimulator.AggregateCandles(m15.ToArray(), 4);
+            var h1  = FadeShortSimulator.AggregateCandles(m15.ToArray(), 4);
             Console.WriteLine($"  {t.sym}: {m15.Count} 15m → {h1.Length} h1 candles (~{h1.Length / 24.0:F0}d)");
             return (t.sym, t.weight, h1);
         }
@@ -141,8 +135,9 @@ async Task RunTrain()
     });
     var fetched = await Task.WhenAll(fetchTasks);
 
-    var namedCoins   = new List<(string Sym, SwingGeneticAlgorithm.CoinData Cd)>();
+    var namedCoins   = new List<(string Sym, FadeShortGA.CoinData Cd)>();
     var heldOutCoins = new List<(string Sym, Candle[] H1)>();
+    var testBySymbol = new Dictionary<string, Candle[]>();
 
     foreach (var (sym, weight, h1) in fetched)
     {
@@ -154,11 +149,13 @@ async Task RunTrain()
         }
         else
         {
-            int split = (int)(h1.Length * 0.8);
-            namedCoins.Add((sym, new SwingGeneticAlgorithm.CoinData(
-                h1[..split],
-                h1[split..],
+            int trainSplit = (int)(h1.Length * 0.75);
+            int valSplit   = (int)(h1.Length * 0.875);
+            namedCoins.Add((sym, new FadeShortGA.CoinData(
+                h1[..trainSplit],
+                h1[trainSplit..valSplit],
                 weight)));
+            testBySymbol[sym] = h1[valSplit..];
         }
     }
 
@@ -169,7 +166,7 @@ async Task RunTrain()
     // prices in practice — the ATR cost model underestimates slippage in thin books.
     {
         Console.WriteLine($"\n  Volume filter (min median 1h vol ≥ ${MinMedianVolUsdM:F1}M):");
-        var volFiltered = new List<(string Sym, SwingGeneticAlgorithm.CoinData Cd)>();
+        var volFiltered = new List<(string Sym, FadeShortGA.CoinData Cd)>();
         foreach (var nc in namedCoins)
         {
             var volUsd = nc.Cd.TrainCandles
@@ -187,14 +184,14 @@ async Task RunTrain()
 
     if (namedCoins.Count == 0) { Console.WriteLine("No coins passed volume filter."); return; }
 
-    SwingGenotype? seed = null;
-    if (File.Exists(GenoFile))
+    FadeShortGenotype? seed = null;
+    if (File.Exists(FadeShortGenoFile))
     {
-        var candidate = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(GenoFile))!.ToGenotype();
+        var candidate = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(FadeShortGenoFile))!.ToGenotype();
         if (candidate.Fitness > 0)
         {
             seed = candidate;
-            Console.WriteLine($"  Seeding from {GenoFile}: {seed}");
+            Console.WriteLine($"  Seeding from {FadeShortGenoFile}: {seed}");
         }
         else
             Console.WriteLine($"  Skipping seed (fitness ≤ 0 — previous run failed)");
@@ -208,7 +205,7 @@ async Task RunTrain()
         var screened = namedCoins
             .Where(nc =>
             {
-                var returns = SwingSimulator.GetSwingReturns(seed, nc.Cd.TrainCandles)
+                var returns = FadeShortSimulator.GetFadeShortReturns(seed, nc.Cd.TrainCandles)
                                            .Select(t => t.Return).ToList();
                 double exp = returns.Count >= 10 ? returns.Average() : double.NegativeInfinity;
                 double pf  = returns.Count >= 10 ? Simulator.ProfitFactor(returns) : 0;
@@ -232,12 +229,12 @@ async Task RunTrain()
 
     // ── Universal GA (all coins) ──────────────────────────────────────────────────
     Console.WriteLine("─── Swing GA training (universal — all coins) ───");
-    var best = new SwingGeneticAlgorithm(80, 150, verbose: true).Run(coinData, seed);
+    var best = new FadeShortGA(80, 150, verbose: true).Run(coinData, seed);
 
     Console.WriteLine($"\nFrozen genotype:\n  {best}\n");
-    File.WriteAllText(GenoFile, JsonSerializer.Serialize(SwingGenotypeDto.From(best),
+    File.WriteAllText(FadeShortGenoFile, JsonSerializer.Serialize(FadeShortGenotypeDto.From(best),
         new JsonSerializerOptions { WriteIndented = true }));
-    Console.WriteLine($"  Saved → {GenoFile}");
+    Console.WriteLine($"  Saved → {FadeShortGenoFile}");
 
     // ── Per-cluster GAs ──────────────────────────────────────────────────────────
     Console.WriteLine("\n─── Per-cluster GA training ───");
@@ -259,39 +256,50 @@ async Task RunTrain()
         if (clusterCoins.Count < 4)
         {
             Console.WriteLine($"  ⚠ Too few coins — skipping cluster GA, universal genotype will cover this cluster");
-            File.WriteAllText(clFile, JsonSerializer.Serialize(SwingGenotypeDto.From(best),
+            File.WriteAllText(clFile, JsonSerializer.Serialize(FadeShortGenotypeDto.From(best),
                 new JsonSerializerOptions { WriteIndented = true }));
             continue;
         }
 
-        SwingGenotype? clusterSeed = File.Exists(clFile)
-            ? JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(clFile))!.ToGenotype() is { Fitness: > 0 } prev ? prev : best
+        FadeShortGenotype? clusterSeed = File.Exists(clFile)
+            ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(clFile))!.ToGenotype() is { Fitness: > 0 } prev ? prev : best
             : best;   // first run: seed cluster from universal
 
-        var clusterBest = new SwingGeneticAlgorithm(60, 100, verbose: false).Run(clusterCoins, clusterSeed);
+        var clusterBest = new FadeShortGA(60, 100, verbose: false).Run(clusterCoins, clusterSeed);
         Console.WriteLine($"  [{clLabel}] best: {clusterBest}");
-        File.WriteAllText(clFile, JsonSerializer.Serialize(SwingGenotypeDto.From(clusterBest),
+        File.WriteAllText(clFile, JsonSerializer.Serialize(FadeShortGenotypeDto.From(clusterBest),
             new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"  Saved → {clFile}");
     }
 
     // Overfit check
-    Console.WriteLine("\n─── Overfit check (train 80% vs val 20%) ───");
+    Console.WriteLine("\n─── Overfit check (train 75% vs val 12.5%) ───");
     var tRet = coinData.SelectMany(cd =>
-        SwingSimulator.GetSwingReturns(best, cd.TrainCandles).Select(t => t.Return)).ToList();
+        FadeShortSimulator.GetFadeShortReturns(best, cd.TrainCandles).Select(t => t.Return)).ToList();
     var vRet = coinData.SelectMany(cd =>
-        SwingSimulator.GetSwingReturns(best, cd.ValCandles).Select(t => t.Return)).ToList();
+        FadeShortSimulator.GetFadeShortReturns(best, cd.ValCandles).Select(t => t.Return)).ToList();
 
     int tCC = coinData.Sum(cd => cd.TrainCandles.Length) * 12;
     int vCC = coinData.Sum(cd => cd.ValCandles.Length) * 12;
-    PrintSplitStats("Train 80%", tRet, tCC);
-    PrintSplitStats("Val   20%", vRet, vCC);
+    PrintSplitStats("Train 75%", tRet, tCC);
+    PrintSplitStats("Val  12.5%", vRet, vCC);
 
     double vExp = vRet.Count > 0 ? vRet.Average() : 0;
     double tExp = tRet.Count > 0 ? tRet.Average() : 0;
     Console.WriteLine(vExp < tExp * 0.4 || vExp <= 0
         ? "\n  !! Possible overfit — val expectancy < 40% of train"
         : "\n  OK — val expectancy within acceptable range");
+
+    // OOS test (last 12.5% — never seen by the GA; this is what backtest evaluates)
+    Console.WriteLine("\n─── OOS test (last 12.5% — not seen by GA) ───");
+    var oosRet = namedCoins
+        .Where(nc => testBySymbol.ContainsKey(nc.Sym))
+        .SelectMany(nc => FadeShortSimulator.GetFadeShortReturns(best, testBySymbol[nc.Sym]).Select(t => t.Return))
+        .ToList();
+    int oosCC = namedCoins
+        .Where(nc => testBySymbol.ContainsKey(nc.Sym))
+        .Sum(nc => testBySymbol[nc.Sym].Length * 12);
+    PrintSplitStats("OOS  12.5%", oosRet, oosCC);
 
     // ── Double validation: coin-level holdout ─────────────────────────────────
     if (heldOutCoins.Count > 0)
@@ -304,7 +312,7 @@ async Task RunTrain()
         int allHeldCC  = 0;
         foreach (var (sym, h1) in heldOutCoins)
         {
-            var rets = SwingSimulator.GetSwingReturns(best, h1).Select(t => t.Return).ToList();
+            var rets = FadeShortSimulator.GetFadeShortReturns(best, h1).Select(t => t.Return).ToList();
             allHeldRet.AddRange(rets);
             allHeldCC += h1.Length * 12;
 
@@ -335,27 +343,36 @@ async Task RunTrain()
 // ══════════════════════════════════════════════════════════════════════════════
 async Task RunBacktest()
 {
-    Console.WriteLine($"=== Gravity-gen2 | BACKTEST (~3yr, {BacktestCoins.Length} coins, 1h setup + 15m entry/exit) ===\n");
+    Console.WriteLine($"=== Gravity-gen2 | BACKTEST (~3yr, {BacktestCoins.Length} coins, 1h setup + 15m entry/exit, test 12.5%) ===\n");
 
-    if (!File.Exists(GenoFile))
+    if (!File.Exists(FadeShortGenoFile))
     {
-        Console.WriteLine($"No genotype at '{GenoFile}'. Run 'dotnet run -- train' first.");
+        Console.WriteLine($"No genotype at '{FadeShortGenoFile}'. Run 'dotnet run -- train' first.");
         return;
     }
-    var gUniversal = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(GenoFile))!.ToGenotype();
+    var gUniversal = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(FadeShortGenoFile))!.ToGenotype();
     Console.WriteLine($"Universal genotype: {gUniversal}\n");
 
     // Load cluster genotypes (fall back to universal if a cluster file is missing or not yet trained)
-    var clusterGenos = new Dictionary<CoinCluster, SwingGenotype>();
+    var clusterGenos = new Dictionary<CoinCluster, FadeShortGenotype>();
     foreach (CoinCluster cl in Enum.GetValues<CoinCluster>())
     {
         string clFile = CoinClusterHelper.GenoFile(cl);
         clusterGenos[cl] = File.Exists(clFile)
-            ? JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(clFile))!.ToGenotype()
+            ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(clFile))!.ToGenotype()
             : gUniversal;
         Console.WriteLine($"  [{CoinClusterHelper.Label(cl)}] genotype: {clusterGenos[cl]}");
     }
     Console.WriteLine();
+
+    // Load grid genotype (optional — backtest still works without it)
+    GridGenotype? gridG = null;
+    if (File.Exists(GridGenoFile))
+    {
+        gridG = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(GridGenoFile))!.ToGenotype();
+        Console.WriteLine($"Grid genotype:     {gridG}\n");
+    }
+    else Console.WriteLine($"  (no grid genotype — run 'dotnet run -- gridtrain' to include grid)\n");
 
     var testCoins = BacktestCoins;
 
@@ -376,8 +393,11 @@ async Task RunBacktest()
     Console.WriteLine();
 
     var allTrades     = new List<(string Coin, DateTime Time, double Return, string Kind, double CoinConf)>();
+    var gridTrades    = new List<(string Coin, DateTime Time, double Return, double CoinConf)>();
     var coinStats     = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
+    var gridCoinStats = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
     int totalVCC      = 0;
+    int gridTotalVCC  = 0;
 
     Console.WriteLine($"{"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
     Console.WriteLine(new string('-', 82));
@@ -387,7 +407,7 @@ async Task RunBacktest()
         if (m15List.Count < 600) { Console.WriteLine($"  {sym,-16}  skip (no data)"); continue; }
 
         var m15 = m15List.ToArray();
-        var h1  = SwingSimulator.AggregateCandles(m15, 4);
+        var h1  = FadeShortSimulator.AggregateCandles(m15, 4);
 
         // Volume filter — same floor as training screen
         {
@@ -404,7 +424,7 @@ async Task RunBacktest()
         var coinCluster = CoinClusterHelper.Classify(h1);
         var g = clusterGenos[coinCluster];
 
-        int h1Split  = (int)(h1.Length * 0.8);
+        int h1Split  = (int)(h1.Length * 0.875);
         int m15Split = h1Split * 4;
         var h1Train  = h1[..h1Split];
         var h1Val    = h1[h1Split..];
@@ -413,7 +433,7 @@ async Task RunBacktest()
 
         var screenH1  = h1Train.Length >= 4380 ? h1Train : h1;
         var screenM15 = screenH1.Length == h1.Length ? m15 : m15Train;
-        var tRet  = SwingSimulator.GetSwingReturns(g, screenH1, screenM15).Select(t => t.Return).ToList();
+        var tRet  = FadeShortSimulator.GetFadeShortReturns(g, screenH1, screenM15).Select(t => t.Return).ToList();
         double tExp  = tRet.Count >= 5 ? tRet.Average() : double.NegativeInfinity;
         double tSort = tRet.Count >= 5 ? Simulator.SortinoRatio(tRet, screenH1.Length * 12) : double.NegativeInfinity;
         double tPF   = tRet.Count >= 5 ? Simulator.ProfitFactor(tRet) : 0;
@@ -425,7 +445,7 @@ async Task RunBacktest()
 
         double coinConf = Simulator.ComputeConfidence(tRet);
 
-        var vTrades = SwingSimulator.GetSwingReturns(g, h1Val, m15Val);
+        var vTrades = FadeShortSimulator.GetFadeShortReturns(g, h1Val, m15Val);
         var vRet    = vTrades.Select(t => t.Return).ToList();
 
         int vCC = h1Val.Length * 12;
@@ -442,11 +462,35 @@ async Task RunBacktest()
 
         Console.WriteLine($"  {sym,-16} {coinConf,6:P1}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%");
         coinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, coinConf));
+
+        // Grid (h1 only — runs on same val slice)
+        if (gridG != null)
+        {
+            var gtRet = GridSimulator.GetGridReturns(gridG, h1Train).Select(t => t.Return).ToList();
+            double gtExp = gtRet.Count >= 5 ? gtRet.Average() : double.NegativeInfinity;
+            double gtPF  = gtRet.Count >= 5 ? Simulator.ProfitFactor(gtRet) : 0;
+            if (gtExp > 0 && gtPF >= 1.15)
+            {
+                double gConf = Simulator.ComputeConfidence(gtRet);
+                var    gvTr  = GridSimulator.GetGridReturns(gridG, h1Val);
+                var    gvRet = gvTr.Select(t => t.Return).ToList();
+                gridTotalVCC += vCC;
+                double gSh   = Simulator.SharpeRatio(gvRet, vCC);
+                double gSort = Simulator.SortinoRatio(gvRet, vCC);
+                double gPf   = Simulator.ProfitFactor(gvRet);
+                double gWr   = gvRet.Count > 0 ? (double)gvRet.Count(r => r > 0) / gvRet.Count : 0;
+                double gAvg  = gvRet.Count > 0 ? gvRet.Average() : 0;
+                foreach (var (t, ret, _) in gvTr)
+                    gridTrades.Add((sym, t, ret, gConf));
+                gridCoinStats.Add((sym, gSh, gSort, gPf, gvRet.Count, gWr, gAvg, gConf));
+            }
+        }
     }
 
-    if (allTrades.Count == 0) { Console.WriteLine("No trades."); return; }
+    if (allTrades.Count == 0 && gridTrades.Count == 0) { Console.WriteLine("No trades."); return; }
 
     allTrades.Sort((a, b) => a.Time.CompareTo(b.Time));
+    gridTrades.Sort((a, b) => a.Time.CompareTo(b.Time));
     var allRet     = allTrades.Select(t => t.Return).ToList();
     double portSharpe  = Simulator.SharpeRatio(allRet, totalVCC);
     double portSortino = Simulator.SortinoRatio(allRet, totalVCC);
@@ -458,7 +502,7 @@ async Task RunBacktest()
     var port = Simulator.SimulatePortfolio(tradesWithConf);
 
     Console.WriteLine($"\n{new string('═', 70)}");
-    Console.WriteLine($"  BACKTEST SUMMARY  (all coins, val 20%, 1h setup + 15m exec)");
+    Console.WriteLine($"  BACKTEST SUMMARY  (all coins, test 12.5%, 1h setup + 15m exec)");
     Console.WriteLine($"{new string('═', 70)}");
     Console.WriteLine($"  Total trades: {allRet.Count}  ({totalWins}W / {allRet.Count - totalWins}L)");
     Console.WriteLine($"  Win rate:     {(allRet.Count > 0 ? (double)totalWins / allRet.Count : 0):P1}");
@@ -483,6 +527,255 @@ async Task RunBacktest()
     Console.WriteLine($"  {new string('-', 75)}");
     foreach (var r in coinStats.OrderByDescending(c => c.Sharpe))
         Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
+
+    // ── Grid summary ──────────────────────────────────────────────────────────
+    if (gridTrades.Count > 0)
+    {
+        var gAllRet   = gridTrades.Select(t => t.Return).ToList();
+        int gWins     = gAllRet.Count(r => r > 0);
+        var gPort     = Simulator.SimulatePortfolio(gridTrades.Select(t => (t.Return, t.CoinConf)).ToList());
+
+        Console.WriteLine();
+        Console.WriteLine($"{new string('═', 70)}");
+        Console.WriteLine($"  GRID SUMMARY  (test 12.5%, 1h candles)");
+        Console.WriteLine($"{new string('═', 70)}");
+        Console.WriteLine($"  Total trades: {gAllRet.Count}  ({gWins}W / {gAllRet.Count - gWins}L)");
+        Console.WriteLine($"  Win rate:     {(double)gWins / gAllRet.Count:P1}");
+        Console.WriteLine($"  Avg return:   {gAllRet.Average():+0.00}%");
+        Console.WriteLine($"  Sharpe:       {Simulator.SharpeRatio(gAllRet, gridTotalVCC):F2}");
+        Console.WriteLine($"  Sortino:      {Simulator.SortinoRatio(gAllRet, gridTotalVCC):F2}");
+        Console.WriteLine($"  Profit factor:{Simulator.ProfitFactor(gAllRet):F2}");
+        Console.WriteLine($"  Calmar:       {Simulator.CalmarRatio(gAllRet):F2}");
+        Console.WriteLine();
+        Console.WriteLine($"  ── Portfolio sim ──");
+        Console.WriteLine($"    End balance:  €{gPort.EndBalance:F2}  ({(gPort.EndBalance - gPort.StartBalance) / gPort.StartBalance * 100:+0.0;-0.0}%)");
+        Console.WriteLine($"    Max drawdown: {gPort.MaxDrawdownPct:F1}%");
+        Console.WriteLine();
+        Console.WriteLine($"  Per-coin (sorted by Sharpe):");
+        Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+        Console.WriteLine($"  {new string('-', 75)}");
+        foreach (var r in gridCoinStats.OrderByDescending(c => c.Sharpe))
+            Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
+
+        // Combined FadeShort + Grid portfolio
+        var combined = allTrades.Select(t => (t.Time, t.Return, t.CoinConf, "fs"))
+            .Concat(gridTrades.Select(t => (t.Time, t.Return, t.CoinConf, "grid")))
+            .OrderBy(t => t.Time)
+            .Select(t => (t.Return, t.CoinConf))
+            .ToList();
+        var combPort = Simulator.SimulatePortfolio(combined);
+        Console.WriteLine();
+        Console.WriteLine($"{new string('═', 70)}");
+        Console.WriteLine($"  COMBINED (FadeShort + Grid) — €100 start, half-Kelly, 5% cap");
+        Console.WriteLine($"{new string('═', 70)}");
+        Console.WriteLine($"    End balance:  €{combPort.EndBalance:F2}  ({(combPort.EndBalance - combPort.StartBalance) / combPort.StartBalance * 100:+0.0;-0.0}%)");
+        Console.WriteLine($"    Max drawdown: {combPort.MaxDrawdownPct:F1}%");
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  YEARLY BREAKDOWN — per-calendar-year portfolio returns, full history
+//  Note: 2021–2025 is in-sample for the genotype. Use to gauge year-to-year
+//  variance, not as an unbiased performance estimate.
+// ══════════════════════════════════════════════════════════════════════════════
+async Task RunYearlyBreakdown()
+{
+    Console.WriteLine("=== Gravity-gen2 | YEARLY BREAKDOWN (full history, in-sample 2021-2025) ===\n");
+
+    if (!File.Exists(FadeShortGenoFile))
+    { Console.WriteLine("No FadeShort genotype — run train first."); return; }
+
+    var gUniversal = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(FadeShortGenoFile))!.ToGenotype();
+    var clusterGenos = new Dictionary<CoinCluster, FadeShortGenotype>();
+    foreach (CoinCluster cl in Enum.GetValues<CoinCluster>())
+    {
+        string clFile = CoinClusterHelper.GenoFile(cl);
+        clusterGenos[cl] = File.Exists(clFile)
+            ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(clFile))!.ToGenotype()
+            : gUniversal;
+    }
+
+    GridGenotype? gridG = File.Exists(GridGenoFile)
+        ? JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(GridGenoFile))!.ToGenotype()
+        : null;
+
+    Console.WriteLine($"  Fetching {BacktestCoins.Length} coins...");
+    var sem = new SemaphoreSlim(4);
+    var fetchTasks = BacktestCoins.Select(async sym =>
+    {
+        await sem.WaitAsync();
+        try { var m15 = await FetchFifteenMinCandlesCached(sym, batches: 113); return (sym, m15); }
+        finally { sem.Release(); }
+    });
+    var fetched = await Task.WhenAll(fetchTasks);
+    Console.WriteLine();
+
+    // Collect all trades with timestamps across full history
+    // Trades carry: timestamp (for concurrent overlap), conf (half-Kelly), riskCap (max
+    // position so a worst-case stop-out never costs more than 1% of portfolio).
+    const double RiskBudget = 0.004;  // 0.4% of portfolio per trade
+    const double FsHoldHours   = 48;  // avg FadeShort hold (max=84h, exits early via TP/stop)
+    const double GridHoldHours = 36;  // avg Grid hold (max=69h, grid cycles faster)
+
+    var allTrades  = new List<(DateTime Time, double Return, double Conf, double RiskCap)>();
+    var gridTrades = new List<(DateTime Time, double Return, double Conf, double RiskCap)>();
+    var coinDiag   = new List<(string Sym, int Trades, double WL, double RC, double FullKPos)>();
+
+    foreach (var (sym, m15List) in fetched)
+    {
+        if (m15List.Count < 600) continue;
+        var m15 = m15List.ToArray();
+        var h1  = FadeShortSimulator.AggregateCandles(m15, 4);
+
+        var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
+        double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
+        if (medVol < MinMedianVolUsdM) continue;
+
+        var coinCluster = CoinClusterHelper.Classify(h1);
+        var g = clusterGenos[coinCluster];
+
+        int trainEnd = (int)(h1.Length * 0.75);
+        var trainRet = FadeShortSimulator.GetFadeShortReturns(g, h1[..trainEnd], m15[..(trainEnd * 4)])
+                           .Select(t => t.Return).ToList();
+        if (trainRet.Count < 10) continue;
+        if (trainRet.Average() <= 0 || Simulator.ProfitFactor(trainRet) < 1.1) continue;
+        double conf = Simulator.ComputeConfidence(trainRet);
+
+        // Worst-case loss per unit of position: 99th-pct of |return| on all losing trades.
+        // This is what a bad stop-out looks like. RiskCap = budget / worstLoss caps
+        // the position so even the worst trade only costs 1% of portfolio.
+        var fullTrades = FadeShortSimulator.GetFadeShortReturns(g, h1, m15);
+        var losses = fullTrades.Where(t => t.Return < 0)
+                               .Select(t => Math.Abs(t.Return) / 100.0)
+                               .OrderBy(x => x).ToList();
+        double worstLoss = losses.Count >= 5
+            ? losses[Math.Min(losses.Count - 1, (int)(losses.Count * 0.99))]
+            : 0.05;
+        worstLoss = Math.Max(worstLoss, 0.005);
+        double riskCap = RiskBudget / worstLoss;
+
+        coinDiag.Add((sym, fullTrades.Count, worstLoss, riskCap, Math.Min(conf * 2.0, riskCap)));
+
+        foreach (var (t, ret, _) in fullTrades)
+            allTrades.Add((t, ret, conf, riskCap));
+
+        if (gridG != null)
+        {
+            var gtTrain = GridSimulator.GetGridReturns(gridG, h1[..trainEnd]).Select(t => t.Return).ToList();
+            if (gtTrain.Count >= 5 && gtTrain.Average() > 0 && Simulator.ProfitFactor(gtTrain) >= 1.15)
+            {
+                double gConf = Simulator.ComputeConfidence(gtTrain);
+                var gLoss = GridSimulator.GetGridReturns(gridG, h1)
+                    .Where(t => t.Return < 0).Select(t => Math.Abs(t.Return) / 100.0).OrderBy(x => x).ToList();
+                double gWorstLoss = gLoss.Count >= 5
+                    ? gLoss[Math.Min(gLoss.Count - 1, (int)(gLoss.Count * 0.99))] : 0.05;
+                gWorstLoss = Math.Max(gWorstLoss, 0.005);
+                double gRiskCap = RiskBudget / gWorstLoss;
+                foreach (var (t, ret, _) in GridSimulator.GetGridReturns(gridG, h1))
+                    gridTrades.Add((t, ret, gConf, gRiskCap));
+            }
+        }
+    }
+
+    if (allTrades.Count == 0) { Console.WriteLine("No trades."); return; }
+
+    var years     = allTrades.Select(t => t.Time.Year)
+                    .Concat(gridTrades.Select(t => t.Time.Year))
+                    .Distinct().OrderBy(y => y).ToList();
+    var fullYears = years.Where(y => y >= 2022 && y <= 2025).ToList();
+    var fsHold    = TimeSpan.FromHours(FsHoldHours);
+    var gridHold  = TimeSpan.FromHours(GridHoldHours);
+
+    // ── Per-year table: current (sequential ½-K) vs live (concurrent full-K risk-capped) ─
+    Console.WriteLine($"  {"Year",-6}  {"Trades",6}  {"½-K seq ret",11}  {"½-K seq DD",10}  {"Full-K live ret",15}  {"Full-K live DD",14}");
+    Console.WriteLine($"  {new string('-', 78)}");
+
+    foreach (int yr in years)
+    {
+        var yrSeq = allTrades.Where(t => t.Time.Year == yr).Select(t => (t.Return, t.Conf))
+            .Concat(gridTrades.Where(t => t.Time.Year == yr).Select(t => (t.Return, t.Conf))).ToList();
+
+        var yrLive = allTrades.Where(t => t.Time.Year == yr)
+            .Select(t => (t.Time, t.Return, t.Conf, t.RiskCap, fsHold))
+            .Concat(gridTrades.Where(t => t.Time.Year == yr)
+                .Select(t => (t.Time, t.Return, t.Conf, t.RiskCap, gridHold)))
+            .OrderBy(t => t.Time).ToList();
+
+        var seqPort  = Simulator.SimulatePortfolio(yrSeq, startBalance: 100.0, maxPositionPct: 0.05);
+        var livePort = Simulator.SimulatePortfolioExposureCapped(yrLive, startBalance: 100.0,
+            drawdownBrakeAt: 0.15, kellyMultiplier: 2.0);
+
+        int n = yrSeq.Count;
+        Console.WriteLine($"  {yr,-6}  {n,6}  {seqPort.EndBalance-100,+10:F1}%  {seqPort.MaxDrawdownPct,9:F1}%  {livePort.EndBalance-100,+14:F1}%  {livePort.MaxDrawdownPct,13:F1}%");
+    }
+
+    Console.WriteLine($"  {new string('-', 78)}");
+
+    // ── Full-history scenario comparison ─────────────────────────────────────
+    var allLive = allTrades.Select(t => (t.Time, t.Return, t.Conf, t.RiskCap, fsHold))
+        .Concat(gridTrades.Select(t => (t.Time, t.Return, t.Conf, t.RiskCap, gridHold)))
+        .OrderBy(t => t.Time).ToList();
+    var allSeq = allTrades.Select(t => (t.Return, t.Conf))
+        .Concat(gridTrades.Select(t => (t.Return, t.Conf))).ToList();
+
+    Console.WriteLine($"\n{new string('═', 72)}");
+    Console.WriteLine($"  SIZING SCENARIOS  (full 2021–2026, in-sample)");
+    Console.WriteLine($"  Concurrent = overlapping positions tracked; brake = size→20% floor at 15% DD");
+    Console.WriteLine($"  RiskCap = position capped so worst stop-out ≤ 0.4% of portfolio");
+    Console.WriteLine($"{new string('═', 72)}");
+    Console.WriteLine($"  {"Scenario",-38}  {"Total",6}  {"Max DD",7}  {"Worst yr",9}  {"Best yr",8}");
+    Console.WriteLine($"  {new string('-', 72)}");
+
+    void PrintScenario(string label,
+        Func<List<(double Return, double Conf)>, Simulator.PortfolioResult> seqFn,
+        Func<List<(DateTime Time, double Return, double Conf, double RiskCap, TimeSpan Hold)>, Simulator.PortfolioResult>? liveFn)
+    {
+        Simulator.PortfolioResult full = liveFn != null ? liveFn(allLive) : seqFn(allSeq);
+        var yrRets = fullYears.Select(yr =>
+        {
+            var ys = allTrades.Where(t => t.Time.Year == yr).Select(t => (t.Return, t.Conf))
+                .Concat(gridTrades.Where(t => t.Time.Year == yr).Select(t => (t.Return, t.Conf))).ToList();
+            var yl = allTrades.Where(t => t.Time.Year == yr)
+                .Select(t => (t.Time, t.Return, t.Conf, t.RiskCap, fsHold))
+                .Concat(gridTrades.Where(t => t.Time.Year == yr)
+                    .Select(t => (t.Time, t.Return, t.Conf, t.RiskCap, gridHold)))
+                .OrderBy(t => t.Time).ToList();
+            return liveFn != null ? liveFn(yl).EndBalance - 100.0 : seqFn(ys).EndBalance - 100.0;
+        }).ToList();
+        double worst = yrRets.Count > 0 ? yrRets.Min() : 0;
+        double best  = yrRets.Count > 0 ? yrRets.Max() : 0;
+        Console.WriteLine($"  {label,-38}  {full.EndBalance-100,+5:F1}%  {full.MaxDrawdownPct,6:F1}%  {worst,+8:F1}%  {best,+7:F1}%");
+    }
+
+    // Sequential reference (current backtest model)
+    PrintScenario("½-K  seq  5%cap  no-brake  [current]",
+        t => Simulator.SimulatePortfolio(t, maxPositionPct: 0.05), null);
+
+    // Concurrent, half-Kelly, brake — base live model
+    PrintScenario("½-K  concurrent  brake@15%",
+        _ => default!, t => Simulator.SimulatePortfolioExposureCapped(t,
+            drawdownBrakeAt: 0.15, kellyMultiplier: 1.0));
+
+    // Concurrent, full-Kelly, NO risk-cap, brake — shows raw full-Kelly danger
+    PrintScenario("Full-K  concurrent  brake@15%  no-riskcap",
+        _ => default!, t => Simulator.SimulatePortfolioExposureCapped(
+            t.Select(x => (x.Time, x.Return, x.Conf, x.Hold)).ToList(),
+            drawdownBrakeAt: 0.15, kellyMultiplier: 2.0));
+
+    // Concurrent, full-Kelly, risk-cap 1%, brake — recommended live scenario
+    PrintScenario("Full-K  concurrent  brake@15%  riskcap0.4%  [live]",
+        _ => default!, t => Simulator.SimulatePortfolioExposureCapped(t,
+            drawdownBrakeAt: 0.15, kellyMultiplier: 2.0));
+
+    Console.WriteLine($"\n  RiskCap per coin: worst 1% of stop-outs limits position so max loss = 0.4% of portfolio.");
+    Console.WriteLine($"  Concurrent: positions overlap in time (48h avg FS hold, 36h avg grid hold).");
+    Console.WriteLine($"  In-sample: 2021–2025 trained. OOS test = Oct 2025–Jun 2026.");
+
+    // ── Per-coin risk cap diagnostics ────────────────────────────────────────
+    Console.WriteLine($"\n  {"Coin",-10}  {"FS trades",9}  {"WorstLoss",9}  {"RiskCap",8}  {"FullK pos",9}  {"Cap binds?",10}");
+    Console.WriteLine($"  {new string('-', 66)}");
+    foreach (var (sym, trades, wl, rc, fkPos) in coinDiag.OrderBy(d => d.Sym))
+        Console.WriteLine($"  {sym,-10}  {trades,9}  {wl*100,8:F1}%  {rc*100,7:F1}%  {fkPos*100,8:F1}%  {(rc < fkPos * 1.001 ? "YES — cap binds" : "no"),10}");
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -492,20 +785,20 @@ async Task RunPaperTrade()
 {
     Console.WriteLine("=== Gravity-gen2 | PAPER TRADE (4h candles) — Ctrl+C to stop ===\n");
 
-    if (!File.Exists(GenoFile))
+    if (!File.Exists(FadeShortGenoFile))
     {
-        Console.WriteLine($"No genotype at '{GenoFile}'. Run 'dotnet run -- train' first.");
+        Console.WriteLine($"No genotype at '{FadeShortGenoFile}'. Run 'dotnet run -- train' first.");
         return;
     }
-    var gUniversalPt = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(GenoFile))!.ToGenotype();
+    var gUniversalPt = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(FadeShortGenoFile))!.ToGenotype();
     Console.WriteLine($"Universal genotype: {gUniversalPt}");
 
-    var clusterGenosPt = new Dictionary<CoinCluster, SwingGenotype>();
+    var clusterGenosPt = new Dictionary<CoinCluster, FadeShortGenotype>();
     foreach (CoinCluster cl in Enum.GetValues<CoinCluster>())
     {
         string clFile = CoinClusterHelper.GenoFile(cl);
         clusterGenosPt[cl] = File.Exists(clFile)
-            ? JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(clFile))!.ToGenotype()
+            ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(clFile))!.ToGenotype()
             : gUniversalPt;
         Console.WriteLine($"  [{CoinClusterHelper.Label(cl)}] {clusterGenosPt[cl]}");
     }
@@ -542,7 +835,7 @@ async Task RunPaperTrade()
             double px       = candles[^1].Close;
             var    coinCl   = CoinClusterHelper.ClassifyByName(sym);
             var    gForCoin = clusterGenosPt[coinCl];
-            var    st       = SwingSimulator.GetSwingTradeState(gForCoin, candles.ToArray());
+            var    st       = FadeShortSimulator.GetFadeShortTradeState(gForCoin, candles.ToArray());
 
             string stateStr  = st.InTrade
                 ? (st.TrailArmed ? "TRAIL ARMED" : $"SHORT b{st.HoldCount}")
@@ -751,7 +1044,7 @@ static void PrintSplitStats(string label, List<double> r, int candleCount)
     double pf   = Simulator.ProfitFactor(r);
     double wr   = (double)r.Count(x => x > 0) / r.Count;
     double avg  = r.Average();
-    Console.WriteLine($"  {label,-12} Sh={sh:F2}  Sort={sort:F2}  PF={pf:F2}  WR={wr:P0}  Tr={r.Count}  Avg={avg:+0.00}%");
+    Console.WriteLine($"  {label,-12} Sh={sh:F2}  Sort={sort:F2}  PF={pf:F2}  WR={wr:P0}  Tr={r.Count}  Avg={avg:+0.00;-0.00}%");
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -762,10 +1055,10 @@ async Task RunTest()
     Console.WriteLine("=== Gravity-gen2 | STATISTICAL TEST (swing + grid, 26 training coins, val 20%) ===\n");
 
     // Load genotypes
-    SwingGenotype? sg = null;
+    FadeShortGenotype? sg = null;
     GridGenotype?  gg = null;
-    if (File.Exists(GenoFile))
-        sg = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(GenoFile))!.ToGenotype();
+    if (File.Exists(FadeShortGenoFile))
+        sg = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(FadeShortGenoFile))!.ToGenotype();
     if (File.Exists(GridGenoFile))
         gg = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(GridGenoFile))!.ToGenotype();
 
@@ -799,7 +1092,7 @@ async Task RunTest()
     {
         if (m15List.Count < 600) continue;
         var m15  = m15List.ToArray();
-        var h1   = SwingSimulator.AggregateCandles(m15, 4);
+        var h1   = FadeShortSimulator.AggregateCandles(m15, 4);
         int split = (int)(h1.Length * 0.8);
         int m15Split = split * 4;
         var h1Val  = h1[split..];
@@ -807,7 +1100,7 @@ async Task RunTest()
         totalH1Val += h1Val.Length;
 
         if (sg != null)
-            swingRet.AddRange(SwingSimulator.GetSwingReturns(sg, h1Val, m15Val).Select(t => t.Return));
+            swingRet.AddRange(FadeShortSimulator.GetFadeShortReturns(sg, h1Val, m15Val).Select(t => t.Return));
         if (gg != null)
             gridRet.AddRange(GridSimulator.GetGridReturns(gg, h1Val).Select(t => t.Return));
     }
@@ -838,17 +1131,17 @@ async Task RunTest()
     {
         if (m15List.Count < 600) continue;
         var m15   = m15List.ToArray();
-        var h1    = SwingSimulator.AggregateCandles(m15, 4);
+        var h1    = FadeShortSimulator.AggregateCandles(m15, 4);
         int split = (int)(h1.Length * 0.8);
         var h1Train  = h1[..split];
         var m15Train = m15[..(split * 4)];
 
         if (sg != null)
         {
-            var trainRets = SwingSimulator.GetSwingReturns(sg, h1Train, m15Train).Select(t => t.Return).ToList();
+            var trainRets = FadeShortSimulator.GetFadeShortReturns(sg, h1Train, m15Train).Select(t => t.Return).ToList();
             var (_, hk) = StrategyStats.KellyFraction(trainRets);
             double swingHk = Math.Min(hk, 0.05);
-            foreach (var (t, ret, _) in SwingSimulator.GetSwingReturns(sg, h1, m15))
+            foreach (var (t, ret, _) in FadeShortSimulator.GetFadeShortReturns(sg, h1, m15))
                 crashTrades.Add((t - TimeSpan.FromHours(sg.MaxHoldCandles), t, ret, swingHk, "swing"));
         }
 
@@ -866,7 +1159,7 @@ async Task RunTest()
 
     Console.WriteLine("  Fetching BTCUSDT for crash detection...");
     var btcM15 = await FetchFifteenMinCandlesCached("BTCUSDT", batches: 113);
-    var btcH1  = SwingSimulator.AggregateCandles(btcM15.ToArray(), 4);
+    var btcH1  = FadeShortSimulator.AggregateCandles(btcM15.ToArray(), 4);
 
     var crashes = CrashAnalyser.DetectCrashes(btcH1);
     CrashAnalyser.Report(crashes, crashTrades);
@@ -903,7 +1196,7 @@ async Task RunGridTrain()
         try
         {
             var m15 = await FetchFifteenMinCandlesCached(t.sym, batches: 113);
-            var h1  = SwingSimulator.AggregateCandles(m15.ToArray(), 4);
+            var h1  = FadeShortSimulator.AggregateCandles(m15.ToArray(), 4);
             Console.WriteLine($"  {t.sym}: {h1.Length} h1 candles");
             return (t.sym, t.weight, h1);
         }
@@ -922,9 +1215,9 @@ async Task RunGridTrain()
 
     // Load swing genotype to enforce regime partition: grid ADX ceiling = swing threshold − 1.
     double adxCeiling = 20.0;
-    if (File.Exists(GenoFile))
+    if (File.Exists(FadeShortGenoFile))
     {
-        var swingGeno = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(GenoFile))!.ToGenotype();
+        var swingGeno = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(FadeShortGenoFile))!.ToGenotype();
         adxCeiling = Math.Min(swingGeno.AdxThreshold - 1.0, 20.0);
         Console.WriteLine($"  Swing AdxThreshold={swingGeno.AdxThreshold:F0} → grid ceiling={adxCeiling:F0} (clean partition)");
     }
@@ -982,7 +1275,7 @@ async Task RunGridBacktest()
         try
         {
             var m15 = await FetchFifteenMinCandlesCached(sym, batches: 113);
-            var h1  = SwingSimulator.AggregateCandles(m15.ToArray(), 4);
+            var h1  = FadeShortSimulator.AggregateCandles(m15.ToArray(), 4);
             Console.WriteLine($"  {sym}: {h1.Length} h1 candles");
             return (sym, h1);
         }
@@ -1090,10 +1383,10 @@ async Task RunCombinedBacktest()
 {
     Console.WriteLine($"=== Gravity-gen2 | COMBINED BACKTEST (swing + grid, {BacktestCoins.Length} coins, val 20%) ===\n");
 
-    if (!File.Exists(GenoFile))     { Console.WriteLine($"Missing swing genotype — run 'train' first.");     return; }
+    if (!File.Exists(FadeShortGenoFile))     { Console.WriteLine($"Missing swing genotype — run 'train' first.");     return; }
     if (!File.Exists(GridGenoFile)) { Console.WriteLine($"Missing grid genotype — run 'gridtrain' first."); return; }
 
-    var swingG = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(GenoFile))!.ToGenotype();
+    var swingG = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(FadeShortGenoFile))!.ToGenotype();
     var gridG  = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(GridGenoFile))!.ToGenotype();
     Console.WriteLine($"Swing: {swingG}");
     Console.WriteLine($"Grid:  {gridG}\n");
@@ -1107,7 +1400,7 @@ async Task RunCombinedBacktest()
         try
         {
             var m15 = await FetchFifteenMinCandlesCached(sym, batches: 113);
-            var h1  = SwingSimulator.AggregateCandles(m15.ToArray(), 4);
+            var h1  = FadeShortSimulator.AggregateCandles(m15.ToArray(), 4);
             return (sym, m15: m15.ToArray(), h1);
         }
         finally { sem.Release(); }
@@ -1153,7 +1446,7 @@ async Task RunCombinedBacktest()
 
         var screenH1  = h1Train.Length >= 4380 ? h1Train : h1;
         var screenM15 = screenH1.Length == h1.Length ? m15 : m15Train;
-        var tRet  = SwingSimulator.GetSwingReturns(swingG, screenH1, screenM15).Select(t => t.Return).ToList();
+        var tRet  = FadeShortSimulator.GetFadeShortReturns(swingG, screenH1, screenM15).Select(t => t.Return).ToList();
         double tExp  = tRet.Count >= 5 ? tRet.Average() : double.NegativeInfinity;
         double tSort = tRet.Count >= 5 ? Simulator.SortinoRatio(tRet, screenH1.Length * 12) : double.NegativeInfinity;
         double tPF   = tRet.Count >= 5 ? Simulator.ProfitFactor(tRet) : 0;
@@ -1164,7 +1457,7 @@ async Task RunCombinedBacktest()
         }
 
         double conf   = Simulator.ComputeConfidence(tRet);
-        var    vSwing = SwingSimulator.GetSwingReturns(swingG, h1Val, m15Val);
+        var    vSwing = FadeShortSimulator.GetFadeShortReturns(swingG, h1Val, m15Val);
         var    vRet   = vSwing.Select(t => t.Return).ToList();
         int    vCC    = h1Val.Length * 12;
         swingTotalVCC += vCC;
@@ -1376,10 +1669,10 @@ async Task RunRankedBacktest()
 
     Console.WriteLine($"=== Gravity-gen2 | RANKED BACKTEST (max {MaxSwing} swing · {MaxGrid} grid · {PosSizePct:P0}/pos) ===\n");
 
-    if (!File.Exists(GenoFile))     { Console.WriteLine("Missing swing genotype — run 'train' first.");     return; }
+    if (!File.Exists(FadeShortGenoFile))     { Console.WriteLine("Missing swing genotype — run 'train' first.");     return; }
     if (!File.Exists(GridGenoFile)) { Console.WriteLine("Missing grid genotype — run 'gridtrain' first."); return; }
 
-    var swingG = JsonSerializer.Deserialize<SwingGenotypeDto>(File.ReadAllText(GenoFile))!.ToGenotype();
+    var swingG = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(FadeShortGenoFile))!.ToGenotype();
     var gridG  = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(GridGenoFile))!.ToGenotype();
     Console.WriteLine($"Swing: {swingG}");
     Console.WriteLine($"Grid:  {gridG}\n");
@@ -1392,7 +1685,7 @@ async Task RunRankedBacktest()
         try
         {
             var m15 = await FetchFifteenMinCandlesCached(sym, batches: 113);
-            var h1  = SwingSimulator.AggregateCandles(m15.ToArray(), 4);
+            var h1  = FadeShortSimulator.AggregateCandles(m15.ToArray(), 4);
             return (sym, m15: m15.ToArray(), h1);
         }
         finally { sem.Release(); }
@@ -1429,14 +1722,14 @@ async Task RunRankedBacktest()
         {
             var screenH1  = h1Train.Length >= 4380 ? h1Train : h1;
             var screenM15 = screenH1.Length == h1.Length ? m15 : m15Train;
-            var tRet  = SwingSimulator.GetSwingReturns(swingG, screenH1, screenM15).Select(t => t.Return).ToList();
+            var tRet  = FadeShortSimulator.GetFadeShortReturns(swingG, screenH1, screenM15).Select(t => t.Return).ToList();
             double tExp  = tRet.Count >= 5 ? tRet.Average()                                      : double.NegativeInfinity;
             double tSort = tRet.Count >= 5 ? Simulator.SortinoRatio(tRet, screenH1.Length * 12)  : double.NegativeInfinity;
             double tPF   = tRet.Count >= 5 ? Simulator.ProfitFactor(tRet)                        : 0;
 
             if (tExp > 0 && tSort >= 0.3 && tPF >= 1.1)
             {
-                var scored = SwingSimulator.GetScoredSwingTrades(sym, swingG, h1Val, m15Val);
+                var scored = FadeShortSimulator.GetScoredSwingTrades(sym, swingG, h1Val, m15Val);
                 if (scored.Count > 0)
                 {
                     allCandidates.AddRange(scored);
@@ -1518,161 +1811,9 @@ async Task RunRankedBacktest()
     PrintPort($"Unranked baseline (all {allCandidates.Count} signals, unlimited concurrent)", unranked);
     PrintPort($"Ranked (max {MaxSwing} swing + {MaxGrid} grid concurrent)", ranked);
 }
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  BULL TRAIN — Bull long GA on 1h/15m candles, same coin set as swing train
-// ══════════════════════════════════════════════════════════════════════════════
-const string BullGenoFile = "bull_best_genotype.json";
-
-async Task RunBullTrain()
-{
-    Console.WriteLine("=== Gravity-gen2 | BULL TRAIN (1h setup + 15m entry/exit, ~3yr) ===\n");
-
-    var trainCoins = new[]
-    {
-        "SOLUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "AVAXUSDT", "ADAUSDT",
-        "LINKUSDT", "DOTUSDT", "ATOMUSDT", "NEARUSDT", "INJUSDT", "OPUSDT", "ARBUSDT",
-        "UNIUSDT", "AAVEUSDT", "RUNEUSDT", "STXUSDT", "SUIUSDT", "APTUSDT", "LDOUSDT",
-        "GMXUSDT", "SANDUSDT", "MANAUSDT", "GALAUSDT", "APEUSDT", "BCHUSDT",
-    };
-
-    Console.WriteLine($"  Fetching {trainCoins.Length} coins (15m → 1h, ~3yr)...");
-    var sem = new SemaphoreSlim(4);
-    var fetchTasks = trainCoins.Select(async sym =>
-    {
-        await sem.WaitAsync();
-        try
-        {
-            var m15 = await FetchFifteenMinCandlesCached(sym, batches: 113);
-            var h1  = SwingSimulator.AggregateCandles(m15.ToArray(), 4);
-            Console.WriteLine($"  {sym}: {m15.Count} 15m → {h1.Length} h1 candles");
-            return (sym, m15: m15.ToArray(), h1);
-        }
-        finally { sem.Release(); }
-    });
-    var fetched = await Task.WhenAll(fetchTasks);
-
-    var coinData = new List<BullGeneticAlgorithm.CoinData>();
-    foreach (var (sym, m15, h1) in fetched)
-    {
-        if (h1.Length < 200) { Console.WriteLine($"  {sym}: skip (insufficient data)"); continue; }
-        int splitH1  = (int)(h1.Length  * 0.8);
-        int splitM15 = (int)(m15.Length * 0.8);
-        coinData.Add(new BullGeneticAlgorithm.CoinData(
-            h1[..splitH1],  h1[splitH1..],
-            m15[..splitM15], m15[splitM15..]));
-    }
-
-    if (coinData.Count == 0) { Console.WriteLine("No data."); return; }
-
-    BullGenotype? seed = null;
-    if (File.Exists(BullGenoFile))
-    {
-        var candidate = JsonSerializer.Deserialize<BullGenotypeDto>(File.ReadAllText(BullGenoFile))!.ToGenotype();
-        if (candidate.Fitness > 0) { seed = candidate; Console.WriteLine($"  Seeding: {seed}"); }
-    }
-
-    Console.WriteLine($"\n  Training on {coinData.Count} coins\n");
-    Console.WriteLine("─── Bull GA training ───");
-    var best = new BullGeneticAlgorithm(80, 150, verbose: true).Run(coinData, seed);
-
-    Console.WriteLine($"\nFrozen genotype:\n  {best}\n");
-    File.WriteAllText(BullGenoFile, JsonSerializer.Serialize(BullGenotypeDto.From(best),
-        new JsonSerializerOptions { WriteIndented = true }));
-    Console.WriteLine($"  Saved → {BullGenoFile}");
-
-    var tRet = coinData.SelectMany(cd =>
-        BullSimulator.GetBullReturns(best, cd.TrainH1, cd.TrainM15).Select(t => t.Return)).ToList();
-    var vRet = coinData.SelectMany(cd =>
-        BullSimulator.GetBullReturns(best, cd.ValH1, cd.ValM15).Select(t => t.Return)).ToList();
-
-    Console.WriteLine("\n─── Overfit check ───");
-    PrintSplitStats("Train 80%", tRet, coinData.Sum(cd => cd.TrainH1.Length) * 12);
-    PrintSplitStats("Val   20%", vRet, coinData.Sum(cd => cd.ValH1.Length)   * 12);
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  BULL BACKTEST — Bull long on 45 coins, val 20%
-// ══════════════════════════════════════════════════════════════════════════════
-async Task RunBullBacktest()
-{
-    Console.WriteLine($"=== Gravity-gen2 | BULL BACKTEST (~3yr, {BacktestCoins.Length} coins) ===\n");
-
-    if (!File.Exists(BullGenoFile))
-    {
-        Console.WriteLine($"No genotype at '{BullGenoFile}'. Run 'dotnet run -- bulltrain' first.");
-        return;
-    }
-    var g = JsonSerializer.Deserialize<BullGenotypeDto>(File.ReadAllText(BullGenoFile))!.ToGenotype();
-    Console.WriteLine($"Genotype: {g}\n");
-
-    var sem = new SemaphoreSlim(4);
-    var fetchTasks = BacktestCoins.Select(async sym =>
-    {
-        await sem.WaitAsync();
-        try { return (sym, m15: await FetchFifteenMinCandlesCached(sym, batches: 113)); }
-        finally { sem.Release(); }
-    });
-    var fetchedArr = await Task.WhenAll(fetchTasks);
-
-    var allTrades = new List<(string Coin, DateTime Time, double Return)>();
-    var coinStats = new List<(string Coin, double Sharpe, double PF, int Trades, double WR, double AvgRet)>();
-    int totalVCC  = 0;
-
-    Console.WriteLine($"{"Coin",-18} {"Sharpe",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
-    Console.WriteLine(new string('-', 65));
-
-    foreach (var (sym, m15List) in fetchedArr)
-    {
-        if (m15List.Count < 600) { Console.WriteLine($"  {sym,-16}  skip (no data)"); continue; }
-        var m15 = m15List.ToArray();
-        var h1  = SwingSimulator.AggregateCandles(m15, 4);
-
-        var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
-        double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
-        if (medVol < MinMedianVolUsdM) { Console.WriteLine($"  {sym,-16}  skip (vol=${medVol:F2}M/h)"); continue; }
-
-        int h1Split  = (int)(h1.Length * 0.8);
-        int m15Split = h1Split * 4;
-        var h1Val    = h1[h1Split..];
-        var m15Val   = m15[m15Split..];
-
-        var vTrades = BullSimulator.GetBullReturns(g, h1Val, m15Val);
-        var vRet    = vTrades.Select(t => t.Return).ToList();
-        totalVCC   += h1Val.Length * 12;
-
-        if (vRet.Count == 0) { Console.WriteLine($"  {sym,-16}  no trades"); continue; }
-
-        double sh  = Simulator.SharpeRatio(vRet, h1Val.Length * 12);
-        double pf  = Simulator.ProfitFactor(vRet);
-        double wr  = (double)vRet.Count(r => r > 0) / vRet.Count;
-        double avg = vRet.Average();
-
-        foreach (var (t, ret, _) in vTrades)
-            allTrades.Add((sym, t, ret));
-
-        Console.WriteLine($"  {sym,-16} {sh,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%");
-        coinStats.Add((sym, sh, pf, vRet.Count, wr, avg));
-    }
-
-    if (allTrades.Count == 0) { Console.WriteLine("No trades."); return; }
-
-    allTrades.Sort((a, b) => a.Time.CompareTo(b.Time));
-    var allRet = allTrades.Select(t => t.Return).ToList();
-
-    Console.WriteLine($"\n{new string('═', 60)}");
-    Console.WriteLine($"  BULL BACKTEST SUMMARY (val 20%, 1h setup + 15m exec)");
-    Console.WriteLine($"{new string('═', 60)}");
-    Console.WriteLine($"  Total trades: {allRet.Count}  WR: {(double)allRet.Count(r => r > 0)/allRet.Count:P1}");
-    Console.WriteLine($"  Avg return:   {allRet.Average():+0.00}%");
-    Console.WriteLine($"  Sharpe:       {Simulator.SharpeRatio(allRet, totalVCC):F2}");
-    Console.WriteLine($"  Profit factor:{Simulator.ProfitFactor(allRet):F2}");
-    Console.WriteLine($"  Calmar:       {Simulator.CalmarRatio(allRet):F2}");
-}
-
 // ── Type declarations ─────────────────────────────────────────────────────────
 
-class SwingGenotypeDto
+class FadeShortGenotypeDto
 {
     public int    EmaPeriod      { get; set; }
     public int    RsiPeriod      { get; set; }
@@ -1691,11 +1832,11 @@ class SwingGenotypeDto
     public double PositionSizePct           { get; set; }
     public double Fitness                   { get; set; }
 
-    public static SwingGenotypeDto From(SwingGenotype g) => new()
+    public static FadeShortGenotypeDto From(FadeShortGenotype g) => new()
     {
         EmaPeriod      = g.EmaPeriod,
-        RsiPeriod      = 7,   // fixed constant — kept in JSON for readability
-        AdxPeriod      = 7,   // fixed constant — kept in JSON for readability
+        RsiPeriod      = 7,
+        AdxPeriod      = 7,
         AdxThreshold   = g.AdxThreshold,
         LookbackCandles  = g.LookbackCandles,
         RsiOverbought    = g.RsiOverbought,
@@ -1711,8 +1852,7 @@ class SwingGenotypeDto
         Fitness                   = g.Fitness,
     };
 
-    // RsiPeriod and AdxPeriod are now fixed constants in SwingSimulator — ignored on load.
-    public SwingGenotype ToGenotype() => new SwingGenotype
+    public FadeShortGenotype ToGenotype() => new FadeShortGenotype
     {
         EmaPeriod        = EmaPeriod,
         AdxThreshold     = AdxThreshold,
@@ -1746,83 +1886,29 @@ class GridGenotypeDto
 
     public static GridGenotypeDto From(GridGenotype g) => new()
     {
-        AdxThreshold     = g.AdxThreshold,
-        BbPeriod         = g.BbPeriod,
-        BbWidthMaxPct    = g.BbWidthMaxPct,
-        EmaPeriod        = g.EmaPeriod,
-        GridStepAtrMult  = g.GridStepAtrMult,
-        GridLevels       = g.GridLevels,
-        TakeProfitAtrMult= g.TakeProfitAtrMult,
-        HardStopAtrMult  = g.HardStopAtrMult,
-        MaxHoldCandles   = g.MaxHoldCandles,
-        Fitness          = g.Fitness,
+        AdxThreshold      = g.AdxThreshold,
+        BbPeriod          = g.BbPeriod,
+        BbWidthMaxPct     = g.BbWidthMaxPct,
+        EmaPeriod         = g.EmaPeriod,
+        GridStepAtrMult   = g.GridStepAtrMult,
+        GridLevels        = g.GridLevels,
+        TakeProfitAtrMult = g.TakeProfitAtrMult,
+        HardStopAtrMult   = g.HardStopAtrMult,
+        MaxHoldCandles    = g.MaxHoldCandles,
+        Fitness           = g.Fitness,
     };
 
     public GridGenotype ToGenotype() => new GridGenotype
     {
-        AdxThreshold     = AdxThreshold     > 0 ? AdxThreshold     : 16.0,
-        BbPeriod         = BbPeriod         > 0 ? BbPeriod         : 20,
-        BbWidthMaxPct    = BbWidthMaxPct    > 0 ? BbWidthMaxPct    : 1.8,
-        EmaPeriod        = EmaPeriod        > 0 ? EmaPeriod        : 50,
-        GridStepAtrMult  = GridStepAtrMult  > 0 ? GridStepAtrMult  : 0.8,
-        GridLevels       = GridLevels       > 0 ? GridLevels       : 2,
-        TakeProfitAtrMult= TakeProfitAtrMult> 0 ? TakeProfitAtrMult: 1.5,
-        HardStopAtrMult  = HardStopAtrMult  > 0 ? HardStopAtrMult  : 2.2,
-        MaxHoldCandles   = MaxHoldCandles   > 0 ? MaxHoldCandles   : 96,
-        Fitness          = Fitness,
-    }.ClampToBounds();
-}
-
-class BullGenotypeDto
-{
-    public int    EmaPeriod             { get; set; }
-    public double AdxThreshold          { get; set; }
-    public int    LookbackCandles       { get; set; }
-    public double RsiOversold           { get; set; }
-    public double RsiDivThreshold       { get; set; }
-    public double MinPullbackAtrMult    { get; set; }
-    public double StopLossAtrMult           { get; set; }
-    public double MaeAtrMult                { get; set; }
-    public double TakeProfitAtrMult         { get; set; }
-    public double TrailingActivationAtrMult { get; set; }
-    public double TrailingStopAtrMult       { get; set; }
-    public int    MaxHoldCandles            { get; set; }
-    public double PositionSizePct           { get; set; }
-    public double Fitness                   { get; set; }
-
-    public static BullGenotypeDto From(BullGenotype g) => new()
-    {
-        EmaPeriod             = g.EmaPeriod,
-        AdxThreshold          = g.AdxThreshold,
-        LookbackCandles       = g.LookbackCandles,
-        RsiOversold           = g.RsiOversold,
-        RsiDivThreshold       = g.RsiDivThreshold,
-        MinPullbackAtrMult    = g.MinPullbackAtrMult,
-        StopLossAtrMult           = g.StopLossAtrMult,
-        MaeAtrMult                = g.MaeAtrMult,
-        TakeProfitAtrMult         = g.TakeProfitAtrMult,
-        TrailingActivationAtrMult = g.TrailingActivationAtrMult,
-        TrailingStopAtrMult       = g.TrailingStopAtrMult,
-        MaxHoldCandles            = g.MaxHoldCandles,
-        PositionSizePct           = g.PositionSizePct,
-        Fitness                   = g.Fitness,
-    };
-
-    public BullGenotype ToGenotype() => new BullGenotype
-    {
-        EmaPeriod             = EmaPeriod          > 0 ? EmaPeriod          : 50,
-        AdxThreshold          = AdxThreshold       > 0 ? AdxThreshold       : 22.0,
-        LookbackCandles       = LookbackCandles    > 0 ? LookbackCandles    : 48,
-        RsiOversold           = RsiOversold        > 0 ? RsiOversold        : 35.0,
-        RsiDivThreshold       = RsiDivThreshold    > 0 ? RsiDivThreshold    : 8.0,
-        MinPullbackAtrMult    = MinPullbackAtrMult > 0 ? MinPullbackAtrMult : 5.0,
-        StopLossAtrMult           = StopLossAtrMult           > 0 ? StopLossAtrMult           : 0.8,
-        MaeAtrMult                = MaeAtrMult                > 0 ? MaeAtrMult                : 2.5,
-        TakeProfitAtrMult         = TakeProfitAtrMult         > 0 ? TakeProfitAtrMult         : 5.0,
-        TrailingActivationAtrMult = TrailingActivationAtrMult > 0 ? TrailingActivationAtrMult : 2.0,
-        TrailingStopAtrMult       = TrailingStopAtrMult       > 0 ? TrailingStopAtrMult       : 2.0,
-        MaxHoldCandles            = MaxHoldCandles            > 0 ? MaxHoldCandles            : 42,
-        PositionSizePct           = PositionSizePct           > 0 ? PositionSizePct           : 0.03,
-        Fitness                   = Fitness,
+        AdxThreshold      = AdxThreshold      > 0 ? AdxThreshold      : 16.0,
+        BbPeriod          = BbPeriod          > 0 ? BbPeriod          : 20,
+        BbWidthMaxPct     = BbWidthMaxPct     > 0 ? BbWidthMaxPct     : 1.8,
+        EmaPeriod         = EmaPeriod         > 0 ? EmaPeriod         : 50,
+        GridStepAtrMult   = GridStepAtrMult   > 0 ? GridStepAtrMult   : 0.8,
+        GridLevels        = GridLevels        > 0 ? GridLevels        : 2,
+        TakeProfitAtrMult = TakeProfitAtrMult > 0 ? TakeProfitAtrMult : 1.5,
+        HardStopAtrMult   = HardStopAtrMult   > 0 ? HardStopAtrMult   : 2.2,
+        MaxHoldCandles    = MaxHoldCandles    > 0 ? MaxHoldCandles    : 96,
+        Fitness           = Fitness,
     }.ClampToBounds();
 }

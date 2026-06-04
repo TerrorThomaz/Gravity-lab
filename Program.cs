@@ -8,23 +8,43 @@ const string GridGenoFile = "grid_best_genotype.json";
 const double MaxTotalExposurePct  = 0.40;   // max % of capital deployed simultaneously across all open positions
 const double MinMedianVolUsdM     = 0.5;    // $0.5M per 1h candle — thin markets excluded from train + backtest
 
-// 45 coins used by both backtest and papertrade
+// 93 coins used by both backtest and papertrade
 string[] BacktestCoins =
 [
-    // large caps / training coins
-    "SOLUSDT",  "ETHUSDT",   "BNBUSDT",   "XRPUSDT",    "DOGEUSDT",
-    "AVAXUSDT", "LINKUSDT",  "ATOMUSDT",  "NEARUSDT",   "INJUSDT",
-    "OPUSDT",   "ARBUSDT",   "ADAUSDT",   "DOTUSDT",    "MATICUSDT",
-    "UNIUSDT",  "AAVEUSDT",  "RUNEUSDT",  "STXUSDT",    "FILUSDT",
-    // mid-caps / memes
+    // large caps
+    "BTCUSDT",   "ETHUSDT",   "SOLUSDT",   "BNBUSDT",   "XRPUSDT",
+    "DOGEUSDT",  "ADAUSDT",   "AVAXUSDT",  "TRXUSDT",   "XLMUSDT",
+    "DOTUSDT",   "LINKUSDT",  "ATOMUSDT",  "NEARUSDT",  "LTCUSDT",
+    "BCHUSDT",   "ETCUSDT",   "VETUSDT",   "HBARUSDT",  "ALGOUSDT",
+    "ICPUSDT",   "FILUSDT",   "STXUSDT",
+
+    // L2s / newer L1s
+    "MATICUSDT", "OPUSDT",    "ARBUSDT",   "APTUSDT",   "SUIUSDT",
+    "INJUSDT",   "SEIUSDT",   "TIAUSDT",   "TONUSDT",   "KASUSDT",
+    "FTMUSDT",   "CFXUSDT",   "ROSEUSDT",  "KSMUSDT",   "STRKUSDT",
+
+    // DeFi blue chips
+    "UNIUSDT",   "AAVEUSDT",  "MKRUSDT",   "SNXUSDT",   "CRVUSDT",
+    "COMPUSDT",  "GMXUSDT",   "DYDXUSDT",  "RUNEUSDT",  "LDOUSDT",
+    "SUSHIUSDT", "1INCHUSDT", "PENDLEUSDT","JUPUSDT",   "ENAUSDT",
+
+    // AI / infra / data
+    "TAOUSDT",   "RNDRUSDT",  "FETUSDT",   "WLDUSDT",   "PYTHUSDT",
+    "EIGENUSDT", "ONDOUSDT",  "ARUSDT",    "OCEANUSDT",
+
+    // NFT / gaming / meta
+    "SANDUSDT",  "MANAUSDT",  "AXSUSDT",   "IMXUSDT",   "GALAUSDT",
+    "APEUSDT",   "CHZUSDT",   "AUDIOUSDT", "ENJUSDT",
+
+    // mid-caps
+    "ZILUSDT",   "ANKRUSDT",  "LRCUSDT",   "SKLUSDT",   "BANDUSDT",
+    "CTSIUSDT",  "HNTUSDT",   "LPTUSDT",   "STORJUSDT", "BATUSDT",
+    "CELRUSDT",  "QNTUSDT",
+
+    // memes / high-beta
     "WIFUSDT",       "MEMEUSDT",     "1000BONKUSDT", "1000PEPEUSDT",
-    "1000FLOKIUSDT", "SUIUSDT",      "APTUSDT",      "LDOUSDT",
-    "TIAUSDT",       "SEIUSDT",      "WLDUSDT",      "JUPUSDT",
-    "ENAUSDT",       "EIGENUSDT",    "ONDOUSDT",     "PYTHUSDT",
-    "GMXUSDT",       "DYDXUSDT",     "SANDUSDT",     "MANAUSDT",
-    "GALAUSDT",      "APEUSDT",
-    // large/safe
-    "BTCUSDT",       "LTCUSDT",      "BCHUSDT",
+    "1000FLOKIUSDT", "BOMEUSDT",     "1000SHIBUSDT", "NOTUSDT",
+    "ORDIUSDT",      "TURBOUSDT",
 ];
 
 var client = new BybitRestClient();
@@ -44,10 +64,10 @@ switch (mode)
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
         Console.WriteLine("  dotnet run -- train              Train FadeShort GA (~10 min)");
-        Console.WriteLine("  dotnet run -- backtest           FadeShort + grid backtest: 45 coins, val 20%");
+        Console.WriteLine("  dotnet run -- backtest           FadeShort + grid backtest: 93 coins, val 20%");
         Console.WriteLine("  dotnet run -- papertrade         Live signals, refreshes every 4h");
         Console.WriteLine("  dotnet run -- gridtrain          Grid GA: ranging-market long grid");
-        Console.WriteLine("  dotnet run -- gridbacktest       Grid backtest: 45 coins, val 20%");
+        Console.WriteLine("  dotnet run -- gridbacktest       Grid backtest: 93 coins, val 20%");
         Console.WriteLine("  dotnet run -- combinedbacktest   FadeShort + grid, shared capital");
         Console.WriteLine("  dotnet run -- rankedbacktest     Ranked portfolio: top-N signals by quality");
         Console.WriteLine("  dotnet run -- test               Statistical edge validation");
@@ -339,7 +359,7 @@ async Task RunFadeShortTrain()
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  BACKTEST — Swing backtest on 45 coins, val 20%, 1h setup + 15m entry/exit
+//  BACKTEST — Swing backtest on 93 coins, val 20%, 1h setup + 15m entry/exit
 // ══════════════════════════════════════════════════════════════════════════════
 async Task RunBacktest()
 {
@@ -1253,7 +1273,7 @@ async Task RunGridTrain()
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  GRID BACKTEST — 45 coins, val 20%, 1h candles
+//  GRID BACKTEST — 93 coins, val 20%, 1h candles
 // ══════════════════════════════════════════════════════════════════════════════
 async Task RunGridBacktest()
 {

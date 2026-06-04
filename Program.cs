@@ -229,7 +229,7 @@ async Task RunFadeShortTrain()
                                            .Select(t => t.Return).ToList();
                 double exp = returns.Count >= 10 ? returns.Average() : double.NegativeInfinity;
                 double pf  = returns.Count >= 10 ? Simulator.ProfitFactor(returns) : 0;
-                bool pass  = exp > 0 && pf >= 1.1;
+                bool pass  = exp > 0 && pf >= 1.3;
                 Console.WriteLine($"    {(pass ? "✓" : "✗")} {nc.Sym,-20} Exp={exp:+0.00;-0.00}%  PF={pf:F2}  Tr={returns.Count}");
                 return pass;
             })
@@ -414,8 +414,8 @@ async Task RunBacktest()
 
     var allTrades     = new List<(string Coin, DateTime Time, double Return, string Kind, double CoinConf)>();
     var gridTrades    = new List<(string Coin, DateTime Time, double Return, double CoinConf)>();
-    var coinStats     = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
-    var gridCoinStats = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
+    var coinStats     = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly, double EurPnl, double EurWon, double EurLost)>();
+    var gridCoinStats = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly, double EurPnl, double EurWon, double EurLost)>();
     int totalVCC      = 0;
     int gridTotalVCC  = 0;
 
@@ -457,7 +457,7 @@ async Task RunBacktest()
         double tExp  = tRet.Count >= 5 ? tRet.Average() : double.NegativeInfinity;
         double tSort = tRet.Count >= 5 ? Simulator.SortinoRatio(tRet, screenH1.Length * 12) : double.NegativeInfinity;
         double tPF   = tRet.Count >= 5 ? Simulator.ProfitFactor(tRet) : 0;
-        if (tExp <= 0 || tSort < 0.3 || tPF < 1.1)
+        if (tExp <= 0 || tSort < 0.3 || tPF < 1.2)
         {
             Console.WriteLine($"  {sym,-16}  [{CoinClusterHelper.Label(coinCluster)}]  skip (exp={tExp:+0.00;-0.00}% sort={tSort:F2} pf={tPF:F2})");
             continue;
@@ -480,8 +480,13 @@ async Task RunBacktest()
         foreach (var (t, ret, kind) in vTrades)
             allTrades.Add((sym, t, ret, kind, coinConf));
 
+        var coinPort = Simulator.SimulatePortfolio(vTrades.Select(t => (t.Return, coinConf)).ToList());
+        double eurPnl  = coinPort.EndBalance - coinPort.StartBalance;
+        double eurWon  = vTrades.Where(t => t.Return > 0).Sum(t => t.Return / 100.0 * coinConf * coinPort.StartBalance);
+        double eurLost = vTrades.Where(t => t.Return <= 0).Sum(t => t.Return / 100.0 * coinConf * coinPort.StartBalance);
+
         Console.WriteLine($"  {sym,-16} {coinConf,6:P1}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%");
-        coinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, coinConf));
+        coinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, coinConf, eurPnl, eurWon, eurLost));
 
         // Grid (h1 only — runs on same val slice)
         if (gridG != null)
@@ -502,7 +507,11 @@ async Task RunBacktest()
                 double gAvg  = gvRet.Count > 0 ? gvRet.Average() : 0;
                 foreach (var (t, ret, _) in gvTr)
                     gridTrades.Add((sym, t, ret, gConf));
-                gridCoinStats.Add((sym, gSh, gSort, gPf, gvRet.Count, gWr, gAvg, gConf));
+                var gCoinPort = Simulator.SimulatePortfolio(gvTr.Select(t => (t.Return, gConf)).ToList());
+                double gEurPnl  = gCoinPort.EndBalance - gCoinPort.StartBalance;
+                double gEurWon  = gvTr.Where(t => t.Return > 0).Sum(t => t.Return / 100.0 * gConf * gCoinPort.StartBalance);
+                double gEurLost = gvTr.Where(t => t.Return <= 0).Sum(t => t.Return / 100.0 * gConf * gCoinPort.StartBalance);
+                gridCoinStats.Add((sym, gSh, gSort, gPf, gvRet.Count, gWr, gAvg, gConf, gEurPnl, gEurWon, gEurLost));
             }
         }
     }
@@ -542,11 +551,11 @@ async Task RunBacktest()
         Console.WriteLine($"    Trades to +10%:{port.TradesToTenPct}");
     Console.WriteLine();
 
-    Console.WriteLine($"  Per-coin (sorted by Sharpe):");
-    Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
-    Console.WriteLine($"  {new string('-', 75)}");
+    Console.WriteLine($"  Per-coin (sorted by Sharpe, €100 start per coin):");
+    Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}  {"€ Net",7}  {"€ Won",7}  {"€ Lost",7}");
+    Console.WriteLine($"  {new string('-', 100)}");
     foreach (var r in coinStats.OrderByDescending(c => c.Sharpe))
-        Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
+        Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%  {r.EurPnl,+6:F2}  {r.EurWon,+6:F2}  {r.EurLost,+6:F2}");
 
     // ── Grid summary ──────────────────────────────────────────────────────────
     if (gridTrades.Count > 0)
@@ -571,11 +580,11 @@ async Task RunBacktest()
         Console.WriteLine($"    End balance:  €{gPort.EndBalance:F2}  ({(gPort.EndBalance - gPort.StartBalance) / gPort.StartBalance * 100:+0.0;-0.0}%)");
         Console.WriteLine($"    Max drawdown: {gPort.MaxDrawdownPct:F1}%");
         Console.WriteLine();
-        Console.WriteLine($"  Per-coin (sorted by Sharpe):");
-        Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
-        Console.WriteLine($"  {new string('-', 75)}");
+        Console.WriteLine($"  Per-coin (sorted by Sharpe, €100 start per coin):");
+        Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}  {"€ Net",7}  {"€ Won",7}  {"€ Lost",7}");
+        Console.WriteLine($"  {new string('-', 100)}");
         foreach (var r in gridCoinStats.OrderByDescending(c => c.Sharpe))
-            Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
+            Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%  {r.EurPnl,+6:F2}  {r.EurWon,+6:F2}  {r.EurLost,+6:F2}");
 
         // Combined FadeShort + Grid portfolio
         var combined = allTrades.Select(t => (t.Time, t.Return, t.CoinConf, "fs"))
@@ -658,7 +667,7 @@ async Task RunYearlyBreakdown()
         var trainRet = FadeShortSimulator.GetFadeShortReturns(g, h1[..trainEnd], m15[..(trainEnd * 4)])
                            .Select(t => t.Return).ToList();
         if (trainRet.Count < 10) continue;
-        if (trainRet.Average() <= 0 || Simulator.ProfitFactor(trainRet) < 1.1) continue;
+        if (trainRet.Average() <= 0 || Simulator.ProfitFactor(trainRet) < 1.2) continue;
         double conf = Simulator.ComputeConfidence(trainRet);
 
         // Worst-case loss per unit of position: 99th-pct of |return| on all losing trades.
@@ -1470,7 +1479,7 @@ async Task RunCombinedBacktest()
         double tExp  = tRet.Count >= 5 ? tRet.Average() : double.NegativeInfinity;
         double tSort = tRet.Count >= 5 ? Simulator.SortinoRatio(tRet, screenH1.Length * 12) : double.NegativeInfinity;
         double tPF   = tRet.Count >= 5 ? Simulator.ProfitFactor(tRet) : 0;
-        if (tExp <= 0 || tSort < 0.3 || tPF < 1.1)
+        if (tExp <= 0 || tSort < 0.3 || tPF < 1.2)
         {
             Console.WriteLine($"  {sym,-16}  skip (exp={tExp:+0.00;-0.00}% sort={tSort:F2} pf={tPF:F2})");
             continue;

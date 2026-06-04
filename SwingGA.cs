@@ -12,7 +12,7 @@ namespace TradingGA;
 // FoldScore = (port_gain × 100) × wr_mult × freq_bonus / dd_div
 //
 // Fitness  = mean(fold_scores) − 0.75 × std(fold_scores)  — penalises time-period fragility
-public class SwingGeneticAlgorithm
+public class FadeShortGA
 {
     public record CoinData(Candle[] TrainCandles, Candle[] ValCandles, double Weight = 1.0);
 
@@ -25,7 +25,7 @@ public class SwingGeneticAlgorithm
 
     private const int MinTradesPerFold = 15;
 
-    public SwingGeneticAlgorithm(
+    public FadeShortGA(
         int  populationSize    = 50,
         int  generations       = 80,
         int  eliteCount        = 15,
@@ -69,20 +69,36 @@ public class SwingGeneticAlgorithm
         // Win rate: ramps from 0 at WR=0 to 1.0 at WR=40%, bonus above 40%
         double wrMult = wr < 0.40 ? wr / 0.40 : 1.0 + (wr - 0.40) * 3.0;
 
+        // PF multiplier: gross win/loss ratio — rewards net profitability across the fold.
+        // 0 at PF=1.0, ramps to 1.0 at PF=1.5, bonus above.
+        double pfMult = pf < 1.5 ? (pf - 1.0) / 0.5 : 1.0 + (pf - 1.5) * 0.5;
+
+        // R:R multiplier: avgWin / avgLoss — pure size asymmetry, independent of WR.
+        // 0 at R:R=1.0, ramps to 1.0 at R:R=2.5, bonus above.
+        var winList  = returns.Where(r => r > 0).ToList();
+        var lossList = returns.Where(r => r <= 0).ToList();
+        double avgWin  = winList.Count  > 0 ? winList.Average()            : 0;
+        double avgLoss = lossList.Count > 0 ? Math.Abs(lossList.Average()) : avgWin;
+        double rr      = avgLoss > 1e-10 ? avgWin / avgLoss : (avgWin > 0 ? 5.0 : 1.0);
+        double rrMult  = rr < 2.5 ? (rr - 1.0) / 1.5 : 1.0 + (rr - 2.5) * 0.3;
+
+        // Combined: geometric mean keeps scale stable, rewards both dimensions equally.
+        double qualityMult = Math.Sqrt(pfMult * rrMult);
+
         // Drawdown penalty: 5% max DD halves the score
         double ddDiv = 1.0 + maxDd * 10.0;
 
         // Frequency bonus: mild log incentive for more trades
         double freqBonus = 1.0 + 0.15 * Math.Log(Math.Max(1.0, returns.Count / (double)MinTradesPerFold));
 
-        return gain * 100.0 * wrMult * freqBonus / ddDiv;
+        return gain * 100.0 * wrMult * qualityMult * freqBonus / ddDiv;
     }
 
     // Pool returns across ALL coins within each fold time-slot.
     // Per-coin fitness was flat (-1 everywhere) because each coin individually
     // produced too few trades per fold. Pooling 12 coins gives ~12× more trades
     // per fold while fold-to-fold std still guards temporal overfitting.
-    private double Fitness(SwingGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
+    private double Fitness(FadeShortGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
     {
         var validCoins = coins
             .Select(c => (c, arr: useValidation ? c.ValCandles : c.TrainCandles))
@@ -95,7 +111,7 @@ public class SwingGeneticAlgorithm
         if (useValidation || folds <= 1)
         {
             var all = validCoins
-                .SelectMany(x => SwingSimulator.GetSwingReturns(ind, x.arr).Select(t => t.Return))
+                .SelectMany(x => FadeShortSimulator.GetFadeShortReturns(ind, x.arr).Select(t => t.Return))
                 .ToList();
             return FoldScore(all, posFrac);
         }
@@ -106,7 +122,7 @@ public class SwingGeneticAlgorithm
         if (k < 2)
         {
             var all = validCoins
-                .SelectMany(x => SwingSimulator.GetSwingReturns(ind, x.arr).Select(t => t.Return))
+                .SelectMany(x => FadeShortSimulator.GetFadeShortReturns(ind, x.arr).Select(t => t.Return))
                 .ToList();
             return FoldScore(all, posFrac);
         }
@@ -122,7 +138,7 @@ public class SwingGeneticAlgorithm
             {
                 if (arr.Length < end) continue;
                 foldReturns.AddRange(
-                    SwingSimulator.GetSwingReturns(ind, arr[start..end]).Select(t => t.Return));
+                    FadeShortSimulator.GetFadeShortReturns(ind, arr[start..end]).Select(t => t.Return));
             }
             scores[f] = FoldScore(foldReturns, posFrac);
         }
@@ -132,7 +148,7 @@ public class SwingGeneticAlgorithm
         return mean - 0.75 * std;
     }
 
-    public SwingGenotype Run(IReadOnlyList<CoinData> coins, SwingGenotype? seed = null)
+    public FadeShortGenotype Run(IReadOnlyList<CoinData> coins, FadeShortGenotype? seed = null)
     {
         if (coins.Count == 0 || coins.All(c => c.TrainCandles.Length == 0))
             throw new ArgumentException("No training candles found.");
@@ -147,7 +163,7 @@ public class SwingGeneticAlgorithm
 
         var population = Enumerable
             .Range(0, _populationSize)
-            .Select(_ => SwingGenotype.Random(_rng, seed))
+            .Select(_ => FadeShortGenotype.Random(_rng, seed))
             .ToList();
 
         // Inject seed variants into first 20% of population
@@ -160,7 +176,7 @@ public class SwingGeneticAlgorithm
                 population[s] = clamped.Mutate(_rng, 0.25);
         }
 
-        List<SwingGenotype> eliteIsland = new();
+        List<FadeShortGenotype> eliteIsland = new();
         double bestFitnessSeen = double.MinValue;
         int    stagnantGens    = 0;
 
@@ -185,11 +201,11 @@ public class SwingGeneticAlgorithm
                 Console.WriteLine($"Gen {gen + 1,3} — elite: {eliteIsland.First()}{tag}");
             }
 
-            var nextGen = new List<SwingGenotype>();
+            var nextGen = new List<FadeShortGenotype>();
             nextGen.AddRange(eliteIsland.Take(5));
             while (nextGen.Count < _populationSize)
             {
-                var child = SwingGenotype.Crossover(
+                var child = FadeShortGenotype.Crossover(
                                 TournamentSelect(population),
                                 TournamentSelect(population), _rng)
                             .Mutate(_rng, mutationRate);
@@ -208,7 +224,7 @@ public class SwingGeneticAlgorithm
         return best;
     }
 
-    private SwingGenotype TournamentSelect(List<SwingGenotype> pop, int k = 4) =>
+    private FadeShortGenotype TournamentSelect(List<FadeShortGenotype> pop, int k = 4) =>
         Enumerable.Range(0, k)
             .Select(_ => pop[_rng.Next(pop.Count)])
             .OrderByDescending(g => g.Fitness)

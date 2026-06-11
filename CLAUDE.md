@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working with code in this repository.
 
 ## Commands
 
@@ -8,73 +8,104 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build
 dotnet build -c Release
 
-# Run modes — swing trading (1h setup + 15m entry/exit)
-dotnet run -- train        # Swing GA: 26 coins, 1h/15m dual-TF, ~3yr history (~10 min)
-dotnet run -- backtest     # Swing backtest: 45 coins, val 20%, 1h/15m dual-TF
-dotnet run -- papertrade   # Live swing signals, refreshes every 4h
+# Strategy training
+dotnet run -- train              # FadeShort GA: 93 coins, 5-fold WFV, ~10 min
+dotnet run -- gridtrain          # Grid GA: ranging-market long grid
+dotnet run -- fadelongtrain      # FadeLong GA: bear-regime oversold bounce, restricted to BTC bear windows
+dotnet run -- diplongtrain       # DipLong GA: bull-regime RSI dip + bullish BoS, regime-gated
+dotnet run -- swingLongtrain     # SwingLong GA: bull-regime RSI bullish divergence + bullish BoS
+dotnet run -- routertrain        # RegimeRouter GA: train routing thresholds + duration gates
+dotnet run -- coevolvetrain      # Coevolve FadeLong + DipLong + Router together (4 cycles)
+dotnet run -- retrain            # FadeShort retrain on unknown coins (inverted screen, anti-overfit)
+
+# Backtesting
+dotnet run -- backtest           # FadeShort backtest: 93 coins, val 20%, 1h+15m dual-TF
+dotnet run -- gridbacktest       # Grid backtest: 93 coins, val 20%
+dotnet run -- combinedbacktest   # All strategies combined, shared capital, router-gated
+dotnet run -- oosbacktest        # OOS backtest: 28 never-seen coins, full history, all strategies
+dotnet run -- allcoinsbacktest   # Portfolio sim: BacktestCoins (val 20%) + OOS coins
+dotnet run -- yearlybreakdown    # Per-year portfolio returns (full history)
+dotnet run -- test               # Statistical edge validation
+
+# Live
+dotnet run -- papertrade         # Live signals (1h refresh), all strategies, router-gated
 
 # Discord bot (requires .env)
 .venv/bin/python discord_bot.py
 ```
 
-No test suite. Validation is done by running `backtest` after any change to `SwingSimulator.cs` or `SwingGenotype.cs`.
+No test suite. Validation is done by running `combinedbacktest` or `oosbacktest` after any simulator change.
 
 ## Architecture
 
-### Strategy flow
+### Strategy suite (5 strategies)
 
-`SwingSimulator.cs` is the single source of truth for all simulation. It operates on a dual-timeframe setup: 1h candles for regime/setup detection, 15m candles for precise entry/exit execution.
+All strategies share the same dual-timeframe setup: **1h candles** for regime/setup detection, **15m candles** for precise entry/exit execution.
 
-Two strategies, regime-gated:
-- **Swing Short** (strong uptrend extended): RSI overbought fade + Break of Structure (lower high) on 1h, ADX ≥ threshold, price > EMA. Entry triggered on 15m confirmation.
-- **Swing Long** (moderate uptrend): RSI bounces from oversold zone on 1h while ADX ≥ threshold×0.6 and price > EMA.
+| Strategy | Regime | Direction | Entry Signal |
+|----------|--------|-----------|--------------|
+| **FadeShort** | Always-on | Short | RSI bearish divergence + min rally + bearish BoS on 15m |
+| **Grid** | Ranging | Long | ADX low + BB compression, grid levels |
+| **SwingLong** | Bull (`DipLongActive`) | Long | RSI bullish divergence + min decline + bullish BoS on 15m |
+| **DipLong** | Bull (`DipLongActive`) | Long | RSI dip (40–55) in established uptrend + bullish BoS on 15m |
+| **FadeLong** | Bear (`FadeLongActive`) | Long | RSI bearish divergence at bottom + bullish BoS on 15m |
 
-Exit uses three layers: hard ATR stop · fixed ATR profit target · trailing ATR stop (armed after `TrailingActivationAtrMult` × ATR move). `MaxHoldCandles` forces close after N 1h bars regardless.
+Exit uses three layers: hard ATR stop · fixed ATR profit target · trailing ATR stop (armed after `TrailingActivationAtrMult` × ATR move) · `MaxHoldCandles` forced close.
 
-All ATR multiples are in absolute price units (14-period ATR at entry), not percentage — naturally scales to each coin's volatility.
+### RegimeClassifier + RegimeRouter
 
-`GetSwingReturns` → used by GA fitness and backtest  
-`GetSwingTradeState` → used by papertrade current-state display
+`RegimeClassifier.cs` — multi-signal ensemble classifier producing Bull/Bear/Ranging/HighVol + confidence (0–1).
+Signals: EMA stack (weight 3), EMA50 slope (1.5), ADX (1), 20-bar momentum (0.5), ATR vol ratio (0.5).
+`ClassifySeriesWithDuration` is O(n) with per-bar duration counter (how many consecutive bars in current regime).
 
-### SwingGenotype (13 genes)
+`RegimeRouter.cs` — BTC-anchored router (ETH as secondary confirmer, configurable blend weight).
+Returns `StrategyActivation` with per-strategy flags + `SizeMult` (confidence-scaled position multiplier).
+Two overloads: rule-based fallback and trained-genotype path (`RegimeRouter.Route(btcH1, routerGeno, ethH1)`).
 
-All parameters the GA evolves. Key ones:
-- `EmaPeriod` / `AdxPeriod` / `AdxThreshold` — regime gate sensitivity
-- `RsiOverbought` — short entry sensitivity
-- `StopLossAtrMult` — hard stop width (capped at 2.0× ATR)
-- `TakeProfitAtrMult` — fixed profit target
-- `TrailingActivationAtrMult` / `TrailingStopAtrMult` — trailing stop trigger and width
-- `MaxHoldCandles` — max bars before forced exit
+`RegimeRouterSession` — pre-computed O(1) per-trade lookup for backtests. Build once, call `IsActive(kind, time)`.
 
-### GA fitness
+### Cooperative coevolution
 
-`SwingGA.cs` uses 5-fold walk-forward cross-validation on 1h training candles. Score = `mean_fold_sharpe − 0.5 × std_fold_sharpe`. Minimum 3 trades per fold (daily-equivalent data produces fewer trades than 5m). Final elite rescored on held-out val candles.
+`CoevolveGA.cs` — 4-cycle loop: FadeLong and DipLong train against the router's current gating (soft bear/bull confidence gradient), then the router retrains on the evolved trade lists. Avoids train-then-gate misalignment.
+`BayesianOptimizer.cs` — TPE post-GA refinement (60 iterations). Applied after FadeShort, FadeLong, DipLong, SwingLong GA runs.
 
-Seed auto-screen: if a previous genotype exists with positive fitness, only coins where the seed shows positive expectancy on training data are passed to the GA — prevents diluting the fitness gradient with coins that have no edge.
+### GA fitness (all long strategies)
+
+5-fold walk-forward CV. FoldScore = `gain × wrMult × qualityMult × freqBonus / ddDiv × retentionMult`.
+`retentionMult` penalises giving back gains at fold end (pushes toward tight trailing, not peak capture).
+
+### Portfolio cap
+
+`PortfolioReplay.cs` — filters combined trade list by per-strategy concurrent count before EUR exposure simulation. Default caps: FadeShort=10, SwingLong=8, DipLong=8, FadeLong=8, Grid=12.
 
 ### Candle fetching
 
-`FetchFifteenMinCandlesCached(symbol, batches)` — fetches 15m candles with disk cache (`candle_cache/{symbol}_15m.csv`). `batches: 113` ≈ 3.2yr. Incremental: only fetches new candles since last cache write.
+`FetchFifteenMinCandlesCached(symbol, batches)` — 15m candles with disk cache (`candle_cache/{symbol}_15m.csv`). `batches: 113` ≈ 3.2yr. Incremental: only fetches new candles since last write.
+`FetchSwingCandles(symbol, batches)` — legacy 4h candle fetch (kept for compatibility).
 
-`FetchSwingCandles(symbol, batches)` — live 4h candles for papertrade warmup (no cache needed; `batches: 1` ≈ 166d is enough for indicator warmup).
+### Saved genotype files
+
+| File | Strategy |
+|------|----------|
+| `fade_short_genotype.json` | FadeShort |
+| `grid_best_genotype.json` | Grid |
+| `fade_long_genotype.json` | FadeLong |
+| `dip_long_genotype.json` | DipLong |
+| `swing_long_genotype.json` | SwingLong |
+| `regime_router_genotype.json` | RegimeRouter |
 
 ### Discord bot
 
-`discord_bot.py` manages a single long-running dotnet subprocess (`papertrade`). It:
+`discord_bot.py` manages a single long-running dotnet subprocess (`papertrade`).
 - Detects cycle boundaries by watching for `=== Gravity-gen2 | PAPER TRADE` headers in stdout
-- Posts a formatted summary to the output channel each cycle
-- Forwards text messages in the command channel to `claude -p` for live code edits, then restarts the process
-- Slash commands (`/backtest`, `/train`, etc.) run one-shot via `dotnet exec bin/Release/net10.0/Gravity-gen2.dll <mode>`
+- Posts formatted summary to Discord each cycle
+- Forwards text messages in command channel to `claude -p` for live code edits, then restarts
 
 Required `.env`:
 ```
 DISCORD_TOKEN=
 DISCORD_OUTPUT_CHANNEL=
 DISCORD_COMMAND_CHANNEL=
-DISCORD_GUILD_ID=          # guild-specific sync (instant); omit for global (up to 1h)
-GRAVITY_MODE=              # papertrade (default)
+DISCORD_GUILD_ID=
+GRAVITY_MODE=papertrade
 ```
-
-### Saved files
-
-- `swing_best_genotype.json` — output of `train`, used by `backtest` + `papertrade`

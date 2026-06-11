@@ -17,7 +17,7 @@ namespace TradingGA;
 //   ADX(7) is faster than ADX(14) and better at catching trend onset. Grid uses
 //   ADX(14) for regime but also requires BB compression, making practical overlap
 //   with swing nearly impossible despite different ADX periods.
-public class SwingGenotype
+public class FadeShortGenotype
 {
     // ── Regime genes ──────────────────────────────────────────────────────────────
     public int    EmaPeriod     { get; set; }   // 20–100   trend-direction EMA
@@ -40,7 +40,7 @@ public class SwingGenotype
 
     public double Fitness { get; set; } = double.MinValue;
 
-    public static SwingGenotype Random(System.Random rng, SwingGenotype? seed = null)
+    public static FadeShortGenotype Random(System.Random rng, FadeShortGenotype? seed = null)
     {
         T Seed<T>(T random, T seeded) => seed == null ? random : seeded;
         return new()
@@ -61,7 +61,7 @@ public class SwingGenotype
         };
     }
 
-    public static SwingGenotype Crossover(SwingGenotype a, SwingGenotype b, System.Random rng)
+    public static FadeShortGenotype Crossover(FadeShortGenotype a, FadeShortGenotype b, System.Random rng)
     {
         T Pick<T>(T va, T vb) => rng.NextDouble() < 0.5 ? va : vb;
         return new()
@@ -82,7 +82,7 @@ public class SwingGenotype
         };
     }
 
-    public SwingGenotype Mutate(System.Random rng, double rate)
+    public FadeShortGenotype Mutate(System.Random rng, double rate)
     {
         double Nudge(double val, double min, double max, double scale)
         {
@@ -94,7 +94,7 @@ public class SwingGenotype
             if (rng.NextDouble() > rate) return val;
             return Math.Clamp(val + rng.Next(-step, step + 1), min, max);
         }
-        return new SwingGenotype
+        return new FadeShortGenotype
         {
             EmaPeriod        = NudgeInt(EmaPeriod,       20, 100, 10),
             AdxThreshold     = Nudge(AdxThreshold,      22.0, 45.0, 4.0),
@@ -112,7 +112,7 @@ public class SwingGenotype
         };
     }
 
-    public SwingGenotype ClampToBounds() => new()
+    public FadeShortGenotype ClampToBounds() => new()
     {
         EmaPeriod        = Math.Clamp(EmaPeriod,      20,  100),
         AdxThreshold     = Math.Clamp(AdxThreshold,  22.0, 45.0),
@@ -128,6 +128,51 @@ public class SwingGenotype
         MaxHoldCandles            = Math.Clamp(MaxHoldCandles,             24,  120),
         PositionSizePct           = Math.Clamp(PositionSizePct,           0.01, 0.05),
         Fitness = Fitness,
+    };
+
+    // ── Bayesian optimiser interface ──────────────────────────────────────────
+    // Order matches ToVector / FromVector.
+    public static readonly double[,] Bounds =
+    {
+        {  20, 100  }, // EmaPeriod
+        {  22,  45  }, // AdxThreshold
+        {  12, 120  }, // LookbackCandles
+        {  65,  80  }, // RsiOverbought
+        { 5.0, 15.0 }, // RsiDivThreshold
+        { 5.0, 12.0 }, // MinRallyAtrMult
+        { 0.3,  2.0 }, // StopLossAtrMult
+        { 1.5,  4.0 }, // MaeAtrMult
+        { 2.0, 10.0 }, // TakeProfitAtrMult
+        { 1.0,  4.0 }, // TrailingActivationAtrMult
+        { 1.0,  5.0 }, // TrailingStopAtrMult
+        {  24, 120  }, // MaxHoldCandles
+        {0.01, 0.05 }, // PositionSizePct
+    };
+
+    public double[] ToVector() =>
+    [
+        EmaPeriod, AdxThreshold, LookbackCandles,
+        RsiOverbought, RsiDivThreshold, MinRallyAtrMult,
+        StopLossAtrMult, MaeAtrMult, TakeProfitAtrMult,
+        TrailingActivationAtrMult, TrailingStopAtrMult,
+        MaxHoldCandles, PositionSizePct,
+    ];
+
+    public static FadeShortGenotype FromVector(double[] v) => new()
+    {
+        EmaPeriod        = Math.Clamp((int)Math.Round(v[0]),  20, 100),
+        AdxThreshold     = Math.Clamp(v[1],  22.0, 45.0),
+        LookbackCandles  = Math.Clamp((int)Math.Round(v[2]),  12, 120),
+        RsiOverbought    = Math.Clamp(v[3],  65.0, 80.0),
+        RsiDivThreshold  = Math.Clamp(v[4],   5.0, 15.0),
+        MinRallyAtrMult  = Math.Clamp(v[5],   5.0, 12.0),
+        StopLossAtrMult           = Math.Clamp(v[6],  0.3,  2.0),
+        MaeAtrMult                = Math.Clamp(v[7],  1.5,  4.0),
+        TakeProfitAtrMult         = Math.Clamp(v[8],  2.0, 10.0),
+        TrailingActivationAtrMult = Math.Clamp(v[9],  1.0,  4.0),
+        TrailingStopAtrMult       = Math.Clamp(v[10], 1.0,  5.0),
+        MaxHoldCandles            = Math.Clamp((int)Math.Round(v[11]), 24, 120),
+        PositionSizePct           = Math.Clamp(v[12], 0.01, 0.05),
     };
 
     public override string ToString() =>

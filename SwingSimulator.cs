@@ -16,30 +16,30 @@ namespace TradingGA;
 //   Wider than a fixed-from-entry stop but correct — wick noise below the swing high is
 //   noise; price exceeding the swing high means the fade was wrong.
 // ATR multiples use the 14-period ATR fixed at entry for the life of the trade.
-public static class SwingSimulator
+public static class FadeShortSimulator
 {
-    private const int AtrPeriod    = 14;
-    private const int RsiPeriod    = 7;   // fixed — not a gene; GA always converges here
-    private const int AdxPeriod    = 7;   // fixed — not a gene; GA always converges here (faster ADX, more reactive to trend onset)
+    internal const int AtrPeriod    = 14;
+    internal const int RsiPeriod    = 7;   // fixed — not a gene; GA always converges here
+    internal const int AdxPeriod    = 7;   // fixed — not a gene; GA always converges here (faster ADX, more reactive to trend onset)
     // Fee model: exchange taker fee + ATR-proportional slippage.
     // Execution is on 15m bars; ATR reference is h4. Calibrated so the average round-trip
     // stays ~0.21% for liquid coins (h4 ATR ≈ 2-3% of price), while volatile coins
     // (memes, h4 ATR ≈ 5-8%) pay proportionally more, especially on stop exits.
     //   SlipK       = 0.025 → slip per side = 0.025 × atrPct  (at 3% ATR → 0.075% each side)
-    //   SlipStopGap = 0.015 → extra gap on stops               (at 3% ATR → +0.045% extra)
-    // Liquid coin TP ≈ 0.185%, Stop ≈ 0.23%. Meme TP ≈ 0.26%, Stop ≈ 0.35%.
+    //   SlipStopGap = 0.030 → extra gap on stops               (at 3% ATR → +0.090% extra)
+    // Liquid coin TP ≈ 0.185%, Stop ≈ 0.275%. Meme TP ≈ 0.26%, Stop ≈ 0.41%.
     private const double FeeExchange = 0.11;   // 0.055% taker × 2 sides
     private const double SlipK       = 0.025;  // entry + normal-exit slip = k × (atr/price × 100)
-    private const double SlipStopGap = 0.015;  // stop gap premium = k × (atr/price × 100)
+    private const double SlipStopGap = 0.030;  // stop gap premium = k × (atr/price × 100) — doubled to reflect fast-stop fill risk
 
-    public static List<(DateTime Time, double Return, string Kind)> GetSwingReturns(
-        SwingGenotype g, Candle[] candles)
+    public static List<(DateTime Time, double Return, string Kind)> GetFadeShortReturns(
+        FadeShortGenotype g, ReadOnlySpan<Candle> candles)
     {
         var (trades, _) = RunSwing(g, candles);
         return trades;
     }
 
-    public record SwingTradeState(
+    public record FadeShortTradeState(
         bool   InTrade,
         double Entry,
         double HardStop,   // swingHigh + SL×ATR
@@ -49,29 +49,61 @@ public static class SwingSimulator
         double TrailLow,   // lowest price seen since entry (trail reference for short)
         int    HoldCount); // h1 bars held
 
-    public static SwingTradeState GetSwingTradeState(SwingGenotype g, Candle[] candles)
+    public static FadeShortTradeState GetFadeShortTradeState(FadeShortGenotype g, ReadOnlySpan<Candle> candles)
     {
         var (_, state) = RunSwing(g, candles);
         return state;
     }
 
-    private static (List<(DateTime, double, string)> Trades, SwingTradeState FinalState)
-        RunSwing(SwingGenotype g, Candle[] candles)
+    private static (List<(DateTime, double, string)> Trades, FadeShortTradeState FinalState)
+        RunSwing(FadeShortGenotype g, ReadOnlySpan<Candle> candles)
     {
         int warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
                    + g.LookbackCandles;
         if (candles.Length <= warmup + 10)
-            return ([], new SwingTradeState(false, 0, 0, 0, 0, false, 0, 0));
+            return ([], new FadeShortTradeState(false, 0, 0, 0, 0, false, 0, 0));
 
-        var closes  = candles.Select(c => c.Close).ToArray();
-        var highs   = candles.Select(c => c.High).ToArray();
-        var lows    = candles.Select(c => c.Low).ToArray();
+        var closes = CandleExt.Closes(candles);
+        var highs  = CandleExt.Highs(candles);
+        var lows   = CandleExt.Lows(candles);
 
         var ema = Indicators.Ema(closes, g.EmaPeriod);
         var rsi = Indicators.Rsi(closes, RsiPeriod);
         var adx = Indicators.Adx(highs, lows, closes, AdxPeriod);
         var atr = Indicators.Atr(highs, lows, closes, AtrPeriod);
 
+        return SimulateCore(g, candles, closes, highs, lows, rsi, adx, atr, ema, warmup, candles.Length);
+    }
+
+    // Entry point for the GA fitness loop — uses pre-computed fixed-period indicators and a
+    // caller-rented EMA buffer, simulating only over [rangeStart, rangeEnd).
+    // This avoids per-individual allocations of rsi/adx/atr arrays and Candle→double LINQ copies.
+    internal static List<(DateTime Time, double Return, string Kind)> GetFadeShortReturnsPrecomputed(
+        FadeShortGenotype g,
+        ReadOnlySpan<Candle>  candles,
+        double[]  closes, double[] highs, double[] lows,
+        double[]  rsi,    double[] adx,   double[] atr,
+        double[]  ema,   // caller fills this via Indicators.EmaInto before each call
+        int       rangeStart, int rangeEnd)
+    {
+        int warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
+                   + g.LookbackCandles;
+        int iStart = Math.Max(rangeStart, warmup);
+        if (iStart >= rangeEnd || rangeEnd > candles.Length) return [];
+        var (trades, _) = SimulateCore(g, candles, closes, highs, lows, rsi, adx, atr, ema, iStart, rangeEnd);
+        return trades;
+    }
+
+    // Core simulation loop shared by RunSwing and GetFadeShortReturnsPrecomputed.
+    // iStart/iEnd are absolute indices into the full arrays; caller ensures iStart ≥ warmup.
+    private static (List<(DateTime, double, string)> Trades, FadeShortTradeState FinalState)
+        SimulateCore(
+            FadeShortGenotype g,
+            ReadOnlySpan<Candle>  candles,
+            double[]  closes, double[] highs, double[] lows,
+            double[]  rsi,    double[] adx,   double[] atr, double[] ema,
+            int       iStart, int      iEnd)
+    {
         var result = new List<(DateTime, double, string)>();
 
         bool   inTrade    = false;
@@ -84,7 +116,7 @@ public static class SwingSimulator
         bool   trailArmed = false;
         int    holdCount  = 0;
 
-        for (int i = warmup; i < candles.Length; i++)
+        for (int i = iStart; i < iEnd; i++)
         {
             double price  = closes[i];
             double atrNow = atr[i] > 1e-10 ? atr[i] : price * 0.04;
@@ -96,16 +128,16 @@ public static class SwingSimulator
                 if (!strongTrend) continue;
 
                 // ── Find swing high in lookback window ────────────────────────────
-                int    lb       = g.LookbackCandles;
-                int    start    = Math.Max(0, i - lb);
-                double swingHigh = closes[start];
-                int    highIdx   = start;
-                double recentLow = lows[start];
+                int    lb        = g.LookbackCandles;
+                int    lbStart   = Math.Max(0, i - lb);
+                double swingHigh = closes[lbStart];
+                int    highIdx   = lbStart;
+                double recentLow = lows[lbStart];
 
-                for (int j = start; j < i; j++)
+                for (int j = lbStart; j < i; j++)
                 {
                     if (closes[j] > swingHigh) { swingHigh = closes[j]; highIdx = j; }
-                    if (lows[j]   < recentLow)    recentLow = lows[j];
+                    if (lows[j]   < recentLow)   recentLow = lows[j];
                 }
 
                 // ── Min rally filter ──────────────────────────────────────────────
@@ -156,21 +188,21 @@ public static class SwingSimulator
                                     hitMae      ? maeStop  :
                                     hitTarget   ? target   : price;
                     double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry);
-                    result.Add((candles[i].Time, ret, "swing_short"));
+                    result.Add((candles[i].Time, ret, "fade_short"));
                     inTrade = false;
                 }
             }
         }
 
-        // Mark open position at last close
+        // Mark open position at last close of the simulated range
         if (inTrade)
         {
-            double finalPx = closes[^1];
+            double finalPx = closes[iEnd - 1];
             double ret = (entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry);
-            result.Add((candles[^1].Time, ret, "swing_short"));
+            result.Add((candles[iEnd - 1].Time, ret, "fade_short"));
         }
 
-        var finalState = new SwingTradeState(inTrade, entry, hardStop, maeStop, target,
+        var finalState = new FadeShortTradeState(inTrade, entry, hardStop, maeStop, target,
             trailArmed, trailLow, holdCount);
         return (result, finalState);
     }
@@ -200,14 +232,14 @@ public static class SwingSimulator
         return result.ToArray();
     }
 
-    public static List<(DateTime Time, double Return, string Kind)> GetSwingReturns(
-        SwingGenotype g, Candle[] h1, Candle[] m15)
+    public static List<(DateTime Time, double Return, string Kind)> GetFadeShortReturns(
+        FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15)
     {
         var (trades, _) = RunSwingMultiTF(g, h1, m15);
         return trades;
     }
 
-    public static SwingTradeState GetSwingTradeState(SwingGenotype g, Candle[] h1, Candle[] m15)
+    public static FadeShortTradeState GetFadeShortTradeState(FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15)
     {
         var (_, state) = RunSwingMultiTF(g, h1, m15);
         return state;
@@ -215,26 +247,26 @@ public static class SwingSimulator
 
     // Returns scored trades — entry+exit times and signal quality score — for ranked portfolio sim.
     // Score = rsiExcess × adxRatio × rallyRatio (all > 1 at entry → higher = stronger signal).
-    public static List<ScoredTrade> GetScoredSwingTrades(string coin, SwingGenotype g, Candle[] h1, Candle[] m15)
+    public static List<ScoredTrade> GetScoredSwingTrades(string coin, FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15)
     {
         var scored = new List<ScoredTrade>();
         RunSwingMultiTF(g, h1, m15, coin, scored);
         return scored;
     }
 
-    private static (List<(DateTime, double, string)> Trades, SwingTradeState FinalState)
-        RunSwingMultiTF(SwingGenotype g, Candle[] h1, Candle[] m15,
+    private static (List<(DateTime, double, string)> Trades, FadeShortTradeState FinalState)
+        RunSwingMultiTF(FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
                         string? coin = null, List<ScoredTrade>? scoredOut = null)
     {
         int h1Warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
                        + g.LookbackCandles + 2;
 
         if (h1.Length <= h1Warmup + 2 || m15.Length < (h1Warmup + 2) * 4)
-            return ([], new SwingTradeState(false, 0, 0, 0, 0, false, 0, 0));
+            return ([], new FadeShortTradeState(false, 0, 0, 0, 0, false, 0, 0));
 
-        var h1Closes = h1.Select(c => c.Close).ToArray();
-        var h1Highs  = h1.Select(c => c.High).ToArray();
-        var h1Lows   = h1.Select(c => c.Low).ToArray();
+        var h1Closes = CandleExt.Closes(h1);
+        var h1Highs  = CandleExt.Highs(h1);
+        var h1Lows   = CandleExt.Lows(h1);
 
         var h1Ema = Indicators.Ema(h1Closes, g.EmaPeriod);
         var h1Rsi = Indicators.Rsi(h1Closes, RsiPeriod);
@@ -242,14 +274,14 @@ public static class SwingSimulator
         var h1Atr = Indicators.Atr(h1Highs, h1Lows, h1Closes, AtrPeriod);
 
         // h4 ATR — exit sizing scaled to holding timeframe, not entry precision
-        var h4      = AggregateCandles(h1, 4);
-        var h4Highs = h4.Select(c => c.High).ToArray();
-        var h4Lows  = h4.Select(c => c.Low).ToArray();
-        var h4Cls   = h4.Select(c => c.Close).ToArray();
+        var h4      = AggregateCandles(h1.ToArray(), 4);
+        var h4Highs = CandleExt.Highs(h4);
+        var h4Lows  = CandleExt.Lows(h4);
+        var h4Cls   = CandleExt.Closes(h4);
         var h4Atr   = Indicators.Atr(h4Highs, h4Lows, h4Cls, AtrPeriod);
 
-        var m15Closes = m15.Select(c => c.Close).ToArray();
-        var m15Lows   = m15.Select(c => c.Low).ToArray();
+        var m15Closes = CandleExt.Closes(m15);
+        var m15Lows   = CandleExt.Lows(m15);
 
         var result = new List<(DateTime, double, string)>();
 
@@ -372,7 +404,7 @@ public static class SwingSimulator
                                     hitMae      ? maeStop  :
                                     hitTarget   ? target   : m15Price;
                     double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry);
-                    result.Add((m15[im15].Time, ret, "swing_short"));
+                    result.Add((m15[im15].Time, ret, "fade_short"));
                     scoredOut?.Add(new ScoredTrade(coin!, "swing", entryTime, m15[im15].Time, ret, entryScore));
                     inTrade = false;
                 }
@@ -383,12 +415,12 @@ public static class SwingSimulator
         {
             double finalPx = m15Closes[^1];
             double ret = (entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry);
-            result.Add((m15[^1].Time, ret, "swing_short"));
+            result.Add((m15[^1].Time, ret, "fade_short"));
             scoredOut?.Add(new ScoredTrade(coin!, "swing", entryTime, m15[^1].Time, ret, entryScore));
         }
 
         int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;
-        return (result, new SwingTradeState(inTrade, entry, hardStop, maeStop, target, trailArmed, trailLow, finalHold));
+        return (result, new FadeShortTradeState(inTrade, entry, hardStop, maeStop, target, trailArmed, trailLow, finalHold));
     }
 
     // ── Cost model ────────────────────────────────────────────────────────────────
@@ -402,4 +434,199 @@ public static class SwingSimulator
         return FeeExchange + slip;
     }
 
+}
+
+// ── SwingLong simulator ──────────────────────────────────────────────────────────────────
+// Mirror of FadeShortSimulator: RSI bullish divergence + bullish BoS.
+// h1  = setup (EMA/RSI/ADX regime gate, swing-low lookback, RSI divergence)
+// m15 = precision entry (bullish BoS: close > prev 15m high)
+// h4  = exit sizing ATR (aggregated from h1; matches multi-day holding timeframe)
+public static class SwingLongSimulator
+{
+    internal const int AtrPeriod = 14;
+    internal const int RsiPeriod =  7;
+    internal const int AdxPeriod =  7;
+
+    private const double FeeExchange = 0.11;
+    private const double SlipK       = 0.025;
+    private const double SlipStopGap = 0.030;
+
+    public record SwingLongTradeState(
+        bool   InTrade,
+        double Entry,
+        double HardStop,
+        double Target,
+        bool   TrailArmed,
+        double TrailHigh,   // highest price seen since entry (trail reference for long)
+        int    HoldCount);
+
+    public static List<(DateTime Time, double Return, string Kind)> GetSwingLongReturns(
+        SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15)
+    {
+        var (trades, _) = RunSwingLongMultiTF(g, h1, m15);
+        return trades;
+    }
+
+    public static SwingLongTradeState GetSwingLongTradeState(
+        SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15)
+    {
+        var (_, state) = RunSwingLongMultiTF(g, h1, m15);
+        return state;
+    }
+
+    private static (List<(DateTime, double, string)> Trades, SwingLongTradeState FinalState)
+        RunSwingLongMultiTF(SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15)
+    {
+        int h1Warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
+                       + g.LookbackCandles + 2;
+
+        if (h1.Length <= h1Warmup + 2 || m15.Length < (h1Warmup + 2) * 4)
+            return ([], new SwingLongTradeState(false, 0, 0, 0, false, 0, 0));
+
+        var h1Closes = CandleExt.Closes(h1);
+        var h1Highs  = CandleExt.Highs(h1);
+        var h1Lows   = CandleExt.Lows(h1);
+
+        var h1Ema = Indicators.Ema(h1Closes, g.EmaPeriod);
+        var h1Rsi = Indicators.Rsi(h1Closes, RsiPeriod);
+        var h1Adx = Indicators.Adx(h1Highs, h1Lows, h1Closes, AdxPeriod);
+        var h1Atr = Indicators.Atr(h1Highs, h1Lows, h1Closes, AtrPeriod);
+
+        var h4      = FadeShortSimulator.AggregateCandles(h1.ToArray(), 4);
+        var h4Highs = CandleExt.Highs(h4);
+        var h4Lows  = CandleExt.Lows(h4);
+        var h4Cls   = CandleExt.Closes(h4);
+        var h4Atr   = Indicators.Atr(h4Highs, h4Lows, h4Cls, AtrPeriod);
+
+        var m15Closes = CandleExt.Closes(m15);
+        var m15Highs  = CandleExt.Highs(m15);
+
+        var result = new List<(DateTime, double, string)>();
+
+        bool   inTrade    = false;
+        double entry      = 0;
+        double hardStop   = 0;
+        double target     = 0;
+        double trailHigh  = 0;
+        double atrEntry   = 0;
+        bool   trailArmed = false;
+        int    entryIH1   = 0;
+
+        int    cachedH1Ref    = -1;
+        bool   cachedSetupMet = false;
+        double cachedSwingLow = 0;
+        double cachedAtrRef   = 0;
+
+        int m15Start = (h1Warmup + 1) * 4;
+        int m15Limit = h1.Length * 4;
+
+        for (int im15 = m15Start; im15 < Math.Min(m15.Length, m15Limit); im15++)
+        {
+            int ih1   = im15 / 4;
+            int h1Ref = ih1 - 1;
+
+            if (h1Ref < h1Warmup || h1Ref >= h1.Length) continue;
+
+            double m15Price = m15Closes[im15];
+
+            if (!inTrade)
+            {
+                if (h1Ref != cachedH1Ref)
+                {
+                    cachedH1Ref    = h1Ref;
+                    cachedSetupMet = false;
+
+                    double atrH1 = h1Atr[h1Ref] > 1e-10 ? h1Atr[h1Ref] : h1Closes[h1Ref] * 0.02;
+
+                    int    h4Ref = h1Ref / 4;
+                    double atrH4 = h4Ref < h4Atr.Length && h4Atr[h4Ref] > 1e-10
+                                 ? h4Atr[h4Ref] : atrH1 * 4;
+
+                    // Trend gate: price above EMA and ADX trending
+                    if (h1Adx[h1Ref] >= g.AdxThreshold && h1Closes[h1Ref] > h1Ema[h1Ref])
+                    {
+                        int    lb         = g.LookbackCandles;
+                        int    lbStart    = Math.Max(0, h1Ref - lb);
+                        double swingLow   = h1Closes[lbStart];
+                        int    lowIdx     = lbStart;
+                        double recentHigh = h1Highs[lbStart];
+
+                        for (int j = lbStart; j < h1Ref; j++)
+                        {
+                            if (h1Closes[j] < swingLow)  { swingLow = h1Closes[j]; lowIdx = j; }
+                            if (h1Highs[j]  > recentHigh)  recentHigh = h1Highs[j];
+                        }
+
+                        // Min decline filter: real pullback, not noise
+                        bool bigDrop = (recentHigh - swingLow) >= g.MinDeclineAtrMult * atrH1;
+
+                        // RSI bullish divergence: swingLow RSI was oversold AND current RSI recovered
+                        double rsiAtLow = h1Rsi[lowIdx];
+                        bool diverging  = rsiAtLow <= g.RsiOversold
+                                       && h1Rsi[h1Ref] >= rsiAtLow + g.RsiDivThreshold;
+
+                        // 1h BoS: close above previous candle's high (bullish)
+                        bool h1Bos = h1Closes[h1Ref] > h1Highs[h1Ref - 1];
+
+                        if (bigDrop && diverging && h1Bos)
+                        {
+                            cachedSetupMet = true;
+                            cachedSwingLow = swingLow;
+                            cachedAtrRef   = atrH4;
+                        }
+                    }
+                }
+
+                // 15m bullish BoS: close above previous 15m candle's high
+                if (cachedSetupMet && m15Closes[im15] > m15Highs[im15 - 1])
+                {
+                    inTrade    = true;
+                    entry      = m15Price;
+                    atrEntry   = cachedAtrRef;
+                    hardStop   = cachedSwingLow - g.StopLossAtrMult * atrEntry;
+                    target     = entry + g.TakeProfitAtrMult * atrEntry;
+                    trailHigh  = m15Price;
+                    trailArmed = false;
+                    entryIH1   = ih1;
+                }
+            }
+            else
+            {
+                if (m15Price > trailHigh) trailHigh = m15Price;
+                if (!trailArmed && trailHigh - entry >= g.TrailingActivationAtrMult * atrEntry)
+                    trailArmed = true;
+
+                int holdH1 = ih1 - entryIH1;
+
+                bool hitStop   = m15Price <= hardStop;
+                bool hitTarget = m15Price >= target;
+                bool hitTrail  = trailArmed && m15Price < trailHigh - g.TrailingStopAtrMult * atrEntry;
+                bool timedOut  = holdH1 >= g.MaxHoldCandles;
+
+                if (hitStop || hitTarget || hitTrail || timedOut)
+                {
+                    double exitPx = hitStop   ? hardStop :
+                                    hitTarget ? target   : m15Price;
+                    double atrPct = atrEntry / entry * 100.0;
+                    double slip   = SlipK * atrPct;
+                    double stopSlip = hitStop ? SlipStopGap * atrPct : 0;
+                    double cost   = FeeExchange + slip * 2 + stopSlip;
+                    double ret    = (exitPx - entry) / entry * 100.0 - cost;
+                    result.Add((m15[im15].Time, ret, "swing_long"));
+                    inTrade = false;
+                }
+            }
+        }
+
+        if (inTrade)
+        {
+            double finalPx = m15Closes[^1];
+            double atrPct  = atrEntry / entry * 100.0;
+            double ret     = (finalPx - entry) / entry * 100.0 - (FeeExchange + SlipK * atrPct * 2);
+            result.Add((m15[^1].Time, ret, "swing_long"));
+        }
+
+        int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;
+        return (result, new SwingLongTradeState(inTrade, entry, hardStop, target, trailArmed, trailHigh, finalHold));
+    }
 }

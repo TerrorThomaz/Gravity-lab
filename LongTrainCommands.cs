@@ -5,6 +5,40 @@ namespace TradingGA;
 
 static class LongTrainCommands
 {
+    private const int BearWindowMinBars = 200; // ~8 days of 1h bars
+
+    private static List<(DateTime Start, DateTime End)> GetBearWindows(RegimeBar[] series, int minBars)
+    {
+        var windows  = new List<(DateTime, DateTime)>();
+        DateTime runStart = default;
+        DateTime runEnd   = default;
+        int      runLen   = 0;
+        foreach (var bar in series)
+        {
+            if (bar.Regime == MarketRegime.Bear)
+            {
+                if (runLen == 0) runStart = bar.Time;
+                runEnd = bar.Time;
+                runLen++;
+            }
+            else if (runLen > 0)
+            {
+                if (runLen >= minBars) windows.Add((runStart, runEnd));
+                runLen = 0;
+            }
+        }
+        if (runLen >= minBars) windows.Add((runStart, runEnd));
+        return windows;
+    }
+
+    private static T[] FilterToWindows<T>(T[] items, Func<T, DateTime> getTime,
+        List<(DateTime Start, DateTime End)> windows)
+    {
+        if (windows.Count == 0) return items;
+        return items.Where(x => { var t = getTime(x); return windows.Any(w => t >= w.Start && t <= w.End); })
+                    .ToArray();
+    }
+
     public static async Task RunCoevolve(BybitRestClient client)
     {
         Console.WriteLine("=== Gravity-gen2 | COEVOLVETRAIN (FadeLong + DipLong + Router, 4 cycles) ===\n");
@@ -161,6 +195,31 @@ static class LongTrainCommands
         });
         var flFetched = await Task.WhenAll(flFetchTasks);
 
+        // Build BTC bear windows to restrict training data to regime-relevant periods
+        var btcFetched = flFetched.FirstOrDefault(f => f.sym == "BTCUSDT");
+        var bearWindows = new List<(DateTime Start, DateTime End)>();
+        if (btcFetched.h1 is { Length: > 220 })
+        {
+            var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcFetched.h1);
+            bearWindows = GetBearWindows(btcSeries, BearWindowMinBars);
+            Console.WriteLine($"  BTC bear windows ({BearWindowMinBars}+ bar runs): {bearWindows.Count}");
+            foreach (var (s, e) in bearWindows)
+                Console.WriteLine($"    {s:yyyy-MM-dd} → {e:yyyy-MM-dd}  ({(e - s).TotalDays:F0}d)");
+        }
+        else
+        {
+            Console.WriteLine("  BTC data insufficient for bear-window filtering — using full history");
+            // Fetch BTC separately if not in BacktestCoins
+            var btcM15 = await CandleFetcher.FetchFifteenMinCandlesCached(client, "BTCUSDT", batches: 113);
+            var btcH1  = FadeShortSimulator.AggregateCandles(btcM15.ToArray(), 4);
+            if (btcH1.Length > 220)
+            {
+                var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcH1);
+                bearWindows = GetBearWindows(btcSeries, BearWindowMinBars);
+                Console.WriteLine($"  BTC bear windows ({BearWindowMinBars}+ bar runs): {bearWindows.Count}");
+            }
+        }
+
         var flPassed = new List<(string Sym, Candle[] H1, Candle[] M15)>();
         foreach (var (sym, h1, m15) in flFetched)
         {
@@ -188,11 +247,23 @@ static class LongTrainCommands
                 if (valStart >= 0)
                 {
                     int m15ValEnd = Math.Min((valEnd + 1) * 4, m15.Length);
+
+                    // Apply bear-window filter to training candles
+                    var h1TrainFiltered  = FilterToWindows(h1[..valStart],        c => c.Time, bearWindows);
+                    var m15TrainFiltered = FilterToWindows(m15[..(valStart * 4)], c => c.Time, bearWindows);
+
+                    if (h1TrainFiltered.Length < 50)
+                    {
+                        Console.WriteLine($"  {sym}: skip training (< 50 bear-window bars after filter)");
+                        flHeld++;
+                        continue;
+                    }
+
                     flCoins.Add(new FadeLongGA.CoinData(
-                        h1[..valStart],        h1[valStart..(valEnd + 1)],
-                        m15[..(valStart * 4)], m15[(valStart * 4)..m15ValEnd]));
+                        h1TrainFiltered,               h1[valStart..(valEnd + 1)],
+                        m15TrainFiltered,              m15[(valStart * 4)..m15ValEnd]));
                     flRegime++;
-                    Console.WriteLine($"  {sym}: regime-val bars [{valStart}..{valEnd}] ({valEnd - valStart + 1} bear bars)");
+                    Console.WriteLine($"  {sym}: regime-val bars [{valStart}..{valEnd}] ({valEnd - valStart + 1} bear bars)  train={h1TrainFiltered.Length} bear-window h1 bars");
                 }
                 else
                 {

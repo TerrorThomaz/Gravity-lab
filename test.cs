@@ -471,12 +471,14 @@ public static class CrashAnalyser
         if (trades.Count == 0) return;
 
         // Sweep line to find the peak concurrent total half-Kelly
+        const double MaxKellyPerPosition = 0.15;
         var events = new List<(DateTime T, double D, bool IsGrid)>();
         foreach (var t in trades)
         {
-            bool grid = t.Strategy == "grid";
-            events.Add((t.Open,  +t.HalfKelly, grid));
-            events.Add((t.Close, -t.HalfKelly, grid));
+            bool   grid   = t.Strategy == "grid";
+            double capped = Math.Min(t.HalfKelly, MaxKellyPerPosition);
+            events.Add((t.Open,  +capped, grid));
+            events.Add((t.Close, -capped, grid));
         }
         events.Sort((a, b) => a.T.CompareTo(b.T));
 

@@ -9,6 +9,7 @@ static class Config
     public const string DipLongGenoFile   = "dip_long_genotype.json";
     public const string RouterGenoFile    = "regime_router_genotype.json";
     public const string SwingLongGenoFile = "swing_long_genotype.json";
+    public const string ExitModifierGenoFile = "exit_modifier_genotype.json";
 
     public const double MaxTotalExposurePct = 0.30;
     public const double MinMedianVolUsdM    = 0.5;

@@ -17,6 +17,7 @@ static class OosBacktest
 
         FadeLongGenotype?     flG     = File.Exists(Config.FadeLongGenoFile)  ? JsonSerializer.Deserialize<FadeLongGenotypeDto>(File.ReadAllText(Config.FadeLongGenoFile))!.ToGenotype()   : null;
         DipLongGenotype?      dlG     = File.Exists(Config.DipLongGenoFile)   ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(Config.DipLongGenoFile))!.ToGenotype()     : null;
+        SwingLongGenotype?    slG     = File.Exists(Config.SwingLongGenoFile) ? JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(Config.SwingLongGenoFile))!.ToGenotype() : null;
         RegimeRouterGenotype? routerG = File.Exists(Config.RouterGenoFile)    ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype() : null;
 
         Console.WriteLine($"FadeShort: {swingG}");
@@ -25,6 +26,8 @@ static class OosBacktest
         else                 Console.WriteLine("FadeLong:  not found — skipping");
         if (dlG     != null) Console.WriteLine($"DipLong:   {dlG}");
         else                 Console.WriteLine("DipLong:   not found — skipping");
+        if (slG     != null) Console.WriteLine($"SwingLong: {slG}");
+        else                 Console.WriteLine("SwingLong: not found — skipping");
         if (routerG != null) Console.WriteLine($"Router:    {routerG}");
         else                 Console.WriteLine("Router:    not found — running ungated");
         Console.WriteLine();
@@ -70,12 +73,14 @@ static class OosBacktest
         var gridTrades  = new List<(DateTime Time, double Return, double Conf)>();
         var flTrades    = new List<(DateTime Time, double Return, double Conf)>();
         var dlTrades    = new List<(DateTime Time, double Return, double Conf)>();
+        var slTrades    = new List<(DateTime Time, double Return, double Conf)>();
         var allTrades   = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
 
         var swingCoinStats = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
         var gridCoinStats  = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
         var flCoinStats    = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
         var dlCoinStats    = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
+        var slCoinStats    = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
         int totalVCC = 0;
 
         // ── SWING ─────────────────────────────────────────────────────────────────
@@ -234,6 +239,48 @@ static class OosBacktest
             }
         }
 
+        // ── SWINGLONG ─────────────────────────────────────────────────────────────────
+        if (slG != null)
+        {
+            Console.WriteLine($"\n══ SWINGLONG (full OOS history, router-gated) ═══════════════════════════════");
+            Console.WriteLine($"{"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}  {"Gated",6}");
+            Console.WriteLine(new string('-', 90));
+
+            foreach (var (sym, m15, h1) in oosFetched)
+            {
+                if (h1.Length < 300 || m15.Length < 1200) continue;
+
+                var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
+                double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
+                if (medVol < oosMinVol) continue;
+
+                var raw   = SwingLongSimulator.GetSwingLongReturns(slG, h1, m15);
+                var gated = session != null
+                    ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()  // SwingLong shares bull-regime gate with DipLong
+                    : raw;
+                var vRet  = gated.Select(t => t.Return).ToList();
+
+                int gatedOut = raw.Count - gated.Count;
+                if (vRet.Count == 0) { Console.WriteLine($"  {sym,-16}  skip (0 trades after gate, {raw.Count} raw)"); continue; }
+
+                int    vCC  = h1.Length * 12;
+                double conf = Simulator.ComputeConfidence(vRet);
+                double sh   = Simulator.SharpeRatio(vRet, vCC);
+                double sort = Simulator.SortinoRatio(vRet, vCC);
+                double pf   = Simulator.ProfitFactor(vRet);
+                double wr   = (double)vRet.Count(r => r > 0) / vRet.Count;
+                double avg  = vRet.Average();
+
+                Console.WriteLine($"  {sym,-16} {conf,6:P1}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%  -{gatedOut,4}");
+                slCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
+                foreach (var t in gated)
+                {
+                    slTrades.Add((t.Time, t.Return, conf));
+                    allTrades.Add((t.Time, t.Return, conf, "swing_long"));
+                }
+            }
+        }
+
         if (allTrades.Count == 0) { Console.WriteLine("\nNo OOS trades generated."); return; }
 
         allTrades.Sort((a, b)   => a.Time.CompareTo(b.Time));
@@ -241,6 +288,7 @@ static class OosBacktest
         gridTrades.Sort((a, b)  => a.Time.CompareTo(b.Time));
         flTrades.Sort((a, b)    => a.Time.CompareTo(b.Time));
         dlTrades.Sort((a, b)    => a.Time.CompareTo(b.Time));
+        slTrades.Sort((a, b)    => a.Time.CompareTo(b.Time));
 
         // Per-strategy concurrent cap
         if (allTrades.Count > 0)
@@ -267,6 +315,7 @@ static class OosBacktest
         var gridRet  = gridTrades.Select(t => t.Return).ToList();
         var flRet    = flTrades.Select(t => t.Return).ToList();
         var dlRet    = dlTrades.Select(t => t.Return).ToList();
+        var slRet    = slTrades.Select(t => t.Return).ToList();
         var allRet   = allTrades.Select(t => t.Return).ToList();
 
         string Pct(List<double> r) => r.Count > 0 ? $"WR={(double)r.Count(x => x > 0)/r.Count:P0}  Avg={r.Average():+0.00}%" : "no trades";
@@ -280,22 +329,25 @@ static class OosBacktest
             Console.WriteLine($"  FadeLong:  {flRet.Count,4} trades  PF={Simulator.ProfitFactor(flRet):F2}  {Pct(flRet)}");
         if (dlRet.Count > 0)
             Console.WriteLine($"  DipLong:   {dlRet.Count,4} trades  PF={Simulator.ProfitFactor(dlRet):F2}  {Pct(dlRet)}");
+        if (slRet.Count > 0)
+            Console.WriteLine($"  SwingLong: {slRet.Count,4} trades  PF={Simulator.ProfitFactor(slRet):F2}  {Pct(slRet)}");
         Console.WriteLine($"  Total:     {allRet.Count,4} trades  PF={Simulator.ProfitFactor(allRet):F2}  {Pct(allRet)}");
         Console.WriteLine();
         Console.WriteLine($"  Sharpe:  {Simulator.SharpeRatio(allRet, totalVCC):F2}");
         Console.WriteLine($"  Sortino: {Simulator.SortinoRatio(allRet, totalVCC):F2}");
         Console.WriteLine($"  Calmar:  {Simulator.CalmarRatio(allRet):F2}");
 
-        static TimeSpan OosStrategyHold(string strat, FadeShortGenotype swG, GridGenotype grG, FadeLongGenotype? flG, DipLongGenotype? dlG) => strat switch
+        static TimeSpan OosStrategyHold(string strat, FadeShortGenotype swG, GridGenotype grG, FadeLongGenotype? flG, DipLongGenotype? dlG, SwingLongGenotype? slG) => strat switch
         {
-            "swing"    => TimeSpan.FromHours(swG.MaxHoldCandles),
-            "fadelong" => TimeSpan.FromHours(flG?.MaxHoldCandles ?? swG.MaxHoldCandles),
-            "diplong"  => TimeSpan.FromHours(dlG?.MaxHoldCandles ?? swG.MaxHoldCandles),
-            _          => TimeSpan.FromHours(grG.MaxHoldCandles),
+            "swing"      => TimeSpan.FromHours(swG.MaxHoldCandles),
+            "swing_long" => TimeSpan.FromHours(slG?.MaxHoldCandles ?? swG.MaxHoldCandles),
+            "fadelong"   => TimeSpan.FromHours(flG?.MaxHoldCandles ?? swG.MaxHoldCandles),
+            "diplong"    => TimeSpan.FromHours(dlG?.MaxHoldCandles ?? swG.MaxHoldCandles),
+            _            => TimeSpan.FromHours(grG.MaxHoldCandles),
         };
 
         var allTradesForExposure = allTrades
-            .Select(t => (t.Time, t.Return, t.Conf, OosStrategyHold(t.Strategy, swingG, gridG, flG, dlG)))
+            .Select(t => (t.Time, t.Return, t.Conf, OosStrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG)))
             .ToList();
 
         var port5cap  = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
@@ -358,6 +410,15 @@ static class OosBacktest
             Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
             Console.WriteLine($"  {new string('-', 75)}");
             foreach (var r in dlCoinStats.OrderByDescending(c => c.Sharpe))
+                Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
+        }
+
+        if (slCoinStats.Count > 0)
+        {
+            Console.WriteLine($"\n  Per-coin breakdown (SwingLong · sorted by Sharpe):");
+            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+            Console.WriteLine($"  {new string('-', 75)}");
+            foreach (var r in slCoinStats.OrderByDescending(c => c.Sharpe))
                 Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
         }
     }

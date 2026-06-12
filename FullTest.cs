@@ -442,7 +442,7 @@ static class FullTest
         Console.WriteLine($"\n{new string('═', 88)}");
         Console.WriteLine($"  PORTFOLIO SIMULATION (€100 start · 30% total cap)");
         Console.WriteLine($"{new string('═', 88)}");
-        Console.WriteLine($"  {"",16}  {"Val 5%cap",12}  {"Val Kelly",12}  {"OOS 5%cap",12}  {"OOS Kelly",12}");
+        Console.WriteLine($"  {"",16}  {"Val 5%cap",12}  {"Val Kelly(15%)",12}  {"OOS 5%cap",12}  {"OOS Kelly(15%)",12}");
         Console.WriteLine($"  {new string('-', 72)}");
         string lbl  = "No guard";
         string lblG = "Dyn guard";
@@ -462,7 +462,7 @@ static class FullTest
         Console.WriteLine($"\n{new string('═', 88)}");
         Console.WriteLine($"  YEAR-BY-YEAR (val window)");
         Console.WriteLine($"{new string('═', 88)}");
-        Console.WriteLine($"  {"Year",-6}  {"Regime",7}  {"N",4}  {"5% w/router",12}  {"5% no router",13}  {"Router Δ",9}  {"Kelly w/r",10}  {"Kelly no r",11}");
+        Console.WriteLine($"  {"Year",-6}  {"Regime",7}  {"N",4}  {"5% w/router",12}  {"5% no router",13}  {"Router Δ",9}  {"Kelly(15%) w/r",10}  {"Kelly(15%) no r",11}");
         Console.WriteLine($"  {new string('-', 84)}");
 
         foreach (int yr in valSim.Select(t => t.Item1.Year).Distinct().OrderBy(y => y))
@@ -591,10 +591,10 @@ static class FullTest
         Console.WriteLine($"  {new string('-', 64)}");
         Console.WriteLine($"  {"5%cap · with router",-22}  {r5R,+7:F1}%  {(valSim.Count>0?val5p.MaxDrawdownPct:0),6:F1}%  |  {or5R,+7:F1}%  {(oosSim.Count>0?oos5p.MaxDrawdownPct:0),6:F1}%");
         Console.WriteLine($"  {"5%cap · no router",-22}  {r5NR,+7:F1}%  {(nrFiltered.Count>0?nrPort5.MaxDrawdownPct:0),6:F1}%  |  {or5NR,+7:F1}%  {(oosNrFiltered.Count>0?oosNrPort5.MaxDrawdownPct:0),6:F1}%");
-        Console.WriteLine($"  {"Kelly · with router",-22}  {rKR,+7:F1}%  {(valSim.Count>0?valKel.MaxDrawdownPct:0),6:F1}%  |  {orKR,+7:F1}%  {(oosSim.Count>0?oosKel.MaxDrawdownPct:0),6:F1}%");
-        Console.WriteLine($"  {"Kelly · no router",-22}  {rKNR,+7:F1}%  {(nrFiltered.Count>0?nrPortK.MaxDrawdownPct:0),6:F1}%  |  {orKNR,+7:F1}%  {(oosNrFiltered.Count>0?oosNrPortK.MaxDrawdownPct:0),6:F1}%");
-        Console.WriteLine($"  Val  router edge: 5%cap {Sign(r5R-r5NR)}{r5R-r5NR:F1}pp  /  Kelly {Sign(rKR-rKNR)}{rKR-rKNR:F1}pp");
-        Console.WriteLine($"  OOS  router edge: 5%cap {Sign(or5R-or5NR)}{or5R-or5NR:F1}pp  /  Kelly {Sign(orKR-orKNR)}{orKR-orKNR:F1}pp");
+        Console.WriteLine($"  {"Kelly(15%) · with router",-22}  {rKR,+7:F1}%  {(valSim.Count>0?valKel.MaxDrawdownPct:0),6:F1}%  |  {orKR,+7:F1}%  {(oosSim.Count>0?oosKel.MaxDrawdownPct:0),6:F1}%");
+        Console.WriteLine($"  {"Kelly(15%) · no router",-22}  {rKNR,+7:F1}%  {(nrFiltered.Count>0?nrPortK.MaxDrawdownPct:0),6:F1}%  |  {orKNR,+7:F1}%  {(oosNrFiltered.Count>0?oosNrPortK.MaxDrawdownPct:0),6:F1}%");
+        Console.WriteLine($"  Val  router edge: 5%cap {Sign(r5R-r5NR)}{r5R-r5NR:F1}pp  /  Kelly(15%) {Sign(rKR-rKNR)}{rKR-rKNR:F1}pp");
+        Console.WriteLine($"  OOS  router edge: 5%cap {Sign(or5R-or5NR)}{or5R-or5NR:F1}pp  /  Kelly(15%) {Sign(orKR-orKNR)}{orKR-orKNR:F1}pp");
 
         // ══════════════════════════════════════════════════════════════════════════
         // SECTION 7: FORWARD PROJECTION
@@ -618,7 +618,7 @@ static class FullTest
                 double aK  = span > 0 ? (Math.Pow(1 + rK, 365.0 / span) - 1) * 100 : 0;
                 Console.WriteLine($"  Slice: {slice90.Count} trades  {slice90[0].Item1:yyyy-MM-dd} → {lastDate:yyyy-MM-dd}  ({span:F0}d)");
                 Console.WriteLine($"  5%cap: {r5*100:+0.0;-0.0}% in {span:F0}d  →  projected {a5:+0.0;-0.0}%/yr  DD {sp5.MaxDrawdownPct:F1}%");
-                Console.WriteLine($"  Kelly: {rK*100:+0.0;-0.0}% in {span:F0}d  →  projected {aK:+0.0;-0.0}%/yr  DD {spK.MaxDrawdownPct:F1}%");
+                Console.WriteLine($"  Kelly(15%): {rK*100:+0.0;-0.0}% in {span:F0}d  →  projected {aK:+0.0;-0.0}%/yr  DD {spK.MaxDrawdownPct:F1}%");
                 Console.WriteLine("  Warning: Assumes stable regime — recent bull market may not persist.");
             }
             else Console.WriteLine($"  Only {slice90.Count} trades in last 90d — insufficient for projection.");

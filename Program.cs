@@ -25,6 +25,7 @@ switch (mode)
     case "oosbacktest":      await OosBacktest.RunOosBacktest(client);                           break;
     case "allcoinsbacktest": await OosBacktest.RunAllCoinsBacktest(client);                      break;
     case "fulltest":         await FullTest.RunFullTest(client);                                break;
+    case "exitmodifiertrain": await ExitModifierTrainCommands.RunExitModifierTrain(client);   break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
         Console.WriteLine("  dotnet run -- train              Train FadeShort GA (~10 min)");

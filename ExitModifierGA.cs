@@ -23,7 +23,7 @@ public class ExitModifierGA
         List<TradeEnricher.EnrichedTrade> valEnriched,
         List<TradeEnricher.EnrichedTrade> oosEnriched)
     {
-        int nDim   = 8;
+        int nDim   = 5;
         int elites = Math.Max(2, _populationSize / 5);
 
         var pop = new List<ExitModifierGenotype>(_populationSize);

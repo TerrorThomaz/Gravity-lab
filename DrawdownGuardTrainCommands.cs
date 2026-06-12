@@ -3,11 +3,11 @@ using System.Text.Json;
 
 namespace TradingGA;
 
-static class ExitModifierTrainCommands
+static class DrawdownGuardTrainCommands
 {
-    public static async Task RunExitModifierTrain(BybitRestClient client)
+    public static async Task RunDrawdownGuardTrain(BybitRestClient client)
     {
-        Console.WriteLine($"=== Gravity-gen2 | EXIT MODIFIER TRAIN (val 20% + OOS, all strategies) ===\n");
+        Console.WriteLine($"=== Gravity-gen2 | DRAWDOWN GUARD TRAIN (val 20% + OOS, all strategies) ===\n");
 
         if (!File.Exists(Config.FadeShortGenoFile)) { Console.WriteLine("Missing FadeShort genotype."); return; }
         if (!File.Exists(Config.GridGenoFile))      { Console.WriteLine("Missing Grid genotype.");      return; }
@@ -39,20 +39,19 @@ static class ExitModifierTrainCommands
         });
         var fetched    = await Task.WhenAll(fetchTasks);
         var fetchedMap = fetched.ToDictionary(f => f.sym);
-        var h1Map      = fetched.Where(f => f.h1.Length >= 200).ToDictionary(f => f.sym, f => f.h1);
         Console.WriteLine("  Done.\n");
 
         RegimeRouterSession? session = null;
-        if (routerG != null && h1Map.TryGetValue("BTCUSDT", out var btcH1) && btcH1.Length >= 200)
+        if (routerG != null && fetchedMap.TryGetValue("BTCUSDT", out var btcEntry) && btcEntry.h1.Length >= 200)
         {
-            var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcH1);
-            RegimeBar[]? ethSeries = h1Map.TryGetValue("ETHUSDT", out var ethH1) && ethH1.Length >= 200
-                ? RegimeClassifier.ClassifySeriesWithDuration(ethH1) : null;
+            var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcEntry.h1);
+            RegimeBar[]? ethSeries = fetchedMap.TryGetValue("ETHUSDT", out var ethEntry) && ethEntry.h1.Length >= 200
+                ? RegimeClassifier.ClassifySeriesWithDuration(ethEntry.h1) : null;
             session = new RegimeRouterSession(btcSeries, ethSeries, routerG);
         }
 
-        var valRaw = new List<(DateTime Time, double Return, double Conf, string Strategy, string Symbol, TimeSpan HoldDuration)>();
-        var oosRaw = new List<(DateTime Time, double Return, double Conf, string Strategy, string Symbol, TimeSpan HoldDuration)>();
+        var valTrades = new List<(DateTime EntryTime, double Return, double CoinConf, TimeSpan HoldDuration, bool IsGuarded)>();
+        var oosTrades = new List<(DateTime EntryTime, double Return, double CoinConf, TimeSpan HoldDuration, bool IsGuarded)>();
 
         // Val coins — 80/20 time split with FadeShort screen
         foreach (var sym in Config.BacktestCoins)
@@ -71,7 +70,7 @@ static class ExitModifierTrainCommands
             var m15Train = m15[..m15Split];
             var m15Val   = m15[m15Split..];
 
-            // FadeShort — screen on train
+            // FadeShort — screen on train, exempt from guard
             {
                 var screenH1  = h1Train.Length >= 4380 ? h1Train : h1;
                 var screenM15 = screenH1.Length == h1.Length ? m15 : m15Train;
@@ -82,10 +81,10 @@ static class ExitModifierTrainCommands
                 {
                     double conf = Simulator.ComputeConfidence(fsTr);
                     foreach (var (t, ret, _) in FadeShortSimulator.GetFadeShortReturns(swingG, h1Val, m15Val))
-                        valRaw.Add((t, ret, conf, "swing", sym, TimeSpan.FromHours(swingG.MaxHoldCandles)));
+                        valTrades.Add((t, ret, conf, TimeSpan.FromHours(swingG.MaxHoldCandles), false));
                 }
             }
-            // Grid
+            // Grid — guarded
             if (h1Train.Length >= 100)
             {
                 var gTr = GridSimulator.GetGridReturns(gridG, h1Train).Select(t => t.Return).ToList();
@@ -95,35 +94,44 @@ static class ExitModifierTrainCommands
                     var raw   = GridSimulator.GetGridReturns(gridG, h1Val);
                     var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList() : raw;
                     foreach (var t in gated)
-                        valRaw.Add((t.Time, t.Return, conf, "grid", sym, TimeSpan.FromHours(gridG.MaxHoldCandles)));
+                        valTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(gridG.MaxHoldCandles), true));
                 }
             }
-            // FadeLong
+            // FadeLong — exempt from guard
             if (flG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
-                double conf = Simulator.ComputeConfidence(FadeLongSimulator.GetFadeLongReturns(flG, h1Val, m15Val).Select(t => t.Return).ToList());
                 var raw   = FadeLongSimulator.GetFadeLongReturns(flG, h1Val, m15Val);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList() : raw;
-                foreach (var t in gated)
-                    valRaw.Add((t.Time, t.Return, conf, "fadelong", sym, TimeSpan.FromHours(flG.MaxHoldCandles)));
+                if (gated.Count > 0)
+                {
+                    double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
+                    foreach (var t in gated)
+                        valTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(flG.MaxHoldCandles), false));
+                }
             }
-            // DipLong
+            // DipLong — guarded
             if (dlG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
-                double conf = Simulator.ComputeConfidence(DipLongSimulator.GetDipLongReturns(dlG, h1Val, m15Val).Select(t => t.Return).ToList());
                 var raw   = DipLongSimulator.GetDipLongReturns(dlG, h1Val, m15Val);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
-                foreach (var t in gated)
-                    valRaw.Add((t.Time, t.Return, conf, "diplong", sym, TimeSpan.FromHours(dlG.MaxHoldCandles)));
+                if (gated.Count > 0)
+                {
+                    double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
+                    foreach (var t in gated)
+                        valTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(dlG.MaxHoldCandles), true));
+                }
             }
-            // SwingLong
+            // SwingLong — guarded
             if (slG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
-                double conf = Simulator.ComputeConfidence(SwingLongSimulator.GetSwingLongReturns(slG, h1Val, m15Val).Select(t => t.Return).ToList());
                 var raw   = SwingLongSimulator.GetSwingLongReturns(slG, h1Val, m15Val);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
-                foreach (var t in gated)
-                    valRaw.Add((t.Time, t.Return, conf, "swing_long", sym, TimeSpan.FromHours(slG.MaxHoldCandles)));
+                if (gated.Count > 0)
+                {
+                    double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
+                    foreach (var t in gated)
+                        valTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(slG.MaxHoldCandles), true));
+                }
             }
         }
 
@@ -132,20 +140,19 @@ static class ExitModifierTrainCommands
         {
             if (!fetchedMap.TryGetValue(sym, out var entry)) continue;
             var (_, m15, h1) = entry;
-            if (h1.Length < 300) continue;
-            if (m15.Length == 0) continue;
+            if (h1.Length < 300 || m15.Length == 0) continue;
 
-            // FadeShort (no screen on OOS)
+            // FadeShort — exempt
             {
                 var trades = FadeShortSimulator.GetFadeShortReturns(swingG, h1, m15);
                 if (trades.Count >= 5)
                 {
                     double conf = Simulator.ComputeConfidence(trades.Select(t => t.Return).ToList());
                     foreach (var (t, ret, _) in trades)
-                        oosRaw.Add((t, ret, conf, "swing", sym, TimeSpan.FromHours(swingG.MaxHoldCandles)));
+                        oosTrades.Add((t, ret, conf, TimeSpan.FromHours(swingG.MaxHoldCandles), false));
                 }
             }
-            // Grid
+            // Grid — guarded
             {
                 var raw   = GridSimulator.GetGridReturns(gridG, h1);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList() : raw;
@@ -153,10 +160,10 @@ static class ExitModifierTrainCommands
                 {
                     double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
                     foreach (var t in gated)
-                        oosRaw.Add((t.Time, t.Return, conf, "grid", sym, TimeSpan.FromHours(gridG.MaxHoldCandles)));
+                        oosTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(gridG.MaxHoldCandles), true));
                 }
             }
-            // FadeLong
+            // FadeLong — exempt
             if (flG != null && m15.Length >= 1200)
             {
                 var raw   = FadeLongSimulator.GetFadeLongReturns(flG, h1, m15);
@@ -165,10 +172,10 @@ static class ExitModifierTrainCommands
                 {
                     double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
                     foreach (var t in gated)
-                        oosRaw.Add((t.Time, t.Return, conf, "fadelong", sym, TimeSpan.FromHours(flG.MaxHoldCandles)));
+                        oosTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(flG.MaxHoldCandles), false));
                 }
             }
-            // DipLong
+            // DipLong — guarded
             if (dlG != null && m15.Length >= 1200)
             {
                 var raw   = DipLongSimulator.GetDipLongReturns(dlG, h1, m15);
@@ -177,10 +184,10 @@ static class ExitModifierTrainCommands
                 {
                     double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
                     foreach (var t in gated)
-                        oosRaw.Add((t.Time, t.Return, conf, "diplong", sym, TimeSpan.FromHours(dlG.MaxHoldCandles)));
+                        oosTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(dlG.MaxHoldCandles), true));
                 }
             }
-            // SwingLong
+            // SwingLong — guarded
             if (slG != null && m15.Length >= 1200)
             {
                 var raw   = SwingLongSimulator.GetSwingLongReturns(slG, h1, m15);
@@ -189,50 +196,40 @@ static class ExitModifierTrainCommands
                 {
                     double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
                     foreach (var t in gated)
-                        oosRaw.Add((t.Time, t.Return, conf, "swing_long", sym, TimeSpan.FromHours(slG.MaxHoldCandles)));
+                        oosTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(slG.MaxHoldCandles), true));
                 }
             }
         }
 
-        Console.WriteLine($"  Val trades: {valRaw.Count}  OOS trades: {oosRaw.Count}");
-        if (valRaw.Count < 20 || oosRaw.Count < 20)
+        Console.WriteLine($"  Val trades: {valTrades.Count}  OOS trades: {oosTrades.Count}");
+        Console.WriteLine($"  Guarded: val={valTrades.Count(t => t.IsGuarded)}  oos={oosTrades.Count(t => t.IsGuarded)}");
+        if (valTrades.Count < 20 || oosTrades.Count < 20)
         {
             Console.WriteLine("  Insufficient trades — aborting.");
             return;
         }
 
-        Console.WriteLine("  Enriching trades with context...");
-        var valEnriched = TradeEnricher.Enrich(valRaw, h1Map);
-        var oosEnriched = TradeEnricher.Enrich(oosRaw, h1Map);
-        Console.WriteLine($"  Enriched: {valEnriched.Count} val / {oosEnriched.Count} OOS\n");
+        Console.WriteLine("\n  Running DrawdownGuardGA (40 individuals, 60 generations)...\n");
+        var ga   = new DrawdownGuardGA(populationSize: 40, generations: 60);
+        var best = ga.Run(valTrades, oosTrades);
 
-        Console.WriteLine("  Running ExitModifierGA (40 individuals, 60 generations)...\n");
-        var ga   = new ExitModifierGA(populationSize: 40, generations: 60, verbose: true);
-        var best = ga.Run(valEnriched, oosEnriched);
+        var valBaseline = Simulator.SimulatePortfolioExposureCapped(
+            valTrades.Select(t => (t.EntryTime, t.Return, t.CoinConf, t.HoldDuration)).OrderBy(t => t.EntryTime).ToList(),
+            Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+        var oosBaseline = Simulator.SimulatePortfolioExposureCapped(
+            oosTrades.Select(t => (t.EntryTime, t.Return, t.CoinConf, t.HoldDuration)).OrderBy(t => t.EntryTime).ToList(),
+            Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+        var valGuarded = Simulator.SimulateWithDrawdownGuard(valTrades, best, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+        var oosGuarded = Simulator.SimulateWithDrawdownGuard(oosTrades, best, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
 
-        var valBefore = Simulator.SimulatePortfolioExposureCapped(
-            valEnriched.Select(t => (t.EntryTime, t.Return, t.CoinConf, t.HoldDuration)).OrderBy(t => t.EntryTime).ToList(),
-            Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-        var valAfter = Simulator.SimulatePortfolioExposureCapped(
-            ExitModifierGA.ApplyModifier(best, valEnriched),
-            Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-        var oosBefore = Simulator.SimulatePortfolioExposureCapped(
-            oosEnriched.Select(t => (t.EntryTime, t.Return, t.CoinConf, t.HoldDuration)).OrderBy(t => t.EntryTime).ToList(),
-            Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-        var oosAfter = Simulator.SimulatePortfolioExposureCapped(
-            ExitModifierGA.ApplyModifier(best, oosEnriched),
-            Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+        Console.WriteLine($"\n  Val:  before {valBaseline.EndBalance - 100:+0.1;-0.1}% DD={valBaseline.MaxDrawdownPct:F1}%"
+                        + $"  →  after {valGuarded.EndBalance - 100:+0.1;-0.1}% DD={valGuarded.MaxDrawdownPct:F1}%");
+        Console.WriteLine($"  OOS:  before {oosBaseline.EndBalance - 100:+0.1;-0.1}% DD={oosBaseline.MaxDrawdownPct:F1}%"
+                        + $"  →  after {oosGuarded.EndBalance - 100:+0.1;-0.1}% DD={oosGuarded.MaxDrawdownPct:F1}%");
 
-        Console.WriteLine($"\n  Val:  before {valBefore.EndBalance - 100:+0.1;-0.1}% DD={valBefore.MaxDrawdownPct:F1}%"
-                        + $"  →  after {valAfter.EndBalance - 100:+0.1;-0.1}% DD={valAfter.MaxDrawdownPct:F1}%");
-        Console.WriteLine($"  OOS:  before {oosBefore.EndBalance - 100:+0.1;-0.1}% DD={oosBefore.MaxDrawdownPct:F1}%"
-                        + $"  →  after {oosAfter.EndBalance - 100:+0.1;-0.1}% DD={oosAfter.MaxDrawdownPct:F1}%");
-
-        var dto = new ExitModifierGenotypeDto(
-            best.LiquidityFloor, best.LiquidityMinMult, best.FreqMaxPerWindow,
-            best.FreqMultAtMax, best.MinSizeMult, best.Fitness);
-        File.WriteAllText(Config.ExitModifierGenoFile,
+        var dto = new DrawdownGuardGenotypeDto(best.ActivationDD, best.FullDD, best.SizeFloor, best.Fitness);
+        File.WriteAllText(Config.DrawdownGuardGenoFile,
             JsonSerializer.Serialize(dto, new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"\n  Saved → {Config.ExitModifierGenoFile}");
+        Console.WriteLine($"\n  Saved → {Config.DrawdownGuardGenoFile}");
     }
 }

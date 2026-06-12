@@ -624,7 +624,7 @@ static class FullTest
 
             double valRetDelta = valModified.EndBalance - valBaseline.EndBalance;
             double valDdDelta  = valModified.MaxDrawdownPct - valBaseline.MaxDrawdownPct;
-            Console.WriteLine($"\n  Val Δ: return {valRetDelta:+0.1;-0.1}%  DD {valDdDelta:+0.1;-0.1}pp");
+            Console.WriteLine($"\n  Val Δ: return {valRetDelta:+0.0;-0.0}%  DD {valDdDelta:+0.0;-0.0}pp");
 
             Console.WriteLine($"\n  Avg context multiplier per strategy (val):");
             foreach (var strat in new[] { "swing", "grid", "diplong", "swing_long", "fadelong" })
@@ -634,6 +634,65 @@ static class FullTest
                 double avgMult = forStrat.Average(t => emG.ComputeMult(t));
                 Console.WriteLine($"    {strat,-12}  {avgMult:F3}×  ({forStrat.Count} trades)");
             }
+        }
+
+        // ── Section 9: Drawdown Guard ──────────────────────────────────────────────
+        Console.WriteLine($"\n{new string('═', 88)}");
+        Console.WriteLine($"  DRAWDOWN GUARD (panic manager: Grid/DipLong/SwingLong only)");
+        Console.WriteLine($"{new string('═', 88)}");
+
+        if (!File.Exists(Config.DrawdownGuardGenoFile))
+        {
+            Console.WriteLine("  No drawdown guard genotype found — run 'drawdownguardtrain' to train one.");
+        }
+        else
+        {
+            var dgG = JsonSerializer.Deserialize<DrawdownGuardGenotypeDto>(
+                File.ReadAllText(Config.DrawdownGuardGenoFile))!.ToGenotype();
+            Console.WriteLine($"  Genotype: {dgG}\n");
+
+            // Build tagged trade lists from the same raw trade data
+            static bool IsGuarded(string s) => DrawdownGuardGenotype.IsGuarded(s);
+
+            var valTagged = valRawForEnrich
+                .Select(t => (t.Time, t.Return, t.Conf, t.HoldDuration, IsGuarded(t.Strategy)))
+                .OrderBy(t => t.Time).ToList();
+            var oosTagged = oosRawForEnrich
+                .Select(t => (t.Time, t.Return, t.Conf, t.HoldDuration, IsGuarded(t.Strategy)))
+                .OrderBy(t => t.Time).ToList();
+
+            var valBaseline = Simulator.SimulatePortfolioExposureCapped(
+                valTagged.Select(t => (t.Time, t.Return, t.Conf, t.HoldDuration)).ToList(),
+                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            var oosBaseline = Simulator.SimulatePortfolioExposureCapped(
+                oosTagged.Select(t => (t.Time, t.Return, t.Conf, t.HoldDuration)).ToList(),
+                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            var valGuarded = Simulator.SimulateWithDrawdownGuard(
+                valTagged.Select(t => (t.Time, t.Return, t.Conf, t.HoldDuration, t.Item5)).ToList(),
+                dgG, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            var oosGuarded = Simulator.SimulateWithDrawdownGuard(
+                oosTagged.Select(t => (t.Time, t.Return, t.Conf, t.HoldDuration, t.Item5)).ToList(),
+                dgG, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+
+            string FmtPort2(Simulator.PortfolioResult p) =>
+                $"ret={p.EndBalance - 100:+0.1;-0.1}%  DD={p.MaxDrawdownPct:F1}%  Calmar={( p.EndBalance - 100) / Math.Max(p.MaxDrawdownPct, 1.0):F1}";
+
+            Console.WriteLine($"  {"",12}  {"── Val (20%) ──────────────────────────────",43}  {"── OOS ──────────────────────────────",37}");
+            Console.WriteLine($"  {"Baseline",-12}  {FmtPort2(valBaseline),-43}  {FmtPort2(oosBaseline),-37}");
+            Console.WriteLine($"  {"Guarded",-12}  {FmtPort2(valGuarded),-43}  {FmtPort2(oosGuarded),-37}");
+
+            double valRetDelta = valGuarded.EndBalance - valBaseline.EndBalance;
+            double valDdDelta  = valGuarded.MaxDrawdownPct - valBaseline.MaxDrawdownPct;
+            double oosRetDelta = oosGuarded.EndBalance - oosBaseline.EndBalance;
+            double oosDdDelta  = oosGuarded.MaxDrawdownPct - oosBaseline.MaxDrawdownPct;
+            Console.WriteLine($"\n  Val Δ: return {valRetDelta:+0.0;-0.0}%  DD {valDdDelta:+0.0;-0.0}pp");
+            Console.WriteLine($"  OOS Δ: return {oosRetDelta:+0.0;-0.0}%  DD {oosDdDelta:+0.0;-0.0}pp");
+
+            int guardedValN  = valTagged.Count(t => t.Item5);
+            int guardedOosN  = oosTagged.Count(t => t.Item5);
+            int exemptValN   = valTagged.Count - guardedValN;
+            int exemptOosN   = oosTagged.Count - guardedOosN;
+            Console.WriteLine($"\n  Guarded trades: val={guardedValN}  oos={guardedOosN}  (exempt: val={exemptValN}  oos={exemptOosN})");
         }
     }
 }

@@ -92,10 +92,11 @@ public static class Simulator
     // share of maxTotalExposurePct; new entries get whatever headroom remains.
     public static PortfolioResult SimulatePortfolioExposureCapped(
         List<(DateTime EntryTime, double Return, double CoinConf, TimeSpan HoldDuration)> trades,
-        double maxTotalExposurePct = 0.40,
+        double maxTotalExposurePct = 0.30,
         double startBalance        = 100.0,
         double drawdownBrakeAt     = 0.15,
-        double kellyMultiplier     = 1.0)
+        double kellyMultiplier     = 1.0,
+        double maxPositionFrac     = 1.0)   // hard cap per position (e.g. 0.05 = 5% max each)
     {
         if (trades.Count == 0) return new PortfolioResult(startBalance, startBalance, 0, startBalance, 0, 0, 0, 0, -1);
 
@@ -119,8 +120,9 @@ public static class Simulator
             double currentDd = peak > balance ? (peak - balance) / peak : 0.0;
             double ddScale   = Math.Max(0.20, 1.0 - currentDd / drawdownBrakeAt);
 
-            double desiredEur = conf * kellyMultiplier * balance * ddScale;
-            double posEur     = Math.Min(desiredEur, headroomEur);
+            double desiredFrac = Math.Min(conf * kellyMultiplier, maxPositionFrac);
+            double desiredEur  = desiredFrac * balance * ddScale;
+            double posEur      = Math.Min(desiredEur, headroomEur);
 
             openPos.Add((entryTime + hold, posEur));
 
@@ -154,7 +156,7 @@ public static class Simulator
     // caps to 10%, so it doesn't bind here, but at worstLoss=20% cap=5% beats fullKelly.
     public static PortfolioResult SimulatePortfolioExposureCapped(
         List<(DateTime EntryTime, double Return, double CoinConf, double RiskCapFrac, TimeSpan HoldDuration)> trades,
-        double maxTotalExposurePct = 0.40,
+        double maxTotalExposurePct = 0.30,
         double startBalance        = 100.0,
         double drawdownBrakeAt     = 0.15,
         double kellyMultiplier     = 1.0)
@@ -169,6 +171,66 @@ public static class Simulator
             })
             .ToList();
         return SimulatePortfolioExposureCapped(adapted, maxTotalExposurePct, startBalance, drawdownBrakeAt, kellyMultiplier: 1.0);
+    }
+
+    // Drawdown-guard simulation: same as SimulatePortfolioExposureCapped but applies a
+    // DrawdownGuardGenotype multiplier to guarded strategies (Grid, DipLong, SwingLong)
+    // whenever portfolio equity is in drawdown. FadeShort and FadeLong are always exempt.
+    public static PortfolioResult SimulateWithDrawdownGuard(
+        List<(DateTime EntryTime, double Return, double CoinConf, TimeSpan HoldDuration, bool IsGuarded)> trades,
+        DrawdownGuardGenotype guard,
+        double maxTotalExposurePct = 0.30,
+        double drawdownBrakeAt     = 0.15,
+        double maxPositionFrac     = 1.0)
+    {
+        const double startBalance = 100.0;
+        if (trades.Count == 0)
+            return new PortfolioResult(startBalance, startBalance, 0, startBalance, 0, 0, 0, 0, -1);
+
+        var sorted = trades.OrderBy(t => t.EntryTime).ToList();
+        double balance = startBalance, peak = startBalance, maxDd = 0, totalPosSizeEur = 0;
+        int tradesToTenPct = -1;
+        var openPos = new List<(DateTime Close, double EurAllocated)>();
+
+        for (int i = 0; i < sorted.Count; i++)
+        {
+            var (entryTime, ret, conf, hold, isGuarded) = sorted[i];
+
+            openPos.RemoveAll(p => p.Close <= entryTime);
+            double currentEurDeployed = openPos.Sum(p => p.EurAllocated);
+            double maxEurDeployable   = maxTotalExposurePct * balance;
+            double headroomEur        = Math.Max(0, maxEurDeployable - currentEurDeployed);
+
+            double currentDd  = peak > balance ? (peak - balance) / peak : 0.0;
+            double ddScale    = Math.Max(0.20, 1.0 - currentDd / drawdownBrakeAt);
+            double guardMult  = isGuarded ? guard.ComputeMult(currentDd) : 1.0;
+
+            double desiredFrac = Math.Min(conf * ddScale * guardMult, maxPositionFrac);
+            double desiredEur  = desiredFrac * balance;
+            double posEur      = Math.Min(desiredEur, headroomEur);
+
+            openPos.Add((entryTime + hold, posEur));
+            totalPosSizeEur += posEur;
+            balance += ret / 100.0 * posEur;
+
+            if (tradesToTenPct < 0 && balance >= startBalance * 1.10)
+                tradesToTenPct = i + 1;
+
+            if (balance > peak) peak = balance;
+            double dd = peak > 0 ? (peak - balance) / peak * 100.0 : 0;
+            if (dd > maxDd) maxDd = dd;
+        }
+
+        return new PortfolioResult(
+            StartBalance:   startBalance,
+            EndBalance:     balance,
+            RealizedProfit: 0,
+            TotalValue:     balance,
+            MaxDrawdownPct: maxDd,
+            Confidence:     0,
+            AvgPositionEur: sorted.Count > 0 ? totalPosSizeEur / sorted.Count : 0,
+            TradesCount:    sorted.Count,
+            TradesToTenPct: tradesToTenPct);
     }
 
     // Time-normalised Sharpe. candleCount = number of 5m-equivalent candles in the window;
@@ -189,9 +251,9 @@ public static class Simulator
         if (returns.Count < 5) return 0;
         double mean       = returns.Average();
         var    negReturns = returns.Where(r => r < 0).ToList();
-        if (negReturns.Count == 0) return mean > 0 ? double.MaxValue : 0;
+        if (negReturns.Count == 0) return mean > 0 ? 99.99 : 0;
         double downStd = Math.Sqrt(negReturns.Select(r => r * r).Average());
-        return downStd < 1e-10 ? 0 : mean / downStd * Math.Sqrt(candleCount / 288.0);
+        return downStd < 1e-10 ? 0 : Math.Min(mean / downStd * Math.Sqrt(candleCount / 288.0), 999.99);
     }
 
     public static double ProfitFactor(List<double> returns)
@@ -212,7 +274,7 @@ public static class Simulator
             double dd = peak - cumulative;
             if (dd > maxDd) maxDd = dd;
         }
-        if (maxDd < 1e-10) return cumulative > 0 ? double.MaxValue : 0;
+        if (maxDd < 1e-10) return cumulative > 0 ? 99.99 : 0;
         return cumulative * (252.0 / returns.Count) / maxDd;
     }
 

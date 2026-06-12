@@ -114,8 +114,12 @@ public class ScenarioGA
 
         foreach (var coin in coins)
         {
+            int coinInjUpper = coin.H1.Length - (int)g.CrashDurationHours - (int)g.RecoveryHours - 10;
+            if (coinInjUpper < 50) continue;
+            int coinInjBar = Math.Min(injBar, coinInjUpper);
+
             double beta = coin.Symbol == "BTCUSDT" ? 1.0 : g.AltBetaPct;
-            var    mH1  = ScenarioInjector.Inject(coin.H1, g, injBar, beta);
+            var    mH1  = ScenarioInjector.Inject(coin.H1, g, coinInjBar, beta);
             var    mM15 = ScenarioInjector.DeaggregateToM15(mH1);
             if (mH1.Length < 200) continue;
 

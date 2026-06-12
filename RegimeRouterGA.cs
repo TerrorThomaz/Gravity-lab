@@ -227,8 +227,10 @@ public class RegimeRouterGA
     }
 
     // Keep only trades where the router would have activated that strategy at trade time.
-    // Transition trades (duration < MinBars but conf OK) are included when TransitionSizeMult > 0,
-    // with their Frac scaled down so the portfolio simulation reflects the reduced sizing.
+    // During the transition window (duration < BullMinBars/BearMinBars), directional longs
+    // are blocked and Grid is forced ON at TransitionSizeMult weight: neutral oscillation
+    // play while direction is unconfirmed. TransitionSizeMult=0 means Grid fires only via
+    // its normal GridMaxConf path (no forcing).
     private static List<TradeRecord> FilterActive(
         RegimeRouterGenotype       router,
         IEnumerable<TradeRecord>   trades,
@@ -244,37 +246,32 @@ public class RegimeRouterGA
 
             double blendedConf = BlendConf(router, btc, ethSeries, bar);
 
-            bool confirmedBull = btc.Regime == MarketRegime.Bull
-                                 && btc.Duration >= (int)router.BullMinBars
-                                 && blendedConf >= router.BullMinConf;
-            bool transitionBull = btc.Regime == MarketRegime.Bull
-                                  && btc.Duration < (int)router.BullMinBars
-                                  && blendedConf >= router.BullMinConf
-                                  && router.TransitionSizeMult > 0;
-
-            bool confirmedBear = btc.Regime == MarketRegime.Bear
-                                 && btc.Duration >= (int)router.BearMinBars
-                                 && blendedConf >= router.BearMinConf;
-            bool transitionBear = btc.Regime == MarketRegime.Bear
-                                  && btc.Duration < (int)router.BearMinBars
-                                  && blendedConf >= router.BearMinConf
-                                  && router.TransitionSizeMult > 0;
+            bool inTransition = (btc.Regime == MarketRegime.Bull && btc.Duration < (int)router.BullMinBars)
+                             || (btc.Regime == MarketRegime.Bear && btc.Duration < (int)router.BearMinBars);
 
             bool active = t.Kind switch
             {
                 StrategyKind.FadeShort => true,
+                // Grid: normal conf-based gate OR forced on during transition window
                 StrategyKind.Grid      => btc.Regime == MarketRegime.Ranging
-                                          || blendedConf < router.GridMaxConf,
-                StrategyKind.DipLong   => confirmedBull || transitionBull,
-                StrategyKind.FadeLong  => confirmedBear || transitionBear,
+                                          || blendedConf < router.GridMaxConf
+                                          || (inTransition && router.TransitionSizeMult > 0),
+                // Directional longs: blocked during transition regardless of TransitionSizeMult
+                StrategyKind.DipLong   => btc.Regime == MarketRegime.Bull
+                                          && btc.Duration >= (int)router.BullMinBars
+                                          && blendedConf >= router.BullMinConf,
+                StrategyKind.FadeLong  => btc.Regime == MarketRegime.Bear
+                                          && btc.Duration >= (int)router.BearMinBars
+                                          && blendedConf >= router.BearMinConf,
                 _                      => false,
             };
 
             if (!active) continue;
 
-            bool inTransition = (t.Kind == StrategyKind.DipLong  && transitionBull)
-                              || (t.Kind == StrategyKind.FadeLong && transitionBear);
-            double frac = inTransition ? t.Frac * router.TransitionSizeMult : t.Frac;
+            // Scale Grid down during transition to the learned fraction
+            double frac = (t.Kind == StrategyKind.Grid && inTransition && router.TransitionSizeMult > 0)
+                ? t.Frac * router.TransitionSizeMult
+                : t.Frac;
             result.Add(t with { Frac = frac });
         }
         return result;

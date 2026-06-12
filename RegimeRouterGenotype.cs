@@ -14,9 +14,12 @@ namespace TradingGA;
 //   GridMaxConf       — Grid is always on in Ranging; in directional regimes it also fires
 //                       when blended confidence < GridMaxConf (ambiguous market = range-bound)
 //   EthBlendWeight    — how much ETH agreement/disagreement adjusts BTC confidence
-//   TransitionSizeMult — position-size fraction applied during the early-regime window
-//                        (duration < BullMinBars or BearMinBars). 0 = hard block (old behaviour);
-//                        >0 = let strategies fire at reduced size during the confirmation wait.
+//   TransitionSizeMult — during the early-regime confirmation window (duration < BullMinBars
+//                        or BearMinBars), directional longs are BLOCKED and Grid is forced
+//                        ON at this size multiplier. 0 = Grid not forced (current GridMaxConf
+//                        still decides); 1 = Grid always fires at full size in transition.
+//                        This keeps the transition neutral (Grid oscillation) rather than
+//                        directional (DipLong/SwingLong), since direction is unconfirmed.
 public class RegimeRouterGenotype
 {
     public double BullMinBars        { get; set; }  // [50, 500]

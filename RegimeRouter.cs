@@ -114,40 +114,33 @@ public static class RegimeRouter
     }
 
     // Genotype-aware activation: uses trained thresholds + BTC duration gate.
-    // During the early-regime window (duration < MinBars) strategies can still fire at
-    // TransitionSizeMult of normal size so partial positioning is taken before full confirmation.
+    // Transition window (duration < MinBars): directional longs blocked, Grid forced ON
+    // at TransitionSizeMult weight — neutral oscillation while direction is unconfirmed.
     private static StrategyActivation ActivateWithGeno(
         MarketRegime regime, double conf, int duration, RegimeRouterGenotype geno)
     {
         if (regime == MarketRegime.HighVol)
             return new(true, false, false, false, 0.5, regime, conf);
 
+        bool inTransition = (regime == MarketRegime.Bull && duration < (int)geno.BullMinBars)
+                         || (regime == MarketRegime.Bear && duration < (int)geno.BearMinBars);
+
         bool fadeShort = true;
-        bool grid      = regime == MarketRegime.Ranging || conf < geno.GridMaxConf;
-
-        bool inBullTransition = regime == MarketRegime.Bull
-                                && duration < (int)geno.BullMinBars
-                                && conf >= geno.BullMinConf
-                                && geno.TransitionSizeMult > 0;
-        bool dipLong = (regime == MarketRegime.Bull
-                        && duration >= (int)geno.BullMinBars
-                        && conf >= geno.BullMinConf)
-                       || inBullTransition;
-
-        bool inBearTransition = regime == MarketRegime.Bear
-                                && duration < (int)geno.BearMinBars
-                                && conf >= geno.BearMinConf
-                                && geno.TransitionSizeMult > 0;
-        bool fadeLong = (regime == MarketRegime.Bear
+        bool grid      = regime == MarketRegime.Ranging
+                         || conf < geno.GridMaxConf
+                         || (inTransition && geno.TransitionSizeMult > 0);
+        bool dipLong   = regime == MarketRegime.Bull
+                         && duration >= (int)geno.BullMinBars
+                         && conf >= geno.BullMinConf;
+        bool fadeLong  = regime == MarketRegime.Bear
                          && duration >= (int)geno.BearMinBars
-                         && conf >= geno.BearMinConf)
-                        || inBearTransition;
+                         && conf >= geno.BearMinConf;
 
         double sizeMult = regime == MarketRegime.Ranging
             ? 1.0
             : 0.60 + 0.40 * Math.Min(1.0, conf / 0.80);
 
-        if (inBullTransition || inBearTransition)
+        if (inTransition && geno.TransitionSizeMult > 0)
             sizeMult *= geno.TransitionSizeMult;
 
         return new(fadeShort, grid, dipLong, fadeLong, sizeMult, regime, conf);
@@ -190,19 +183,21 @@ public class RegimeRouterSession
         var btc = _btc[bar];
         double conf = Blend(btc, bar);
 
+        bool inTransition = (btc.Regime == MarketRegime.Bull && btc.Duration < (int)_geno.BullMinBars)
+                         || (btc.Regime == MarketRegime.Bear && btc.Duration < (int)_geno.BearMinBars);
+
         return kind switch
         {
             RegimeRouterGA.StrategyKind.FadeShort => true,
             RegimeRouterGA.StrategyKind.Grid      => btc.Regime == MarketRegime.Ranging
-                                                     || conf < _geno.GridMaxConf,
+                                                     || conf < _geno.GridMaxConf
+                                                     || (inTransition && _geno.TransitionSizeMult > 0),
             RegimeRouterGA.StrategyKind.DipLong   => btc.Regime == MarketRegime.Bull
-                                                     && conf >= _geno.BullMinConf
-                                                     && (btc.Duration >= (int)_geno.BullMinBars
-                                                         || _geno.TransitionSizeMult > 0),
+                                                     && btc.Duration >= (int)_geno.BullMinBars
+                                                     && conf >= _geno.BullMinConf,
             RegimeRouterGA.StrategyKind.FadeLong  => btc.Regime == MarketRegime.Bear
-                                                     && conf >= _geno.BearMinConf
-                                                     && (btc.Duration >= (int)_geno.BearMinBars
-                                                         || _geno.TransitionSizeMult > 0),
+                                                     && btc.Duration >= (int)_geno.BearMinBars
+                                                     && conf >= _geno.BearMinConf,
             _                                     => false,
         };
     }

@@ -96,7 +96,7 @@ public static class Simulator
         double startBalance        = 100.0,
         double drawdownBrakeAt     = 0.15,
         double kellyMultiplier     = 1.0,
-        double maxPositionFrac     = 1.0)   // hard cap per position (e.g. 0.05 = 5% max each)
+        double maxPositionFrac     = 0.15)  // hard cap per position (e.g. 0.05 = 5% max each)
     {
         if (trades.Count == 0) return new PortfolioResult(startBalance, startBalance, 0, startBalance, 0, 0, 0, 0, -1);
 
@@ -180,7 +180,7 @@ public static class Simulator
         List<(DateTime EntryTime, double Return, double CoinConf, TimeSpan HoldDuration, bool IsGuarded)> trades,
         DrawdownGuardGenotype guard,
         double maxTotalExposurePct = 0.30,
-        double maxPositionFrac     = 1.0)
+        double maxPositionFrac     = 0.15)
     {
         const double startBalance = 100.0;
         if (trades.Count == 0)

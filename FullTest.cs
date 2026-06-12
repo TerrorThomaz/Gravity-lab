@@ -310,9 +310,8 @@ static class FullTest
                 .Select(t => (t.EntryTime, t.Return, t.Conf, t.Strategy)).ToList();
         }
 
-        valAll  = ApplyCap(valAll);
-        oosAll  = ApplyCap(oosAll);
-        valNoRouter.Sort((a, b) => a.Time.CompareTo(b.Time));
+        valAll = ApplyCap(valAll);
+        oosAll = ApplyCap(oosAll);
 
         // Helper: trades → exposure sim input
         List<(DateTime, double, double, TimeSpan)> ToSim(
@@ -321,6 +320,18 @@ static class FullTest
 
         var valSim = ToSim(valAll);
         var oosSim = ToSim(oosAll);
+
+        // Pre-compute no-router sims (needed by Section 3 year-by-year and Section 6)
+        static TimeSpan HoldFor(string s) => s switch {
+            "swing" or "swing_long" or "diplong" => TimeSpan.FromHours(48),
+            _ => TimeSpan.FromHours(72),
+        };
+        valNoRouter.Sort((a, b) => a.Time.CompareTo(b.Time));
+        oosNoRouter.Sort((a, b) => a.Time.CompareTo(b.Time));
+        var nrFilteredTrades    = PortfolioReplay.FilterByConcurrentCap(valNoRouter.Select(t => new PortfolioReplay.Trade(t.Strategy, t.Time, HoldFor(t.Strategy), t.Return, t.Conf)).ToList()).ToList();
+        var nrFiltered          = nrFilteredTrades.Select(t => (t.EntryTime, t.Return, t.Conf, StratHold(t.Strategy, swingG, gridG, flG, dlG, slG))).ToList();
+        var oosNrFilteredTrades = PortfolioReplay.FilterByConcurrentCap(oosNoRouter.Select(t => new PortfolioReplay.Trade(t.Strategy, t.Time, HoldFor(t.Strategy), t.Return, t.Conf)).ToList()).ToList();
+        var oosNrFiltered       = oosNrFilteredTrades.Select(t => (t.EntryTime, t.Return, t.Conf, StratHold(t.Strategy, swingG, gridG, flG, dlG, slG))).ToList();
 
         // ══════════════════════════════════════════════════════════════════════════
         // SECTION 1: STRATEGY PERFORMANCE
@@ -382,22 +393,32 @@ static class FullTest
         // SECTION 3: YEAR-BY-YEAR (val window)
         // ══════════════════════════════════════════════════════════════════════════
         Console.WriteLine($"\n{new string('═', 88)}");
-        Console.WriteLine($"  YEAR-BY-YEAR (val window, router-gated)");
+        Console.WriteLine($"  YEAR-BY-YEAR (val window)");
         Console.WriteLine($"{new string('═', 88)}");
-        Console.WriteLine($"  {"Year",-6}  {"Regime",7}  {"Trades",6}  {"5%cap ret",10}  {"5%cap DD",9}  {"Kelly ret",10}  {"Kelly DD",9}");
-        Console.WriteLine($"  {new string('-', 68)}");
+        Console.WriteLine($"  {"Year",-6}  {"Regime",7}  {"N",4}  {"5% w/router",12}  {"5% no router",13}  {"Router Δ",9}  {"Kelly w/r",10}  {"Kelly no r",11}");
+        Console.WriteLine($"  {new string('-', 84)}");
 
         foreach (int yr in valSim.Select(t => t.Item1.Year).Distinct().OrderBy(y => y))
         {
             var yrSim = valSim.Where(t => t.Item1.Year == yr).ToList();
             if (yrSim.Count == 0) continue;
-            var p5  = Simulator.SimulatePortfolioExposureCapped(yrSim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-            var pK  = Simulator.SimulatePortfolioExposureCapped(yrSim, Config.MaxTotalExposurePct);
-            string reg = btcSeries != null
+            var yrNr  = nrFiltered.Where(t => t.Item1.Year == yr).ToList();
+            var p5    = Simulator.SimulatePortfolioExposureCapped(yrSim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            var pK    = Simulator.SimulatePortfolioExposureCapped(yrSim, Config.MaxTotalExposurePct);
+            var p5nr  = yrNr.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(yrNr, Config.MaxTotalExposurePct, maxPositionFrac: 0.05) : default!;
+            var pKnr  = yrNr.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(yrNr, Config.MaxTotalExposurePct) : default!;
+            double r5   = p5.EndBalance - 100;
+            double r5nr = yrNr.Count > 0 ? p5nr.EndBalance - 100 : double.NaN;
+            double rK   = pK.EndBalance - 100;
+            double rKnr = yrNr.Count > 0 ? pKnr.EndBalance - 100 : double.NaN;
+            string reg  = btcSeries != null
                 ? btcSeries.Where(b => b.Time.Year == yr).GroupBy(b => b.Regime)
                     .OrderByDescending(g => g.Count()).FirstOrDefault()?.Key.ToString()[..4] ?? "?"
                 : "?";
-            Console.WriteLine($"  {yr,-6}  {reg,7}  {yrSim.Count,6}  {p5.EndBalance-100,+9:F1}%  {p5.MaxDrawdownPct,8:F1}%  {pK.EndBalance-100,+9:F1}%  {pK.MaxDrawdownPct,8:F1}%");
+            string nr5str  = double.IsNaN(r5nr)  ? "—" : $"{r5nr,+6:F1}%";
+            string nrKstr  = double.IsNaN(rKnr)  ? "—" : $"{rKnr,+6:F1}%";
+            string delta5  = double.IsNaN(r5nr)  ? "—" : $"{r5-r5nr,+6:F1}pp";
+            Console.WriteLine($"  {yr,-6}  {reg,7}  {yrSim.Count,4}  {r5,+10:F1}%    {nr5str,10}    {delta5,8}  {rK,+8:F1}%    {nrKstr,9}");
         }
 
         // ══════════════════════════════════════════════════════════════════════════
@@ -456,20 +477,7 @@ static class FullTest
         Console.WriteLine($"  ROUTER IMPACT");
         Console.WriteLine($"{new string('═', 88)}");
 
-        // Val no-router
-        var nrCapIn = valNoRouter.Select(t => new PortfolioReplay.Trade(t.Strategy, t.Time,
-            t.Strategy switch {
-                "swing"      => TimeSpan.FromHours(48),
-                "swing_long" => TimeSpan.FromHours(48),
-                "diplong"    => TimeSpan.FromHours(48),
-                "fadelong"   => TimeSpan.FromHours(72),
-                _            => TimeSpan.FromHours(72),
-            }, t.Return, t.Conf)).ToList();
-        var nrFilteredTrades = PortfolioReplay.FilterByConcurrentCap(nrCapIn).ToList();
-        var nrFiltered = nrFilteredTrades
-            .Select(t => (t.EntryTime, t.Return, t.Conf, StratHold(t.Strategy, swingG, gridG, flG, dlG, slG)))
-            .ToList();
-
+        // Val no-router (nrFilteredTrades / nrFiltered already computed above)
         var nrPort5 = nrFiltered.Count > 0
             ? Simulator.SimulatePortfolioExposureCapped(nrFiltered, Config.MaxTotalExposurePct, maxPositionFrac: 0.05)
             : default!;
@@ -477,21 +485,7 @@ static class FullTest
             ? Simulator.SimulatePortfolioExposureCapped(nrFiltered, Config.MaxTotalExposurePct)
             : default!;
 
-        // OOS no-router
-        oosNoRouter.Sort((a, b) => a.Time.CompareTo(b.Time));
-        var oosNrCapIn = oosNoRouter.Select(t => new PortfolioReplay.Trade(t.Strategy, t.Time,
-            t.Strategy switch {
-                "swing"      => TimeSpan.FromHours(48),
-                "swing_long" => TimeSpan.FromHours(48),
-                "diplong"    => TimeSpan.FromHours(48),
-                "fadelong"   => TimeSpan.FromHours(72),
-                _            => TimeSpan.FromHours(72),
-            }, t.Return, t.Conf)).ToList();
-        var oosNrFilteredTrades = PortfolioReplay.FilterByConcurrentCap(oosNrCapIn).ToList();
-        var oosNrFiltered = oosNrFilteredTrades
-            .Select(t => (t.EntryTime, t.Return, t.Conf, StratHold(t.Strategy, swingG, gridG, flG, dlG, slG)))
-            .ToList();
-
+        // OOS no-router (oosNrFilteredTrades / oosNrFiltered already computed above)
         var oosNrPort5 = oosNrFiltered.Count > 0
             ? Simulator.SimulatePortfolioExposureCapped(oosNrFiltered, Config.MaxTotalExposurePct, maxPositionFrac: 0.05)
             : default!;

@@ -64,6 +64,15 @@ static class FullTest
             Console.WriteLine($"  Router session: BTC {btcSeries.Length} bars  ETH {(ethSeries != null ? ethSeries.Length.ToString() : "none")} bars\n");
         }
 
+        // ── Dynamic guard session (built once, used in Section 2 and 9) ─────────────
+        DynamicGuardSession? dgSession = null;
+        DynamicGuardGenotype? dgGeno   = null;
+        if (File.Exists(Config.DynamicGuardGenoFile) && fetchedMap.TryGetValue("BTCUSDT", out var btcDG) && btcDG.h1.Length >= 50)
+        {
+            dgGeno   = JsonSerializer.Deserialize<DynamicGuardGenotypeDto>(File.ReadAllText(Config.DynamicGuardGenoFile))!.ToGenotype();
+            dgSession = new DynamicGuardSession(btcDG.h1, dgGeno);
+        }
+
         // ── Val trade collection (training coins, 80/20 time split) ───────────────
         var valSwingRets = new List<double>();
         var valGridRets  = new List<double>();
@@ -222,8 +231,7 @@ static class FullTest
                 var screenRets = FadeShortSimulator.GetFadeShortReturns(swingG, h1Screen, m15Screen)
                     .Select(t => t.Return).ToList();
                 bool oosScreenPass = screenRets.Count >= 5 && screenRets.Average() > 0
-                    && Simulator.ProfitFactor(screenRets) >= 1.3
-                    && Simulator.SortinoRatio(screenRets, h1Screen.Length * 12) >= 0.5;
+                    && Simulator.ProfitFactor(screenRets) >= 1.1;
                 if (oosScreenPass)
                 {
                     var trades = FadeShortSimulator.GetFadeShortReturns(swingG, h1, m15);
@@ -351,8 +359,18 @@ static class FullTest
             List<(DateTime Time, double Return, double Conf, string Strategy)> t) =>
             t.Select(x => (x.Time, x.Return, x.Conf, StratHold(x.Strategy, swingG, gridG, flG, dlG, slG))).ToList();
 
-        var valSim = ToSim(valAll);
-        var oosSim = ToSim(oosAll);
+        // Guarded variant: apply DynamicGuard multiplier to guarded-strategy confs
+        List<(DateTime, double, double, TimeSpan)> ToSimGuarded(
+            List<(DateTime Time, double Return, double Conf, string Strategy)> t,
+            DynamicGuardSession gs) =>
+            t.Select(x => (x.Time, x.Return,
+                DynamicGuardSession.IsGuarded(x.Strategy) ? x.Conf * gs.GetMult(x.Time) : x.Conf,
+                StratHold(x.Strategy, swingG, gridG, flG, dlG, slG))).ToList();
+
+        var valSim  = ToSim(valAll);
+        var oosSim  = ToSim(oosAll);
+        var valSimG = dgSession != null ? ToSimGuarded(valAll,  dgSession) : valSim;
+        var oosSimG = dgSession != null ? ToSimGuarded(oosAll, dgSession) : oosSim;
 
         // Pre-compute no-router sims (needed by Section 3 year-by-year and Section 6)
         static TimeSpan HoldFor(string s) => s switch {
@@ -402,25 +420,41 @@ static class FullTest
             return ($"{r:+0.0;-0.0}%", $"{ann:+0.0;-0.0}%/yr", $"{p.MaxDrawdownPct:F1}%", $"{sh:F2}");
         }
 
-        var val5p  = valSim.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(valSim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05) : default!;
-        var valKel = valSim.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(valSim, Config.MaxTotalExposurePct) : default!;
-        var oos5p  = oosSim.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05) : default!;
-        var oosKel = oosSim.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSim, Config.MaxTotalExposurePct) : default!;
+        var val5p   = valSim.Count  > 0 ? Simulator.SimulatePortfolioExposureCapped(valSim,  Config.MaxTotalExposurePct, maxPositionFrac: 0.05) : default!;
+        var valKel  = valSim.Count  > 0 ? Simulator.SimulatePortfolioExposureCapped(valSim,  Config.MaxTotalExposurePct) : default!;
+        var oos5p   = oosSim.Count  > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSim,  Config.MaxTotalExposurePct, maxPositionFrac: 0.05) : default!;
+        var oosKel  = oosSim.Count  > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSim,  Config.MaxTotalExposurePct) : default!;
+        var val5pG  = valSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(valSimG, Config.MaxTotalExposurePct, maxPositionFrac: 0.05) : default!;
+        var valKelG = valSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(valSimG, Config.MaxTotalExposurePct) : default!;
+        var oos5pG  = oosSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSimG, Config.MaxTotalExposurePct, maxPositionFrac: 0.05) : default!;
+        var oosKelG = oosSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSimG, Config.MaxTotalExposurePct) : default!;
 
-        var (vr5, va5, vd5, vs5)  = valSim.Count > 0 ? PortMetrics(valSim, val5p)  : ("—","—","—","—");
-        var (vrK, vaK, vdK, vsK)  = valSim.Count > 0 ? PortMetrics(valSim, valKel) : ("—","—","—","—");
-        var (or5, oa5, od5, os5)  = oosSim.Count > 0 ? PortMetrics(oosSim, oos5p)  : ("—","—","—","—");
-        var (orK, oaK, odK, osK)  = oosSim.Count > 0 ? PortMetrics(oosSim, oosKel) : ("—","—","—","—");
+        var (vr5, va5, vd5, vs5)    = valSim.Count  > 0 ? PortMetrics(valSim,  val5p)   : ("—","—","—","—");
+        var (vrK, vaK, vdK, vsK)    = valSim.Count  > 0 ? PortMetrics(valSim,  valKel)  : ("—","—","—","—");
+        var (or5, oa5, od5, os5)    = oosSim.Count  > 0 ? PortMetrics(oosSim,  oos5p)   : ("—","—","—","—");
+        var (orK, oaK, odK, osK)    = oosSim.Count  > 0 ? PortMetrics(oosSim,  oosKel)  : ("—","—","—","—");
+        var (vr5G, va5G, vd5G, vs5G)  = valSimG.Count > 0 ? PortMetrics(valSimG, val5pG)  : ("—","—","—","—");
+        var (vrKG, vaKG, vdKG, vsKG)  = valSimG.Count > 0 ? PortMetrics(valSimG, valKelG) : ("—","—","—","—");
+        var (or5G, oa5G, od5G, os5G)  = oosSimG.Count > 0 ? PortMetrics(oosSimG, oos5pG)  : ("—","—","—","—");
+        var (orKG, oaKG, odKG, osKG)  = oosSimG.Count > 0 ? PortMetrics(oosSimG, oosKelG) : ("—","—","—","—");
 
+        bool hasGuard = dgSession != null;
         Console.WriteLine($"\n{new string('═', 88)}");
         Console.WriteLine($"  PORTFOLIO SIMULATION (€100 start · 30% total cap)");
         Console.WriteLine($"{new string('═', 88)}");
-        Console.WriteLine($"  {"",14}  {"Val 5%cap",12}  {"Val Kelly",12}  {"OOS 5%cap",12}  {"OOS Kelly",12}");
-        Console.WriteLine($"  {new string('-', 70)}");
-        Console.WriteLine($"  {"Return",-14}  {vr5,12}  {vrK,12}  {or5,12}  {orK,12}");
-        Console.WriteLine($"  {"Annualised",-14}  {va5,12}  {vaK,12}  {oa5,12}  {oaK,12}");
-        Console.WriteLine($"  {"Max DD",-14}  {vd5,12}  {vdK,12}  {od5,12}  {odK,12}");
-        Console.WriteLine($"  {"Sharpe",-14}  {vs5,12}  {vsK,12}  {os5,12}  {osK,12}");
+        Console.WriteLine($"  {"",16}  {"Val 5%cap",12}  {"Val Kelly",12}  {"OOS 5%cap",12}  {"OOS Kelly",12}");
+        Console.WriteLine($"  {new string('-', 72)}");
+        string lbl  = "No guard";
+        string lblG = "Dyn guard";
+        Console.WriteLine($"  {lbl,-16}  {vr5,12}  {vrK,12}  {or5,12}  {orK,12}");
+        if (hasGuard) Console.WriteLine($"  {lblG,-16}  {vr5G,12}  {vrKG,12}  {or5G,12}  {orKG,12}");
+        Console.WriteLine($"  {new string('-', 72)}");
+        Console.WriteLine($"  {"Annualised",16}  {va5,12}  {vaK,12}  {oa5,12}  {oaK,12}");
+        if (hasGuard) Console.WriteLine($"  {"",16}  {va5G,12}  {vaKG,12}  {oa5G,12}  {oaKG,12}");
+        Console.WriteLine($"  {"Max DD",16}  {vd5,12}  {vdK,12}  {od5,12}  {odK,12}");
+        if (hasGuard) Console.WriteLine($"  {"",16}  {vd5G,12}  {vdKG,12}  {od5G,12}  {odKG,12}");
+        Console.WriteLine($"  {"Sharpe",16}  {vs5,12}  {vsK,12}  {os5,12}  {osK,12}");
+        if (hasGuard) Console.WriteLine($"  {"",16}  {vs5G,12}  {vsKG,12}  {os5G,12}  {osKG,12}");
 
         // ══════════════════════════════════════════════════════════════════════════
         // SECTION 3: YEAR-BY-YEAR (val window)

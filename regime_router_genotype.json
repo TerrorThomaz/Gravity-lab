@@ -1,10 +1,10 @@
 {
   "BullMinBars": 50,
-  "BullMinConf": 0.20671909917685577,
-  "BearMinBars": 110.52197496538219,
-  "BearMinConf": 0.8,
-  "GridMaxConf": 0.12816842236371945,
-  "EthBlendWeight": 0.13590218517896308,
-  "Fitness": 1.3499485278277599,
-  "TransitionSizeMult": 0.9348225640401183
+  "BullMinConf": 0.4167273547805556,
+  "BearMinBars": 186.05556944526433,
+  "BearMinConf": 0.5326392465174922,
+  "GridMaxConf": 0.41014170691703056,
+  "EthBlendWeight": 0,
+  "Fitness": 1.902899823245305,
+  "TransitionSizeMult": 0
 }

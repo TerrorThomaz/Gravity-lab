@@ -227,6 +227,8 @@ public class RegimeRouterGA
     }
 
     // Keep only trades where the router would have activated that strategy at trade time.
+    // Transition trades (duration < MinBars but conf OK) are included when TransitionSizeMult > 0,
+    // with their Frac scaled down so the portfolio simulation reflects the reduced sizing.
     private static List<TradeRecord> FilterActive(
         RegimeRouterGenotype       router,
         IEnumerable<TradeRecord>   trades,
@@ -242,21 +244,38 @@ public class RegimeRouterGA
 
             double blendedConf = BlendConf(router, btc, ethSeries, bar);
 
+            bool confirmedBull = btc.Regime == MarketRegime.Bull
+                                 && btc.Duration >= (int)router.BullMinBars
+                                 && blendedConf >= router.BullMinConf;
+            bool transitionBull = btc.Regime == MarketRegime.Bull
+                                  && btc.Duration < (int)router.BullMinBars
+                                  && blendedConf >= router.BullMinConf
+                                  && router.TransitionSizeMult > 0;
+
+            bool confirmedBear = btc.Regime == MarketRegime.Bear
+                                 && btc.Duration >= (int)router.BearMinBars
+                                 && blendedConf >= router.BearMinConf;
+            bool transitionBear = btc.Regime == MarketRegime.Bear
+                                  && btc.Duration < (int)router.BearMinBars
+                                  && blendedConf >= router.BearMinConf
+                                  && router.TransitionSizeMult > 0;
+
             bool active = t.Kind switch
             {
                 StrategyKind.FadeShort => true,
                 StrategyKind.Grid      => btc.Regime == MarketRegime.Ranging
                                           || blendedConf < router.GridMaxConf,
-                StrategyKind.DipLong   => btc.Regime == MarketRegime.Bull
-                                          && btc.Duration >= (int)router.BullMinBars
-                                          && blendedConf >= router.BullMinConf,
-                StrategyKind.FadeLong  => btc.Regime == MarketRegime.Bear
-                                          && btc.Duration >= (int)router.BearMinBars
-                                          && blendedConf >= router.BearMinConf,
+                StrategyKind.DipLong   => confirmedBull || transitionBull,
+                StrategyKind.FadeLong  => confirmedBear || transitionBear,
                 _                      => false,
             };
 
-            if (active) result.Add(t);
+            if (!active) continue;
+
+            bool inTransition = (t.Kind == StrategyKind.DipLong  && transitionBull)
+                              || (t.Kind == StrategyKind.FadeLong && transitionBear);
+            double frac = inTransition ? t.Frac * router.TransitionSizeMult : t.Frac;
+            result.Add(t with { Frac = frac });
         }
         return result;
     }

@@ -26,6 +26,7 @@ switch (mode)
     case "allcoinsbacktest": await OosBacktest.RunAllCoinsBacktest(client);                      break;
     case "fulltest":         await FullTest.RunFullTest(client);                                break;
     case "exitmodifiertrain": await ExitModifierTrainCommands.RunExitModifierTrain(client);   break;
+    case "stresstest":        await StressTestCommands.RunStressTest(client);                  break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
         Console.WriteLine("  dotnet run -- train              Train FadeShort GA (~10 min)");
@@ -47,5 +48,7 @@ switch (mode)
         Console.WriteLine("  dotnet run -- oosbacktest        OOS backtest: 28 never-seen coins, full history, all strategies");
         Console.WriteLine("  dotnet run -- allcoinsbacktest   Portfolio sim: BacktestCoins (val 20%) + OOS coins (full history), concurrency analysis");
         Console.WriteLine("  dotnet run -- fulltest           Condensed master report: val+OOS, 7 sections, single candle fetch");
+        Console.WriteLine("  dotnet run -- exitmodifiertrain  Train context-aware position-size modifier");
+        Console.WriteLine("  dotnet run -- stresstest         Adversarial scenario GA: find worst-case crash drawdown");
         break;
 }

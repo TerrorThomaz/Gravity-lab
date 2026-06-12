@@ -227,7 +227,7 @@ static class DrawdownGuardTrainCommands
         Console.WriteLine($"  OOS:  before {oosBaseline.EndBalance - 100:+0.1;-0.1}% DD={oosBaseline.MaxDrawdownPct:F1}%"
                         + $"  →  after {oosGuarded.EndBalance - 100:+0.1;-0.1}% DD={oosGuarded.MaxDrawdownPct:F1}%");
 
-        var dto = new DrawdownGuardGenotypeDto(best.ActivationDD, best.FullDD, best.SizeFloor, best.Fitness);
+        var dto = new DrawdownGuardGenotypeDto(best.ActivationDD, best.FullDD, best.SizeFloor, best.DrawdownBrakeAt, best.Fitness);
         File.WriteAllText(Config.DrawdownGuardGenoFile,
             JsonSerializer.Serialize(dto, new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"\n  Saved → {Config.DrawdownGuardGenoFile}");

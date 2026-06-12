@@ -1,6 +1,7 @@
 {
-  "ActivationDD": 0.02,
-  "FullDD": 0.05,
-  "SizeFloor": 0.1,
-  "Fitness": 48.87581502290394
+  "ActivationDD": 0.07125589003999233,
+  "FullDD": 0.1863960193991875,
+  "SizeFloor": 0.7132190873436635,
+  "DrawdownBrakeAt": 0.18032651627434418,
+  "Fitness": 50.18991655243305
 }

@@ -180,7 +180,6 @@ public static class Simulator
         List<(DateTime EntryTime, double Return, double CoinConf, TimeSpan HoldDuration, bool IsGuarded)> trades,
         DrawdownGuardGenotype guard,
         double maxTotalExposurePct = 0.30,
-        double drawdownBrakeAt     = 0.15,
         double maxPositionFrac     = 1.0)
     {
         const double startBalance = 100.0;
@@ -202,7 +201,7 @@ public static class Simulator
             double headroomEur        = Math.Max(0, maxEurDeployable - currentEurDeployed);
 
             double currentDd  = peak > balance ? (peak - balance) / peak : 0.0;
-            double ddScale    = Math.Max(0.20, 1.0 - currentDd / drawdownBrakeAt);
+            double ddScale    = Math.Max(0.20, 1.0 - currentDd / Math.Max(1e-9, guard.DrawdownBrakeAt));
             double guardMult  = isGuarded ? guard.ComputeMult(currentDd) : 1.0;
 
             double desiredFrac = Math.Min(conf * ddScale * guardMult, maxPositionFrac);

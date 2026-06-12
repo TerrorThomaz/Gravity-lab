@@ -18,12 +18,13 @@ switch (mode)
     case "bulltrain":        await TrainCommands.RunMomLongTrain(client);                        break;
     case "fadelongtrain":    await LongTrainCommands.RunFadeLongTrain(client);                   break;
     case "diplongtrain":     await LongTrainCommands.RunDipLongTrain(client);                    break;
-    case "swingLongtrain":   await LongTrainCommands.RunSwingLongTrain(client);                    break;
+    case "swinglongtrain":   await LongTrainCommands.RunSwingLongTrain(client);                    break;
     case "routertrain":      await LongTrainCommands.RunRegimeRouterTrain(client);               break;
     case "coevolvetrain":    await LongTrainCommands.RunCoevolve(client);                        break;
     case "retrain":          await TrainCommands.RunFadeShortTrain(client, invertScreen: true);  break;
     case "oosbacktest":      await OosBacktest.RunOosBacktest(client);                           break;
     case "allcoinsbacktest": await OosBacktest.RunAllCoinsBacktest(client);                      break;
+    case "fulltest":         await FullTest.RunFullTest(client);                                break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
         Console.WriteLine("  dotnet run -- train              Train FadeShort GA (~10 min)");
@@ -44,5 +45,6 @@ switch (mode)
         Console.WriteLine("  dotnet run -- retrain            Retrain FadeShort on unknown coins (inverted screen, fixes overfit)");
         Console.WriteLine("  dotnet run -- oosbacktest        OOS backtest: 28 never-seen coins, full history, all strategies");
         Console.WriteLine("  dotnet run -- allcoinsbacktest   Portfolio sim: BacktestCoins (val 20%) + OOS coins (full history), concurrency analysis");
+        Console.WriteLine("  dotnet run -- fulltest           Condensed master report: val+OOS, 7 sections, single candle fetch");
         break;
 }

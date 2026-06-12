@@ -45,7 +45,7 @@ switch (mode)
         Console.WriteLine("  dotnet run -- diplongtrain       DipLong GA: bull pullback, regime-gated, 53 coins, ~3yr");
         Console.WriteLine("  dotnet run -- swingLongtrain      SwingLong GA: bull divergence+BoS long, 93 coins, ~3yr");
         Console.WriteLine("  dotnet run -- routertrain        RegimeRouter GA: train routing thresholds + duration gates");
-        Console.WriteLine("  dotnet run -- coevolvetrain      Red-Queen coevolve: DipLong+SwingLong+Guard in parallel, Router after each round (8 rounds)");
+        Console.WriteLine("  dotnet run -- coevolvetrain      Red-Queen coevolve: Router (profit) ↔ Guard (risk), 8 rounds parallel — strategies frozen");
         Console.WriteLine("  dotnet run -- retrain            Retrain FadeShort on unknown coins (inverted screen, fixes overfit)");
         Console.WriteLine("  dotnet run -- oosbacktest        OOS backtest: 28 never-seen coins, full history, all strategies");
         Console.WriteLine("  dotnet run -- allcoinsbacktest   Portfolio sim: BacktestCoins (val 20%) + OOS coins (full history), concurrency analysis");

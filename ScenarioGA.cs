@@ -93,6 +93,26 @@ public class ScenarioGA
         return pop[0];
     }
 
+    // Public entry point: evaluate a specific scenario against the full coin set,
+    // optionally with the drawdown guard active.
+    public static double EvaluateScenario(
+        ScenarioGenotype         scenario,
+        IReadOnlyDictionary<string, Candle[]> h1Map,
+        FadeShortGenotype        fsG,
+        GridGenotype             gridG,
+        FadeLongGenotype?        flG,
+        DipLongGenotype?         dlG,
+        SwingLongGenotype?       slG,
+        RegimeRouterSession?     session,
+        DrawdownGuardGenotype?   guard = null)
+    {
+        var coins = ScenarioCoins
+            .Where(h1Map.ContainsKey)
+            .Select(s => new CoinData(h1Map[s], s))
+            .ToList();
+        return Evaluate(scenario, coins, fsG, gridG, flG, dlG, slG, session, guard);
+    }
+
     private static double Evaluate(
         ScenarioGenotype      g,
         List<CoinData>        coins,
@@ -101,7 +121,8 @@ public class ScenarioGA
         FadeLongGenotype?     flG,
         DipLongGenotype?      dlG,
         SwingLongGenotype?    slG,
-        RegimeRouterSession?  session)
+        RegimeRouterSession?  session,
+        DrawdownGuardGenotype? guard = null)
     {
         var btcCoin = coins.FirstOrDefault(c => c.Symbol == "BTCUSDT");
         if (btcCoin == null) return 0;
@@ -110,7 +131,7 @@ public class ScenarioGA
         if (injUpper < 50) return 0;
         injBar = Math.Clamp(injBar, 50, injUpper);
 
-        var trades = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold)>();
+        var trades = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, bool IsGuarded)>();
 
         foreach (var coin in coins)
         {
@@ -123,55 +144,63 @@ public class ScenarioGA
             var    mM15 = ScenarioInjector.DeaggregateToM15(mH1);
             if (mH1.Length < 200) continue;
 
-            // FadeShort — dual-TF overload exists: GetFadeShortReturns(g, h1, m15)
+            // FadeShort — exempt from guard
             {
                 var t    = FadeShortSimulator.GetFadeShortReturns(fsG, mH1, mM15);
                 double c = t.Count > 0 ? Simulator.ComputeConfidence(t.Select(x => x.Return).ToList()) : 0.03;
                 foreach (var (time, ret, _) in t)
-                    trades.Add((time, ret, c, TimeSpan.FromHours(fsG.MaxHoldCandles)));
+                    trades.Add((time, ret, c, TimeSpan.FromHours(fsG.MaxHoldCandles), false));
             }
-            // Grid
+            // Grid — guarded
             {
                 var raw   = GridSimulator.GetGridReturns(gridG, mH1);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList() : raw;
                 double c  = gated.Count > 0 ? Simulator.ComputeConfidence(gated.Select(x => x.Return).ToList()) : 0.03;
                 foreach (var (time, ret, _) in gated)
-                    trades.Add((time, ret, c, TimeSpan.FromHours(gridG.MaxHoldCandles)));
+                    trades.Add((time, ret, c, TimeSpan.FromHours(gridG.MaxHoldCandles), true));
             }
-            // FadeLong
+            // FadeLong — exempt from guard
             if (flG != null && mH1.Length >= 200 && mM15.Length >= 800)
             {
                 var raw   = FadeLongSimulator.GetFadeLongReturns(flG, mH1, mM15);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList() : raw;
                 double c  = gated.Count > 0 ? Simulator.ComputeConfidence(gated.Select(x => x.Return).ToList()) : 0.03;
                 foreach (var (time, ret, _, _) in gated)
-                    trades.Add((time, ret, c, TimeSpan.FromHours(flG.MaxHoldCandles)));
+                    trades.Add((time, ret, c, TimeSpan.FromHours(flG.MaxHoldCandles), false));
             }
-            // DipLong
+            // DipLong — guarded
             if (dlG != null && mH1.Length >= 200 && mM15.Length >= 800)
             {
                 var raw   = DipLongSimulator.GetDipLongReturns(dlG, mH1, mM15);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
                 double c  = gated.Count > 0 ? Simulator.ComputeConfidence(gated.Select(x => x.Return).ToList()) : 0.03;
                 foreach (var (time, ret, _, _) in gated)
-                    trades.Add((time, ret, c, TimeSpan.FromHours(dlG.MaxHoldCandles)));
+                    trades.Add((time, ret, c, TimeSpan.FromHours(dlG.MaxHoldCandles), true));
             }
-            // SwingLong — gated via DipLong (Bull regime), same as router uses
+            // SwingLong — guarded
             if (slG != null && mH1.Length >= 200 && mM15.Length >= 800)
             {
                 var raw   = SwingLongSimulator.GetSwingLongReturns(slG, mH1, mM15);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
                 double c  = gated.Count > 0 ? Simulator.ComputeConfidence(gated.Select(x => x.Return).ToList()) : 0.03;
                 foreach (var (time, ret, _) in gated)
-                    trades.Add((time, ret, c, TimeSpan.FromHours(slG.MaxHoldCandles)));
+                    trades.Add((time, ret, c, TimeSpan.FromHours(slG.MaxHoldCandles), true));
             }
         }
 
         if (trades.Count < 5) return 0;
-        var simInput = trades.OrderBy(t => t.Time)
-            .Select(t => (t.Time, t.Return, t.Conf, t.Hold)).ToList();
-        var result = Simulator.SimulatePortfolioExposureCapped(simInput, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-        return result.MaxDrawdownPct;
+
+        if (guard != null)
+        {
+            var simInput = trades.OrderBy(t => t.Time).ToList();
+            return Simulator.SimulateWithDrawdownGuard(simInput, guard, Config.MaxTotalExposurePct, maxPositionFrac: 0.05).MaxDrawdownPct;
+        }
+        else
+        {
+            var simInput = trades.OrderBy(t => t.Time)
+                .Select(t => (t.Time, t.Return, t.Conf, t.Hold)).ToList();
+            return Simulator.SimulatePortfolioExposureCapped(simInput, Config.MaxTotalExposurePct, maxPositionFrac: 0.05).MaxDrawdownPct;
+        }
     }
 
     private static double[] RandomGenes(int nDim, Random rng)

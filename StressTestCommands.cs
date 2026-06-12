@@ -17,7 +17,8 @@ static class StressTestCommands
         var flG     = File.Exists(Config.FadeLongGenoFile)  ? JsonSerializer.Deserialize<FadeLongGenotypeDto>(File.ReadAllText(Config.FadeLongGenoFile))!.ToGenotype()   : null;
         var dlG     = File.Exists(Config.DipLongGenoFile)   ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(Config.DipLongGenoFile))!.ToGenotype()     : null;
         var slG     = File.Exists(Config.SwingLongGenoFile) ? JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(Config.SwingLongGenoFile))!.ToGenotype() : null;
-        var routerG = File.Exists(Config.RouterGenoFile)    ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype() : null;
+        var routerG = File.Exists(Config.RouterGenoFile)      ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype()     : null;
+        var guardG  = File.Exists(Config.DrawdownGuardGenoFile) ? JsonSerializer.Deserialize<DrawdownGuardGenotypeDto>(File.ReadAllText(Config.DrawdownGuardGenoFile))!.ToGenotype() : null;
 
         var allSyms = ScenarioGA.ScenarioCoins.Concat(new[] { "BTCUSDT", "ETHUSDT" }).Distinct().ToArray();
         Console.WriteLine($"  Fetching {allSyms.Length} coins (1h, ~3yr)...");
@@ -37,7 +38,17 @@ static class StressTestCommands
         var h1Map   = fetched.Where(f => f.h1.Length >= 200).ToDictionary(f => f.sym, f => f.h1);
         Console.WriteLine($"  Done ({h1Map.Count} coins loaded).\n");
 
-        double baselineDd = ComputeBaselineDD(h1Map, fsG, gridG, flG, dlG, slG, routerG);
+        // Build router session once — used for baseline and scenario evaluation
+        RegimeRouterSession? session = null;
+        if (routerG != null && h1Map.TryGetValue("BTCUSDT", out var btcForSession) && btcForSession.Length >= 200)
+        {
+            var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcForSession);
+            RegimeBar[]? ethSeries = h1Map.TryGetValue("ETHUSDT", out var ethForSession) && ethForSession.Length >= 200
+                ? RegimeClassifier.ClassifySeriesWithDuration(ethForSession) : null;
+            session = new RegimeRouterSession(btcSeries, ethSeries, routerG);
+        }
+
+        double baselineDd = ComputeBaselineDD(h1Map, fsG, gridG, flG, dlG, slG, session);
         Console.WriteLine($"  Baseline max-drawdown (unmorphed): {baselineDd:F1}%\n");
 
         Console.WriteLine("  Running adversarial GA (40 individuals, 60 generations)...\n");
@@ -48,6 +59,11 @@ static class StressTestCommands
         int injBar  = btcH1 != null ? (int)(btcH1.Length * best.InjectionOffsetFrac) : 0;
         var injDate = btcH1 != null && injBar < btcH1.Length ? btcH1[injBar].Time : DateTime.MinValue;
 
+        // Evaluate worst-case scenario with guard active (if trained)
+        double? guardedDd = guardG != null
+            ? ScenarioGA.EvaluateScenario(best, h1Map, fsG, gridG, flG, dlG, slG, session, guardG)
+            : null;
+
         Console.WriteLine($"\n{new string('=', 88)}");
         Console.WriteLine($"  WORST-CASE SCENARIO");
         Console.WriteLine($"{new string('=', 88)}");
@@ -57,27 +73,20 @@ static class StressTestCommands
         Console.WriteLine($"  Liquidity squeeze: {best.LiquiditySqueezeHours:F0}h of reduced volume");
         Console.WriteLine($"  Injection point:   bar {injBar} / {btcH1?.Length ?? 0}  ({injDate:yyyy-MM-dd})");
         Console.WriteLine($"\n  Portfolio max-drawdown:  {best.Fitness:F1}%  (baseline {baselineDd:F1}%)");
-        Console.WriteLine($"  Stress multiplier:       {best.Fitness / Math.Max(baselineDd, 1.0):F2}x");
+        if (guardedDd.HasValue)
+            Console.WriteLine($"  With panic manager:      {guardedDd.Value:F1}%  ({guardedDd.Value - best.Fitness:+0.0;-0.0}pp vs unguarded)");
+        Console.WriteLine($"  Stress multiplier:       {best.Fitness / Math.Max(baselineDd, 1.0):F2}x  (guarded: {(guardedDd ?? best.Fitness) / Math.Max(baselineDd, 1.0):F2}x)");
     }
 
     private static double ComputeBaselineDD(
         IReadOnlyDictionary<string, Candle[]> h1Map,
-        FadeShortGenotype     fsG,
-        GridGenotype          gridG,
-        FadeLongGenotype?     flG,
-        DipLongGenotype?      dlG,
-        SwingLongGenotype?    slG,
-        RegimeRouterGenotype? routerG)
+        FadeShortGenotype    fsG,
+        GridGenotype         gridG,
+        FadeLongGenotype?    flG,
+        DipLongGenotype?     dlG,
+        SwingLongGenotype?   slG,
+        RegimeRouterSession? session)
     {
-        RegimeRouterSession? session = null;
-        if (routerG != null && h1Map.TryGetValue("BTCUSDT", out var btcH1r) && btcH1r.Length >= 200)
-        {
-            var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcH1r);
-            RegimeBar[]? ethSeries = h1Map.TryGetValue("ETHUSDT", out var ethH1r) && ethH1r.Length >= 200
-                ? RegimeClassifier.ClassifySeriesWithDuration(ethH1r) : null;
-            session = new RegimeRouterSession(btcSeries, ethSeries, routerG);
-        }
-
         var trades = new List<(DateTime, double, double, TimeSpan)>();
         foreach (var sym in ScenarioGA.ScenarioCoins.Where(h1Map.ContainsKey))
         {

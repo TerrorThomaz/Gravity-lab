@@ -223,7 +223,8 @@ static class DynamicGuardTrainCommands
                         + $"  →  guarded ret={oosGuarded.EndBalance - 100:+0.1;-0.1}% DD={oosGuarded.MaxDrawdownPct:F1}%");
 
         var dto = new DynamicGuardGenotypeDto(best.AtrLookback, best.AtrTrigger,
-            best.MomLookback, best.MomThreshold, best.SizeFloor, best.Fitness);
+            best.MomLookback, best.MomThreshold, best.SizeFloor, best.Fitness,
+            best.PanicTrigger, best.RecoveryBars);
         File.WriteAllText(Config.DynamicGuardGenoFile,
             System.Text.Json.JsonSerializer.Serialize(dto, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"\n  Saved → {Config.DynamicGuardGenoFile}");

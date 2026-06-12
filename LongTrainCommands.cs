@@ -197,7 +197,8 @@ static class LongTrainCommands
 
         var dgDto = new DynamicGuardGenotypeDto(result.DynamicGuard.AtrLookback, result.DynamicGuard.AtrTrigger,
             result.DynamicGuard.MomLookback, result.DynamicGuard.MomThreshold,
-            result.DynamicGuard.SizeFloor, result.DynamicGuard.Fitness);
+            result.DynamicGuard.SizeFloor, result.DynamicGuard.Fitness,
+            result.DynamicGuard.PanicTrigger, result.DynamicGuard.RecoveryBars);
         File.WriteAllText(Config.DynamicGuardGenoFile,
             JsonSerializer.Serialize(dgDto, new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"  Saved DynGuard   → {Config.DynamicGuardGenoFile}  {result.DynamicGuard}");

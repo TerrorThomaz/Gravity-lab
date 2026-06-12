@@ -2,23 +2,24 @@ using System.Collections.Concurrent;
 
 namespace TradingGA;
 
-// Cooperative coevolution: DipLong · SwingLong · RegimeRouter · DynamicGuard.
+// Red-Queen cooperative coevolution:
 //
-// Each cycle:
-//   1. DipLong evolves with router bull-gate × guard multiplier.
-//   2. SwingLong evolves with router bull-gate × guard multiplier.
-//   3. Router evolves over fresh trade lists from all strategy elites.
-//   4. DynamicGuard calibrates on router-gated trade lists.
+//   Each round, three populations evolve IN PARALLEL against the previous round's peers:
+//     • DipLong   ← gate = router[t-1] × guard[t-1]
+//     • SwingLong ← gate = router[t-1] × guard[t-1]
+//     • Guard     ← trade lists from DipLong[t-1] + SwingLong[t-1]
 //
-// With guard pressure in fitness, DipLong/SwingLong discover exits that perform
-// across the full volatility range. The guard recalibrates each cycle. The router
-// adjusts its mid-range thresholds to the evolved strategy+guard landscape.
+//   Then (sequentially):
+//     • Router  ← fresh trade lists from DipLong[t] + SwingLong[t]
+//     • Guard trades rebuilt for next round from Router[t]
 //
-// Cycle 1 is an unbiased warm-start (no gating, no guard). Cycles 2-N apply
-// progressive pressure with halved generation budgets (already near optimum).
+// Because each component evolves against the OTHER's last-known state, both sides
+// must keep adapting — strategies defend exits against a guard that tightens on their
+// weak spots, and the guard calibrates on strategies that keep finding new exits.
 //
-// FadeLong is excluded — it adds a ~20% time cost and is disabled in production
-// (PF=0.06 OOS). FadeShort is always-on and not coevolved.
+// Round 1 is an unbiased warm-start (no gating, seeds from JSON files).
+// Rounds 2–N use full gate pressure with short bursts (StratGens each).
+// Console output from the three parallel tasks is suppressed; round summaries are printed.
 public class CoevolveGA
 {
     public record AllData(
@@ -38,12 +39,11 @@ public class CoevolveGA
         RegimeRouterGenotype  Router,
         DynamicGuardGenotype  DynamicGuard);
 
-    private const int Cycles          = 4;
-    private const int WarmStartGens   = 40;   // cycle 1: full exploration budget
-    private const int RefinementGens  = 20;   // cycles 2-4: already seeded, just adapt to gate
-    private const int RouterGens      = 40;
-    private const int GuardGens       = 30;
-    private const int GuardPopSize    = 40;
+    private const int RedQueenRounds = 8;
+    private const int StratGens      = 10;   // gens per strategy per round (short burst)
+    private const int RouterGens     = 20;
+    private const int GuardGens      = 15;
+    private const int GuardPopSize   = 30;
 
     public CoevolveResult Run(
         AllData               data,
@@ -59,62 +59,82 @@ public class CoevolveGA
         var slBest      = slSeed;
         var guardBest   = dgSeed;
 
-        for (int cycle = 0; cycle < Cycles; cycle++)
+        // Pre-build initial guard trade lists from seeds so round 1 guard phase is not empty
+        var (guardVal, guardOos) = data.BtcH1.Length >= 50
+            ? BuildGuardTrades(fsSeed, dlBest, slBest, data.GridGeno, data, routerElite)
+            : (new List<(DateTime, double, double, TimeSpan, bool)>(),
+               new List<(DateTime, double, double, TimeSpan, bool)>());
+
+        for (int round = 0; round < RedQueenRounds; round++)
         {
-            bool useGating = cycle > 0;
-            int  stratGens = useGating ? RefinementGens : WarmStartGens;
+            bool useGating = round > 0;
 
             Console.WriteLine($"\n{'═',80}");
-            Console.WriteLine($"  Coevolve Cycle {cycle + 1}/{Cycles}  (stratGens={stratGens})");
+            Console.WriteLine($"  Red Queen Round {round + 1}/{RedQueenRounds}  (stratGens={StratGens}  routerGens={RouterGens}  guardGens={GuardGens})");
             Console.WriteLine($"{'═',80}");
             Console.WriteLine($"  Router: {routerElite}");
             if (guardBest != null) Console.WriteLine($"  Guard:  {guardBest}");
 
+            // ── Build gate from PREVIOUS round's router + guard (red-queen: compete vs last state) ──
             RegimeRouterSession? session = useGating
                 ? new RegimeRouterSession(data.BtcSeries, data.EthSeries, routerElite)
                 : null;
-
             DynamicGuardSession? guardSession = (useGating && guardBest != null && data.BtcH1.Length > 0)
                 ? new DynamicGuardSession(data.BtcH1, guardBest)
                 : null;
-
-            // Combined bull gate: router soft-gate × guard multiplier.
-            // Strategies see full weight in calm bull periods, reduced in volatile.
-            Func<DateTime, double>? bullGate = session != null
-                ? t => session.GetWeight(RegimeRouterGA.StrategyKind.DipLong, t)
-                      * (guardSession?.GetMult(t) ?? 1.0)
-                : guardSession != null
-                    ? t => guardSession.GetMult(t)
-                    : null;
+            Func<DateTime, double>? bullGate = BuildBullGate(session, guardSession);
 
             Console.WriteLine(useGating
-                ? "  Gate: DipLong/SwingLong = bull·conf × guard"
-                : "  Gate: none (warm-start cycle)");
+                ? "  Gate: DipLong/SwingLong = bull·conf × guard[t-1]  ║  Guard ← strats[t-1]  [PARALLEL]"
+                : "  Gate: none (warm-start)  ║  Guard ← seeds  [PARALLEL]");
 
-            // ── DipLong phase ─────────────────────────────────────────────────
-            Console.WriteLine("\n─── DipLong (bull-gated × guard) ───");
-            dlBest = new DipLongGA(
+            // Capture loop variables for closures
+            var dlCapture    = dlBest;
+            var slCapture    = slBest;
+            var guardValCap  = guardVal;
+            var guardOosCap  = guardOos;
+            var guardCapture = guardBest;
+
+            // ── Parallel: DipLong || SwingLong || Guard ───────────────────────────
+            var dlTask = Task.Run(() =>
+                new DipLongGA(
                     populationSize:    60,
-                    generations:       stratGens,
+                    generations:       StratGens,
                     eliteCount:        10,
-                    migrationInterval: 10,
-                    verbose:           true,
+                    migrationInterval: 5,
+                    verbose:           false,
                     tradeGate:         bullGate)
-                .Run(data.DlCoins, dlBest);
+                .Run(data.DlCoins, dlCapture));
 
-            // ── SwingLong phase ───────────────────────────────────────────────
-            Console.WriteLine("\n─── SwingLong (bull-gated × guard) ───");
-            slBest = new SwingLongGA(
+            var slTask = Task.Run(() =>
+                new SwingLongGA(
                     populationSize:    60,
-                    generations:       stratGens,
+                    generations:       StratGens,
                     eliteCount:        10,
-                    migrationInterval: 10,
-                    verbose:           true,
+                    migrationInterval: 5,
+                    verbose:           false,
                     tradeGate:         bullGate)
-                .Run(data.SlCoins, slBest);
+                .Run(data.SlCoins, slCapture));
 
-            // ── Router phase ──────────────────────────────────────────────────
-            Console.WriteLine("\n─── Router (fresh trade lists) ───");
+            var guardTask = Task.Run(() =>
+            {
+                if (data.BtcH1.Length < 50 || (guardValCap.Count < 20 && guardOosCap.Count < 20))
+                    return guardCapture;
+                return (DynamicGuardGenotype?)new DynamicGuardGA(GuardPopSize, GuardGens)
+                    .Run(data.BtcH1, guardValCap, guardOosCap);
+            });
+
+            Task.WaitAll(dlTask, slTask, guardTask);
+            dlBest    = dlTask.Result;
+            slBest    = slTask.Result;
+            guardBest = guardTask.Result;
+
+            Console.WriteLine($"\n  DipLong:   {dlBest}");
+            Console.WriteLine($"  SwingLong: {slBest}");
+            if (guardBest != null) Console.WriteLine($"  Guard:     {guardBest}");
+
+            // ── Router phase (sequential; uses updated DipLong + SwingLong bests) ──
+            Console.WriteLine("\n─── Router (fresh trade lists from updated strategies) ───");
             var routerTrades = BuildTradeLists(fsSeed, dlBest, slBest, data.GridGeno, data);
             Console.WriteLine(
                 $"  Trade records: {routerTrades.Count} total — " +
@@ -137,27 +157,29 @@ public class CoevolveGA
                 Console.WriteLine("  !! Too few trades — skipping router phase.");
             }
 
-            // ── DynamicGuard phase ────────────────────────────────────────────
-            Console.WriteLine("\n─── DynamicGuard (calibrate on router-gated trades) ───");
+            // ── Rebuild guard trade lists for the next round (uses updated Router + strategies) ──
             if (data.BtcH1.Length >= 50)
             {
-                var (guardVal, guardOos) = BuildGuardTrades(
+                (guardVal, guardOos) = BuildGuardTrades(
                     fsSeed, dlBest, slBest, data.GridGeno, data, routerElite);
-
-                if (guardVal.Count >= 20 || guardOos.Count >= 20)
-                {
-                    guardBest = new DynamicGuardGA(GuardPopSize, GuardGens)
-                        .Run(data.BtcH1, guardVal, guardOos);
-                }
-                else
-                {
-                    Console.WriteLine("  !! Too few trades — skipping guard phase.");
-                }
+                Console.WriteLine($"  Guard trades rebuilt: val={guardVal.Count}  pseudo-oos={guardOos.Count}");
             }
         }
 
         return new CoevolveResult(flSeed!, dlBest!, slBest!, routerElite, guardBest!);
     }
+
+    // ── Shared helpers ────────────────────────────────────────────────────────
+
+    private static Func<DateTime, double>? BuildBullGate(
+        RegimeRouterSession?  session,
+        DynamicGuardSession?  guardSession) =>
+        session != null
+            ? t => session.GetWeight(RegimeRouterGA.StrategyKind.DipLong, t)
+                  * (guardSession?.GetMult(t) ?? 1.0)
+            : guardSession != null
+                ? t => guardSession.GetMult(t)
+                : (Func<DateTime, double>?)null;
 
     // ── Trade list builders (parallelised over coins) ─────────────────────────
 

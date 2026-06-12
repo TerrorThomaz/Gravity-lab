@@ -5,25 +5,29 @@ namespace TradingGA;
 
 static class StressTestCommands
 {
+    private static readonly int[] Seeds = [42, 137, 271, 512, 999];
+
     public static async Task RunStressTest(BybitRestClient client)
     {
-        Console.WriteLine($"=== Gravity-gen2 | STRESS TEST (adversarial scenario GA, {ScenarioGA.ScenarioCoins.Length} coins) ===\n");
+        Console.WriteLine($"=== Gravity-gen2 | STRESS TEST ({Seeds.Length} seeds · {ScenarioGA.ScenarioCoins.Length} coins each) ===\n");
 
         if (!File.Exists(Config.FadeShortGenoFile)) { Console.WriteLine("Missing FadeShort genotype."); return; }
         if (!File.Exists(Config.GridGenoFile))      { Console.WriteLine("Missing Grid genotype."); return; }
 
         var fsG     = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype();
         var gridG   = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(Config.GridGenoFile))!.ToGenotype();
-        var flG     = File.Exists(Config.FadeLongGenoFile)  ? JsonSerializer.Deserialize<FadeLongGenotypeDto>(File.ReadAllText(Config.FadeLongGenoFile))!.ToGenotype()   : null;
-        var dlG     = File.Exists(Config.DipLongGenoFile)   ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(Config.DipLongGenoFile))!.ToGenotype()     : null;
-        var slG     = File.Exists(Config.SwingLongGenoFile) ? JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(Config.SwingLongGenoFile))!.ToGenotype() : null;
-        var routerG = File.Exists(Config.RouterGenoFile)      ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype()     : null;
+        var flG     = File.Exists(Config.FadeLongGenoFile)      ? JsonSerializer.Deserialize<FadeLongGenotypeDto>(File.ReadAllText(Config.FadeLongGenoFile))!.ToGenotype()         : null;
+        var dlG     = File.Exists(Config.DipLongGenoFile)       ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(Config.DipLongGenoFile))!.ToGenotype()           : null;
+        var slG     = File.Exists(Config.SwingLongGenoFile)     ? JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(Config.SwingLongGenoFile))!.ToGenotype()       : null;
+        var routerG = File.Exists(Config.RouterGenoFile)        ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype()       : null;
         var guardG  = File.Exists(Config.DrawdownGuardGenoFile) ? JsonSerializer.Deserialize<DrawdownGuardGenotypeDto>(File.ReadAllText(Config.DrawdownGuardGenoFile))!.ToGenotype() : null;
 
+        if (guardG != null) Console.WriteLine($"  Panic manager: {guardG}");
+
         var allSyms = ScenarioGA.ScenarioCoins.Concat(new[] { "BTCUSDT", "ETHUSDT" }).Distinct().ToArray();
-        Console.WriteLine($"  Fetching {allSyms.Length} coins (1h, ~3yr)...");
+        Console.WriteLine($"\n  Fetching {allSyms.Length} coins (1h, ~3yr)...");
         var sem = new SemaphoreSlim(4);
-        var tasks = allSyms.Select(async sym =>
+        var fetchTasks = allSyms.Select(async sym =>
         {
             await sem.WaitAsync();
             try
@@ -34,11 +38,11 @@ static class StressTestCommands
             }
             finally { sem.Release(); }
         });
-        var fetched = await Task.WhenAll(tasks);
+        var fetched = await Task.WhenAll(fetchTasks);
         var h1Map   = fetched.Where(f => f.h1.Length >= 200).ToDictionary(f => f.sym, f => f.h1);
         Console.WriteLine($"  Done ({h1Map.Count} coins loaded).\n");
 
-        // Build router session once — used for baseline and scenario evaluation
+        // Router session (shared across all runs)
         RegimeRouterSession? session = null;
         if (routerG != null && h1Map.TryGetValue("BTCUSDT", out var btcForSession) && btcForSession.Length >= 200)
         {
@@ -49,33 +53,61 @@ static class StressTestCommands
         }
 
         double baselineDd = ComputeBaselineDD(h1Map, fsG, gridG, flG, dlG, slG, session);
-        Console.WriteLine($"  Baseline max-drawdown (unmorphed): {baselineDd:F1}%\n");
+        Console.WriteLine($"  Baseline DD (unmorphed): {baselineDd:F1}%\n");
 
-        Console.WriteLine("  Running adversarial GA (40 individuals, 60 generations)...\n");
-        var ga   = new ScenarioGA(populationSize: 40, generations: 60, verbose: true);
-        var best = ga.Run(h1Map, fsG, gridG, flG, dlG, slG, routerG);
+        Console.WriteLine($"  {"Seed",5}  {"Worst DD",9}  {"Guarded DD",11}  Scenario");
+        Console.WriteLine($"  {new string('─', 70)}");
+
+        Console.WriteLine($"  Running {Seeds.Length} seeds in parallel...");
+        var seedTasks = Seeds.Select(seed => Task.Run(() =>
+        {
+            var ga   = new ScenarioGA(populationSize: 40, generations: 60, verbose: false, seed: seed);
+            var best = ga.Run(h1Map, fsG, gridG, flG, dlG, slG, routerG);
+            double guardedDd = guardG != null
+                ? ScenarioGA.EvaluateScenario(best, h1Map, fsG, gridG, flG, dlG, slG, session, guardG)
+                : best.Fitness;
+            return (seed, best, guardedDd);
+        })).ToList();
+        var results = (await Task.WhenAll(seedTasks))
+            .OrderBy(r => r.seed).ToList();
 
         h1Map.TryGetValue("BTCUSDT", out var btcH1);
-        int injBar  = btcH1 != null ? (int)(btcH1.Length * best.InjectionOffsetFrac) : 0;
-        var injDate = btcH1 != null && injBar < btcH1.Length ? btcH1[injBar].Time : DateTime.MinValue;
+        foreach (var (seed, best, guardedDd) in results)
+        {
+            int injBar  = btcH1 != null ? (int)(btcH1.Length * best.InjectionOffsetFrac) : 0;
+            var injDate = btcH1 != null && injBar < btcH1.Length ? btcH1[injBar].Time : DateTime.MinValue;
+            string guardStr = guardG != null ? $"{guardedDd,7:F1}%" : "   n/a  ";
+            Console.WriteLine($"  {seed,5}  {best.Fitness,7:F1}%    {guardStr}    "
+                + $"depth={best.CrashDepthPct:P0} dur={best.CrashDurationHours:F0}h "
+                + $"beta={best.AltBetaPct:F2} atr={best.AtrExpansionPeak:F1}x  ({injDate:yyyy-MM-dd})");
+        }
 
-        // Evaluate worst-case scenario with guard active (if trained)
-        double? guardedDd = guardG != null
-            ? ScenarioGA.EvaluateScenario(best, h1Map, fsG, gridG, flG, dlG, slG, session, guardG)
-            : null;
+        // Summary
+        var dds   = results.Select(r => r.best.Fitness).OrderBy(x => x).ToList();
+        var gDds  = results.Select(r => r.guardedDd).OrderBy(x => x).ToList();
+        var worst = results.MaxBy(r => r.best.Fitness)!;
 
-        Console.WriteLine($"\n{new string('=', 88)}");
-        Console.WriteLine($"  WORST-CASE SCENARIO");
-        Console.WriteLine($"{new string('=', 88)}");
-        Console.WriteLine($"  Crash depth:       {best.CrashDepthPct:P0}  (alt beta x{best.AltBetaPct:F2})");
-        Console.WriteLine($"  Crash duration:    {best.CrashDurationHours:F0}h  ->  recovery {best.RecoveryHours:F0}h");
-        Console.WriteLine($"  ATR expansion:     {best.AtrExpansionPeak:F1}x  at trough");
-        Console.WriteLine($"  Liquidity squeeze: {best.LiquiditySqueezeHours:F0}h of reduced volume");
-        Console.WriteLine($"  Injection point:   bar {injBar} / {btcH1?.Length ?? 0}  ({injDate:yyyy-MM-dd})");
-        Console.WriteLine($"\n  Portfolio max-drawdown:  {best.Fitness:F1}%  (baseline {baselineDd:F1}%)");
-        if (guardedDd.HasValue)
-            Console.WriteLine($"  With panic manager:      {guardedDd.Value:F1}%  ({guardedDd.Value - best.Fitness:+0.0;-0.0}pp vs unguarded)");
-        Console.WriteLine($"  Stress multiplier:       {best.Fitness / Math.Max(baselineDd, 1.0):F2}x  (guarded: {(guardedDd ?? best.Fitness) / Math.Max(baselineDd, 1.0):F2}x)");
+        Console.WriteLine($"\n  {new string('─', 70)}");
+        Console.WriteLine($"  Unguarded DD  —  min {dds[0]:F1}%  median {dds[dds.Count/2]:F1}%  max {dds[^1]:F1}%");
+        if (guardG != null)
+            Console.WriteLine($"  Guarded DD    —  min {gDds[0]:F1}%  median {gDds[gDds.Count/2]:F1}%  max {gDds[^1]:F1}%");
+
+        // Full detail on the single worst scenario found
+        int worstBar  = btcH1 != null ? (int)(btcH1.Length * worst.best.InjectionOffsetFrac) : 0;
+        var worstDate = btcH1 != null && worstBar < btcH1.Length ? btcH1[worstBar].Time : DateTime.MinValue;
+
+        Console.WriteLine($"\n{new string('═', 88)}");
+        Console.WriteLine($"  HARDEST SCENARIO FOUND  (seed {worst.seed})");
+        Console.WriteLine($"{new string('═', 88)}");
+        Console.WriteLine($"  Crash depth:       {worst.best.CrashDepthPct:P0}  (alt beta x{worst.best.AltBetaPct:F2})");
+        Console.WriteLine($"  Crash duration:    {worst.best.CrashDurationHours:F0}h  →  recovery {worst.best.RecoveryHours:F0}h");
+        Console.WriteLine($"  ATR expansion:     {worst.best.AtrExpansionPeak:F1}x  at trough");
+        Console.WriteLine($"  Liquidity squeeze: {worst.best.LiquiditySqueezeHours:F0}h of reduced volume");
+        Console.WriteLine($"  Injection point:   bar {worstBar} / {btcH1?.Length ?? 0}  ({worstDate:yyyy-MM-dd})");
+        Console.WriteLine($"\n  Portfolio max-drawdown:  {worst.best.Fitness:F1}%  (baseline {baselineDd:F1}%)");
+        if (guardG != null)
+            Console.WriteLine($"  With panic manager:      {worst.guardedDd:F1}%  ({worst.guardedDd - worst.best.Fitness:+0.0;-0.0}pp vs unguarded)");
+        Console.WriteLine($"  Stress multiplier:       {worst.best.Fitness / Math.Max(baselineDd, 1.0):F2}x");
     }
 
     private static double ComputeBaselineDD(
@@ -93,7 +125,6 @@ static class StressTestCommands
             var h1  = h1Map[sym];
             var m15 = ScenarioInjector.DeaggregateToM15(h1);
 
-            // FadeShort — dual-TF overload: GetFadeShortReturns(g, h1, m15)
             var fsT  = FadeShortSimulator.GetFadeShortReturns(fsG, h1, m15);
             double fc = fsT.Count > 0 ? Simulator.ComputeConfidence(fsT.Select(t => t.Return).ToList()) : 0.03;
             foreach (var (t, r, _) in fsT) trades.Add((t, r, fc, TimeSpan.FromHours(fsG.MaxHoldCandles)));
@@ -127,8 +158,7 @@ static class StressTestCommands
         }
 
         if (trades.Count < 5) return 0;
-        var result = Simulator.SimulatePortfolioExposureCapped(
-            trades.OrderBy(t => t.Item1).ToList(), Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-        return result.MaxDrawdownPct;
+        return Simulator.SimulatePortfolioExposureCapped(
+            trades.OrderBy(t => t.Item1).ToList(), Config.MaxTotalExposurePct, maxPositionFrac: 0.05).MaxDrawdownPct;
     }
 }

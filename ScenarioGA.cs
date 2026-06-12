@@ -14,12 +14,14 @@ public class ScenarioGA
     private readonly int  _populationSize;
     private readonly int  _generations;
     private readonly bool _verbose;
+    private readonly int  _seed;
 
-    public ScenarioGA(int populationSize = 40, int generations = 60, bool verbose = true)
+    public ScenarioGA(int populationSize = 40, int generations = 60, bool verbose = true, int seed = 42)
     {
         _populationSize = populationSize;
         _generations    = generations;
         _verbose        = verbose;
+        _seed           = seed;
     }
 
     public record CoinData(Candle[] H1, string Symbol);
@@ -49,7 +51,7 @@ public class ScenarioGA
             session = new RegimeRouterSession(btcSeries, ethSeries, routerG);
         }
 
-        var rng  = new Random(42);
+        var rng  = new Random(_seed);
         int nDim = 7;
 
         var pop = new List<ScenarioGenotype>(_populationSize);

@@ -59,6 +59,9 @@ public record ExitModifierGenotype(
         return Math.Clamp(atr * heat * liq * freq, MinSizeMult, 1.0);
     }
 
+    public double ComputeMult(TradeEnricher.EnrichedTrade t) =>
+        ComputeMult(t.AtrRank, t.OpenPositions, t.LiquidityScore, t.RecentTradeCount);
+
     public override string ToString() =>
         $"AtrPow={AtrRankPower:F2} HeatThr={HeatThreshold:F0}@{HeatMultPerPosition:F2} "
       + $"Liq={LiquidityFloor:F2}/{LiquidityMinMult:F2} "

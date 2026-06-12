@@ -188,6 +188,7 @@ static class FullTest
         var oosDlRets    = new List<double>();
         var oosSlRets    = new List<double>();
         var oosAll       = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
+        var oosNoRouter  = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
         int oosCandleCount = 0;
         const double oosMinVol = 0.05;
 
@@ -225,6 +226,7 @@ static class FullTest
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosGridRets.AddRange(vRet);
                     foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "grid"));
+                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "grid"));
                 }
             }
 
@@ -241,6 +243,7 @@ static class FullTest
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosFlRets.AddRange(vRet);
                     foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "fadelong"));
+                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "fadelong"));
                 }
             }
 
@@ -257,6 +260,7 @@ static class FullTest
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosDlRets.AddRange(vRet);
                     foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "diplong"));
+                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "diplong"));
                 }
             }
 
@@ -273,6 +277,7 @@ static class FullTest
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosSlRets.AddRange(vRet);
                     foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "swing_long"));
+                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "swing_long"));
                 }
             }
         }
@@ -445,12 +450,13 @@ static class FullTest
         else Console.WriteLine("  BTC data unavailable — skipping crash/rally analysis");
 
         // ══════════════════════════════════════════════════════════════════════════
-        // SECTION 6: ROUTER IMPACT (val window)
+        // SECTION 6: ROUTER IMPACT (val + OOS)
         // ══════════════════════════════════════════════════════════════════════════
         Console.WriteLine($"\n{new string('═', 88)}");
-        Console.WriteLine($"  ROUTER IMPACT (val window)");
+        Console.WriteLine($"  ROUTER IMPACT");
         Console.WriteLine($"{new string('═', 88)}");
 
+        // Val no-router
         var nrCapIn = valNoRouter.Select(t => new PortfolioReplay.Trade(t.Strategy, t.Time,
             t.Strategy switch {
                 "swing"      => TimeSpan.FromHours(48),
@@ -471,29 +477,63 @@ static class FullTest
             ? Simulator.SimulatePortfolioExposureCapped(nrFiltered, Config.MaxTotalExposurePct)
             : default!;
 
-        double r5R  = valSim.Count > 0     ? (val5p.EndBalance  - 100) / 100 * 100 : 0;
-        double r5NR = nrFiltered.Count > 0 ? (nrPort5.EndBalance - 100) / 100 * 100 : 0;
-        double rKR  = valSim.Count > 0     ? (valKel.EndBalance  - 100) / 100 * 100 : 0;
-        double rKNR = nrFiltered.Count > 0 ? (nrPortK.EndBalance - 100) / 100 * 100 : 0;
+        // OOS no-router
+        oosNoRouter.Sort((a, b) => a.Time.CompareTo(b.Time));
+        var oosNrCapIn = oosNoRouter.Select(t => new PortfolioReplay.Trade(t.Strategy, t.Time,
+            t.Strategy switch {
+                "swing"      => TimeSpan.FromHours(48),
+                "swing_long" => TimeSpan.FromHours(48),
+                "diplong"    => TimeSpan.FromHours(48),
+                "fadelong"   => TimeSpan.FromHours(72),
+                _            => TimeSpan.FromHours(72),
+            }, t.Return, t.Conf)).ToList();
+        var oosNrFilteredTrades = PortfolioReplay.FilterByConcurrentCap(oosNrCapIn).ToList();
+        var oosNrFiltered = oosNrFilteredTrades
+            .Select(t => (t.EntryTime, t.Return, t.Conf, StratHold(t.Strategy, swingG, gridG, flG, dlG, slG)))
+            .ToList();
 
-        Console.WriteLine($"  {"Strategy",-12}  {"With router",11}  {"No router",9}  {"Δ",6}");
-        Console.WriteLine($"  {new string('-', 44)}");
-        int cntSwing = valAll.Count(t => t.Strategy == "swing");
-        Console.WriteLine($"  {"FadeShort",-12}  {cntSwing,11}  {cntSwing,9}  {"—",6}");
-        Console.WriteLine($"  {"Grid",-12}  {valAll.Count(t=>t.Strategy=="grid"),11}  {nrFilteredTrades.Count(t=>t.Strategy=="grid"),9}  {nrFilteredTrades.Count(t=>t.Strategy=="grid")-valAll.Count(t=>t.Strategy=="grid"),+6}");
-        Console.WriteLine($"  {"DipLong",-12}  {valAll.Count(t=>t.Strategy=="diplong"),11}  {nrFilteredTrades.Count(t=>t.Strategy=="diplong"),9}  {nrFilteredTrades.Count(t=>t.Strategy=="diplong")-valAll.Count(t=>t.Strategy=="diplong"),+6}");
-        Console.WriteLine($"  {"FadeLong",-12}  {valAll.Count(t=>t.Strategy=="fadelong"),11}  {nrFilteredTrades.Count(t=>t.Strategy=="fadelong"),9}  {nrFilteredTrades.Count(t=>t.Strategy=="fadelong")-valAll.Count(t=>t.Strategy=="fadelong"),+6}");
-        Console.WriteLine($"  {"SwingLong",-12}  {valAll.Count(t=>t.Strategy=="swing_long"),11}  {nrFilteredTrades.Count(t=>t.Strategy=="swing_long"),9}  {nrFilteredTrades.Count(t=>t.Strategy=="swing_long")-valAll.Count(t=>t.Strategy=="swing_long"),+6}");
-        Console.WriteLine($"  {"Total",-12}  {valAll.Count,11}  {nrFiltered.Count,9}");
-        Console.WriteLine();
+        var oosNrPort5 = oosNrFiltered.Count > 0
+            ? Simulator.SimulatePortfolioExposureCapped(oosNrFiltered, Config.MaxTotalExposurePct, maxPositionFrac: 0.05)
+            : default!;
+        var oosNrPortK = oosNrFiltered.Count > 0
+            ? Simulator.SimulatePortfolioExposureCapped(oosNrFiltered, Config.MaxTotalExposurePct)
+            : default!;
+
+        double r5R   = valSim.Count > 0        ? (val5p.EndBalance   - 100) / 100 * 100 : 0;
+        double r5NR  = nrFiltered.Count > 0    ? (nrPort5.EndBalance  - 100) / 100 * 100 : 0;
+        double rKR   = valSim.Count > 0        ? (valKel.EndBalance   - 100) / 100 * 100 : 0;
+        double rKNR  = nrFiltered.Count > 0    ? (nrPortK.EndBalance  - 100) / 100 * 100 : 0;
+        double or5R  = oosSim.Count > 0        ? (oos5p.EndBalance    - 100) / 100 * 100 : 0;
+        double or5NR = oosNrFiltered.Count > 0 ? (oosNrPort5.EndBalance - 100) / 100 * 100 : 0;
+        double orKR  = oosSim.Count > 0        ? (oosKel.EndBalance   - 100) / 100 * 100 : 0;
+        double orKNR = oosNrFiltered.Count > 0 ? (oosNrPortK.EndBalance - 100) / 100 * 100 : 0;
+
         string Sign(double v) => v >= 0 ? "+" : "";
-        Console.WriteLine($"  {"Scenario",-30}  {"Return",8}  {"DD",6}");
-        Console.WriteLine($"  {new string('-', 50)}");
-        Console.WriteLine($"  {"5%cap · with router",-30}  {r5R,+7:F1}%  {(valSim.Count>0?val5p.MaxDrawdownPct:0),5:F1}%");
-        Console.WriteLine($"  {"5%cap · no router",-30}  {r5NR,+7:F1}%  {(nrFiltered.Count>0?nrPort5.MaxDrawdownPct:0),5:F1}%");
-        Console.WriteLine($"  {"Kelly · with router",-30}  {rKR,+7:F1}%  {(valSim.Count>0?valKel.MaxDrawdownPct:0),5:F1}%");
-        Console.WriteLine($"  {"Kelly · no router",-30}  {rKNR,+7:F1}%  {(nrFiltered.Count>0?nrPortK.MaxDrawdownPct:0),5:F1}%");
-        Console.WriteLine($"  Router edge: 5%cap {Sign(r5R-r5NR)}{r5R-r5NR:F1}pp  /  Kelly {Sign(rKR-rKNR)}{rKR-rKNR:F1}pp");
+
+        Console.WriteLine($"  {"",12}  {"── Val (20%) ──────────────",26}  {"── OOS (28 coins) ─────────",26}");
+        Console.WriteLine($"  {"Strategy",-12}  {"W/ router",9}  {"No router",9}  {"Δ",5}  |  {"W/ router",9}  {"No router",9}  {"Δ",5}");
+        Console.WriteLine($"  {new string('-', 78)}");
+        int cntSwing    = valAll.Count(t => t.Strategy == "swing");
+        int oosCntSwing = oosAll.Count(t => t.Strategy == "swing");
+        Console.WriteLine($"  {"FadeShort",-12}  {cntSwing,9}  {cntSwing,9}  {"—",5}  |  {oosCntSwing,9}  {oosCntSwing,9}  {"—",5}");
+        foreach (var (strat, label) in new[] { ("grid","Grid"), ("diplong","DipLong"), ("fadelong","FadeLong"), ("swing_long","SwingLong") })
+        {
+            int vW = valAll.Count(t => t.Strategy == strat);
+            int vN = nrFilteredTrades.Count(t => t.Strategy == strat);
+            int oW = oosAll.Count(t => t.Strategy == strat);
+            int oN = oosNrFilteredTrades.Count(t => t.Strategy == strat);
+            Console.WriteLine($"  {label,-12}  {vW,9}  {vN,9}  {vN-vW,+5}  |  {oW,9}  {oN,9}  {oN-oW,+5}");
+        }
+        Console.WriteLine($"  {"Total",-12}  {valAll.Count,9}  {nrFiltered.Count,9}  {"",5}  |  {oosAll.Count,9}  {oosNrFiltered.Count,9}");
+        Console.WriteLine();
+        Console.WriteLine($"  {"Scenario",-22}  {"Val ret",8}  {"Val DD",7}  |  {"OOS ret",8}  {"OOS DD",7}");
+        Console.WriteLine($"  {new string('-', 64)}");
+        Console.WriteLine($"  {"5%cap · with router",-22}  {r5R,+7:F1}%  {(valSim.Count>0?val5p.MaxDrawdownPct:0),6:F1}%  |  {or5R,+7:F1}%  {(oosSim.Count>0?oos5p.MaxDrawdownPct:0),6:F1}%");
+        Console.WriteLine($"  {"5%cap · no router",-22}  {r5NR,+7:F1}%  {(nrFiltered.Count>0?nrPort5.MaxDrawdownPct:0),6:F1}%  |  {or5NR,+7:F1}%  {(oosNrFiltered.Count>0?oosNrPort5.MaxDrawdownPct:0),6:F1}%");
+        Console.WriteLine($"  {"Kelly · with router",-22}  {rKR,+7:F1}%  {(valSim.Count>0?valKel.MaxDrawdownPct:0),6:F1}%  |  {orKR,+7:F1}%  {(oosSim.Count>0?oosKel.MaxDrawdownPct:0),6:F1}%");
+        Console.WriteLine($"  {"Kelly · no router",-22}  {rKNR,+7:F1}%  {(nrFiltered.Count>0?nrPortK.MaxDrawdownPct:0),6:F1}%  |  {orKNR,+7:F1}%  {(oosNrFiltered.Count>0?oosNrPortK.MaxDrawdownPct:0),6:F1}%");
+        Console.WriteLine($"  Val  router edge: 5%cap {Sign(r5R-r5NR)}{r5R-r5NR:F1}pp  /  Kelly {Sign(rKR-rKNR)}{rKR-rKNR:F1}pp");
+        Console.WriteLine($"  OOS  router edge: 5%cap {Sign(or5R-or5NR)}{or5R-or5NR:F1}pp  /  Kelly {Sign(orKR-orKNR)}{orKR-orKNR:F1}pp");
 
         // ══════════════════════════════════════════════════════════════════════════
         // SECTION 7: FORWARD PROJECTION

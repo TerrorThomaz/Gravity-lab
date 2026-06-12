@@ -580,7 +580,7 @@ static class CombinedBacktest
         }
 
         PrintCombinedPort($"5% per position · {Config.MaxTotalExposurePct:P0} total cap  [concurrent-aware]", port5cap);
-        PrintCombinedPort($"half-Kelly · {Config.MaxTotalExposurePct:P0} total cap  [concurrent-aware]", portKelly);
+        PrintCombinedPort($"Kelly(15%) · {Config.MaxTotalExposurePct:P0} total cap  [concurrent-aware]", portKelly);
 
         if (allTrades.Count >= 2)
         {
@@ -594,7 +594,7 @@ static class CombinedBacktest
             }
             Console.WriteLine();
             AnnLine("5% cap ", port5cap);
-            AnnLine("Kelly  ", portKelly);
+            AnnLine("Kelly(15%)  ", portKelly);
         }
 
         {
@@ -704,12 +704,12 @@ static class CombinedBacktest
             Console.WriteLine($"  {new string('-', 48)}");
             Console.WriteLine($"  {"5% cap · with router",-30}  {r5R,+7:F1}%  {port5cap.MaxDrawdownPct,5:F1}%");
             Console.WriteLine($"  {"5% cap · no router",-30}  {r5NR,+7:F1}%  {nrPort5cap.MaxDrawdownPct,5:F1}%");
-            Console.WriteLine($"  {"Kelly · with router",-30}  {rKR,+7:F1}%  {portKelly.MaxDrawdownPct,5:F1}%");
-            Console.WriteLine($"  {"Kelly · no router",-30}  {rKNR,+7:F1}%  {nrPortKelly.MaxDrawdownPct,5:F1}%");
+            Console.WriteLine($"  {"Kelly(15%) · with router",-30}  {rKR,+7:F1}%  {portKelly.MaxDrawdownPct,5:F1}%");
+            Console.WriteLine($"  {"Kelly(15%) · no router",-30}  {rKNR,+7:F1}%  {nrPortKelly.MaxDrawdownPct,5:F1}%");
 
             string edgeSign5 = r5R >= r5NR ? "+" : "";
             string edgeSignK = rKR >= rKNR ? "+" : "";
-            Console.WriteLine($"  Router edge: 5% cap {edgeSign5}{r5R - r5NR:F1}pp  /  Kelly {edgeSignK}{rKR - rKNR:F1}pp");
+            Console.WriteLine($"  Router edge: 5% cap {edgeSign5}{r5R - r5NR:F1}pp  /  Kelly(15%) {edgeSignK}{rKR - rKNR:F1}pp");
         }
 
         {

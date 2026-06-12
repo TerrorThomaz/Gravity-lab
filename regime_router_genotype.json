@@ -1,0 +1,9 @@
+{
+  "BullMinBars": 50,
+  "BullMinConf": 0.4286020516827745,
+  "BearMinBars": 178.94456280960569,
+  "BearMinConf": 0.1593643358456629,
+  "GridMaxConf": 0.4190865734214886,
+  "EthBlendWeight": 0.021909882035553625,
+  "Fitness": 1.9005606277778457
+}

@@ -18,32 +18,44 @@ public class SwingLongGA
     private readonly int    _migrationInterval;
     private readonly bool   _verbose;
     private readonly Random _rng = new();
+    private readonly Func<DateTime, double>? _tradeGate;
 
     public SwingLongGA(
         int populationSize    = 60,
         int generations       = 100,
         int eliteCount        = 10,
         int migrationInterval = 10,
-        bool verbose          = false)
+        bool verbose          = false,
+        Func<DateTime, double>? tradeGate = null)
     {
         _populationSize    = populationSize;
         _generations       = generations;
         _eliteCount        = eliteCount;
         _migrationInterval = migrationInterval;
         _verbose           = verbose;
+        _tradeGate         = tradeGate;
     }
 
-    private static double FoldScore(
+    private double FoldScore(
         SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15)
     {
-        var trades = SwingLongSimulator.GetSwingLongReturns(g, h1, m15);
+        var rawTrades = SwingLongSimulator.GetSwingLongReturns(g, h1, m15);
+
+        // Apply gate (router soft-gate × guard mult): scale returns by gate weight.
+        // Trades with near-zero gate are excluded — they contribute no real signal.
+        var trades = rawTrades
+            .Select(t => {
+                double w = _tradeGate != null ? _tradeGate(t.Time) : 1.0;
+                return (Return: t.Return * w, w);
+            })
+            .Where(t => t.w >= 0.05)
+            .ToList();
         if (trades.Count < 3) return -1.0;
 
-        // Replay to track peak for retentionMult
         double balance = 1.0, peak = 1.0;
-        foreach (var t in trades)
+        foreach (var (ret, _) in trades)
         {
-            balance *= 1.0 + t.Return / 100.0 * g.PositionSizePct;
+            balance *= 1.0 + ret / 100.0 * g.PositionSizePct;
             if (balance > peak) peak = balance;
         }
 

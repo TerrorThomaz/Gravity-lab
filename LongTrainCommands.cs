@@ -41,7 +41,7 @@ static class LongTrainCommands
 
     public static async Task RunCoevolve(BybitRestClient client)
     {
-        Console.WriteLine("=== Gravity-gen2 | COEVOLVETRAIN (FadeLong + DipLong + Router, 4 cycles) ===\n");
+        Console.WriteLine("=== Gravity-gen2 | COEVOLVETRAIN (FadeLong + DipLong + SwingLong + Router + DynamicGuard, 4 cycles) ===\n");
 
         FadeShortGenotype? fsSeed = File.Exists(Config.FadeShortGenoFile)
             ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype()
@@ -63,11 +63,23 @@ static class LongTrainCommands
         if (dlSeed is { Fitness: > 0 }) Console.WriteLine($"  DipLong seed    : {dlSeed}");
         else { dlSeed = null; Console.WriteLine("  DipLong seed    : none (training from scratch)"); }
 
+        SwingLongGenotype? slSeed = File.Exists(Config.SwingLongGenoFile)
+            ? JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(Config.SwingLongGenoFile))!.ToGenotype()
+            : null;
+        if (slSeed is { Fitness: > 0 }) Console.WriteLine($"  SwingLong seed  : {slSeed}");
+        else { slSeed = null; Console.WriteLine("  SwingLong seed  : none (training from scratch)"); }
+
         RegimeRouterGenotype? routerSeed = File.Exists(Config.RouterGenoFile)
             ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype()
             : null;
         if (routerSeed is { Fitness: > 0 }) Console.WriteLine($"  Router seed     : {routerSeed}");
         else { routerSeed = null; Console.WriteLine("  Router seed     : none (training from scratch)"); }
+
+        DynamicGuardGenotype? dgSeed = File.Exists(Config.DynamicGuardGenoFile)
+            ? JsonSerializer.Deserialize<DynamicGuardGenotypeDto>(File.ReadAllText(Config.DynamicGuardGenoFile))!.ToGenotype()
+            : null;
+        if (dgSeed != null) Console.WriteLine($"  DynamicGuard seed: {dgSeed}");
+        else                Console.WriteLine("  DynamicGuard seed: none (training from scratch)");
 
         GridGenotype? gridSeed = File.Exists(Config.GridGenoFile)
             ? JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(Config.GridGenoFile))!.ToGenotype()
@@ -150,29 +162,47 @@ static class LongTrainCommands
                 h1[..split],      h1[split..],
                 m15[..m15sp],     m15[m15sp..]));
         }
-        Console.WriteLine($"  DipLong : {dlCoins.Count} coins (full 3yr, 80/20 split)\n");
+        Console.WriteLine($"  DipLong : {dlCoins.Count} coins (full 3yr, 80/20 split)");
+
+        // SwingLong shares the same 80/20 split as DipLong — re-use the same coin windows.
+        var slCoins = dlCoins
+            .Select(c => new SwingLongGA.CoinData(c.TrainH1, c.ValH1, c.TrainM15, c.ValM15))
+            .ToList();
+        Console.WriteLine($"  SwingLong: {slCoins.Count} coins (same split as DipLong)\n");
 
         var allCoins = coPassed.Select(x => (x.H1, x.M15)).ToList<(Candle[] H1, Candle[] M15)>();
 
-        var data   = new CoevolveGA.AllData(flCoins, dlCoins, allCoins, btcSeries, ethSeries, gridSeed);
-        var result = new CoevolveGA().Run(data, fsSeed, flSeed, dlSeed, routerSeed);
+        var data   = new CoevolveGA.AllData(flCoins, dlCoins, slCoins, allCoins, btcSeries, ethSeries, btcEntry.H1, gridSeed);
+        var result = new CoevolveGA().Run(data, fsSeed, flSeed, dlSeed, slSeed, routerSeed, dgSeed);
 
         File.WriteAllText(Config.FadeLongGenoFile,
             JsonSerializer.Serialize(FadeLongGenotypeDto.From(result.FadeLong),
                 new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"\n  Saved FadeLong  → {Config.FadeLongGenoFile}  {result.FadeLong}");
+        Console.WriteLine($"\n  Saved FadeLong   → {Config.FadeLongGenoFile}  {result.FadeLong}");
 
         File.WriteAllText(Config.DipLongGenoFile,
             JsonSerializer.Serialize(DipLongGenotypeDto.From(result.DipLong),
                 new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved DipLong   → {Config.DipLongGenoFile}  {result.DipLong}");
+        Console.WriteLine($"  Saved DipLong    → {Config.DipLongGenoFile}  {result.DipLong}");
+
+        File.WriteAllText(Config.SwingLongGenoFile,
+            JsonSerializer.Serialize(SwingLongGenotypeDto.From(result.SwingLong),
+                new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"  Saved SwingLong  → {Config.SwingLongGenoFile}  {result.SwingLong}");
 
         File.WriteAllText(Config.RouterGenoFile,
             JsonSerializer.Serialize(RegimeRouterGenotypeDto.From(result.Router),
                 new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved Router    → {Config.RouterGenoFile}  {result.Router}");
+        Console.WriteLine($"  Saved Router     → {Config.RouterGenoFile}  {result.Router}");
 
-        Console.WriteLine("\nNext: dotnet run -- combinedbacktest");
+        var dgDto = new DynamicGuardGenotypeDto(result.DynamicGuard.AtrLookback, result.DynamicGuard.AtrTrigger,
+            result.DynamicGuard.MomLookback, result.DynamicGuard.MomThreshold,
+            result.DynamicGuard.SizeFloor, result.DynamicGuard.Fitness);
+        File.WriteAllText(Config.DynamicGuardGenoFile,
+            JsonSerializer.Serialize(dgDto, new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"  Saved DynGuard   → {Config.DynamicGuardGenoFile}  {result.DynamicGuard}");
+
+        Console.WriteLine("\nNext: dotnet run -- fulltest");
     }
 
     public static async Task RunFadeLongTrain(BybitRestClient client)

@@ -74,6 +74,8 @@ static class FullTest
         var valNoRouter    = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
         var crashTrades    = new List<(DateTime Open, DateTime Close, double Return, double HalfKelly, string Strategy)>();
         int valCandleCount = 0;
+        var valRawForEnrich = new List<(DateTime Time, double Return, double Conf, string Strategy, string Symbol, TimeSpan HoldDuration)>();
+        var oosRawForEnrich = new List<(DateTime Time, double Return, double Conf, string Strategy, string Symbol, TimeSpan HoldDuration)>();
 
         foreach (var sym in Config.BacktestCoins)
         {
@@ -109,6 +111,7 @@ static class FullTest
                         valSwingRets.Add(ret);
                         valAll.Add((t, ret, conf, "swing"));
                         valNoRouter.Add((t, ret, conf, "swing"));
+                        valRawForEnrich.Add((t, ret, conf, "swing", sym, TimeSpan.FromHours(swingG.MaxHoldCandles)));
                         crashTrades.Add((t - TimeSpan.FromHours(swingG.MaxHoldCandles), t, ret, fsHk, "FadeShort"));
                     }
                 }
@@ -130,6 +133,8 @@ static class FullTest
                     valGridRets.AddRange(gated.Select(t => t.Return));
                     foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "grid"));
                     foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "grid"));
+                    foreach (var t in gated)
+                        valRawForEnrich.Add((t.Time, t.Return, conf, "grid", sym, TimeSpan.FromHours(gridG.MaxHoldCandles)));
                 }
             }
 
@@ -145,6 +150,8 @@ static class FullTest
                 valFlRets.AddRange(gated.Select(t => t.Return));
                 foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "fadelong"));
                 foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "fadelong"));
+                foreach (var t in gated)
+                    valRawForEnrich.Add((t.Time, t.Return, conf, "fadelong", sym, TimeSpan.FromHours(flG!.MaxHoldCandles)));
             }
 
             // DipLong
@@ -164,6 +171,8 @@ static class FullTest
                     crashTrades.Add((t.Time - TimeSpan.FromHours(dlG.MaxHoldCandles), t.Time, t.Return, dlHk, "DipLong"));
                 }
                 foreach (var t in raw) valNoRouter.Add((t.Time, t.Return, conf, "diplong"));
+                foreach (var t in gated)
+                    valRawForEnrich.Add((t.Time, t.Return, conf, "diplong", sym, TimeSpan.FromHours(dlG!.MaxHoldCandles)));
             }
 
             // SwingLong
@@ -178,6 +187,8 @@ static class FullTest
                 valSlRets.AddRange(gated.Select(t => t.Return));
                 foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "swing_long"));
                 foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "swing_long"));
+                foreach (var t in gated)
+                    valRawForEnrich.Add((t.Time, t.Return, conf, "swing_long", sym, TimeSpan.FromHours(slG!.MaxHoldCandles)));
             }
         }
 
@@ -211,6 +222,8 @@ static class FullTest
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosSwingRets.AddRange(vRet);
                     foreach (var (t, ret, _) in trades) oosAll.Add((t, ret, conf, "swing"));
+                    foreach (var (t, ret, _) in trades)
+                        oosRawForEnrich.Add((t, ret, conf, "swing", sym, TimeSpan.FromHours(swingG.MaxHoldCandles)));
                 }
             }
 
@@ -227,6 +240,8 @@ static class FullTest
                     oosGridRets.AddRange(vRet);
                     foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "grid"));
                     foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "grid"));
+                    foreach (var t in gated)
+                        oosRawForEnrich.Add((t.Time, t.Return, conf, "grid", sym, TimeSpan.FromHours(gridG.MaxHoldCandles)));
                 }
             }
 
@@ -244,6 +259,8 @@ static class FullTest
                     oosFlRets.AddRange(vRet);
                     foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "fadelong"));
                     foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "fadelong"));
+                    foreach (var t in gated)
+                        oosRawForEnrich.Add((t.Time, t.Return, conf, "fadelong", sym, TimeSpan.FromHours(flG!.MaxHoldCandles)));
                 }
             }
 
@@ -261,6 +278,8 @@ static class FullTest
                     oosDlRets.AddRange(vRet);
                     foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "diplong"));
                     foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "diplong"));
+                    foreach (var t in gated)
+                        oosRawForEnrich.Add((t.Time, t.Return, conf, "diplong", sym, TimeSpan.FromHours(dlG!.MaxHoldCandles)));
                 }
             }
 
@@ -278,6 +297,8 @@ static class FullTest
                     oosSlRets.AddRange(vRet);
                     foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "swing_long"));
                     foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "swing_long"));
+                    foreach (var t in gated)
+                        oosRawForEnrich.Add((t.Time, t.Return, conf, "swing_long", sym, TimeSpan.FromHours(slG!.MaxHoldCandles)));
                 }
             }
         }
@@ -557,5 +578,62 @@ static class FullTest
             else Console.WriteLine($"  Only {slice90.Count} trades in last 90d — insufficient for projection.");
         }
         else Console.WriteLine("  Insufficient val trades for projection.");
+
+        // ══════════════════════════════════════════════════════════════════════════
+        // SECTION 8: EXIT MODIFIER
+        // ══════════════════════════════════════════════════════════════════════════
+        Console.WriteLine($"\n{new string('═', 88)}");
+        Console.WriteLine($"  EXIT MODIFIER (context-aware position sizing)");
+        Console.WriteLine($"{new string('═', 88)}");
+
+        if (!File.Exists(Config.ExitModifierGenoFile))
+        {
+            Console.WriteLine("  No exit modifier genotype found — run 'exitmodifiertrain' to train one.");
+        }
+        else
+        {
+            var emG = JsonSerializer.Deserialize<ExitModifierGenotypeDto>(
+                File.ReadAllText(Config.ExitModifierGenoFile))!.ToGenotype();
+            Console.WriteLine($"  Genotype: {emG}\n");
+
+            var h1MapForEnrich = fetchedMap.ToDictionary(kv => kv.Key, kv => kv.Value.h1);
+
+            Console.WriteLine("  Enriching trades...");
+            var valEnriched = TradeEnricher.Enrich(valRawForEnrich, h1MapForEnrich);
+            var oosEnriched = TradeEnricher.Enrich(oosRawForEnrich, h1MapForEnrich);
+
+            var valBaseline = Simulator.SimulatePortfolioExposureCapped(
+                valEnriched.Select(t => (t.EntryTime, t.Return, t.CoinConf, t.HoldDuration)).OrderBy(t => t.EntryTime).ToList(),
+                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            var oosBaseline = Simulator.SimulatePortfolioExposureCapped(
+                oosEnriched.Select(t => (t.EntryTime, t.Return, t.CoinConf, t.HoldDuration)).OrderBy(t => t.EntryTime).ToList(),
+                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            var valModified = Simulator.SimulatePortfolioExposureCapped(
+                ExitModifierGA.ApplyModifier(emG, valEnriched),
+                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            var oosModified = Simulator.SimulatePortfolioExposureCapped(
+                ExitModifierGA.ApplyModifier(emG, oosEnriched),
+                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+
+            string FmtPort(Simulator.PortfolioResult p) =>
+                $"ret={p.EndBalance - 100:+0.1;-0.1}%  DD={p.MaxDrawdownPct:F1}%  n={p.TradesCount}";
+
+            Console.WriteLine($"  {"",12}  {"── Val (20%) ─────────────────────",35}  {"── OOS ─────────────────────",28}");
+            Console.WriteLine($"  {"Baseline",-12}  {FmtPort(valBaseline),-35}  {FmtPort(oosBaseline),-28}");
+            Console.WriteLine($"  {"Modified",-12}  {FmtPort(valModified),-35}  {FmtPort(oosModified),-28}");
+
+            double valRetDelta = valModified.EndBalance - valBaseline.EndBalance;
+            double valDdDelta  = valModified.MaxDrawdownPct - valBaseline.MaxDrawdownPct;
+            Console.WriteLine($"\n  Val Δ: return {valRetDelta:+0.1;-0.1}%  DD {valDdDelta:+0.1;-0.1}pp");
+
+            Console.WriteLine($"\n  Avg context multiplier per strategy (val):");
+            foreach (var strat in new[] { "swing", "grid", "diplong", "swing_long", "fadelong" })
+            {
+                var forStrat = valEnriched.Where(t => t.Strategy == strat).ToList();
+                if (forStrat.Count == 0) continue;
+                double avgMult = forStrat.Average(t => emG.ComputeMult(t));
+                Console.WriteLine($"    {strat,-12}  {avgMult:F3}×  ({forStrat.Count} trades)");
+            }
+        }
     }
 }

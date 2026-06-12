@@ -7,7 +7,7 @@ static class LongTrainCommands
 {
     private const int BearWindowMinBars = 200; // ~8 days of 1h bars
 
-    private static List<(DateTime Start, DateTime End)> GetBearWindows(RegimeBar[] series, int minBars)
+    private static List<(DateTime Start, DateTime End)> GetBearWindows(RegimeBar[] series, int minBars, double minConf = 0.0)
     {
         var windows  = new List<(DateTime, DateTime)>();
         DateTime runStart = default;
@@ -15,7 +15,7 @@ static class LongTrainCommands
         int      runLen   = 0;
         foreach (var bar in series)
         {
-            if (bar.Regime == MarketRegime.Bear)
+            if (bar.Regime == MarketRegime.Bear && bar.Confidence >= minConf)
             {
                 if (runLen == 0) runStart = bar.Time;
                 runEnd = bar.Time;
@@ -195,14 +195,24 @@ static class LongTrainCommands
         });
         var flFetched = await Task.WhenAll(flFetchTasks);
 
+        // Load router genotype to align bear-window thresholds with live routing
+        RegimeRouterGenotype? flRouterG = File.Exists(Config.RouterGenoFile)
+            ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype()
+            : null;
+        int    bearMinBars = flRouterG != null ? (int)flRouterG.BearMinBars : BearWindowMinBars;
+        double bearMinConf = flRouterG != null ? flRouterG.BearMinConf      : 0.0;
+        Console.WriteLine(flRouterG != null
+            ? $"  Router bear thresholds: ≥{bearMinBars} bars / conf≥{bearMinConf:F2}"
+            : $"  No router genotype — using default ≥{bearMinBars} bars");
+
         // Build BTC bear windows to restrict training data to regime-relevant periods
         var btcFetched = flFetched.FirstOrDefault(f => f.sym == "BTCUSDT");
         var bearWindows = new List<(DateTime Start, DateTime End)>();
         if (btcFetched.h1 is { Length: > 220 })
         {
             var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcFetched.h1);
-            bearWindows = GetBearWindows(btcSeries, BearWindowMinBars);
-            Console.WriteLine($"  BTC bear windows ({BearWindowMinBars}+ bar runs): {bearWindows.Count}");
+            bearWindows = GetBearWindows(btcSeries, bearMinBars, bearMinConf);
+            Console.WriteLine($"  BTC bear windows ({bearMinBars}+ bar runs, conf≥{bearMinConf:F2}): {bearWindows.Count}");
             foreach (var (s, e) in bearWindows)
                 Console.WriteLine($"    {s:yyyy-MM-dd} → {e:yyyy-MM-dd}  ({(e - s).TotalDays:F0}d)");
         }
@@ -215,8 +225,8 @@ static class LongTrainCommands
             if (btcH1.Length > 220)
             {
                 var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcH1);
-                bearWindows = GetBearWindows(btcSeries, BearWindowMinBars);
-                Console.WriteLine($"  BTC bear windows ({BearWindowMinBars}+ bar runs): {bearWindows.Count}");
+                bearWindows = GetBearWindows(btcSeries, bearMinBars, bearMinConf);
+                Console.WriteLine($"  BTC bear windows ({bearMinBars}+ bar runs, conf≥{bearMinConf:F2}): {bearWindows.Count}");
             }
         }
 

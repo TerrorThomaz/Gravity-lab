@@ -13,22 +13,24 @@ namespace TradingGA;
 //   BearMinConf
 //   GridMaxConf       — Grid is always on in Ranging; in directional regimes it also fires
 //                       when blended confidence < GridMaxConf (ambiguous market = range-bound)
-//   EthBlendWeight    — how much ETH agreement/disagreement adjusts BTC confidence
-//   TransitionSizeMult — during the early-regime confirmation window (duration < BullMinBars
-//                        or BearMinBars), directional longs are BLOCKED and Grid is forced
-//                        ON at this size multiplier. 0 = Grid not forced (current GridMaxConf
-//                        still decides); 1 = Grid always fires at full size in transition.
-//                        This keeps the transition neutral (Grid oscillation) rather than
-//                        directional (DipLong/SwingLong), since direction is unconfirmed.
+//   EthBlendWeight      — how much ETH agreement/disagreement adjusts BTC confidence
+//   TransitionSizeMult  — during the early-regime confirmation window (duration < BullMinBars
+//                         or BearMinBars), directional longs are BLOCKED and Grid is forced
+//                         ON at this size multiplier. 0 = Grid not forced.
+//   BullFromBearLongMult — position-size fraction for DipLong/SwingLong during the early-bull
+//                         window ONLY when the previous regime was Bear (genuine reversal).
+//                         0 = block all transition longs (safe). >0 = catch the Bear→Bull flip
+//                         at reduced size. Bull→Bear and Ranging→Bull transitions stay blocked.
 public class RegimeRouterGenotype
 {
-    public double BullMinBars        { get; set; }  // [50, 500]
-    public double BullMinConf        { get; set; }  // [0.10, 0.80]
-    public double BearMinBars        { get; set; }  // [50, 500]
-    public double BearMinConf        { get; set; }  // [0.10, 0.80]
-    public double GridMaxConf        { get; set; }  // [0.10, 0.70] — Grid fires when conf < this
-    public double EthBlendWeight     { get; set; }  // [0.00, 0.50]
-    public double TransitionSizeMult { get; set; }  // [0.00, 1.00]
+    public double BullMinBars          { get; set; }  // [50, 500]
+    public double BullMinConf          { get; set; }  // [0.10, 0.80]
+    public double BearMinBars          { get; set; }  // [50, 500]
+    public double BearMinConf          { get; set; }  // [0.10, 0.80]
+    public double GridMaxConf          { get; set; }  // [0.10, 0.70] — Grid fires when conf < this
+    public double EthBlendWeight       { get; set; }  // [0.00, 0.50]
+    public double TransitionSizeMult   { get; set; }  // [0.00, 1.00] — Grid forcing in transition
+    public double BullFromBearLongMult { get; set; }  // [0.00, 1.00] — longs on Bear→Bull flip only
 
     public double Fitness { get; set; }
 
@@ -42,23 +44,26 @@ public class RegimeRouterGenotype
         { 0.10, 0.70 }, // GridMaxConf
         { 0.00, 0.50 }, // EthBlendWeight
         { 0.00, 1.00 }, // TransitionSizeMult
+        { 0.00, 1.00 }, // BullFromBearLongMult
     };
 
     // ── BO / vector interface ─────────────────────────────────────────────────
     public double[] ToVector() =>
     [
-        BullMinBars, BullMinConf, BearMinBars, BearMinConf, GridMaxConf, EthBlendWeight, TransitionSizeMult,
+        BullMinBars, BullMinConf, BearMinBars, BearMinConf, GridMaxConf,
+        EthBlendWeight, TransitionSizeMult, BullFromBearLongMult,
     ];
 
     public static RegimeRouterGenotype FromVector(double[] v) => new()
     {
-        BullMinBars        = Math.Clamp(v[0],  50, 500),
-        BullMinConf        = Math.Clamp(v[1], 0.10, 0.80),
-        BearMinBars        = Math.Clamp(v[2],  50, 500),
-        BearMinConf        = Math.Clamp(v[3], 0.10, 0.80),
-        GridMaxConf        = Math.Clamp(v[4], 0.10, 0.70),
-        EthBlendWeight     = Math.Clamp(v[5], 0.00, 0.50),
-        TransitionSizeMult = Math.Clamp(v[6], 0.00, 1.00),
+        BullMinBars          = Math.Clamp(v[0],  50, 500),
+        BullMinConf          = Math.Clamp(v[1], 0.10, 0.80),
+        BearMinBars          = Math.Clamp(v[2],  50, 500),
+        BearMinConf          = Math.Clamp(v[3], 0.10, 0.80),
+        GridMaxConf          = Math.Clamp(v[4], 0.10, 0.70),
+        EthBlendWeight       = Math.Clamp(v[5], 0.00, 0.50),
+        TransitionSizeMult   = Math.Clamp(v[6], 0.00, 1.00),
+        BullFromBearLongMult = Math.Clamp(v[7], 0.00, 1.00),
     };
 
     // ── GA operators ─────────────────────────────────────────────────────────
@@ -69,13 +74,14 @@ public class RegimeRouterGenotype
 
         return new()
         {
-            BullMinBars        = rng.NextDouble() * 450 + 50,
-            BullMinConf        = rng.NextDouble() * 0.70 + 0.10,
-            BearMinBars        = rng.NextDouble() * 450 + 50,
-            BearMinConf        = rng.NextDouble() * 0.70 + 0.10,
-            GridMaxConf        = rng.NextDouble() * 0.60 + 0.10,
-            EthBlendWeight     = rng.NextDouble() * 0.50,
-            TransitionSizeMult = rng.NextDouble(),
+            BullMinBars          = rng.NextDouble() * 450 + 50,
+            BullMinConf          = rng.NextDouble() * 0.70 + 0.10,
+            BearMinBars          = rng.NextDouble() * 450 + 50,
+            BearMinConf          = rng.NextDouble() * 0.70 + 0.10,
+            GridMaxConf          = rng.NextDouble() * 0.60 + 0.10,
+            EthBlendWeight       = rng.NextDouble() * 0.50,
+            TransitionSizeMult   = rng.NextDouble(),
+            BullFromBearLongMult = rng.NextDouble(),
         };
     }
 
@@ -91,31 +97,34 @@ public class RegimeRouterGenotype
 
         return new()
         {
-            BullMinBars        = G(BullMinBars,         50,  500),
-            BullMinConf        = G(BullMinConf,        0.10, 0.80),
-            BearMinBars        = G(BearMinBars,         50,  500),
-            BearMinConf        = G(BearMinConf,        0.10, 0.80),
-            GridMaxConf        = G(GridMaxConf,        0.10, 0.70),
-            EthBlendWeight     = G(EthBlendWeight,     0.00, 0.50),
-            TransitionSizeMult = G(TransitionSizeMult, 0.00, 1.00),
+            BullMinBars          = G(BullMinBars,           50,  500),
+            BullMinConf          = G(BullMinConf,          0.10, 0.80),
+            BearMinBars          = G(BearMinBars,           50,  500),
+            BearMinConf          = G(BearMinConf,          0.10, 0.80),
+            GridMaxConf          = G(GridMaxConf,          0.10, 0.70),
+            EthBlendWeight       = G(EthBlendWeight,       0.00, 0.50),
+            TransitionSizeMult   = G(TransitionSizeMult,   0.00, 1.00),
+            BullFromBearLongMult = G(BullFromBearLongMult, 0.00, 1.00),
         };
     }
 
     public static RegimeRouterGenotype Crossover(RegimeRouterGenotype a, RegimeRouterGenotype b, System.Random rng) =>
         new()
         {
-            BullMinBars        = rng.NextDouble() < 0.5 ? a.BullMinBars        : b.BullMinBars,
-            BullMinConf        = rng.NextDouble() < 0.5 ? a.BullMinConf        : b.BullMinConf,
-            BearMinBars        = rng.NextDouble() < 0.5 ? a.BearMinBars        : b.BearMinBars,
-            BearMinConf        = rng.NextDouble() < 0.5 ? a.BearMinConf        : b.BearMinConf,
-            GridMaxConf        = rng.NextDouble() < 0.5 ? a.GridMaxConf        : b.GridMaxConf,
-            EthBlendWeight     = rng.NextDouble() < 0.5 ? a.EthBlendWeight     : b.EthBlendWeight,
-            TransitionSizeMult = rng.NextDouble() < 0.5 ? a.TransitionSizeMult : b.TransitionSizeMult,
+            BullMinBars          = rng.NextDouble() < 0.5 ? a.BullMinBars          : b.BullMinBars,
+            BullMinConf          = rng.NextDouble() < 0.5 ? a.BullMinConf          : b.BullMinConf,
+            BearMinBars          = rng.NextDouble() < 0.5 ? a.BearMinBars          : b.BearMinBars,
+            BearMinConf          = rng.NextDouble() < 0.5 ? a.BearMinConf          : b.BearMinConf,
+            GridMaxConf          = rng.NextDouble() < 0.5 ? a.GridMaxConf          : b.GridMaxConf,
+            EthBlendWeight       = rng.NextDouble() < 0.5 ? a.EthBlendWeight       : b.EthBlendWeight,
+            TransitionSizeMult   = rng.NextDouble() < 0.5 ? a.TransitionSizeMult   : b.TransitionSizeMult,
+            BullFromBearLongMult = rng.NextDouble() < 0.5 ? a.BullFromBearLongMult : b.BullFromBearLongMult,
         };
 
     public override string ToString() =>
         $"Bull≥{BullMinBars:F0}bars/conf{BullMinConf:F2}  Bear≥{BearMinBars:F0}bars/conf{BearMinConf:F2}  " +
-        $"GridIfConf<{GridMaxConf:F2}  EthW={EthBlendWeight:F2}  TransMult={TransitionSizeMult:F2}  F={Fitness:F4}";
+        $"GridIfConf<{GridMaxConf:F2}  EthW={EthBlendWeight:F2}  TransMult={TransitionSizeMult:F2}  " +
+        $"B2BLong={BullFromBearLongMult:F2}  F={Fitness:F4}";
 }
 
 // ── JSON DTO ─────────────────────────────────────────────────────────────────
@@ -128,21 +137,24 @@ public record RegimeRouterGenotypeDto(
     double GridMaxConf,
     double EthBlendWeight,
     double Fitness,
-    double TransitionSizeMult = 0.0)  // default 0 = backward-compatible (hard block, old behaviour)
+    double TransitionSizeMult   = 0.0,  // backward-compatible default
+    double BullFromBearLongMult = 0.0)  // backward-compatible default: block all transition longs
 {
     public RegimeRouterGenotype ToGenotype() => new()
     {
-        BullMinBars        = BullMinBars,
-        BullMinConf        = BullMinConf,
-        BearMinBars        = BearMinBars,
-        BearMinConf        = BearMinConf,
-        GridMaxConf        = GridMaxConf,
-        EthBlendWeight     = EthBlendWeight,
-        Fitness            = Fitness,
-        TransitionSizeMult = TransitionSizeMult,
+        BullMinBars          = BullMinBars,
+        BullMinConf          = BullMinConf,
+        BearMinBars          = BearMinBars,
+        BearMinConf          = BearMinConf,
+        GridMaxConf          = GridMaxConf,
+        EthBlendWeight       = EthBlendWeight,
+        Fitness              = Fitness,
+        TransitionSizeMult   = TransitionSizeMult,
+        BullFromBearLongMult = BullFromBearLongMult,
     };
 
     public static RegimeRouterGenotypeDto From(RegimeRouterGenotype g) =>
         new(g.BullMinBars, g.BullMinConf, g.BearMinBars, g.BearMinConf,
-            g.GridMaxConf, g.EthBlendWeight, g.Fitness, g.TransitionSizeMult);
+            g.GridMaxConf, g.EthBlendWeight, g.Fitness,
+            g.TransitionSizeMult, g.BullFromBearLongMult);
 }

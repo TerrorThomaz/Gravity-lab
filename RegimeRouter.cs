@@ -46,7 +46,11 @@ public static class RegimeRouter
         }
 
         double blendedConf = BlendConf(geno.EthBlendWeight, btc, eth);
-        return ActivateWithGeno(btc.Regime, blendedConf, btc.Duration, geno);
+        // Previous regime: look back duration bars to the bar before this run started
+        var prevRegime = btcSeries.Length > btc.Duration
+            ? btcSeries[^(btc.Duration + 1)].Regime
+            : MarketRegime.Ranging;
+        return ActivateWithGeno(btc.Regime, blendedConf, btc.Duration, geno, prevRegime);
     }
 
     // Route using BTC as primary anchor (rule-based fallback, no trained genotype).
@@ -114,24 +118,33 @@ public static class RegimeRouter
     }
 
     // Genotype-aware activation: uses trained thresholds + BTC duration gate.
-    // Transition window (duration < MinBars): directional longs blocked, Grid forced ON
-    // at TransitionSizeMult weight — neutral oscillation while direction is unconfirmed.
+    // Transition window (duration < MinBars):
+    //   Grid is forced ON at TransitionSizeMult; directional longs are blocked except
+    //   on a confirmed Bear→Bull flip (prevRegime=Bear) where BullFromBearLongMult applies.
     private static StrategyActivation ActivateWithGeno(
-        MarketRegime regime, double conf, int duration, RegimeRouterGenotype geno)
+        MarketRegime regime, double conf, int duration,
+        RegimeRouterGenotype geno, MarketRegime prevRegime = MarketRegime.Ranging)
     {
         if (regime == MarketRegime.HighVol)
             return new(true, false, false, false, 0.5, regime, conf);
 
-        bool inTransition = (regime == MarketRegime.Bull && duration < (int)geno.BullMinBars)
-                         || (regime == MarketRegime.Bear && duration < (int)geno.BearMinBars);
+        bool inBullTransition = regime == MarketRegime.Bull && duration < (int)geno.BullMinBars;
+        bool inTransition     = inBullTransition
+                             || (regime == MarketRegime.Bear && duration < (int)geno.BearMinBars);
+
+        bool bearToBull = inBullTransition
+                          && prevRegime == MarketRegime.Bear
+                          && conf >= geno.BullMinConf
+                          && geno.BullFromBearLongMult > 0;
 
         bool fadeShort = true;
         bool grid      = regime == MarketRegime.Ranging
                          || conf < geno.GridMaxConf
                          || (inTransition && geno.TransitionSizeMult > 0);
-        bool dipLong   = regime == MarketRegime.Bull
-                         && duration >= (int)geno.BullMinBars
-                         && conf >= geno.BullMinConf;
+        bool dipLong   = (regime == MarketRegime.Bull
+                          && duration >= (int)geno.BullMinBars
+                          && conf >= geno.BullMinConf)
+                         || bearToBull;
         bool fadeLong  = regime == MarketRegime.Bear
                          && duration >= (int)geno.BearMinBars
                          && conf >= geno.BearMinConf;
@@ -140,8 +153,10 @@ public static class RegimeRouter
             ? 1.0
             : 0.60 + 0.40 * Math.Min(1.0, conf / 0.80);
 
-        if (inTransition && geno.TransitionSizeMult > 0)
+        if (inTransition && geno.TransitionSizeMult > 0 && !bearToBull)
             sizeMult *= geno.TransitionSizeMult;
+        else if (bearToBull)
+            sizeMult *= geno.BullFromBearLongMult;
 
         return new(fadeShort, grid, dipLong, fadeLong, sizeMult, regime, conf);
     }
@@ -183,8 +198,19 @@ public class RegimeRouterSession
         var btc = _btc[bar];
         double conf = Blend(btc, bar);
 
-        bool inTransition = (btc.Regime == MarketRegime.Bull && btc.Duration < (int)_geno.BullMinBars)
-                         || (btc.Regime == MarketRegime.Bear && btc.Duration < (int)_geno.BearMinBars);
+        bool inBullTransition = btc.Regime == MarketRegime.Bull
+                               && btc.Duration < (int)_geno.BullMinBars;
+        bool inTransition     = inBullTransition
+                             || (btc.Regime == MarketRegime.Bear
+                                 && btc.Duration < (int)_geno.BearMinBars);
+
+        // Previous regime for Bear→Bull detection
+        bool bearToBull = false;
+        if (inBullTransition && _geno.BullFromBearLongMult > 0 && conf >= _geno.BullMinConf)
+        {
+            int prevBar = Math.Max(0, bar - btc.Duration);
+            bearToBull  = _btc[prevBar].Regime == MarketRegime.Bear;
+        }
 
         return kind switch
         {
@@ -192,9 +218,10 @@ public class RegimeRouterSession
             RegimeRouterGA.StrategyKind.Grid      => btc.Regime == MarketRegime.Ranging
                                                      || conf < _geno.GridMaxConf
                                                      || (inTransition && _geno.TransitionSizeMult > 0),
-            RegimeRouterGA.StrategyKind.DipLong   => btc.Regime == MarketRegime.Bull
-                                                     && btc.Duration >= (int)_geno.BullMinBars
-                                                     && conf >= _geno.BullMinConf,
+            RegimeRouterGA.StrategyKind.DipLong   => (btc.Regime == MarketRegime.Bull
+                                                      && btc.Duration >= (int)_geno.BullMinBars
+                                                      && conf >= _geno.BullMinConf)
+                                                     || bearToBull,
             RegimeRouterGA.StrategyKind.FadeLong  => btc.Regime == MarketRegime.Bear
                                                      && btc.Duration >= (int)_geno.BearMinBars
                                                      && conf >= _geno.BearMinConf,

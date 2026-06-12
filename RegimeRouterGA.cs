@@ -227,10 +227,11 @@ public class RegimeRouterGA
     }
 
     // Keep only trades where the router would have activated that strategy at trade time.
-    // During the transition window (duration < BullMinBars/BearMinBars), directional longs
-    // are blocked and Grid is forced ON at TransitionSizeMult weight: neutral oscillation
-    // play while direction is unconfirmed. TransitionSizeMult=0 means Grid fires only via
-    // its normal GridMaxConf path (no forcing).
+    // Transition windows (duration < MinBars):
+    //   - Grid: forced ON at TransitionSizeMult (neutral oscillation play)
+    //   - DipLong/SwingLong: blocked UNLESS previous regime was Bear (Bear→Bull reversal)
+    //     and BullFromBearLongMult > 0 — catches genuine reversals at reduced size.
+    //   - Bull→Bear / Ranging→Bull transitions stay hard-blocked for longs.
     private static List<TradeRecord> FilterActive(
         RegimeRouterGenotype       router,
         IEnumerable<TradeRecord>   trades,
@@ -246,20 +247,35 @@ public class RegimeRouterGA
 
             double blendedConf = BlendConf(router, btc, ethSeries, bar);
 
-            bool inTransition = (btc.Regime == MarketRegime.Bull && btc.Duration < (int)router.BullMinBars)
-                             || (btc.Regime == MarketRegime.Bear && btc.Duration < (int)router.BearMinBars);
+            bool inBullTransition = btc.Regime == MarketRegime.Bull
+                                    && btc.Duration < (int)router.BullMinBars;
+            bool inTransition     = inBullTransition
+                                 || (btc.Regime == MarketRegime.Bear
+                                     && btc.Duration < (int)router.BearMinBars);
+
+            // Previous regime: look back duration bars to the bar before this run started
+            bool prevWasBear = false;
+            if (inBullTransition && router.BullFromBearLongMult > 0)
+            {
+                int prevBar  = Math.Max(0, bar - btc.Duration);
+                prevWasBear  = btcSeries[prevBar].Regime == MarketRegime.Bear;
+            }
+
+            bool bearToBullLong = inBullTransition
+                                  && prevWasBear
+                                  && blendedConf >= router.BullMinConf
+                                  && router.BullFromBearLongMult > 0;
 
             bool active = t.Kind switch
             {
                 StrategyKind.FadeShort => true,
-                // Grid: normal conf-based gate OR forced on during transition window
                 StrategyKind.Grid      => btc.Regime == MarketRegime.Ranging
                                           || blendedConf < router.GridMaxConf
                                           || (inTransition && router.TransitionSizeMult > 0),
-                // Directional longs: blocked during transition regardless of TransitionSizeMult
-                StrategyKind.DipLong   => btc.Regime == MarketRegime.Bull
-                                          && btc.Duration >= (int)router.BullMinBars
-                                          && blendedConf >= router.BullMinConf,
+                StrategyKind.DipLong   => (btc.Regime == MarketRegime.Bull
+                                           && btc.Duration >= (int)router.BullMinBars
+                                           && blendedConf >= router.BullMinConf)
+                                          || bearToBullLong,
                 StrategyKind.FadeLong  => btc.Regime == MarketRegime.Bear
                                           && btc.Duration >= (int)router.BearMinBars
                                           && blendedConf >= router.BearMinConf,
@@ -268,10 +284,11 @@ public class RegimeRouterGA
 
             if (!active) continue;
 
-            // Scale Grid down during transition to the learned fraction
-            double frac = (t.Kind == StrategyKind.Grid && inTransition && router.TransitionSizeMult > 0)
-                ? t.Frac * router.TransitionSizeMult
-                : t.Frac;
+            double frac = t.Frac;
+            if (t.Kind == StrategyKind.Grid && inTransition && router.TransitionSizeMult > 0)
+                frac *= router.TransitionSizeMult;
+            else if (t.Kind == StrategyKind.DipLong && bearToBullLong)
+                frac *= router.BullFromBearLongMult;
             result.Add(t with { Frac = frac });
         }
         return result;

@@ -55,8 +55,8 @@ static class DynamicGuardTrainCommands
             session = new RegimeRouterSession(btcSeries, ethSeries, routerG);
         }
 
-        var valTrades = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, bool IsGuarded)>();
-        var oosTrades = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, bool IsGuarded)>();
+        var valTrades = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>();
+        var oosTrades = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>();
 
         foreach (var sym in Config.BacktestCoins)
         {
@@ -85,7 +85,7 @@ static class DynamicGuardTrainCommands
                 {
                     double conf = Simulator.ComputeConfidence(fsTr);
                     foreach (var (t, ret, _) in FadeShortSimulator.GetFadeShortReturns(swingG, h1Val, m15Val))
-                        valTrades.Add((t, ret, conf, TimeSpan.FromHours(swingG.MaxHoldCandles), false));
+                        valTrades.Add((t, ret, conf, TimeSpan.FromHours(swingG.MaxHoldCandles), "swing"));
                 }
             }
             // Grid — guarded
@@ -98,7 +98,7 @@ static class DynamicGuardTrainCommands
                     var raw   = GridSimulator.GetGridReturns(gridG, h1Val);
                     var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList() : raw;
                     foreach (var t in gated)
-                        valTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(gridG.MaxHoldCandles), true));
+                        valTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(gridG.MaxHoldCandles), "grid"));
                 }
             }
             // DipLong — guarded
@@ -110,7 +110,7 @@ static class DynamicGuardTrainCommands
                 {
                     double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
                     foreach (var t in gated)
-                        valTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(dlG.MaxHoldCandles), true));
+                        valTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(dlG.MaxHoldCandles), "diplong"));
                 }
             }
             // SwingLong — guarded
@@ -122,7 +122,7 @@ static class DynamicGuardTrainCommands
                 {
                     double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
                     foreach (var t in gated)
-                        valTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(slG.MaxHoldCandles), true));
+                        valTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(slG.MaxHoldCandles), "swing_long"));
                 }
             }
         }
@@ -147,7 +147,7 @@ static class DynamicGuardTrainCommands
                     {
                         double conf = Simulator.ComputeConfidence(trades.Select(t => t.Return).ToList());
                         foreach (var (t, ret, _) in trades)
-                            oosTrades.Add((t, ret, conf, TimeSpan.FromHours(swingG.MaxHoldCandles), false));
+                            oosTrades.Add((t, ret, conf, TimeSpan.FromHours(swingG.MaxHoldCandles), "swing"));
                     }
                 }
             }
@@ -159,7 +159,7 @@ static class DynamicGuardTrainCommands
                 {
                     double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
                     foreach (var t in gated)
-                        oosTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(gridG.MaxHoldCandles), true));
+                        oosTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(gridG.MaxHoldCandles), "grid"));
                 }
             }
             // DipLong — guarded
@@ -171,7 +171,7 @@ static class DynamicGuardTrainCommands
                 {
                     double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
                     foreach (var t in gated)
-                        oosTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(dlG.MaxHoldCandles), true));
+                        oosTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(dlG.MaxHoldCandles), "diplong"));
                 }
             }
             // SwingLong — guarded
@@ -183,13 +183,13 @@ static class DynamicGuardTrainCommands
                 {
                     double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
                     foreach (var t in gated)
-                        oosTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(slG.MaxHoldCandles), true));
+                        oosTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(slG.MaxHoldCandles), "swing_long"));
                 }
             }
         }
 
         Console.WriteLine($"  Val trades: {valTrades.Count}  OOS trades: {oosTrades.Count}");
-        Console.WriteLine($"  Guarded: val={valTrades.Count(t => t.IsGuarded)}  oos={oosTrades.Count(t => t.IsGuarded)}");
+        Console.WriteLine($"  Guarded: val={valTrades.Count(t => DynamicGuardSession.IsGuarded(t.Strategy))}  oos={oosTrades.Count(t => DynamicGuardSession.IsGuarded(t.Strategy))}");
         if (valTrades.Count < 20 || oosTrades.Count < 20)
         {
             Console.WriteLine("  Insufficient trades — aborting."); return;
@@ -199,23 +199,21 @@ static class DynamicGuardTrainCommands
         var ga   = new DynamicGuardGA(populationSize: 40, generations: 60);
         var best = ga.Run(btcH1, valTrades, oosTrades);
 
-        // Show before/after
-        var baselineSim = (List<(DateTime, double, double, TimeSpan)> t) =>
-            Simulator.SimulatePortfolioExposureCapped(
-                t.Select(x => (x.Item1, x.Item2, x.Item3, x.Item4)).OrderBy(x => x.Item1).ToList(),
-                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+        // Show before/after — use ApplyCap so baseline matches fulltest exactly
+        var dgSession  = new DynamicGuardSession(btcH1, best);
+        var valCapped  = DynamicGuardGA.ApplyCap(valTrades);
+        var oosCapped  = DynamicGuardGA.ApplyCap(oosTrades);
 
-        var valRaw = valTrades.Select(t => (t.Time, t.Return, t.Conf, t.Hold)).OrderBy(t => t.Item1).ToList();
-        var oosRaw = oosTrades.Select(t => (t.Time, t.Return, t.Conf, t.Hold)).OrderBy(t => t.Item1).ToList();
-
-        var valBase = Simulator.SimulatePortfolioExposureCapped(valRaw, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-        var oosBase = Simulator.SimulatePortfolioExposureCapped(oosRaw, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-
-        var dgSession = new DynamicGuardSession(btcH1, best);
+        var valBase = Simulator.SimulatePortfolioExposureCapped(
+            valCapped.Select(t => (t.EntryTime, t.Return, t.Conf, t.HoldDuration)).OrderBy(t => t.Item1).ToList(),
+            Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+        var oosBase = Simulator.SimulatePortfolioExposureCapped(
+            oosCapped.Select(t => (t.EntryTime, t.Return, t.Conf, t.HoldDuration)).OrderBy(t => t.Item1).ToList(),
+            Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
         var valGuarded = Simulator.SimulatePortfolioExposureCapped(
-            DynamicGuardGA.ApplyGuard(valTrades, dgSession), Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            DynamicGuardGA.ApplyGuard(valCapped, dgSession), Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
         var oosGuarded = Simulator.SimulatePortfolioExposureCapped(
-            DynamicGuardGA.ApplyGuard(oosTrades, dgSession), Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            DynamicGuardGA.ApplyGuard(oosCapped, dgSession), Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
 
         Console.WriteLine($"\n  Val:  baseline ret={valBase.EndBalance - 100:+0.1;-0.1}% DD={valBase.MaxDrawdownPct:F1}%"
                         + $"  →  guarded ret={valGuarded.EndBalance - 100:+0.1;-0.1}% DD={valGuarded.MaxDrawdownPct:F1}%");

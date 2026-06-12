@@ -15,8 +15,8 @@ public class DynamicGuardGA
 
     public DynamicGuardGenotype Run(
         Candle[] btcH1,
-        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, bool IsGuarded)> valTrades,
-        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, bool IsGuarded)> oosTrades)
+        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> valTrades,
+        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> oosTrades)
     {
         int nDim   = DynamicGuardGenotype.Bounds.GetLength(0);
         int elites = Math.Max(2, _populationSize / 5);
@@ -68,27 +68,35 @@ public class DynamicGuardGA
     internal static double Evaluate(
         DynamicGuardGenotype g,
         Candle[] btcH1,
-        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, bool IsGuarded)> valTrades,
-        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, bool IsGuarded)> oosTrades)
+        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> valTrades,
+        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> oosTrades)
     {
-        var session = new DynamicGuardSession(btcH1, g);
-        var valSim  = ApplyGuard(valTrades,  session);
-        var oosSim  = ApplyGuard(oosTrades, session);
-        var valR    = Simulator.SimulatePortfolioExposureCapped(valSim,  Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-        var oosR    = Simulator.SimulatePortfolioExposureCapped(oosSim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+        var session   = new DynamicGuardSession(btcH1, g);
+        var valCapped = ApplyCap(valTrades);
+        var oosCapped = ApplyCap(oosTrades);
+        var valSim    = ApplyGuard(valCapped, session);
+        var oosSim    = ApplyGuard(oosCapped, session);
+        var valR      = Simulator.SimulatePortfolioExposureCapped(valSim,  Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+        var oosR      = Simulator.SimulatePortfolioExposureCapped(oosSim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
         double valCalmar = (valR.EndBalance - 100.0) / Math.Max(valR.MaxDrawdownPct, 0.5);
         double oosCalmar = (oosR.EndBalance - 100.0) / Math.Max(oosR.MaxDrawdownPct, 0.5);
         return (valCalmar + oosCalmar) / 2.0;
     }
 
-    // Applies dynamic guard multipliers to guarded trade confidences.
+    // Apply concurrent position cap — identical to fulltest ApplyCap, so GA sees same trade set.
+    internal static List<PortfolioReplay.Trade> ApplyCap(
+        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> trades) =>
+        PortfolioReplay.FilterByConcurrentCap(
+            trades.Select(t => new PortfolioReplay.Trade(t.Strategy, t.Time, t.Hold, t.Return, t.Conf)));
+
+    // Applies dynamic guard multipliers — guarded strategies (grid/diplong/swing_long) get scaled.
     internal static List<(DateTime, double, double, TimeSpan)> ApplyGuard(
-        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, bool IsGuarded)> trades,
+        IEnumerable<PortfolioReplay.Trade> trades,
         DynamicGuardSession session) =>
         trades.Select(t => (
-            t.Time, t.Return,
-            t.IsGuarded ? t.Conf * session.GetMult(t.Time) : t.Conf,
-            t.Hold))
+            t.EntryTime, t.Return,
+            DynamicGuardSession.IsGuarded(t.Strategy) ? t.Conf * session.GetMult(t.EntryTime) : t.Conf,
+            t.HoldDuration))
         .OrderBy(t => t.Item1).ToList();
 
     private double[] RandomGenes(int nDim)

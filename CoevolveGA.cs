@@ -62,10 +62,12 @@ public class CoevolveGA
                     .Select(k => $"{k}: {rawTrades.Count(t => t.Kind == k)}")));
 
         // Initial guard trade lists (router-gated)
+        var emptyGuard = (
+            val: new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>(),
+            oos: new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>());
         var (guardVal, guardOos) = data.BtcH1.Length >= 50
             ? BuildGuardTrades(fsSeed, dlSeed, slSeed, data.GridGeno, data, routerElite)
-            : (new List<(DateTime, double, double, TimeSpan, bool)>(),
-               new List<(DateTime, double, double, TimeSpan, bool)>());
+            : emptyGuard;
 
         for (int round = 0; round < RedQueenRounds; round++)
         {
@@ -176,8 +178,8 @@ public class CoevolveGA
     }
 
     private static (
-        List<(DateTime, double, double, TimeSpan, bool)> val,
-        List<(DateTime, double, double, TimeSpan, bool)> oos)
+        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> val,
+        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> oos)
     BuildGuardTrades(
         FadeShortGenotype?   fs,
         DipLongGenotype?     dl,
@@ -187,7 +189,7 @@ public class CoevolveGA
         RegimeRouterGenotype router)
     {
         var session = new RegimeRouterSession(data.BtcSeries, data.EthSeries, router);
-        var bag     = new ConcurrentBag<(DateTime, double, double, TimeSpan, bool)>();
+        var bag     = new ConcurrentBag<(DateTime, double, double, TimeSpan, string)>();
 
         Parallel.ForEach(data.AllCoins, (coin) =>
         {
@@ -197,13 +199,13 @@ public class CoevolveGA
             if (fs != null)
                 foreach (var t in FadeShortSimulator.GetFadeShortReturns(fs, h1, m15))
                     bag.Add((t.Time, t.Return, fs.PositionSizePct,
-                             TimeSpan.FromHours(fs.MaxHoldCandles), false));
+                             TimeSpan.FromHours(fs.MaxHoldCandles), "swing"));
 
             if (grid != null)
                 foreach (var t in GridSimulator.GetGridReturns(grid, h1)
                              .Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)))
                     bag.Add((t.Time, t.Return, 0.05,
-                             TimeSpan.FromHours(grid.MaxHoldCandles), true));
+                             TimeSpan.FromHours(grid.MaxHoldCandles), "grid"));
         });
 
         if (dl is { Fitness: > 0 })
@@ -217,7 +219,7 @@ public class CoevolveGA
                              .Where(t => t.RegimeBarsActive >= dl.RegimeSustainedBars
                                       && session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)))
                     bag.Add((t.Time, t.Return, dl.PositionSizePct,
-                             TimeSpan.FromHours(dl.MaxHoldCandles), true));
+                             TimeSpan.FromHours(dl.MaxHoldCandles), "diplong"));
             });
         }
 
@@ -231,7 +233,7 @@ public class CoevolveGA
                 foreach (var t in SwingLongSimulator.GetSwingLongReturns(sl, h1, m15)
                              .Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)))
                     bag.Add((t.Time, t.Return, sl.PositionSizePct,
-                             TimeSpan.FromHours(sl.MaxHoldCandles), true));
+                             TimeSpan.FromHours(sl.MaxHoldCandles), "swing_long"));
             });
         }
 

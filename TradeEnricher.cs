@@ -117,7 +117,7 @@ public static class TradeEnricher
             for (int j = 0; j < i; j++)
             {
                 var other = sorted[j];
-                if (other.Time + other.HoldDuration > time)
+                if (other.Time < time && other.Time + other.HoldDuration > time)
                 {
                     openPos++;
                     totalExp += other.Conf;

@@ -106,8 +106,9 @@ public class ScenarioGA
         var btcCoin = coins.FirstOrDefault(c => c.Symbol == "BTCUSDT");
         if (btcCoin == null) return 0;
         int injBar = (int)(btcCoin.H1.Length * g.InjectionOffsetFrac);
-        injBar = Math.Clamp(injBar, 50, btcCoin.H1.Length - (int)g.CrashDurationHours - (int)g.RecoveryHours - 10);
-        if (injBar < 50) return 0;
+        int injUpper = btcCoin.H1.Length - (int)g.CrashDurationHours - (int)g.RecoveryHours - 10;
+        if (injUpper < 50) return 0;
+        injBar = Math.Clamp(injBar, 50, injUpper);
 
         var trades = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold)>();
 

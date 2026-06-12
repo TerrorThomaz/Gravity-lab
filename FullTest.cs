@@ -114,13 +114,14 @@ static class FullTest
                 {
                     double conf = Simulator.ComputeConfidence(fsTr);
                     var (_, hk) = StrategyStats.KellyFraction(fsTr);
+                    double fsHk = Math.Min(hk, 0.05);
                     foreach (var (t, ret, _) in FadeShortSimulator.GetFadeShortReturns(swingG, h1Val, m15Val))
                     {
                         valSwingRets.Add(ret);
                         valAll.Add((t, ret, conf, "swing"));
                         valNoRouter.Add((t, ret, conf, "swing"));
                         valRawForEnrich.Add((t, ret, conf, "swing", sym, TimeSpan.FromHours(swingG.MaxHoldCandles)));
-                        crashTrades.Add((t - TimeSpan.FromHours(swingG.MaxHoldCandles), t, ret, hk, "FadeShort"));
+                        crashTrades.Add((t - TimeSpan.FromHours(swingG.MaxHoldCandles), t, ret, fsHk, "FadeShort"));
                     }
                 }
             }
@@ -167,6 +168,7 @@ static class FullTest
             {
                 double conf = Simulator.ComputeConfidence(
                     DipLongSimulator.GetDipLongReturns(dlG, h1Val, m15Val).Select(t => t.Return).ToList());
+                double dlHk = Math.Min(dlG.PositionSizePct, 0.05);
                 var raw   = DipLongSimulator.GetDipLongReturns(dlG, h1Val, m15Val);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
@@ -175,7 +177,7 @@ static class FullTest
                 foreach (var t in gated)
                 {
                     valAll.Add((t.Time, t.Return, conf, "diplong"));
-                    crashTrades.Add((t.Time - TimeSpan.FromHours(dlG.MaxHoldCandles), t.Time, t.Return, dlG.PositionSizePct, "DipLong"));
+                    crashTrades.Add((t.Time - TimeSpan.FromHours(dlG.MaxHoldCandles), t.Time, t.Return, dlHk, "DipLong"));
                 }
                 foreach (var t in raw) valNoRouter.Add((t.Time, t.Return, conf, "diplong"));
                 foreach (var t in gated)

@@ -12,7 +12,7 @@ static class FullTest
         // ── Genotypes ─────────────────────────────────────────────────────────────
         var swingG  = File.Exists(Config.FadeShortGenoFile)  ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype()   : (FadeShortGenotype?)null;
         var gridG   = File.Exists(Config.GridGenoFile)        ? JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(Config.GridGenoFile))!.ToGenotype()             : (GridGenotype?)null;
-        var flG     = File.Exists(Config.FadeLongGenoFile)    ? JsonSerializer.Deserialize<FadeLongGenotypeDto>(File.ReadAllText(Config.FadeLongGenoFile))!.ToGenotype()     : (FadeLongGenotype?)null;
+        var flG     = (FadeLongGenotype?)null;  // disabled — PF=0.06 OOS, net drag
         var dlG     = File.Exists(Config.DipLongGenoFile)     ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(Config.DipLongGenoFile))!.ToGenotype()       : (DipLongGenotype?)null;
         var slG     = File.Exists(Config.SwingLongGenoFile)   ? JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(Config.SwingLongGenoFile))!.ToGenotype()   : (SwingLongGenotype?)null;
         var routerG = File.Exists(Config.RouterGenoFile)      ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype()   : (RegimeRouterGenotype?)null;
@@ -100,8 +100,8 @@ static class FullTest
                 var screenM15 = screenH1.Length == h1.Length ? m15 : m15Train;
                 var fsTr = FadeShortSimulator.GetFadeShortReturns(swingG, screenH1, screenM15).Select(t => t.Return).ToList();
                 if (fsTr.Count >= 5 && fsTr.Average() > 0
-                    && Simulator.ProfitFactor(fsTr) >= 1.2
-                    && Simulator.SortinoRatio(fsTr, screenH1.Length * 12) >= 0.3)
+                    && Simulator.ProfitFactor(fsTr) >= 1.3
+                    && Simulator.SortinoRatio(fsTr, screenH1.Length * 12) >= 0.5)
                 {
                     double conf = Simulator.ComputeConfidence(fsTr);
                     var (_, hk) = StrategyStats.KellyFraction(fsTr);
@@ -213,17 +213,29 @@ static class FullTest
             if (volUsd.Count == 0 || volUsd[volUsd.Count / 2] < oosMinVol) continue;
             oosCandleCount += h1.Length * 12;
 
-            // FadeShort
+            // FadeShort — screen on first 80% of OOS coin history
             {
-                var trades = FadeShortSimulator.GetFadeShortReturns(swingG, h1, m15);
-                var vRet   = trades.Select(t => t.Return).ToList();
-                if (vRet.Count >= 5)
+                int oosSplit   = (int)(h1.Length * 0.8);
+                int oosM15Spl  = oosSplit * 4;
+                var h1Screen   = h1[..oosSplit];
+                var m15Screen  = m15[..Math.Min(oosM15Spl, m15.Length)];
+                var screenRets = FadeShortSimulator.GetFadeShortReturns(swingG, h1Screen, m15Screen)
+                    .Select(t => t.Return).ToList();
+                bool oosScreenPass = screenRets.Count >= 5 && screenRets.Average() > 0
+                    && Simulator.ProfitFactor(screenRets) >= 1.3
+                    && Simulator.SortinoRatio(screenRets, h1Screen.Length * 12) >= 0.5;
+                if (oosScreenPass)
                 {
-                    double conf = Simulator.ComputeConfidence(vRet);
-                    oosSwingRets.AddRange(vRet);
-                    foreach (var (t, ret, _) in trades) oosAll.Add((t, ret, conf, "swing"));
-                    foreach (var (t, ret, _) in trades)
-                        oosRawForEnrich.Add((t, ret, conf, "swing", sym, TimeSpan.FromHours(swingG.MaxHoldCandles)));
+                    var trades = FadeShortSimulator.GetFadeShortReturns(swingG, h1, m15);
+                    var vRet   = trades.Select(t => t.Return).ToList();
+                    if (vRet.Count >= 5)
+                    {
+                        double conf = Simulator.ComputeConfidence(vRet);
+                        oosSwingRets.AddRange(vRet);
+                        foreach (var (t, ret, _) in trades) oosAll.Add((t, ret, conf, "swing"));
+                        foreach (var (t, ret, _) in trades)
+                            oosRawForEnrich.Add((t, ret, conf, "swing", sym, TimeSpan.FromHours(swingG.MaxHoldCandles)));
+                    }
                 }
             }
 
@@ -636,63 +648,75 @@ static class FullTest
             }
         }
 
-        // ── Section 9: Drawdown Guard ──────────────────────────────────────────────
+        // ── Section 9: Dynamic Guard ───────────────────────────────────────────────
         Console.WriteLine($"\n{new string('═', 88)}");
-        Console.WriteLine($"  DRAWDOWN GUARD (panic manager: Grid/DipLong/SwingLong only)");
+        Console.WriteLine($"  DYNAMIC GUARD (BTC 4H ATR/momentum · proactive · Grid/DipLong/SwingLong)");
         Console.WriteLine($"{new string('═', 88)}");
 
-        if (!File.Exists(Config.DrawdownGuardGenoFile))
+        if (!File.Exists(Config.DynamicGuardGenoFile))
         {
-            Console.WriteLine("  No drawdown guard genotype found — run 'drawdownguardtrain' to train one.");
+            Console.WriteLine("  No dynamic guard genotype found — run 'dynamicguardtrain' to train one.");
         }
         else
         {
-            var dgG = JsonSerializer.Deserialize<DrawdownGuardGenotypeDto>(
-                File.ReadAllText(Config.DrawdownGuardGenoFile))!.ToGenotype();
+            var dgG = JsonSerializer.Deserialize<DynamicGuardGenotypeDto>(
+                File.ReadAllText(Config.DynamicGuardGenoFile))!.ToGenotype();
             Console.WriteLine($"  Genotype: {dgG}\n");
 
-            // Build tagged trade lists from the same raw trade data
-            static bool IsGuarded(string s) => DrawdownGuardGenotype.IsGuarded(s);
+            if (!fetchedMap.TryGetValue("BTCUSDT", out var btcForGuard) || btcForGuard.h1.Length < 50)
+            {
+                Console.WriteLine("  BTC H1 data unavailable — skipping.");
+            }
+            else
+            {
+                var guardSession = new DynamicGuardSession(btcForGuard.h1, dgG);
 
-            var valTagged = valRawForEnrich
-                .Select(t => (t.Time, t.Return, t.Conf, t.HoldDuration, IsGuarded(t.Strategy)))
-                .OrderBy(t => t.Time).ToList();
-            var oosTagged = oosRawForEnrich
-                .Select(t => (t.Time, t.Return, t.Conf, t.HoldDuration, IsGuarded(t.Strategy)))
-                .OrderBy(t => t.Time).ToList();
+                // Baseline: raw confs from valRawForEnrich / oosRawForEnrich (already router-gated)
+                var valBaseList = valRawForEnrich
+                    .Select(t => (t.Time, t.Return, t.Conf, t.HoldDuration))
+                    .OrderBy(t => t.Item1).ToList();
+                var oosBaseList = oosRawForEnrich
+                    .Select(t => (t.Time, t.Return, t.Conf, t.HoldDuration))
+                    .OrderBy(t => t.Item1).ToList();
 
-            var valBaseline = Simulator.SimulatePortfolioExposureCapped(
-                valTagged.Select(t => (t.Time, t.Return, t.Conf, t.HoldDuration)).ToList(),
-                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-            var oosBaseline = Simulator.SimulatePortfolioExposureCapped(
-                oosTagged.Select(t => (t.Time, t.Return, t.Conf, t.HoldDuration)).ToList(),
-                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-            var valGuarded = Simulator.SimulateWithDrawdownGuard(
-                valTagged.Select(t => (t.Time, t.Return, t.Conf, t.HoldDuration, t.Item5)).ToList(),
-                dgG, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-            var oosGuarded = Simulator.SimulateWithDrawdownGuard(
-                oosTagged.Select(t => (t.Time, t.Return, t.Conf, t.HoldDuration, t.Item5)).ToList(),
-                dgG, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+                // Guarded: multiply guarded-strategy confs by dynamic guard multiplier
+                var valGuardList = valRawForEnrich
+                    .Select(t => (t.Time, t.Return,
+                        DynamicGuardSession.IsGuarded(t.Strategy) ? t.Conf * guardSession.GetMult(t.Time) : t.Conf,
+                        t.HoldDuration))
+                    .OrderBy(t => t.Item1).ToList();
+                var oosGuardList = oosRawForEnrich
+                    .Select(t => (t.Time, t.Return,
+                        DynamicGuardSession.IsGuarded(t.Strategy) ? t.Conf * guardSession.GetMult(t.Time) : t.Conf,
+                        t.HoldDuration))
+                    .OrderBy(t => t.Item1).ToList();
 
-            string FmtPort2(Simulator.PortfolioResult p) =>
-                $"ret={p.EndBalance - 100:+0.1;-0.1}%  DD={p.MaxDrawdownPct:F1}%  Calmar={( p.EndBalance - 100) / Math.Max(p.MaxDrawdownPct, 1.0):F1}";
+                var valBase = Simulator.SimulatePortfolioExposureCapped(valBaseList, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+                var oosBase = Simulator.SimulatePortfolioExposureCapped(oosBaseList, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+                var valGrd  = Simulator.SimulatePortfolioExposureCapped(valGuardList, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+                var oosGrd  = Simulator.SimulatePortfolioExposureCapped(oosGuardList, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
 
-            Console.WriteLine($"  {"",12}  {"── Val (20%) ──────────────────────────────",43}  {"── OOS ──────────────────────────────",37}");
-            Console.WriteLine($"  {"Baseline",-12}  {FmtPort2(valBaseline),-43}  {FmtPort2(oosBaseline),-37}");
-            Console.WriteLine($"  {"Guarded",-12}  {FmtPort2(valGuarded),-43}  {FmtPort2(oosGuarded),-37}");
+                string FmtDG(Simulator.PortfolioResult p) =>
+                    $"ret={p.EndBalance - 100:+0.1;-0.1}%  DD={p.MaxDrawdownPct:F1}%  Calmar={(p.EndBalance - 100) / Math.Max(p.MaxDrawdownPct, 1.0):F1}";
 
-            double valRetDelta = valGuarded.EndBalance - valBaseline.EndBalance;
-            double valDdDelta  = valGuarded.MaxDrawdownPct - valBaseline.MaxDrawdownPct;
-            double oosRetDelta = oosGuarded.EndBalance - oosBaseline.EndBalance;
-            double oosDdDelta  = oosGuarded.MaxDrawdownPct - oosBaseline.MaxDrawdownPct;
-            Console.WriteLine($"\n  Val Δ: return {valRetDelta:+0.0;-0.0}%  DD {valDdDelta:+0.0;-0.0}pp");
-            Console.WriteLine($"  OOS Δ: return {oosRetDelta:+0.0;-0.0}%  DD {oosDdDelta:+0.0;-0.0}pp");
+                Console.WriteLine($"  {"",12}  {"── Val (20%) ──────────────────────────────",43}  {"── OOS ──────────────────────────────",37}");
+                Console.WriteLine($"  {"Baseline",-12}  {FmtDG(valBase),-43}  {FmtDG(oosBase),-37}");
+                Console.WriteLine($"  {"Guarded",-12}  {FmtDG(valGrd),-43}  {FmtDG(oosGrd),-37}");
 
-            int guardedValN  = valTagged.Count(t => t.Item5);
-            int guardedOosN  = oosTagged.Count(t => t.Item5);
-            int exemptValN   = valTagged.Count - guardedValN;
-            int exemptOosN   = oosTagged.Count - guardedOosN;
-            Console.WriteLine($"\n  Guarded trades: val={guardedValN}  oos={guardedOosN}  (exempt: val={exemptValN}  oos={exemptOosN})");
+                static string Sgn(double v) => $"{(v >= 0 ? "+" : "")}{v:F1}";
+                Console.WriteLine($"\n  Val Δ: return {Sgn(valGrd.EndBalance - valBase.EndBalance)}%  DD {Sgn(valGrd.MaxDrawdownPct - valBase.MaxDrawdownPct)}pp");
+                Console.WriteLine($"  OOS Δ: return {Sgn(oosGrd.EndBalance - oosBase.EndBalance)}%  DD {Sgn(oosGrd.MaxDrawdownPct - oosBase.MaxDrawdownPct)}pp");
+
+                // Show avg multiplier by strategy to diagnose how much the guard is active
+                Console.WriteLine($"\n  Avg guard multiplier per strategy (val):");
+                foreach (var strat in new[] { "grid", "diplong", "swing_long" })
+                {
+                    var forStrat = valRawForEnrich.Where(t => t.Strategy == strat).ToList();
+                    if (forStrat.Count == 0) continue;
+                    double avgMult = forStrat.Average(t => guardSession.GetMult(t.Time));
+                    Console.WriteLine($"    {strat,-12}  {avgMult:F3}×  ({forStrat.Count} trades)");
+                }
+            }
         }
     }
 }

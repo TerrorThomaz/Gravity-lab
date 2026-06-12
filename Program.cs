@@ -28,6 +28,7 @@ switch (mode)
     case "exitmodifiertrain": await ExitModifierTrainCommands.RunExitModifierTrain(client);   break;
     case "stresstest":          await StressTestCommands.RunStressTest(client);                break;
     case "drawdownguardtrain":  await DrawdownGuardTrainCommands.RunDrawdownGuardTrain(client); break;
+    case "dynamicguardtrain":   await DynamicGuardTrainCommands.RunDynamicGuardTrain(client);  break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
         Console.WriteLine("  dotnet run -- train              Train FadeShort GA (~10 min)");
@@ -52,5 +53,6 @@ switch (mode)
         Console.WriteLine("  dotnet run -- exitmodifiertrain  Train context-aware position-size modifier");
         Console.WriteLine("  dotnet run -- stresstest         Adversarial scenario GA: find worst-case crash drawdown");
         Console.WriteLine("  dotnet run -- drawdownguardtrain Train drawdown-reactive panic manager (guards Grid/DipLong/SwingLong)");
+        Console.WriteLine("  dotnet run -- dynamicguardtrain  Train BTC 4H ATR/momentum dynamic guard (proactive, corrects router)");
         break;
 }

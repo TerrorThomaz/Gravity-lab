@@ -16,13 +16,15 @@ static class StressTestCommands
 
         var fsG     = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype();
         var gridG   = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(Config.GridGenoFile))!.ToGenotype();
-        var flG     = File.Exists(Config.FadeLongGenoFile)      ? JsonSerializer.Deserialize<FadeLongGenotypeDto>(File.ReadAllText(Config.FadeLongGenoFile))!.ToGenotype()         : null;
+        var flG     = (FadeLongGenotype?)null;  // disabled — net drag in OOS
         var dlG     = File.Exists(Config.DipLongGenoFile)       ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(Config.DipLongGenoFile))!.ToGenotype()           : null;
         var slG     = File.Exists(Config.SwingLongGenoFile)     ? JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(Config.SwingLongGenoFile))!.ToGenotype()       : null;
-        var routerG = File.Exists(Config.RouterGenoFile)        ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype()       : null;
-        var guardG  = File.Exists(Config.DrawdownGuardGenoFile) ? JsonSerializer.Deserialize<DrawdownGuardGenotypeDto>(File.ReadAllText(Config.DrawdownGuardGenoFile))!.ToGenotype() : null;
+        var routerG     = File.Exists(Config.RouterGenoFile)      ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype()     : null;
+        var guardG      = File.Exists(Config.DrawdownGuardGenoFile) ? JsonSerializer.Deserialize<DrawdownGuardGenotypeDto>(File.ReadAllText(Config.DrawdownGuardGenoFile))!.ToGenotype() : null;
+        var dynamicGuardG = File.Exists(Config.DynamicGuardGenoFile) ? JsonSerializer.Deserialize<DynamicGuardGenotypeDto>(File.ReadAllText(Config.DynamicGuardGenoFile))!.ToGenotype() : null;
 
-        if (guardG != null) Console.WriteLine($"  Panic manager: {guardG}");
+        if (dynamicGuardG != null) Console.WriteLine($"  Dynamic guard: {dynamicGuardG}");
+        else if (guardG   != null) Console.WriteLine($"  Panic manager: {guardG}");
 
         var allSyms = ScenarioGA.ScenarioCoins.Concat(new[] { "BTCUSDT", "ETHUSDT" }).Distinct().ToArray();
         Console.WriteLine($"\n  Fetching {allSyms.Length} coins (1h, ~3yr)...");
@@ -63,9 +65,11 @@ static class StressTestCommands
         {
             var ga   = new ScenarioGA(populationSize: 40, generations: 60, verbose: false, seed: seed);
             var best = ga.Run(h1Map, fsG, gridG, flG, dlG, slG, routerG);
-            double guardedDd = guardG != null
-                ? ScenarioGA.EvaluateScenario(best, h1Map, fsG, gridG, flG, dlG, slG, session, guardG)
-                : best.Fitness;
+            double guardedDd = dynamicGuardG != null
+                ? ScenarioGA.EvaluateScenario(best, h1Map, fsG, gridG, flG, dlG, slG, session, null, dynamicGuardG)
+                : guardG != null
+                    ? ScenarioGA.EvaluateScenario(best, h1Map, fsG, gridG, flG, dlG, slG, session, guardG)
+                    : best.Fitness;
             return (seed, best, guardedDd);
         })).ToList();
         var results = (await Task.WhenAll(seedTasks))
@@ -76,7 +80,7 @@ static class StressTestCommands
         {
             int injBar  = btcH1 != null ? (int)(btcH1.Length * best.InjectionOffsetFrac) : 0;
             var injDate = btcH1 != null && injBar < btcH1.Length ? btcH1[injBar].Time : DateTime.MinValue;
-            string guardStr = guardG != null ? $"{guardedDd,7:F1}%" : "   n/a  ";
+            string guardStr = (dynamicGuardG != null || guardG != null) ? $"{guardedDd,7:F1}%" : "   n/a  ";
             Console.WriteLine($"  {seed,5}  {best.Fitness,7:F1}%    {guardStr}    "
                 + $"depth={best.CrashDepthPct:P0} dur={best.CrashDurationHours:F0}h "
                 + $"beta={best.AltBetaPct:F2} atr={best.AtrExpansionPeak:F1}x  ({injDate:yyyy-MM-dd})");
@@ -89,7 +93,8 @@ static class StressTestCommands
 
         Console.WriteLine($"\n  {new string('─', 70)}");
         Console.WriteLine($"  Unguarded DD  —  min {dds[0]:F1}%  median {dds[dds.Count/2]:F1}%  max {dds[^1]:F1}%");
-        if (guardG != null)
+        bool hasGuard = dynamicGuardG != null || guardG != null;
+        if (hasGuard)
             Console.WriteLine($"  Guarded DD    —  min {gDds[0]:F1}%  median {gDds[gDds.Count/2]:F1}%  max {gDds[^1]:F1}%");
 
         // Full detail on the single worst scenario found
@@ -105,8 +110,9 @@ static class StressTestCommands
         Console.WriteLine($"  Liquidity squeeze: {worst.best.LiquiditySqueezeHours:F0}h of reduced volume");
         Console.WriteLine($"  Injection point:   bar {worstBar} / {btcH1?.Length ?? 0}  ({worstDate:yyyy-MM-dd})");
         Console.WriteLine($"\n  Portfolio max-drawdown:  {worst.best.Fitness:F1}%  (baseline {baselineDd:F1}%)");
-        if (guardG != null)
-            Console.WriteLine($"  With panic manager:      {worst.guardedDd:F1}%  ({worst.guardedDd - worst.best.Fitness:+0.0;-0.0}pp vs unguarded)");
+        string guardLabel = dynamicGuardG != null ? "With dynamic guard:  " : "With panic manager:  ";
+        if (hasGuard)
+            Console.WriteLine($"  {guardLabel}    {worst.guardedDd:F1}%  ({worst.guardedDd - worst.best.Fitness:+0.0;-0.0}pp vs unguarded)");
         Console.WriteLine($"  Stress multiplier:       {worst.best.Fitness / Math.Max(baselineDd, 1.0):F2}x");
     }
 

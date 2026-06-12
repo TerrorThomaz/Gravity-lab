@@ -96,7 +96,7 @@ public class ScenarioGA
     }
 
     // Public entry point: evaluate a specific scenario against the full coin set,
-    // optionally with the drawdown guard active.
+    // optionally with a dynamic guard active.
     public static double EvaluateScenario(
         ScenarioGenotype         scenario,
         IReadOnlyDictionary<string, Candle[]> h1Map,
@@ -106,13 +106,14 @@ public class ScenarioGA
         DipLongGenotype?         dlG,
         SwingLongGenotype?       slG,
         RegimeRouterSession?     session,
-        DrawdownGuardGenotype?   guard = null)
+        DrawdownGuardGenotype?   guard        = null,
+        DynamicGuardGenotype?    dynamicGuard = null)
     {
         var coins = ScenarioCoins
             .Where(h1Map.ContainsKey)
             .Select(s => new CoinData(h1Map[s], s))
             .ToList();
-        return Evaluate(scenario, coins, fsG, gridG, flG, dlG, slG, session, guard);
+        return Evaluate(scenario, coins, fsG, gridG, flG, dlG, slG, session, guard, dynamicGuard);
     }
 
     private static double Evaluate(
@@ -124,7 +125,8 @@ public class ScenarioGA
         DipLongGenotype?      dlG,
         SwingLongGenotype?    slG,
         RegimeRouterSession?  session,
-        DrawdownGuardGenotype? guard = null)
+        DrawdownGuardGenotype?  guard        = null,
+        DynamicGuardGenotype?   dynamicGuard = null)
     {
         var btcCoin = coins.FirstOrDefault(c => c.Symbol == "BTCUSDT");
         if (btcCoin == null) return 0;
@@ -134,6 +136,7 @@ public class ScenarioGA
         injBar = Math.Clamp(injBar, 50, injUpper);
 
         var trades = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, bool IsGuarded)>();
+        Candle[]? morphedBtcH1 = null;
 
         foreach (var coin in coins)
         {
@@ -143,6 +146,7 @@ public class ScenarioGA
 
             double beta = coin.Symbol == "BTCUSDT" ? 1.0 : g.AltBetaPct;
             var    mH1  = ScenarioInjector.Inject(coin.H1, g, coinInjBar, beta);
+            if (coin.Symbol == "BTCUSDT") morphedBtcH1 = mH1;
             var    mM15 = ScenarioInjector.DeaggregateToM15(mH1);
             if (mH1.Length < 200) continue;
 
@@ -191,6 +195,17 @@ public class ScenarioGA
         }
 
         if (trades.Count < 5) return 0;
+
+        // Apply dynamic guard (BTC 4H ATR/momentum) if provided — uses morphed BTC H1
+        if (dynamicGuard != null && morphedBtcH1 != null)
+        {
+            var dgSession = new DynamicGuardSession(morphedBtcH1, dynamicGuard);
+            trades = trades
+                .Select(t => t.IsGuarded
+                    ? (t.Time, t.Return, t.Conf * dgSession.GetMult(t.Time), t.Hold, t.IsGuarded)
+                    : t)
+                .ToList();
+        }
 
         if (guard != null)
         {

@@ -76,5 +76,31 @@ static class Config
 
         // newer / gaming / NFT not in universe
         "RONINUSDT",  "BLURUSDT",  "ARKMUSDT",  "LOOKSUSDT", "BICOUSDT",
+
+        // alt-L1s / older chains
+        "EGLDUSDT",   "IOTAUSDT",  "ZECUSDT",   "WAVESUSDT", "QTUMUSDT",
+        "KLAYUSDT",   "GLMRUSDT",  "ASTRUSDT",  "METISUSDT", "CELOUSDT",
+        "NULSUSDT",   "LSKUSDT",
+
+        // DeFi — AMMs, lending, yield (not in BacktestCoins)
+        "BALUSDT",    "CVXUSDT",   "SPELLUSDT", "MASKUSDT",  "FXSUSDT",
+        "RDNTUSDT",   "JOEUSDT",   "ALPACAUSDT","DODOUSDT",  "PERPUSDT",
+        "LQTYUSDT",   "SSVUSDT",   "XVSUSDT",   "SYNUSDT",   "QIUSDT",
+        "RSRUSDT",    "ALPHAUSDT", "FLMUSDT",
+
+        // gaming / social / NFT
+        "ILVUSDT",    "SLPUSDT",   "ALICEUSDT", "YGGUSDT",   "WEMIXUSDT",
+        "PEOPLEUSDT", "GALUSDT",   "RAREUSDT",
+
+        // AI / infra / oracle
+        "AGIXUSDT",   "NMRUSDT",   "GTCUSDT",   "PHAUSDT",   "ARPAUSDT",
+        "FRONTUSDT",  "POLYXUSDT", "DIAUSDT",   "DUSKUSDT",  "STPTUSDT",
+
+        // utility / misc mid-caps
+        "BTTUSDT",    "SUNUSDT",   "WINUSDT",   "CVCUSDT",   "TWTUSDT",
+        "ACHUSDT",    "OMUSDT",    "HIGHUSDT",  "REQUSDT",   "POWRUSDT",
+        "DENTUSDT",   "RADUSDT",   "UTKUSDT",   "MDTUSDT",   "SUPERUSDT",
+        "BONDUSDT",   "IOTXUSDT",  "FORTHUSDT", "ADXUSDT",   "BAKEUSDT",
+        "LITUSDT",    "MOVRUSDT",  "MINAUSDT",  "XPRTUSDT",
     ];
 }

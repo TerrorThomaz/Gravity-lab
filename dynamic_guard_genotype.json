@@ -1,10 +1,8 @@
 {
-  "AtrLookback": 13.664382829995237,
-  "AtrTrigger": 1.6727060508514309,
-  "MomLookback": 41.24576100362401,
-  "MomThreshold": -0.14378853699067823,
-  "SizeFloor": 0.20866475199819326,
-  "Fitness": 156.67756230025918,
-  "PanicTrigger": 1.6024057135523095,
-  "RecoveryBars": 13.02966866543045
+  "AtrLookback": 8.233242737802554,
+  "AtrTrigger": 1,
+  "MomLookback": 5.214306325491998,
+  "MomThreshold": -0.01,
+  "SizeFloor": 0.1,
+  "Fitness": 61.08488695463093
 }

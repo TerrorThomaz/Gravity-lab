@@ -8,11 +8,10 @@ namespace TradingGA;
 // for at least RegimeSustainedBars consecutive h1 bars at entry. This prevents
 // trades taken on the first bar of a new regime (noise) from polluting the score.
 //
-// Protection mode: when portfolio gain ≥ ProfitLockThreshold and then drawback
-// ≥ DrawbackTolerance, position size scales to ProtectedSizeFactor×normal.
-// This runs inside FoldScore's portfolio simulation, so the GA can optimise it.
+// Protection mode (profit protect) is handled by DynamicGuardGenotype — moved there
+// so the guard trains on all strategies combined (better N/d ratio).
 //
-// Fitness = mean(fold_scores) − 0.75 × std(fold_scores)
+// Fitness = mean(fold_scores) − stdMult × std(fold_scores)  (stdMult VC-proportional)
 public class DipLongGA
 {
     public record CoinData(ReadOnlyMemory<Candle> TrainH1, ReadOnlyMemory<Candle> ValH1, ReadOnlyMemory<Candle> TrainM15, ReadOnlyMemory<Candle> ValM15, double Weight = 1.0);
@@ -25,8 +24,8 @@ public class DipLongGA
     private readonly Func<DateTime, double>? _tradeGate;  // null = no gating; returns weight 0..1 (set by CoevolveGA)
     private readonly Random _rng = new();
 
-    private const int MinTradesPerFold = 25;   // raised from 15: VC theory requires N > d per fold (d=17)
-    private const int D                = 17;   // genotype parameter count (excl. Fitness)
+    private const int MinTradesPerFold = 25;   // VC theory requires N > d per fold; d=14 after protection mode moved to guard
+    private const int D                = 14;   // genotype parameter count (excl. Fitness)
 
     public DipLongGA(
         int  populationSize    = 50,
@@ -47,10 +46,7 @@ public class DipLongGA
     private static double FoldScore(
         List<(double Return, int RegimeBars)> returns,
         double posFrac,
-        int    sustainedBars,
-        double profitLockThreshold,
-        double drawbackTolerance,
-        double protectedSizeFactor)
+        int    sustainedBars)
     {
         // Only score trades that fired during a confirmed bull regime
         var valid = returns.Where(r => r.RegimeBars >= sustainedBars).Select(r => r.Return).ToList();
@@ -64,16 +60,12 @@ public class DipLongGA
         if (pf < 1.0) return pf - 2.0;
 
         double balance = 1.0, peak = 1.0, maxDd = 0.0;
-        bool protectionMode = false;
         foreach (var r in valid)
         {
-            double effectiveFrac = protectionMode ? posFrac * protectedSizeFactor : posFrac;
-            balance += r / 100.0 * effectiveFrac;
-            if (balance > peak) { peak = balance; protectionMode = false; }
+            balance += r / 100.0 * posFrac;
+            if (balance > peak) peak = balance;
             double dd = (peak - balance) / peak;
             if (dd > maxDd) maxDd = dd;
-            // Arm protection when meaningful gains exist and we're drawing back
-            if (balance - 1.0 >= profitLockThreshold && dd >= drawbackTolerance) protectionMode = true;
         }
 
         double gain = balance - 1.0;
@@ -121,8 +113,7 @@ public class DipLongGA
                     .Where(t => t.w >= 0.05)
                     .Select(t => (t.Return, t.RegimeBars)))
                 .ToList();
-            return FoldScore(all, posFrac, ind.RegimeSustainedBars,
-                ind.ProfitLockThreshold, ind.DrawbackTolerance, ind.ProtectedSizeFactor);
+            return FoldScore(all, posFrac, ind.RegimeSustainedBars);
         }
 
         // Per-coin percentage folds: each coin slices its own history into k equal parts.
@@ -150,8 +141,7 @@ public class DipLongGA
                                     .Select(t => (t.Return, t.RegimeBars)));
             }
             totalFoldTrades += foldRet.Count;
-            scores[f] = FoldScore(foldRet, posFrac, ind.RegimeSustainedBars,
-                ind.ProfitLockThreshold, ind.DrawbackTolerance, ind.ProtectedSizeFactor);
+            scores[f] = FoldScore(foldRet, posFrac, ind.RegimeSustainedBars);
         }
 
         double mean    = scores.Average();

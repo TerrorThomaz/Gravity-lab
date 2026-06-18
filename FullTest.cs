@@ -64,6 +64,18 @@ static class FullTest
             Console.WriteLine($"  Router session: BTC {btcSeries.Length} bars  ETH {(ethSeries != null ? ethSeries.Length.ToString() : "none")} bars\n");
         }
 
+        // ── Funding rate session (BTC as market-wide proxy) ───────────────────────────
+        FundingRateSession? fundingSession = null;
+        if (fetchedMap.ContainsKey("BTCUSDT"))
+        {
+            var btcFunding = await CandleFetcher.FetchFundingRateCachedAsync(client, "BTCUSDT");
+            if (btcFunding.Length > 0)
+            {
+                fundingSession = new FundingRateSession(btcFunding);
+                Console.WriteLine($"  BTC funding: {btcFunding.Length} 8h records · current={fundingSession.CurrentRate:+0.0000%;-0.0000%;0.0000%}/8h\n");
+            }
+        }
+
         // ── Dynamic guard session (built once, used in Section 2 and 9) ─────────────
         DynamicGuardSession? dgSession = null;
         DynamicGuardGenotype? dgGeno   = null;
@@ -117,6 +129,7 @@ static class FullTest
                     double fsHk = Math.Min(hk, 0.05);
                     foreach (var (t, ret, _) in FadeShortSimulator.GetFadeShortReturns(swingG, h1Val, m15Val))
                     {
+                        if (fundingSession?.IsCrowdedShort(t) == true) continue;
                         valSwingRets.Add(ret);
                         valAll.Add((t, ret, conf, "swing"));
                         valNoRouter.Add((t, ret, conf, "swing"));
@@ -173,6 +186,8 @@ static class FullTest
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
+                if (fundingSession != null)
+                    gated = gated.Where(t => !fundingSession.IsCrowdedLong(t.Time)).ToList();
                 valDlRets.AddRange(gated.Select(t => t.Return));
                 foreach (var t in gated)
                 {
@@ -193,6 +208,8 @@ static class FullTest
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()  // SwingLong shares bull-regime gate with DipLong
                     : raw;
+                if (fundingSession != null)
+                    gated = gated.Where(t => !fundingSession.IsCrowdedLong(t.Time)).ToList();
                 valSlRets.AddRange(gated.Select(t => t.Return));
                 foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "swing_long"));
                 foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "swing_long"));
@@ -234,8 +251,9 @@ static class FullTest
                     && Simulator.ProfitFactor(screenRets) >= 1.1;
                 if (oosScreenPass)
                 {
-                    var trades = FadeShortSimulator.GetFadeShortReturns(swingG, h1, m15);
-                    var vRet   = trades.Select(t => t.Return).ToList();
+                    var trades = FadeShortSimulator.GetFadeShortReturns(swingG, h1, m15)
+                        .Where(t => fundingSession?.IsCrowdedShort(t.Time) != true).ToList();
+                    var vRet = trades.Select(t => t.Return).ToList();
                     if (vRet.Count >= 5)
                     {
                         double conf = Simulator.ComputeConfidence(vRet);
@@ -291,6 +309,8 @@ static class FullTest
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
+                if (fundingSession != null)
+                    gated = gated.Where(t => !fundingSession.IsCrowdedLong(t.Time)).ToList();
                 var vRet  = gated.Select(t => t.Return).ToList();
                 if (vRet.Count > 0)
                 {
@@ -310,6 +330,8 @@ static class FullTest
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()  // SwingLong shares bull-regime gate with DipLong
                     : raw;
+                if (fundingSession != null)
+                    gated = gated.Where(t => !fundingSession.IsCrowdedLong(t.Time)).ToList();
                 var vRet  = gated.Select(t => t.Return).ToList();
                 if (vRet.Count > 0)
                 {
@@ -359,18 +381,31 @@ static class FullTest
             List<(DateTime Time, double Return, double Conf, string Strategy)> t) =>
             t.Select(x => (x.Time, x.Return, x.Conf, StratHold(x.Strategy, swingG, gridG, flG, dlG, slG))).ToList();
 
-        // Guarded variant: apply DynamicGuard multiplier to guarded-strategy confs
-        List<(DateTime, double, double, TimeSpan)> ToSimGuarded(
+        // Guarded variant: ATR entry gate first (blocks high-ATR DipLong/SwingLong),
+        // then confidence scaling. Strategy preserved for the portfolio-DD gate inside the simulator.
+        List<(DateTime, double, double, TimeSpan, string)> ToSimGuarded(
             List<(DateTime Time, double Return, double Conf, string Strategy)> t,
             DynamicGuardSession gs) =>
-            t.Select(x => (x.Time, x.Return,
-                DynamicGuardSession.IsGuarded(x.Strategy) ? x.Conf * gs.GetMult(x.Time) : x.Conf,
-                StratHold(x.Strategy, swingG, gridG, flG, dlG, slG))).ToList();
+            t.Where(x => !gs.IsEntryBlocked(x.Time, x.Strategy))
+             .Select(x => (x.Time, x.Return,
+                DynamicGuardSession.IsGuarded(x.Strategy) ? x.Conf * gs.GetMult(x.Time, x.Strategy) : x.Conf,
+                StratHold(x.Strategy, swingG, gridG, flG, dlG, slG), x.Strategy)).ToList();
+
+        // 5-tuple version of ToSim (adds Strategy) — used for DD-gate-aware guarded simulation.
+        List<(DateTime, double, double, TimeSpan, string)> ToSim5(
+            List<(DateTime Time, double Return, double Conf, string Strategy)> t) =>
+            t.Select(x => (x.Time, x.Return, x.Conf,
+                StratHold(x.Strategy, swingG, gridG, flG, dlG, slG), x.Strategy)).ToList();
+
+        // Strip Strategy from 5-tuple for callers that only need 4-tuple (PortMetrics, etc.)
+        static List<(DateTime, double, double, TimeSpan)> Drop5(
+            List<(DateTime, double, double, TimeSpan, string)> t) =>
+            t.Select(x => (x.Item1, x.Item2, x.Item3, x.Item4)).ToList();
 
         var valSim  = ToSim(valAll);
         var oosSim  = ToSim(oosAll);
-        var valSimG = dgSession != null ? ToSimGuarded(valAll,  dgSession) : valSim;
-        var oosSimG = dgSession != null ? ToSimGuarded(oosAll, dgSession) : oosSim;
+        var valSimG = dgSession != null ? ToSimGuarded(valAll,  dgSession) : ToSim5(valAll);
+        var oosSimG = dgSession != null ? ToSimGuarded(oosAll, dgSession) : ToSim5(oosAll);
 
         // Pre-compute no-router sims (needed by Section 3 year-by-year and Section 6)
         static TimeSpan HoldFor(string s) => s switch {
@@ -420,23 +455,33 @@ static class FullTest
             return ($"{r:+0.0;-0.0}%", $"{ann:+0.0;-0.0}%/yr", $"{p.MaxDrawdownPct:F1}%", $"{sh:F2}");
         }
 
+        double ddGate      = dgGeno?.DdEntryGatePct         ?? 1.0;
+        double capMin      = dgGeno?.ConfLossCapMin          ?? 1.0;
+        double capMax      = dgGeno?.ConfLossCapMax          ?? 1.0;
+        double ppThreshold = dgGeno?.ProfitProtectThreshold  ?? 1.0;
+        double ppDrawback  = dgGeno?.ProfitProtectDrawback   ?? 0.10;
+        double ppFactor    = dgGeno?.ProfitProtectFactor     ?? 1.0;
+
         var val5p   = valSim.Count  > 0 ? Simulator.SimulatePortfolioExposureCapped(valSim,  Config.MaxTotalExposurePct, maxPositionFrac: 0.05) : default!;
         var valKel  = valSim.Count  > 0 ? Simulator.SimulatePortfolioExposureCapped(valSim,  Config.MaxTotalExposurePct) : default!;
         var oos5p   = oosSim.Count  > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSim,  Config.MaxTotalExposurePct, maxPositionFrac: 0.05) : default!;
         var oosKel  = oosSim.Count  > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSim,  Config.MaxTotalExposurePct) : default!;
-        var val5pG  = valSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(valSimG, Config.MaxTotalExposurePct, maxPositionFrac: 0.05) : default!;
-        var valKelG = valSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(valSimG, Config.MaxTotalExposurePct) : default!;
-        var oos5pG  = oosSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSimG, Config.MaxTotalExposurePct, maxPositionFrac: 0.05) : default!;
-        var oosKelG = oosSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSimG, Config.MaxTotalExposurePct) : default!;
+        var val5pG  = valSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(valSimG, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: ddGate, confLossCapMin: capMin, confLossCapMax: capMax, profitProtectThreshold: ppThreshold, profitProtectDrawback: ppDrawback, profitProtectFactor: ppFactor) : default!;
+        var valKelG = valSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(valSimG, Config.MaxTotalExposurePct, ddLongEntryGatePct: ddGate, confLossCapMin: capMin, confLossCapMax: capMax, profitProtectThreshold: ppThreshold, profitProtectDrawback: ppDrawback, profitProtectFactor: ppFactor) : default!;
+        var oos5pG  = oosSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSimG, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: ddGate, confLossCapMin: capMin, confLossCapMax: capMax, profitProtectThreshold: ppThreshold, profitProtectDrawback: ppDrawback, profitProtectFactor: ppFactor) : default!;
+        var oosKelG = oosSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSimG, Config.MaxTotalExposurePct, ddLongEntryGatePct: ddGate, confLossCapMin: capMin, confLossCapMax: capMax, profitProtectThreshold: ppThreshold, profitProtectDrawback: ppDrawback, profitProtectFactor: ppFactor) : default!;
 
-        var (vr5, va5, vd5, vs5)    = valSim.Count  > 0 ? PortMetrics(valSim,  val5p)   : ("—","—","—","—");
-        var (vrK, vaK, vdK, vsK)    = valSim.Count  > 0 ? PortMetrics(valSim,  valKel)  : ("—","—","—","—");
-        var (or5, oa5, od5, os5)    = oosSim.Count  > 0 ? PortMetrics(oosSim,  oos5p)   : ("—","—","—","—");
-        var (orK, oaK, odK, osK)    = oosSim.Count  > 0 ? PortMetrics(oosSim,  oosKel)  : ("—","—","—","—");
-        var (vr5G, va5G, vd5G, vs5G)  = valSimG.Count > 0 ? PortMetrics(valSimG, val5pG)  : ("—","—","—","—");
-        var (vrKG, vaKG, vdKG, vsKG)  = valSimG.Count > 0 ? PortMetrics(valSimG, valKelG) : ("—","—","—","—");
-        var (or5G, oa5G, od5G, os5G)  = oosSimG.Count > 0 ? PortMetrics(oosSimG, oos5pG)  : ("—","—","—","—");
-        var (orKG, oaKG, odKG, osKG)  = oosSimG.Count > 0 ? PortMetrics(oosSimG, oosKelG) : ("—","—","—","—");
+        var valSimG4 = Drop5(valSimG);
+        var oosSimG4 = Drop5(oosSimG);
+
+        var (vr5, va5, vd5, vs5)    = valSim.Count   > 0 ? PortMetrics(valSim,   val5p)   : ("—","—","—","—");
+        var (vrK, vaK, vdK, vsK)    = valSim.Count   > 0 ? PortMetrics(valSim,   valKel)  : ("—","—","—","—");
+        var (or5, oa5, od5, os5)    = oosSim.Count   > 0 ? PortMetrics(oosSim,   oos5p)   : ("—","—","—","—");
+        var (orK, oaK, odK, osK)    = oosSim.Count   > 0 ? PortMetrics(oosSim,   oosKel)  : ("—","—","—","—");
+        var (vr5G, va5G, vd5G, vs5G)  = valSimG4.Count > 0 ? PortMetrics(valSimG4, val5pG)  : ("—","—","—","—");
+        var (vrKG, vaKG, vdKG, vsKG)  = valSimG4.Count > 0 ? PortMetrics(valSimG4, valKelG) : ("—","—","—","—");
+        var (or5G, oa5G, od5G, os5G)  = oosSimG4.Count > 0 ? PortMetrics(oosSimG4, oos5pG)  : ("—","—","—","—");
+        var (orKG, oaKG, odKG, osKG)  = oosSimG4.Count > 0 ? PortMetrics(oosSimG4, oosKelG) : ("—","—","—","—");
 
         bool hasGuard = dgSession != null;
         Console.WriteLine($"\n{new string('═', 88)}");
@@ -530,9 +575,9 @@ static class FullTest
 
         if (fetchedMap.TryGetValue("BTCUSDT", out var btcForCrash))
         {
-            var btcYear = btcForCrash.h1[Math.Max(0, btcForCrash.h1.Length - 8760)..];
-            CrashAnalyser.Report(CrashAnalyser.DetectCrashes(btcYear), crashTrades);
-            CrashAnalyser.ReportRallies(CrashAnalyser.DetectRallies(btcYear), crashTrades);
+            // Use full BTC history — cache goes back to 2020, covers COVID/LUNA/FTX
+            CrashAnalyser.Report(CrashAnalyser.DetectCrashes(btcForCrash.h1), crashTrades);
+            CrashAnalyser.ReportRallies(CrashAnalyser.DetectRallies(btcForCrash.h1), crashTrades);
             CrashAnalyser.SyntheticWorstCase(crashTrades);
         }
         else Console.WriteLine("  BTC data unavailable — skipping crash/rally analysis");
@@ -687,70 +732,125 @@ static class FullTest
         Console.WriteLine($"  DYNAMIC GUARD (BTC 4H ATR/momentum · proactive · Grid/DipLong/SwingLong)");
         Console.WriteLine($"{new string('═', 88)}");
 
-        if (!File.Exists(Config.DynamicGuardGenoFile))
+        if (dgSession == null || dgGeno == null)
         {
             Console.WriteLine("  No dynamic guard genotype found — run 'dynamicguardtrain' to train one.");
         }
         else
         {
-            var dgG = JsonSerializer.Deserialize<DynamicGuardGenotypeDto>(
-                File.ReadAllText(Config.DynamicGuardGenoFile))!.ToGenotype();
-            Console.WriteLine($"  Genotype: {dgG}\n");
+            Console.WriteLine($"  Genotype: {dgGeno}\n");
 
-            if (!fetchedMap.TryGetValue("BTCUSDT", out var btcForGuard) || btcForGuard.h1.Length < 50)
+            // Reuse the already-computed 5%cap portfolio results from the portfolio section.
+            // Baseline = val5p / oos5p (no guard, cap-filtered), Guarded = val5pG / oos5pG.
+            // This ensures the guard section baseline exactly matches the "No guard" portfolio row.
+            string FmtDG(Simulator.PortfolioResult p) =>
+                $"ret={p.EndBalance - 100:+0.0;-0.0}%  DD={p.MaxDrawdownPct:F1}%  Calmar={(p.EndBalance - 100) / Math.Max(p.MaxDrawdownPct, 1.0):F1}";
+
+            Console.WriteLine($"  {"",12}  {"── Val (20%) ──────────────────────────────",43}  {"── OOS ──────────────────────────────",37}");
+            Console.WriteLine($"  {"Baseline",-12}  {FmtDG(val5p),-43}  {FmtDG(oos5p),-37}");
+            Console.WriteLine($"  {"Guarded",-12}  {FmtDG(val5pG),-43}  {FmtDG(oos5pG),-37}");
+
+            static string Sgn(double v) => $"{(v >= 0 ? "+" : "")}{v:F1}";
+            Console.WriteLine($"\n  Val Δ: return {Sgn(val5pG.EndBalance - val5p.EndBalance)}%  DD {Sgn(val5pG.MaxDrawdownPct - val5p.MaxDrawdownPct)}pp");
+            Console.WriteLine($"  OOS Δ: return {Sgn(oos5pG.EndBalance - oos5p.EndBalance)}%  DD {Sgn(oos5pG.MaxDrawdownPct - oos5p.MaxDrawdownPct)}pp");
+
+            // Avg multiplier per strategy (uses post-cap valAll which matches portfolio section)
+            Console.WriteLine($"\n  Avg guard multiplier per strategy (val):");
+            foreach (var strat in new[] { "grid", "diplong", "swing_long" })
             {
-                Console.WriteLine("  BTC H1 data unavailable — skipping.");
+                var forStrat = valAll.Where(t => t.Strategy == strat).ToList();
+                if (forStrat.Count == 0) continue;
+                double avgMult = forStrat.Average(t => dgSession.GetMult(t.Time));
+                Console.WriteLine($"    {strat,-12}  {avgMult:F3}×  ({forStrat.Count} trades)");
             }
-            else
+        }
+
+        // ══════════════════════════════════════════════════════════════════════════
+        // SECTION 10: OOS KELLY DD INVESTIGATION
+        // ══════════════════════════════════════════════════════════════════════════
+        Console.WriteLine($"\n{new string('═', 88)}");
+        Console.WriteLine($"  OOS KELLY DD INVESTIGATION");
+        Console.WriteLine($"{new string('═', 88)}");
+
+        if (oosSim.Count > 0)
+        {
+            // Per-year OOS Kelly breakdown
+            Console.WriteLine($"\n  ── OOS Kelly by year ──");
+            Console.WriteLine($"  {"Year",-6}  {"N",4}  {"Return",8}  {"DD",6}  Strategies");
+            Console.WriteLine($"  {new string('-', 70)}");
+            foreach (int yr in oosSim.Select(t => t.Item1.Year).Distinct().OrderBy(y => y))
             {
-                var guardSession = new DynamicGuardSession(btcForGuard.h1, dgG);
+                var yrSim = oosSim.Where(t => t.Item1.Year == yr).ToList();
+                if (yrSim.Count == 0) continue;
+                var pK = Simulator.SimulatePortfolioExposureCapped(yrSim, Config.MaxTotalExposurePct);
+                double rK = pK.EndBalance - 100;
+                var stratCounts = oosAll
+                    .Where(t => t.Time.Year == yr)
+                    .GroupBy(t => t.Strategy)
+                    .Select(g => $"{g.Key}:{g.Count()}")
+                    .ToArray();
+                Console.WriteLine($"  {yr,-6}  {yrSim.Count,4}  {rK,+7:F1}%  {pK.MaxDrawdownPct,5:F1}%  {string.Join("  ", stratCounts)}");
+            }
 
-                // Baseline: raw confs from valRawForEnrich / oosRawForEnrich (already router-gated)
-                var valBaseList = valRawForEnrich
-                    .Select(t => (t.Time, t.Return, t.Conf, t.HoldDuration))
-                    .OrderBy(t => t.Item1).ToList();
-                var oosBaseList = oosRawForEnrich
-                    .Select(t => (t.Time, t.Return, t.Conf, t.HoldDuration))
-                    .OrderBy(t => t.Item1).ToList();
+            // Worst-DD event: peak/trough timestamps + trade decomposition
+            var (_, ddEvent, _) = Simulator.SimulateExposureCappedWithCurve(oosSim, Config.MaxTotalExposurePct);
 
-                // Guarded: multiply guarded-strategy confs by dynamic guard multiplier
-                var valGuardList = valRawForEnrich
-                    .Select(t => (t.Time, t.Return,
-                        DynamicGuardSession.IsGuarded(t.Strategy) ? t.Conf * guardSession.GetMult(t.Time) : t.Conf,
-                        t.HoldDuration))
-                    .OrderBy(t => t.Item1).ToList();
-                var oosGuardList = oosRawForEnrich
-                    .Select(t => (t.Time, t.Return,
-                        DynamicGuardSession.IsGuarded(t.Strategy) ? t.Conf * guardSession.GetMult(t.Time) : t.Conf,
-                        t.HoldDuration))
-                    .OrderBy(t => t.Item1).ToList();
+            if (ddEvent != null)
+            {
+                double spanDays = (ddEvent.TroughTime - ddEvent.PeakTime).TotalDays;
+                Console.WriteLine($"\n  ── Worst DD event ──");
+                Console.WriteLine($"  Peak    {ddEvent.PeakTime:yyyy-MM-dd HH:mm}  balance={ddEvent.PeakBalance:F3}");
+                Console.WriteLine($"  Trough  {ddEvent.TroughTime:yyyy-MM-dd HH:mm}  balance={ddEvent.TroughBalance:F3}");
+                Console.WriteLine($"  Drop    {ddEvent.DropPct:F2}%  over {spanDays:F0}d");
 
-                var valBase = Simulator.SimulatePortfolioExposureCapped(valBaseList, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-                var oosBase = Simulator.SimulatePortfolioExposureCapped(oosBaseList, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-                var valGrd  = Simulator.SimulatePortfolioExposureCapped(valGuardList, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-                var oosGrd  = Simulator.SimulatePortfolioExposureCapped(oosGuardList, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-
-                string FmtDG(Simulator.PortfolioResult p) =>
-                    $"ret={p.EndBalance - 100:+0.1;-0.1}%  DD={p.MaxDrawdownPct:F1}%  Calmar={(p.EndBalance - 100) / Math.Max(p.MaxDrawdownPct, 1.0):F1}";
-
-                Console.WriteLine($"  {"",12}  {"── Val (20%) ──────────────────────────────",43}  {"── OOS ──────────────────────────────",37}");
-                Console.WriteLine($"  {"Baseline",-12}  {FmtDG(valBase),-43}  {FmtDG(oosBase),-37}");
-                Console.WriteLine($"  {"Guarded",-12}  {FmtDG(valGrd),-43}  {FmtDG(oosGrd),-37}");
-
-                static string Sgn(double v) => $"{(v >= 0 ? "+" : "")}{v:F1}";
-                Console.WriteLine($"\n  Val Δ: return {Sgn(valGrd.EndBalance - valBase.EndBalance)}%  DD {Sgn(valGrd.MaxDrawdownPct - valBase.MaxDrawdownPct)}pp");
-                Console.WriteLine($"  OOS Δ: return {Sgn(oosGrd.EndBalance - oosBase.EndBalance)}%  DD {Sgn(oosGrd.MaxDrawdownPct - oosBase.MaxDrawdownPct)}pp");
-
-                // Show avg multiplier by strategy to diagnose how much the guard is active
-                Console.WriteLine($"\n  Avg guard multiplier per strategy (val):");
-                foreach (var strat in new[] { "grid", "diplong", "swing_long" })
+                // Trades that entered during the DD window (post-cap oosAll matches oosSim)
+                var ddTrades = oosAll
+                    .Where(t => t.Time >= ddEvent.PeakTime && t.Time <= ddEvent.TroughTime)
+                    .OrderBy(t => t.Time)
+                    .ToList();
+                Console.WriteLine($"\n  Trades entering in DD window ({ddTrades.Count} total):");
+                Console.WriteLine($"  {"Strategy",-12}  {"N",4}  {"WR",5}  {"Avg%",8}  {"Sum%",8}");
+                Console.WriteLine($"  {new string('-', 48)}");
+                foreach (var grp in ddTrades.GroupBy(t => t.Strategy).OrderBy(g => g.Key))
                 {
-                    var forStrat = valRawForEnrich.Where(t => t.Strategy == strat).ToList();
-                    if (forStrat.Count == 0) continue;
-                    double avgMult = forStrat.Average(t => guardSession.GetMult(t.Time));
-                    Console.WriteLine($"    {strat,-12}  {avgMult:F3}×  ({forStrat.Count} trades)");
+                    var rets = grp.Select(t => t.Return).ToList();
+                    double wr  = (double)rets.Count(r => r > 0) / rets.Count;
+                    Console.WriteLine($"  {grp.Key,-12}  {grp.Count(),4}  {wr,5:P0}  {rets.Average(),+8:F2}%  {rets.Sum(),+8:F1}%");
+                }
+
+                // 10 worst individual trades in the window
+                var worst = ddTrades.OrderBy(t => t.Return).Take(10).ToList();
+                if (worst.Count > 0)
+                {
+                    Console.WriteLine($"\n  Worst individual trades in DD window:");
+                    Console.WriteLine($"  {"Date",-18}  {"Strategy",-12}  {"Return",8}  {"Conf",6}");
+                    foreach (var t in worst)
+                        Console.WriteLine($"  {t.Time:yyyy-MM-dd HH:mm}  {t.Strategy,-12}  {t.Return,+8:F2}%  {t.Conf,6:F4}");
+                }
+
+                // ATR + funding context at peak and trough
+                Console.WriteLine();
+                if (dgSession != null)
+                {
+                    double atrPeak   = dgSession.GetAtrRatio(ddEvent.PeakTime);
+                    double atrTrough = dgSession.GetAtrRatio(ddEvent.TroughTime);
+                    string gate      = dgGeno != null ? $"  entryGate={dgGeno.EntryAtrGate:F2}" : "";
+                    Console.WriteLine($"  BTC 4H ATR ratio at peak:   {atrPeak:F3}×{gate}");
+                    Console.WriteLine($"  BTC 4H ATR ratio at trough: {atrTrough:F3}×");
+                    bool wouldBlock = dgSession.IsEntryBlocked(ddEvent.TroughTime, "diplong");
+                    Console.WriteLine($"  Entry gate would block DipLong/SwingLong at trough: {wouldBlock}");
+                }
+                if (fundingSession != null)
+                {
+                    double rateAtPeak   = fundingSession.GetRate(ddEvent.PeakTime);
+                    double rateAtTrough = fundingSession.GetRate(ddEvent.TroughTime);
+                    Console.WriteLine($"  BTC funding at peak:   {rateAtPeak:+0.0000%;-0.0000%;0.0000%}/8h  " +
+                        $"(crowded long: {fundingSession.IsCrowdedLong(ddEvent.PeakTime)})");
+                    Console.WriteLine($"  BTC funding at trough: {rateAtTrough:+0.0000%;-0.0000%;0.0000%}/8h  " +
+                        $"(crowded long: {fundingSession.IsCrowdedLong(ddEvent.TroughTime)})");
                 }
             }
         }
+        else Console.WriteLine("  No OOS trades — skipping.");
     }
 }

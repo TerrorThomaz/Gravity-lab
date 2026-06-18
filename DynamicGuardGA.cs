@@ -76,8 +76,8 @@ public class DynamicGuardGA
         var oosCapped = ApplyCap(oosTrades);
         var valSim    = ApplyGuard(valCapped, session);
         var oosSim    = ApplyGuard(oosCapped, session);
-        var valR      = Simulator.SimulatePortfolioExposureCapped(valSim,  Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-        var oosR      = Simulator.SimulatePortfolioExposureCapped(oosSim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+        var valR      = Simulator.SimulatePortfolioExposureCapped(valSim,  Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: g.DdEntryGatePct, confLossCapMin: g.ConfLossCapMin, confLossCapMax: g.ConfLossCapMax, profitProtectThreshold: g.ProfitProtectThreshold, profitProtectDrawback: g.ProfitProtectDrawback, profitProtectFactor: g.ProfitProtectFactor);
+        var oosR      = Simulator.SimulatePortfolioExposureCapped(oosSim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: g.DdEntryGatePct, confLossCapMin: g.ConfLossCapMin, confLossCapMax: g.ConfLossCapMax, profitProtectThreshold: g.ProfitProtectThreshold, profitProtectDrawback: g.ProfitProtectDrawback, profitProtectFactor: g.ProfitProtectFactor);
         double valCalmar = (valR.EndBalance - 100.0) / Math.Max(valR.MaxDrawdownPct, 0.5);
         double oosCalmar = (oosR.EndBalance - 100.0) / Math.Max(oosR.MaxDrawdownPct, 0.5);
         return (valCalmar + oosCalmar) / 2.0;
@@ -89,14 +89,17 @@ public class DynamicGuardGA
         PortfolioReplay.FilterByConcurrentCap(
             trades.Select(t => new PortfolioReplay.Trade(t.Strategy, t.Time, t.Hold, t.Return, t.Conf)));
 
-    // Applies dynamic guard multipliers — guarded strategies (grid/diplong/swing_long) get scaled.
-    internal static List<(DateTime, double, double, TimeSpan)> ApplyGuard(
+    // Applies dynamic guard: ATR entry gate first (blocks high-ATR entries), then confidence scaling.
+    // Strategy is preserved in output so the simulator can apply the portfolio-DD entry gate.
+    internal static List<(DateTime, double, double, TimeSpan, string)> ApplyGuard(
         IEnumerable<PortfolioReplay.Trade> trades,
         DynamicGuardSession session) =>
-        trades.Select(t => (
+        trades
+        .Where(t => !session.IsEntryBlocked(t.EntryTime, t.Strategy))
+        .Select(t => (
             t.EntryTime, t.Return,
-            DynamicGuardSession.IsGuarded(t.Strategy) ? t.Conf * session.GetMult(t.EntryTime) : t.Conf,
-            t.HoldDuration))
+            DynamicGuardSession.IsGuarded(t.Strategy) ? t.Conf * session.GetMult(t.EntryTime, t.Strategy) : t.Conf,
+            t.HoldDuration, t.Strategy))
         .OrderBy(t => t.Item1).ToList();
 
     private double[] RandomGenes(int nDim)

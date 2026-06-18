@@ -188,12 +188,12 @@ public static class StrategyStats
         new(StringComparer.OrdinalIgnoreCase)
         {
             ["FadeShort"]    = 15,  // EmaPeriod..PositionSizePct
-            ["FadeLong"]     = 18,  // + RegimePeriod, RegimeSustainedBars, ProfitLock, Drawback, ProtectedSize
-            ["DipLong"]      = 17,  // + RegimeLongEmaPeriod, RegimeSlopeLookback, TimeStop×2, ProfitLock, Drawback, ProtectedSize
+            ["FadeLong"]     = 15,  // protection mode moved to DynamicGuard
+            ["DipLong"]      = 14,  // protection mode moved to DynamicGuard
             ["SwingLong"]    = 14,  // EmaPeriod..TimeStopLossPct
             ["Grid"]         =  9,  // AdxThreshold..MaxHoldCandles
             ["Router"]       = 10,  // BullMinBars..EarlyBullBearCarry
-            ["DynamicGuard"] = 12,  // AtrLookback..ConfLossCapMax
+            ["DynamicGuard"] = 15,  // AtrLookback..ProfitProtectFactor
         };
 
     // N/d ratio — Abu-Mustafa rule of thumb for VC generalization:

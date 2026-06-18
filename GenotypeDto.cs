@@ -58,50 +58,6 @@ class FadeShortGenotypeDto
     }.ClampToBounds();
 }
 
-class MomLongGenotypeDto
-{
-    public int    RegimePeriod             { get; set; }
-    public int    EmaPeriod                { get; set; }
-    public double AdxThreshold             { get; set; }
-    public double RsiEntry                 { get; set; }
-    public double StopLossAtrMult          { get; set; }
-    public double TakeProfitAtrMult        { get; set; }
-    public double TrailingActivationAtrMult { get; set; }
-    public double TrailingStopAtrMult      { get; set; }
-    public int    MaxHoldCandles           { get; set; }
-    public double PositionSizePct          { get; set; }
-    public double Fitness                  { get; set; }
-
-    public static MomLongGenotypeDto From(MomLongGenotype g) => new()
-    {
-        RegimePeriod              = g.RegimePeriod,
-        EmaPeriod                 = g.EmaPeriod,
-        AdxThreshold              = g.AdxThreshold,
-        RsiEntry                  = g.RsiEntry,
-        StopLossAtrMult           = g.StopLossAtrMult,
-        TakeProfitAtrMult         = g.TakeProfitAtrMult,
-        TrailingActivationAtrMult = g.TrailingActivationAtrMult,
-        TrailingStopAtrMult       = g.TrailingStopAtrMult,
-        MaxHoldCandles            = g.MaxHoldCandles,
-        PositionSizePct           = g.PositionSizePct,
-        Fitness                   = g.Fitness,
-    };
-
-    public MomLongGenotype ToGenotype() => new MomLongGenotype
-    {
-        RegimePeriod              = RegimePeriod  > 0 ? RegimePeriod  : 200,
-        EmaPeriod                 = EmaPeriod     > 0 ? EmaPeriod     : 50,
-        AdxThreshold              = AdxThreshold  > 0 ? AdxThreshold  : 25.0,
-        RsiEntry                  = RsiEntry      > 0 ? RsiEntry      : 45.0,
-        StopLossAtrMult           = StopLossAtrMult           > 0 ? StopLossAtrMult           : 0.8,
-        TakeProfitAtrMult         = TakeProfitAtrMult         > 0 ? TakeProfitAtrMult         : 5.0,
-        TrailingActivationAtrMult = TrailingActivationAtrMult > 0 ? TrailingActivationAtrMult : 2.0,
-        TrailingStopAtrMult       = TrailingStopAtrMult       > 0 ? TrailingStopAtrMult       : 2.0,
-        MaxHoldCandles            = MaxHoldCandles > 0 ? MaxHoldCandles : 36,
-        PositionSizePct           = PositionSizePct > 0 ? PositionSizePct : 0.03,
-        Fitness                   = Fitness,
-    }.ClampToBounds();
-}
 
 class FadeLongGenotypeDto
 {
@@ -120,9 +76,6 @@ class FadeLongGenotypeDto
     public int    MaxHoldCandles           { get; set; }
     public double PositionSizePct          { get; set; }
     public int    RegimeSustainedBars      { get; set; }
-    public double ProfitLockThreshold      { get; set; }
-    public double DrawbackTolerance        { get; set; }
-    public double ProtectedSizeFactor      { get; set; }
     public double Fitness                  { get; set; }
 
     public static FadeLongGenotypeDto From(FadeLongGenotype g) => new()
@@ -142,9 +95,6 @@ class FadeLongGenotypeDto
         MaxHoldCandles            = g.MaxHoldCandles,
         PositionSizePct           = g.PositionSizePct,
         RegimeSustainedBars       = g.RegimeSustainedBars,
-        ProfitLockThreshold       = g.ProfitLockThreshold,
-        DrawbackTolerance         = g.DrawbackTolerance,
-        ProtectedSizeFactor       = g.ProtectedSizeFactor,
         Fitness                   = g.Fitness,
     };
 
@@ -165,9 +115,6 @@ class FadeLongGenotypeDto
         MaxHoldCandles            = MaxHoldCandles   > 0 ? MaxHoldCandles   : 42,
         PositionSizePct           = PositionSizePct  > 0 ? PositionSizePct  : 0.03,
         RegimeSustainedBars       = RegimeSustainedBars > 0 ? RegimeSustainedBars : 30,
-        ProfitLockThreshold       = ProfitLockThreshold > 0 ? ProfitLockThreshold : 0.15,
-        DrawbackTolerance         = DrawbackTolerance   > 0 ? DrawbackTolerance   : 0.07,
-        ProtectedSizeFactor       = ProtectedSizeFactor > 0 ? ProtectedSizeFactor : 0.50,
         Fitness                   = Fitness,
     }.ClampToBounds();
 }
@@ -185,10 +132,9 @@ class DipLongGenotypeDto
     public double TrailingStopAtrMult         { get; set; }
     public int    MaxHoldCandles              { get; set; }
     public double PositionSizePct             { get; set; }
+    public int    TimeStopBars                { get; set; }  // 0 = not in old JSON → use 999 (disabled)
+    public double TimeStopLossPct             { get; set; }  // 0 = not in old JSON → use 0.99 (disabled)
     public int    RegimeSustainedBars         { get; set; }
-    public double ProfitLockThreshold         { get; set; }
-    public double DrawbackTolerance           { get; set; }
-    public double ProtectedSizeFactor         { get; set; }
     public double Fitness                     { get; set; }
 
     public static DipLongGenotypeDto From(DipLongGenotype g) => new()
@@ -204,10 +150,9 @@ class DipLongGenotypeDto
         TrailingStopAtrMult       = g.TrailingStopAtrMult,
         MaxHoldCandles            = g.MaxHoldCandles,
         PositionSizePct           = g.PositionSizePct,
+        TimeStopBars              = g.TimeStopBars,
+        TimeStopLossPct           = g.TimeStopLossPct,
         RegimeSustainedBars       = g.RegimeSustainedBars,
-        ProfitLockThreshold       = g.ProfitLockThreshold,
-        DrawbackTolerance         = g.DrawbackTolerance,
-        ProtectedSizeFactor       = g.ProtectedSizeFactor,
         Fitness                   = g.Fitness,
     };
 
@@ -224,10 +169,9 @@ class DipLongGenotypeDto
         TrailingStopAtrMult       = TrailingStopAtrMult       > 0 ? TrailingStopAtrMult       : 2.0,
         MaxHoldCandles            = MaxHoldCandles      > 0 ? MaxHoldCandles      : 30,
         PositionSizePct           = PositionSizePct     > 0 ? PositionSizePct     : 0.03,
+        TimeStopBars              = TimeStopBars        > 0 ? TimeStopBars        : 999,  // 0 in old JSON → disabled
+        TimeStopLossPct           = TimeStopLossPct     > 0 ? TimeStopLossPct     : 0.99,
         RegimeSustainedBars       = RegimeSustainedBars > 0 ? RegimeSustainedBars : 30,
-        ProfitLockThreshold       = ProfitLockThreshold > 0 ? ProfitLockThreshold : 0.15,
-        DrawbackTolerance         = DrawbackTolerance   > 0 ? DrawbackTolerance   : 0.07,
-        ProtectedSizeFactor       = ProtectedSizeFactor > 0 ? ProtectedSizeFactor : 0.50,
         Fitness                   = Fitness,
     }.ClampToBounds();
 }
@@ -246,6 +190,8 @@ class SwingLongGenotypeDto
     public double TrailingStopAtrMult       { get; set; }
     public int    MaxHoldCandles            { get; set; }
     public double PositionSizePct           { get; set; }
+    public int    TimeStopBars              { get; set; }
+    public double TimeStopLossPct           { get; set; }
     public double Fitness                   { get; set; }
 
     public static SwingLongGenotypeDto From(SwingLongGenotype g) => new()
@@ -262,6 +208,8 @@ class SwingLongGenotypeDto
         TrailingStopAtrMult       = g.TrailingStopAtrMult,
         MaxHoldCandles            = g.MaxHoldCandles,
         PositionSizePct           = g.PositionSizePct,
+        TimeStopBars              = g.TimeStopBars,
+        TimeStopLossPct           = g.TimeStopLossPct,
         Fitness                   = g.Fitness,
     };
 
@@ -279,6 +227,8 @@ class SwingLongGenotypeDto
         TrailingStopAtrMult       = TrailingStopAtrMult       > 0 ? TrailingStopAtrMult       : 2.0,
         MaxHoldCandles            = MaxHoldCandles            > 0 ? MaxHoldCandles            : 42,
         PositionSizePct           = PositionSizePct           > 0 ? PositionSizePct           : 0.03,
+        TimeStopBars              = TimeStopBars              > 0 ? TimeStopBars              : 999,  // 0 in old JSON → disabled
+        TimeStopLossPct           = TimeStopLossPct           > 0 ? TimeStopLossPct           : 0.99,
         Fitness                   = Fitness,
     }.ClampToBounds();
 }

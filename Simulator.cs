@@ -150,6 +150,188 @@ public static class Simulator
         );
     }
 
+    public record DDEvent(DateTime PeakTime, double PeakBalance, DateTime TroughTime, double TroughBalance)
+    {
+        public double DropPct => (PeakBalance - TroughBalance) / PeakBalance * 100.0;
+    }
+
+    // Like SimulatePortfolioExposureCapped but also returns a per-trade equity curve and
+    // the worst-DD event (peak/trough timestamps + balances) for post-hoc investigation.
+    public static (PortfolioResult Result, DDEvent? WorstDD, List<(DateTime Time, double Balance)> Curve)
+        SimulateExposureCappedWithCurve(
+            List<(DateTime EntryTime, double Return, double CoinConf, TimeSpan HoldDuration)> trades,
+            double maxTotalExposurePct = 0.30,
+            double startBalance        = 100.0,
+            double drawdownBrakeAt     = 0.15,
+            double kellyMultiplier     = 1.0,
+            double maxPositionFrac     = 0.15)
+    {
+        if (trades.Count == 0)
+            return (new PortfolioResult(startBalance, startBalance, 0, startBalance, 0, 0, 0, 0, -1), null, []);
+
+        var sorted = trades.OrderBy(t => t.EntryTime).ToList();
+        double balance = startBalance, peak = startBalance, maxDd = 0, totalPosSizeEur = 0;
+        int tradesToTenPct = -1;
+        var openPos = new List<(DateTime Close, double EurAllocated)>();
+        var curve   = new List<(DateTime, double)>(sorted.Count);
+
+        // Running peak / worst-DD tracking
+        DateTime curPeakTime = sorted[0].EntryTime;
+        double   curPeakBal  = startBalance;
+        DateTime peakTime    = sorted[0].EntryTime;
+        DateTime troughTime  = sorted[0].EntryTime;
+        double   peakBal     = startBalance;
+        double   troughBal   = startBalance;
+
+        for (int i = 0; i < sorted.Count; i++)
+        {
+            var (entryTime, ret, conf, hold) = sorted[i];
+
+            openPos.RemoveAll(p => p.Close <= entryTime);
+            double currentEurDeployed = openPos.Sum(p => p.EurAllocated);
+            double maxEurDeployable   = maxTotalExposurePct * balance;
+            double headroomEur        = Math.Max(0, maxEurDeployable - currentEurDeployed);
+
+            double currentDd = peak > balance ? (peak - balance) / peak : 0.0;
+            double ddScale   = Math.Max(0.20, 1.0 - currentDd / drawdownBrakeAt);
+
+            double desiredFrac = Math.Min(conf * kellyMultiplier, maxPositionFrac);
+            double desiredEur  = desiredFrac * balance * ddScale;
+            double posEur      = Math.Min(desiredEur, headroomEur);
+
+            openPos.Add((entryTime + hold, posEur));
+            totalPosSizeEur += posEur;
+            balance += ret / 100.0 * posEur;
+            curve.Add((entryTime, balance));
+
+            if (tradesToTenPct < 0 && balance >= startBalance * 1.10)
+                tradesToTenPct = i + 1;
+
+            if (balance > peak)
+            {
+                peak        = balance;
+                curPeakTime = entryTime;
+                curPeakBal  = balance;
+            }
+
+            double dd = peak > 0 ? (peak - balance) / peak * 100.0 : 0;
+            if (dd > maxDd)
+            {
+                maxDd      = dd;
+                peakTime   = curPeakTime;
+                peakBal    = curPeakBal;
+                troughTime = entryTime;
+                troughBal  = balance;
+            }
+        }
+
+        var result = new PortfolioResult(
+            StartBalance:   startBalance,
+            EndBalance:     balance,
+            RealizedProfit: 0,
+            TotalValue:     balance,
+            MaxDrawdownPct: maxDd,
+            Confidence:     0,
+            AvgPositionEur: sorted.Count > 0 ? totalPosSizeEur / sorted.Count : 0,
+            TradesCount:    sorted.Count,
+            TradesToTenPct: tradesToTenPct);
+
+        DDEvent? ddEvent = maxDd > 0
+            ? new DDEvent(peakTime, peakBal, troughTime, troughBal)
+            : null;
+
+        return (result, ddEvent, curve);
+    }
+
+    // Strategy-aware overload: includes per-trade strategy name so the simulator can apply
+    // a portfolio-DD-based entry gate for long strategies (DipLong / SwingLong).
+    // ddLongEntryGatePct: skip long entries when portfolio peak-to-trough DD exceeds this fraction.
+    //   1.0 = gate disabled (default).  0.08 = block new longs when down 8%+ from peak.
+    // confLossCapMin/Max: confidence-scaled P&L cap for long trades.
+    //   effectiveCap = min + (max - min) * conf  →  loss floored at -cap.
+    //   Low confidence → tight cap; high confidence → wider cap.  1.0 defaults = disabled.
+    public static PortfolioResult SimulatePortfolioExposureCapped(
+        List<(DateTime EntryTime, double Return, double CoinConf, TimeSpan HoldDuration, string Strategy)> trades,
+        double maxTotalExposurePct      = 0.30,
+        double startBalance             = 100.0,
+        double drawdownBrakeAt          = 0.15,
+        double kellyMultiplier          = 1.0,
+        double maxPositionFrac          = 0.15,
+        double ddLongEntryGatePct       = 1.0,
+        double confLossCapMin           = 1.0,
+        double confLossCapMax           = 1.0,
+        double profitProtectThreshold   = 1.0,   // portfolio gain fraction that arms protection; 1.0 = disabled
+        double profitProtectDrawback    = 0.10,  // drawback from peak that triggers protection
+        double profitProtectFactor      = 1.0)   // size multiplier in protection mode; 1.0 = no reduction
+    {
+        if (trades.Count == 0) return new PortfolioResult(startBalance, startBalance, 0, startBalance, 0, 0, 0, 0, -1);
+
+        var sorted = trades.OrderBy(t => t.EntryTime).ToList();
+        double balance = startBalance, peak = startBalance, maxDd = 0, totalPosSizeEur = 0;
+        int tradesToTenPct = -1;
+        var openPos = new List<(DateTime Close, double EurAllocated)>();
+
+        for (int i = 0; i < sorted.Count; i++)
+        {
+            var (entryTime, ret, conf, hold, strategy) = sorted[i];
+
+            openPos.RemoveAll(p => p.Close <= entryTime);
+
+            // Portfolio DD entry gate: block new DipLong/SwingLong when portfolio is in drawdown
+            bool isLong = strategy is "diplong" or "swing_long";
+            double currentDd = peak > balance ? (peak - balance) / peak : 0.0;
+            if (isLong && currentDd > ddLongEntryGatePct) continue;
+
+            // Profit protection: reduce long position size when portfolio has made gains and is giving them back.
+            // Applies to all non-short longs (diplong, swing_long, fade_long).
+            bool isProtectable = strategy is "diplong" or "swing_long" or "fade_long";
+            double portGain = (balance - startBalance) / startBalance;
+            bool inProtectMode = isProtectable
+                && profitProtectThreshold < 1.0
+                && portGain >= profitProtectThreshold
+                && currentDd >= profitProtectDrawback;
+
+            // Confidence-scaled P&L cap: limits how much a long trade can drag the portfolio.
+            double effectiveRet = ret;
+            if (isLong && confLossCapMin < 1.0)
+            {
+                double cap = confLossCapMin + (confLossCapMax - confLossCapMin) * Math.Clamp(conf, 0.0, 1.0);
+                effectiveRet = Math.Max(ret, -cap * 100.0);
+            }
+
+            double maxEurDeployable = maxTotalExposurePct * balance;
+            double headroomEur      = Math.Max(0, maxEurDeployable - openPos.Sum(p => p.EurAllocated));
+            double ddScale          = Math.Max(0.20, 1.0 - currentDd / drawdownBrakeAt);
+
+            double desiredFrac = Math.Min(conf * kellyMultiplier, maxPositionFrac);
+            double desiredEur  = desiredFrac * balance * ddScale;
+            if (inProtectMode) desiredEur *= profitProtectFactor;
+            double posEur      = Math.Min(desiredEur, headroomEur);
+
+            openPos.Add((entryTime + hold, posEur));
+            totalPosSizeEur += posEur;
+            balance += effectiveRet / 100.0 * posEur;
+
+            if (tradesToTenPct < 0 && balance >= startBalance * 1.10)
+                tradesToTenPct = i + 1;
+
+            if (balance > peak) peak = balance;
+            double dd = peak > 0 ? (peak - balance) / peak * 100.0 : 0;
+            if (dd > maxDd) maxDd = dd;
+        }
+
+        return new PortfolioResult(
+            StartBalance:   startBalance,
+            EndBalance:     balance,
+            RealizedProfit: 0,
+            TotalValue:     balance,
+            MaxDrawdownPct: maxDd,
+            Confidence:     0,
+            AvgPositionEur: sorted.Count > 0 ? totalPosSizeEur / sorted.Count : 0,
+            TradesCount:    sorted.Count,
+            TradesToTenPct: tradesToTenPct);
+    }
+
     // Risk-capped overload: RiskCapFrac per trade limits effective position size so that
     // a stop-out at the coin's historical worst-case loss never exceeds the risk budget.
     // e.g. worstLoss=10%, riskBudget=1% → RiskCapFrac=0.10; at fullKelly conf=6% this

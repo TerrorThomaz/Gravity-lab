@@ -211,9 +211,9 @@ static class DynamicGuardTrainCommands
             oosCapped.Select(t => (t.EntryTime, t.Return, t.Conf, t.HoldDuration)).OrderBy(t => t.Item1).ToList(),
             Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
         var valGuarded = Simulator.SimulatePortfolioExposureCapped(
-            DynamicGuardGA.ApplyGuard(valCapped, dgSession), Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            DynamicGuardGA.ApplyGuard(valCapped, dgSession), Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: best.DdEntryGatePct, confLossCapMin: best.ConfLossCapMin, confLossCapMax: best.ConfLossCapMax, profitProtectThreshold: best.ProfitProtectThreshold, profitProtectDrawback: best.ProfitProtectDrawback, profitProtectFactor: best.ProfitProtectFactor);
         var oosGuarded = Simulator.SimulatePortfolioExposureCapped(
-            DynamicGuardGA.ApplyGuard(oosCapped, dgSession), Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            DynamicGuardGA.ApplyGuard(oosCapped, dgSession), Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: best.DdEntryGatePct, confLossCapMin: best.ConfLossCapMin, confLossCapMax: best.ConfLossCapMax, profitProtectThreshold: best.ProfitProtectThreshold, profitProtectDrawback: best.ProfitProtectDrawback, profitProtectFactor: best.ProfitProtectFactor);
 
         Console.WriteLine($"\n  Val:  baseline ret={valBase.EndBalance - 100:+0.1;-0.1}% DD={valBase.MaxDrawdownPct:F1}%"
                         + $"  →  guarded ret={valGuarded.EndBalance - 100:+0.1;-0.1}% DD={valGuarded.MaxDrawdownPct:F1}%");
@@ -222,7 +222,9 @@ static class DynamicGuardTrainCommands
 
         var dto = new DynamicGuardGenotypeDto(best.AtrLookback, best.AtrTrigger,
             best.MomLookback, best.MomThreshold, best.SizeFloor, best.Fitness,
-            best.PanicTrigger, best.RecoveryBars);
+            best.PanicTrigger, best.RecoveryBars, best.BullMomBypass, best.EntryAtrGate, best.DdEntryGatePct,
+            best.ConfLossCapMin, best.ConfLossCapMax,
+            best.ProfitProtectThreshold, best.ProfitProtectDrawback, best.ProfitProtectFactor);
         File.WriteAllText(Config.DynamicGuardGenoFile,
             System.Text.Json.JsonSerializer.Serialize(dto, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"\n  Saved → {Config.DynamicGuardGenoFile}");

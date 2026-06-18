@@ -181,6 +181,49 @@ public static class StrategyStats
         return NormalCDF((sr - expectedMax) / sdSharpe);
     }
 
+    // ── Gene count per trained strategy (excludes Fitness field) ────────────────
+    // Source: count of JSON fields in each *_genotype.json (Fitness excluded).
+    // Used for VC-dimension-style generalization analysis (Abu-Mustafa / LFD).
+    private static readonly Dictionary<string, int> GenesPerStrategy =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["FadeShort"]    = 15,  // EmaPeriod..PositionSizePct
+            ["FadeLong"]     = 18,  // + RegimePeriod, RegimeSustainedBars, ProfitLock, Drawback, ProtectedSize
+            ["DipLong"]      = 17,  // + RegimeLongEmaPeriod, RegimeSlopeLookback, TimeStop×2, ProfitLock, Drawback, ProtectedSize
+            ["SwingLong"]    = 14,  // EmaPeriod..TimeStopLossPct
+            ["Grid"]         =  9,  // AdxThreshold..MaxHoldCandles
+            ["Router"]       = 10,  // BullMinBars..EarlyBullBearCarry
+            ["DynamicGuard"] = 12,  // AtrLookback..ConfLossCapMax
+        };
+
+    // N/d ratio — Abu-Mustafa rule of thumb for VC generalization:
+    // need N >> d_vc. Dangerous < 5, borderline 5–10, ok 10–20, good > 30.
+    private static (double Ratio, string Verdict) NdRatio(int n, int d)
+    {
+        double r = (double)n / d;
+        string v = r < 5  ? "! severely undersampled" :
+                   r < 10 ? "~ borderline" :
+                   r < 20 ? "ok" : "good";
+        return (r, v);
+    }
+
+    // Hoeffding bound on mean: given N iid bounded samples, the true mean
+    // is within ±ε of the observed mean with probability ≥ 1-α.
+    // ε = (max-min) · sqrt(ln(2/α) / (2N))
+    private static double HoeffdingMeanBound(int n, double minR, double maxR, double alpha = 0.05)
+    {
+        if (n < 1) return double.PositiveInfinity;
+        return (maxR - minR) * Math.Sqrt(Math.Log(2.0 / alpha) / (2.0 * n));
+    }
+
+    // Minimum N to certify |observed_mean - true_mean| ≤ epsilon with prob ≥ 1-α.
+    // N = (max-min)² · ln(2/α) / (2ε²)
+    public static int HoeffdingMinN(double minR, double maxR, double epsilon, double alpha = 0.05)
+    {
+        double range = maxR - minR;
+        return (int)Math.Ceiling(range * range * Math.Log(2.0 / alpha) / (2.0 * epsilon * epsilon));
+    }
+
     // ── 7. Full strategy report ────────────────────────────────────────────────────
     public static void Report(string name, List<double> returns, int candleCount)
     {
@@ -198,6 +241,21 @@ public static class StrategyStats
         Console.WriteLine($"  Dist:        {dist}");
         Console.WriteLine($"  Kelly:       full={kelly:P1}  half={halfKelly:P1}  (using 5% cap)");
         Console.WriteLine($"  DSR:         {dsr:F3}  {(dsr > 0.95 ? "✓ strong" : dsr > 0.5 ? "~ moderate" : "✗ weak after GA search bias")}");
+
+        if (GenesPerStrategy.TryGetValue(name, out int d))
+        {
+            double minR   = returns.Min();
+            double maxR   = returns.Max();
+            double hBound = HoeffdingMeanBound(returns.Count, minR, maxR);
+            int    minN05 = HoeffdingMinN(minR, maxR, epsilon: 0.5);
+            int    minN10 = HoeffdingMinN(minR, maxR, epsilon: 1.0);
+            var (ratio, verdict) = NdRatio(returns.Count, d);
+            Console.WriteLine($"  VC:          d={d}  N/d={ratio:F1} {verdict}");
+            Console.WriteLine($"  Hoeffding:   worst-case bound on mean: ±{hBound:F2}%  (range [{minR:+0.1f;-0.1f}%, {maxR:+0.1f}%])");
+            Console.WriteLine($"               certify ±0.5%: need {minN05} trades  |  certify ±1.0%: need {minN10} trades");
+            if (returns.Count < 10 * d)
+                Console.WriteLine($"  ⚠  N < 10d ({returns.Count} < {10 * d}) — VC bound loose; rely on WFV + bootstrap, not raw E_in");
+        }
 
         if (!t.Sig95 && boot.ProbPositive < 0.9)
             Console.WriteLine("  ⚠  Edge not statistically significant — could be luck");
@@ -505,6 +563,23 @@ public static class CrashAnalyser
         Console.WriteLine($"  Swing stop loss:  {swingStopPct:F1}% avg per position (1.64 ATR × h4 ATR ≈ 3%)");
         Console.WriteLine($"  Max portfolio hit (clean stops):  -{maxLossEur:F2}€  on €100  ({-maxLossEur:F1}%)");
         Console.WriteLine($"  With 3× ATR expansion (crash):   -{maxLossEur * 3:F2}€  on €100  ({-maxLossEur * 3:F1}%)");
+
+        // Historical scenario projections using actual crash ATR expansion multiples
+        Console.WriteLine("\n  ── Historical crash projections (at peak exposure above) ──");
+        Console.WriteLine($"  {"Scenario",-20}  {"BTC drop",9}  {"Duration",9}  {"ATR ×",6}  {"Clean stops",12}  {"With slippage",14}");
+        Console.WriteLine($"  {new string('─', 80)}");
+        var historic = new (string Name, double DropPct, string Dur, double AtrMult)[]
+        {
+            ("COVID  Mar 2020", -50.0, "48h",  8.0),
+            ("LUNA   May 2022", -40.0, "7d",   5.0),
+            ("FTX    Nov 2022", -30.0, "5d",   3.0),
+        };
+        foreach (var (name, drop, dur, atrMult) in historic)
+        {
+            double clean = maxLossEur;
+            double slip  = maxLossEur * atrMult;
+            Console.WriteLine($"  {name,-20}  {drop,+8:F0}%  {dur,9}  {atrMult,5:F0}×  -{clean,10:F1}%  -{slip,12:F1}%");
+        }
     }
 
     // Rolling-trough rally: rally = BTC close > minRisePct above its low over troughLookbackH bars.

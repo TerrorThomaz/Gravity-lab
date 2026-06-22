@@ -19,6 +19,7 @@ public class SwingLongGA
     private readonly bool   _verbose;
     private readonly Random _rng = new();
     private readonly Func<DateTime, double>? _tradeGate;
+    private readonly FitnessConfig _cfg;
 
     public SwingLongGA(
         int populationSize    = 60,
@@ -26,7 +27,8 @@ public class SwingLongGA
         int eliteCount        = 10,
         int migrationInterval = 10,
         bool verbose          = false,
-        Func<DateTime, double>? tradeGate = null)
+        Func<DateTime, double>? tradeGate = null,
+        FitnessConfig? cfg = null)
     {
         _populationSize    = populationSize;
         _generations       = generations;
@@ -34,10 +36,11 @@ public class SwingLongGA
         _migrationInterval = migrationInterval;
         _verbose           = verbose;
         _tradeGate         = tradeGate;
+        _cfg               = cfg ?? new FitnessConfig();
     }
 
     private double FoldScore(
-        SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15)
+        SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, FitnessConfig cfg)
     {
         var rawTrades = SwingLongSimulator.GetSwingLongReturns(g, h1, m15);
 
@@ -51,6 +54,17 @@ public class SwingLongGA
             .Where(t => t.w >= 0.05)
             .ToList();
         if (trades.Count < 3) return -1.0;
+
+        // Compute vol coverage from m15 candles
+        double volWeight = 1.0;
+        if (cfg.AtrLow > 0.0 || cfg.AtrHigh < 9999.0)
+        {
+            var highs  = m15.ToArray().Select(c => c.High).ToArray();
+            var lows   = m15.ToArray().Select(c => c.Low).ToArray();
+            var closes = m15.ToArray().Select(c => c.Close).ToArray();
+            var atr    = Indicators.Atr(highs, lows, closes, 14);
+            volWeight  = VariantRouter.VolCoverage(atr, 0, atr.Length, cfg.AtrLow, cfg.AtrHigh);
+        }
 
         double balance = 1.0, peak = 1.0;
         foreach (var (ret, _) in trades)
@@ -74,7 +88,19 @@ public class SwingLongGA
             ? Math.Max(0.2, gain / peakGain)
             : 1.0;
 
-        return gain * 100.0 * wrMult * qualityMult * freqBonus / ddDiv * retentionMult;
+        var   retList = trades.Select(t => t.Return).ToList();
+        int   n       = retList.Count;
+        double sharpe  = Simulator.SharpeRatio(retList, n);
+        double calmar  = Simulator.CalmarRatio(retList);
+        double pf      = Simulator.ProfitFactor(retList);
+        double sortino = Simulator.SortinoRatio(retList, n);
+        double base_   = gain * 100.0 * wrMult * qualityMult * freqBonus / ddDiv * retentionMult;
+        return base_
+            * (1.0 + cfg.SharpeW  * Math.Max(0, Math.Min(sharpe  / 3.0,  3.0)))
+            * (1.0 + cfg.CalmarW  * Math.Max(0, Math.Min(calmar  / 2.0,  3.0)))
+            * (1.0 + cfg.PfW      * Math.Max(0, Math.Min(pf - 1.0,       3.0)))
+            * (1.0 + cfg.SortinoW * Math.Max(0, Math.Min(sortino / 4.0,  3.0)))
+            * volWeight;
     }
 
     private double Fitness(SwingLongGenotype g, IReadOnlyList<CoinData> coins, bool useValidation)
@@ -85,7 +111,7 @@ public class SwingLongGA
             var h1  = useValidation ? coin.ValH1.Span  : coin.TrainH1.Span;
             var m15 = useValidation ? coin.ValM15.Span : coin.TrainM15.Span;
             if (h1.Length < 50) return;
-            double s = FoldScore(g, h1, m15);
+            double s = FoldScore(g, h1, m15, _cfg);
             if (!double.IsNaN(s)) scores.Add(s * coin.Weight);
         });
         if (scores.IsEmpty) return -1.0;

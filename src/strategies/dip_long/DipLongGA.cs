@@ -23,6 +23,7 @@ public class DipLongGA
     private readonly bool                  _verbose;
     private readonly Func<DateTime, double>? _tradeGate;  // null = no gating; returns weight 0..1 (set by CoevolveGA)
     private readonly Random _rng = new();
+    private readonly FitnessConfig _cfg;
 
     private const int MinTradesPerFold = 25;   // VC theory requires N > d per fold; d=14 after protection mode moved to guard
     private const int D                = 14;   // genotype parameter count (excl. Fitness)
@@ -33,7 +34,8 @@ public class DipLongGA
         int  eliteCount        = 15,
         int  migrationInterval = 10,
         bool verbose           = true,
-        Func<DateTime, double>? tradeGate = null)
+        Func<DateTime, double>? tradeGate = null,
+        FitnessConfig? cfg = null)
     {
         _populationSize    = populationSize;
         _generations       = generations;
@@ -41,12 +43,15 @@ public class DipLongGA
         _migrationInterval = migrationInterval;
         _verbose           = verbose;
         _tradeGate         = tradeGate;
+        _cfg               = cfg ?? new FitnessConfig();
     }
 
     private static double FoldScore(
         List<(double Return, int RegimeBars)> returns,
         double posFrac,
-        int    sustainedBars)
+        int    sustainedBars,
+        FitnessConfig cfg,
+        double volWeight = 1.0)
     {
         // Only score trades that fired during a confirmed bull regime
         var valid = returns.Where(r => r.RegimeBars >= sustainedBars).Select(r => r.Return).ToList();
@@ -91,7 +96,18 @@ public class DipLongGA
             ? Math.Max(0.2, (balance - 1.0) / peakGain)
             : 1.0;
 
-        return gain * 100.0 * wrMult * qualityMult * freqBonus / ddDiv * retentionMult;
+        int    n       = valid.Count;
+        double sharpe  = Simulator.SharpeRatio(valid, n);
+        double calmar  = Simulator.CalmarRatio(valid);
+        double pfStat  = Simulator.ProfitFactor(valid);
+        double sortino = Simulator.SortinoRatio(valid, n);
+        double base_   = gain * 100.0 * wrMult * qualityMult * freqBonus / ddDiv * retentionMult;
+        return base_
+            * (1.0 + cfg.SharpeW  * Math.Max(0, Math.Min(sharpe  / 3.0,  3.0)))
+            * (1.0 + cfg.CalmarW  * Math.Max(0, Math.Min(calmar  / 2.0,  3.0)))
+            * (1.0 + cfg.PfW      * Math.Max(0, Math.Min(pfStat - 1.0,   3.0)))
+            * (1.0 + cfg.SortinoW * Math.Max(0, Math.Min(sortino / 4.0,  3.0)))
+            * volWeight;
     }
 
     private double Fitness(DipLongGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
@@ -105,6 +121,18 @@ public class DipLongGA
 
         double posFrac = Math.Clamp(ind.PositionSizePct, 0.01, 0.05);
 
+        // Compute vol coverage from m15 candles (all coins combined)
+        double volWeight = 1.0;
+        if (_cfg.AtrLow > 0.0 || _cfg.AtrHigh < 9999.0)
+        {
+            var m15Arr = validCoins.SelectMany(x => x.m15.ToArray()).ToArray();
+            var atr = Indicators.Atr(
+                m15Arr.Select(c => c.High).ToArray(),
+                m15Arr.Select(c => c.Low).ToArray(),
+                m15Arr.Select(c => c.Close).ToArray(), 14);
+            volWeight = VariantRouter.VolCoverage(atr, 0, atr.Length, _cfg.AtrLow, _cfg.AtrHigh);
+        }
+
         if (useValidation || folds <= 1)
         {
             var all = validCoins
@@ -113,7 +141,7 @@ public class DipLongGA
                     .Where(t => t.w >= 0.05)
                     .Select(t => (t.Return, t.RegimeBars)))
                 .ToList();
-            return FoldScore(all, posFrac, ind.RegimeSustainedBars);
+            return FoldScore(all, posFrac, ind.RegimeSustainedBars, _cfg, volWeight);
         }
 
         // Per-coin percentage folds: each coin slices its own history into k equal parts.
@@ -141,7 +169,7 @@ public class DipLongGA
                                     .Select(t => (t.Return, t.RegimeBars)));
             }
             totalFoldTrades += foldRet.Count;
-            scores[f] = FoldScore(foldRet, posFrac, ind.RegimeSustainedBars);
+            scores[f] = FoldScore(foldRet, posFrac, ind.RegimeSustainedBars, _cfg, volWeight);
         }
 
         double mean    = scores.Average();

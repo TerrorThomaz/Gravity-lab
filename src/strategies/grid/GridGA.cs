@@ -15,31 +15,34 @@ public class GridGeneticAlgorithm
 {
     public record CoinData(ReadOnlyMemory<Candle> TrainCandles, ReadOnlyMemory<Candle> ValCandles, double Weight = 1.0);
 
-    private readonly int    _populationSize;
-    private readonly int    _generations;
-    private readonly int    _eliteCount;
-    private readonly int    _migrationInterval;
-    private readonly bool   _verbose;
-    private readonly Random _rng = new();
+    private readonly int           _populationSize;
+    private readonly int           _generations;
+    private readonly int           _eliteCount;
+    private readonly int           _migrationInterval;
+    private readonly bool          _verbose;
+    private readonly Random        _rng = new();
+    private readonly FitnessConfig _cfg;
 
     private const int    MinTradesPerFold = 10;
     private const double FitPosFrac       = 0.03;
 
     public GridGeneticAlgorithm(
-        int  populationSize    = 60,
-        int  generations       = 100,
-        int  eliteCount        = 15,
-        int  migrationInterval = 10,
-        bool verbose           = true)
+        int            populationSize    = 60,
+        int            generations       = 100,
+        int            eliteCount        = 15,
+        int            migrationInterval = 10,
+        bool           verbose           = true,
+        FitnessConfig? cfg               = null)
     {
         _populationSize    = populationSize;
         _generations       = generations;
         _eliteCount        = eliteCount;
         _migrationInterval = migrationInterval;
         _verbose           = verbose;
+        _cfg               = cfg ?? new FitnessConfig();
     }
 
-    private static double FoldScore(List<double> returns)
+    private static double FoldScore(List<double> returns, FitnessConfig cfg, double volWeight = 1.0)
     {
         if (returns.Count < MinTradesPerFold) return -1.0;
 
@@ -65,7 +68,18 @@ public class GridGeneticAlgorithm
         double wrMult = wr < 0.40 ? wr / 0.40 : 1.0 + (wr - 0.40) * 0.5;
         double ddDiv  = 1.0 + maxDd * 20.0;
 
-        return gain * 100.0 * wrMult / ddDiv;
+        double baseScore = gain * 100.0 * wrMult / ddDiv;
+        int    n         = returns.Count;
+        double sharpe    = Simulator.SharpeRatio(returns, n);
+        double calmar    = Simulator.CalmarRatio(returns);
+        double pfStat    = Simulator.ProfitFactor(returns);
+        double sortino   = Simulator.SortinoRatio(returns, n);
+        return baseScore
+            * (1.0 + cfg.SharpeW  * Math.Max(0, Math.Min(sharpe   / 3.0,  3.0)))
+            * (1.0 + cfg.CalmarW  * Math.Max(0, Math.Min(calmar   / 2.0,  3.0)))
+            * (1.0 + cfg.PfW      * Math.Max(0, Math.Min(pfStat - 1.0,    3.0)))
+            * (1.0 + cfg.SortinoW * Math.Max(0, Math.Min(sortino  / 4.0,  3.0)))
+            * volWeight;
     }
 
     private double Fitness(GridGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
@@ -81,7 +95,7 @@ public class GridGeneticAlgorithm
             var all = validCoins
                 .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr.Span).Select(t => t.Return))
                 .ToList();
-            return FoldScore(all);
+            return FoldScore(all, _cfg);
         }
 
         int minLen  = validCoins.Min(x => x.arr.Length);
@@ -92,7 +106,7 @@ public class GridGeneticAlgorithm
             var all = validCoins
                 .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr.Span).Select(t => t.Return))
                 .ToList();
-            return FoldScore(all);
+            return FoldScore(all, _cfg);
         }
 
         int      foldSize = minLen / k;
@@ -108,7 +122,7 @@ public class GridGeneticAlgorithm
                 foldReturns.AddRange(
                     GridSimulator.GetGridSessionReturns(ind, arr.Slice(start, end - start).Span).Select(t => t.Return));
             }
-            scores[f] = FoldScore(foldReturns);
+            scores[f] = FoldScore(foldReturns, _cfg);
         }
 
         double mean = scores.Average();

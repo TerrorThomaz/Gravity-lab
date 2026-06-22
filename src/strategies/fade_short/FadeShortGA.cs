@@ -52,32 +52,35 @@ public class FadeShortGA
             weight);
     }
 
-    private readonly int    _populationSize;
-    private readonly int    _generations;
-    private readonly int    _eliteCount;
-    private readonly int    _migrationInterval;
-    private readonly bool   _verbose;
-    private readonly Random _rng = new();
+    private readonly int          _populationSize;
+    private readonly int          _generations;
+    private readonly int          _eliteCount;
+    private readonly int          _migrationInterval;
+    private readonly bool         _verbose;
+    private readonly Random       _rng = new();
+    private readonly FitnessConfig _cfg;
 
     private const int MinTradesPerFold = 30;
 
     public FadeShortGA(
-        int  populationSize    = 50,
-        int  generations       = 80,
-        int  eliteCount        = 15,
-        int  migrationInterval = 10,
-        bool verbose           = true)
+        int           populationSize    = 50,
+        int           generations       = 80,
+        int           eliteCount        = 15,
+        int           migrationInterval = 10,
+        bool          verbose           = true,
+        FitnessConfig? cfg              = null)
     {
         _populationSize    = populationSize;
         _generations       = generations;
         _eliteCount        = eliteCount;
         _migrationInterval = migrationInterval;
         _verbose           = verbose;
+        _cfg               = cfg ?? new FitnessConfig();
     }
 
     // Portfolio-based fold score: simulate a genotype-evolved position size through the fold,
     // then weight by win rate and divide by drawdown.
-    private static double FoldScore(List<double> returns, double posFrac)
+    private static double FoldScore(List<double> returns, double posFrac, FitnessConfig cfg, double volWeight = 1.0)
     {
         if (returns.Count < MinTradesPerFold) return -1.0;
 
@@ -138,7 +141,18 @@ public class FadeShortGA
             ? Math.Max(0.2, (balance - 1.0) / peakGain)
             : 1.0;
 
-        return gain * 100.0 * wrMult * qualityMult * freqBonus / ddDiv * retentionMult;
+        double baseScore = gain * 100.0 * wrMult * qualityMult * freqBonus / ddDiv * retentionMult;
+        int    n         = returns.Count;
+        double sharpe    = Simulator.SharpeRatio(returns, n);
+        double calmar    = Simulator.CalmarRatio(returns);
+        double pfStat    = Simulator.ProfitFactor(returns);
+        double sortino   = Simulator.SortinoRatio(returns, n);
+        return baseScore
+            * (1.0 + cfg.SharpeW  * Math.Max(0, Math.Min(sharpe   / 3.0,  3.0)))
+            * (1.0 + cfg.CalmarW  * Math.Max(0, Math.Min(calmar   / 2.0,  3.0)))
+            * (1.0 + cfg.PfW      * Math.Max(0, Math.Min(pfStat - 1.0,    3.0)))
+            * (1.0 + cfg.SortinoW * Math.Max(0, Math.Min(sortino  / 4.0,  3.0)))
+            * volWeight;
     }
 
     // Pool returns across ALL coins within each fold time-slot.
@@ -149,10 +163,11 @@ public class FadeShortGA
     // Uses pre-computed RSI/ADX/ATR caches and a caller-rented EMA buffer so that
     // per-individual allocations are limited to the single EMA array per coin per fold.
     private static double FitnessFromCache(
-        FadeShortGenotype      ind,
+        FadeShortGenotype        ind,
         IReadOnlyList<CoinCache> caches,
-        bool                   useFolds,
-        int                    folds = 5)
+        bool                     useFolds,
+        FitnessConfig            cfg,
+        int                      folds = 5)
     {
         if (caches.Count == 0) return 0;
 
@@ -175,7 +190,8 @@ public class FadeShortGA
                         cache.Rsi, cache.Adx, cache.Atr, emaBuffer, 0, cache.Candles.Length))
                         all.Add(t.Return);
                 }
-                return FoldScore(all, posFrac);
+                double volWeight = AverageVolCoverage(caches, 0, caches.Min(c => c.Candles.Length), cfg);
+                return FoldScore(all, posFrac, cfg, volWeight);
             }
 
             // Walk-forward fold CV on train caches
@@ -193,7 +209,8 @@ public class FadeShortGA
                         cache.Rsi, cache.Adx, cache.Atr, emaBuffer, 0, cache.Candles.Length))
                         all.Add(t.Return);
                 }
-                return FoldScore(all, posFrac);
+                double volWeight = AverageVolCoverage(caches, 0, caches.Min(c => c.Candles.Length), cfg);
+                return FoldScore(all, posFrac, cfg, volWeight);
             }
 
             int      foldSize = minLen / k;
@@ -212,7 +229,8 @@ public class FadeShortGA
                         cache.Rsi, cache.Adx, cache.Atr, emaBuffer, fStart, fEnd))
                         foldReturns.Add(t.Return);
                 }
-                scores[f] = FoldScore(foldReturns, posFrac);
+                double volWeight = AverageVolCoverage(caches, fStart, fEnd, cfg);
+                scores[f] = FoldScore(foldReturns, posFrac, cfg, volWeight);
             }
 
             double mean = scores.Average();
@@ -223,6 +241,19 @@ public class FadeShortGA
         {
             ArrayPool<double>.Shared.Return(emaBuffer);
         }
+    }
+
+    private static double AverageVolCoverage(IReadOnlyList<CoinCache> caches, int start, int end, FitnessConfig cfg)
+    {
+        if (cfg.AtrLow <= 0.0 && cfg.AtrHigh >= 9999.0) return 1.0;
+        double sum = 0; int count = 0;
+        foreach (var c in caches)
+        {
+            if (c.Atr.Length < end) continue;
+            sum += VariantRouter.VolCoverage(c.Atr, start, end, cfg.AtrLow, cfg.AtrHigh);
+            count++;
+        }
+        return count == 0 ? 1.0 : sum / count;
     }
 
     public FadeShortGenotype Run(IReadOnlyList<CoinData> coins, FadeShortGenotype? seed = null)
@@ -274,7 +305,7 @@ public class FadeShortGA
             double mutationRate = stagnantGens >= 15 ? Math.Min(baseMutRate * 2.0, 0.9) : baseMutRate;
 
             Parallel.ForEach(population, ind =>
-                ind.Fitness = FitnessFromCache(ind, trainCaches, useFolds: true));
+                ind.Fitness = FitnessFromCache(ind, trainCaches, useFolds: true, _cfg));
 
             population  = population.OrderByDescending(g => g.Fitness).ToList();
             eliteIsland = population.Take(_eliteCount).ToList();
@@ -305,7 +336,7 @@ public class FadeShortGA
         // Re-score elite on held-out validation candles
         if (_verbose) Console.WriteLine("\n=== Held-out validation ===");
         Parallel.ForEach(eliteIsland, ind =>
-            ind.Fitness = FitnessFromCache(ind, valCaches, useFolds: false));
+            ind.Fitness = FitnessFromCache(ind, valCaches, useFolds: false, _cfg));
 
         var best = eliteIsland.OrderByDescending(g => g.Fitness).First();
         if (_verbose) Console.WriteLine($"Best: {best}");

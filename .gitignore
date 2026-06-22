@@ -26,3 +26,9 @@ best_genotype_original.json
 .vs/
 .vscode/
 .idea/
+
+## Variant / experiment files (machine-local, not shared)
+fitness_config.json
+backtest_results.json
+training_progress.json
+fulltest_results.json

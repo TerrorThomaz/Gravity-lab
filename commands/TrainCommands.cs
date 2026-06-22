@@ -5,10 +5,14 @@ namespace TradingGA;
 
 static class TrainCommands
 {
-    public static async Task RunFadeShortTrain(BybitRestClient client, bool invertScreen = false)
+    public static async Task RunFadeShortTrain(BybitRestClient client, string[]? args = null, bool invertScreen = false)
     {
+        string variant  = ResolveVariant(args);
+        var    cfg      = FitnessConfig.Load();
+        string genoPath = VariantGenoPath("fade_short", variant, Config.FadeShortGenoFile);
         string modeLabel = invertScreen ? "RETRAIN (generalisation pass — unknown coins)" : "TRAIN (1h setup + 15m entry/exit, 40 coins, ~3yr)";
-        Console.WriteLine($"=== Gravity-gen2 | {modeLabel} ===\n");
+        Console.WriteLine($"=== Gravity-gen2 | {modeLabel} ===");
+        Console.WriteLine($"Training FadeShort / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
 
         string[] heldOutSyms = ["BTCUSDT", "LTCUSDT", "FILUSDT", "DYDXUSDT", "ENAUSDT"];
 
@@ -138,13 +142,13 @@ static class TrainCommands
         if (namedCoins.Count == 0) { Console.WriteLine("No coins passed volume filter."); return; }
 
         FadeShortGenotype? seed = null;
-        if (File.Exists(Config.FadeShortGenoFile))
+        if (File.Exists(genoPath))
         {
-            var candidate = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype();
+            var candidate = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(genoPath))!.ToGenotype();
             if (candidate.Fitness > 0)
             {
                 seed = candidate;
-                Console.WriteLine($"  Seeding from {Config.FadeShortGenoFile}: {seed}");
+                Console.WriteLine($"  Seeding from {genoPath}: {seed}");
             }
             else
                 Console.WriteLine($"  Skipping seed (fitness ≤ 0 — previous run failed)");
@@ -185,7 +189,7 @@ static class TrainCommands
         Console.WriteLine($"\n  Training on {coinData.Count} coins simultaneously\n");
 
         Console.WriteLine("─── Swing GA training (universal — all coins) ───");
-        var best = new FadeShortGA(80, 150, verbose: true).Run(coinData, seed);
+        var best = new FadeShortGA(80, 150, verbose: true, cfg: cfg).Run(coinData, seed);
 
         Console.WriteLine("\n─── Bayesian refinement (60 TPE iterations) ───");
         var rngBo  = new Random(42);
@@ -214,9 +218,9 @@ static class TrainCommands
         else Console.WriteLine($"  GA elite kept (TPE did not improve)");
 
         Console.WriteLine($"\nFrozen genotype:\n  {best}\n");
-        File.WriteAllText(Config.FadeShortGenoFile, JsonSerializer.Serialize(FadeShortGenotypeDto.From(best),
+        File.WriteAllText(genoPath, JsonSerializer.Serialize(FadeShortGenotypeDto.From(best, cfg),
             new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved → {Config.FadeShortGenoFile}");
+        Console.WriteLine($"  Saved → {genoPath}");
 
         Console.WriteLine("\n─── Per-cluster GA training ───");
         var clusterGroups = namedCoins
@@ -308,5 +312,18 @@ static class TrainCommands
 
         Console.WriteLine($"\nNext: dotnet run -- backtest");
     }
+
+    internal static string ResolveVariant(string[]? args)
+    {
+        if (args != null)
+        {
+            int idx = Array.IndexOf(args, "--variant");
+            if (idx >= 0 && idx + 1 < args.Length) return args[idx + 1];
+        }
+        return Environment.GetEnvironmentVariable("GRAVITY_VARIANT") ?? "default";
+    }
+
+    internal static string VariantGenoPath(string key, string variant, string defaultPath)
+        => variant == "default" ? defaultPath : $"genotypes/{key}_{variant}_genotype.json";
 
 }

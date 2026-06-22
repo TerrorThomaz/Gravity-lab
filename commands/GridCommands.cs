@@ -5,9 +5,13 @@ namespace TradingGA;
 
 static class GridCommands
 {
-    public static async Task RunGridTrain(BybitRestClient client)
+    public static async Task RunGridTrain(BybitRestClient client, string[]? args = null)
     {
-        Console.WriteLine("=== Gravity-gen2 | GRID TRAIN (ranging long grid, 1h candles, 26 coins) ===\n");
+        string variant  = TrainCommands.ResolveVariant(args);
+        var    cfg      = FitnessConfig.Load();
+        string genoPath = TrainCommands.VariantGenoPath("grid", variant, Config.GridGenoFile);
+        Console.WriteLine("=== Gravity-gen2 | GRID TRAIN (ranging long grid, 1h candles, 26 coins) ===");
+        Console.WriteLine($"Training Grid / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
 
         var trainCoins = new[]
         {
@@ -54,22 +58,22 @@ static class GridCommands
         }
 
         GridGenotype? seed = null;
-        if (File.Exists(Config.GridGenoFile))
+        if (File.Exists(genoPath))
         {
-            var candidate = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(Config.GridGenoFile))!.ToGenotype();
+            var candidate = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(genoPath))!.ToGenotype();
             var clamped = candidate.ClampToBounds(adxCeiling);
-            if (clamped.Fitness > 0) { seed = clamped; Console.WriteLine($"  Seeding from {Config.GridGenoFile}: {seed}"); }
+            if (clamped.Fitness > 0) { seed = clamped; Console.WriteLine($"  Seeding from {genoPath}: {seed}"); }
             else Console.WriteLine("  Skipping seed (fitness ≤ 0)");
         }
 
         Console.WriteLine($"\n  Training on {coinData.Count} coins\n");
         Console.WriteLine("─── Grid GA training ───");
-        var best = new GridGeneticAlgorithm(60, 100, verbose: true).Run(coinData, seed, adxCeiling);
+        var best = new GridGeneticAlgorithm(60, 100, verbose: true, cfg: cfg).Run(coinData, seed, adxCeiling);
 
         Console.WriteLine($"\nFrozen genotype:\n  {best}\n");
-        File.WriteAllText(Config.GridGenoFile, JsonSerializer.Serialize(GridGenotypeDto.From(best),
+        File.WriteAllText(genoPath, JsonSerializer.Serialize(GridGenotypeDto.From(best, cfg),
             new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved → {Config.GridGenoFile}");
+        Console.WriteLine($"  Saved → {genoPath}");
 
         Console.WriteLine("\n─── Overfit check (train 80% vs val 20%, session-level) ───");
         var tRet = coinData.SelectMany(cd => GridSimulator.GetGridSessionReturns(best, cd.TrainCandles.Span).Select(t => t.Return)).ToList();

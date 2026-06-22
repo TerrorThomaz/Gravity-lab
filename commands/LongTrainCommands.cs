@@ -39,9 +39,12 @@ static class LongTrainCommands
                     .ToArray();
     }
 
-    public static async Task RunCoevolve(BybitRestClient client)
+    public static async Task RunCoevolve(BybitRestClient client, string[]? args = null)
     {
-        Console.WriteLine("=== Gravity-gen2 | COEVOLVETRAIN (FadeLong + DipLong + SwingLong + Router + DynamicGuard, 4 cycles) ===\n");
+        string variant = TrainCommands.ResolveVariant(args);
+        var    cfg     = FitnessConfig.Load();
+        Console.WriteLine("=== Gravity-gen2 | COEVOLVETRAIN (FadeLong + DipLong + SwingLong + Router + DynamicGuard, 4 cycles) ===");
+        Console.WriteLine($"Training Coevolve / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
 
         FadeShortGenotype? fsSeed = File.Exists(Config.FadeShortGenoFile)
             ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype()
@@ -206,9 +209,13 @@ static class LongTrainCommands
         Console.WriteLine("\nNext: dotnet run -- fulltest");
     }
 
-    public static async Task RunFadeLongTrain(BybitRestClient client)
+    public static async Task RunFadeLongTrain(BybitRestClient client, string[]? args = null)
     {
-        Console.WriteLine($"=== Gravity-gen2 | FADELONGTRAIN (oversold bounce, 1h setup + 15m entry/exit, {Config.BacktestCoins.Length} coins, ~3yr) ===\n");
+        string variant  = TrainCommands.ResolveVariant(args);
+        var    cfg      = FitnessConfig.Load();
+        string genoPath = TrainCommands.VariantGenoPath("fade_long", variant, Config.FadeLongGenoFile);
+        Console.WriteLine($"=== Gravity-gen2 | FADELONGTRAIN (oversold bounce, 1h setup + 15m entry/exit, {Config.BacktestCoins.Length} coins, ~3yr) ===");
+        Console.WriteLine($"Training FadeLong / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
 
         Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins (15m → 1h, ~3yr)...");
         var semFl = new SemaphoreSlim(4);
@@ -318,14 +325,14 @@ static class LongTrainCommands
         Console.WriteLine($"\n  {flCoins.Count} coins: {flCoins.Count - flHeld} training ({flRegime} regime-split + {flFallback} fallback) · {flHeld} held-out OOS\n");
 
         FadeLongGenotype? flSeed = null;
-        if (File.Exists(Config.FadeLongGenoFile))
+        if (File.Exists(genoPath))
         {
-            var candidate = JsonSerializer.Deserialize<FadeLongGenotypeDto>(File.ReadAllText(Config.FadeLongGenoFile))!.ToGenotype();
-            if (candidate.Fitness > 0) { flSeed = candidate; Console.WriteLine($"  Seeding from {Config.FadeLongGenoFile}: {flSeed}"); }
+            var candidate = JsonSerializer.Deserialize<FadeLongGenotypeDto>(File.ReadAllText(genoPath))!.ToGenotype();
+            if (candidate.Fitness > 0) { flSeed = candidate; Console.WriteLine($"  Seeding from {genoPath}: {flSeed}"); }
             else Console.WriteLine("  Skipping seed (fitness ≤ 0 — training from scratch)");
         }
 
-        var flBest = new FadeLongGA(80, 150, verbose: true).Run(flCoins, flSeed);
+        var flBest = new FadeLongGA(80, 150, verbose: true, cfg: cfg).Run(flCoins, flSeed);
 
         Console.WriteLine("\n─── Bayesian refinement for FadeLong (60 TPE iterations) ───");
         var flRng = new Random(42);
@@ -353,9 +360,9 @@ static class LongTrainCommands
         else Console.WriteLine($"  GA elite kept");
 
         Console.WriteLine($"\nFrozen genotype:\n  {flBest}\n");
-        File.WriteAllText(Config.FadeLongGenoFile, JsonSerializer.Serialize(FadeLongGenotypeDto.From(flBest),
+        File.WriteAllText(genoPath, JsonSerializer.Serialize(FadeLongGenotypeDto.From(flBest, cfg),
             new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved → {Config.FadeLongGenoFile}");
+        Console.WriteLine($"  Saved → {genoPath}");
 
         Console.WriteLine("\n─── Overfit check ───");
         var flTRaw = flCoins.Where(cd => cd.TrainH1.Length > 0)
@@ -392,9 +399,13 @@ static class LongTrainCommands
         Console.WriteLine($"\nNext: dotnet run -- backtest");
     }
 
-    public static async Task RunRegimeRouterTrain(BybitRestClient client)
+    public static async Task RunRegimeRouterTrain(BybitRestClient client, string[]? args = null)
     {
-        Console.WriteLine("=== Gravity-gen2 | ROUTERTRAIN (RegimeRouter GA · BTC-anchored · full history) ===\n");
+        string variant  = TrainCommands.ResolveVariant(args);
+        var    cfg      = FitnessConfig.Load();
+        string genoPath = TrainCommands.VariantGenoPath("regime_router", variant, Config.RouterGenoFile);
+        Console.WriteLine("=== Gravity-gen2 | ROUTERTRAIN (RegimeRouter GA · BTC-anchored · full history) ===");
+        Console.WriteLine($"Training RegimeRouter / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
 
         if (!File.Exists(Config.FadeShortGenoFile))
         { Console.WriteLine("No FadeShort genotype — run train first."); return; }
@@ -522,13 +533,13 @@ static class LongTrainCommands
         Console.WriteLine();
 
         RegimeRouterGenotype? routerSeed = null;
-        if (File.Exists(Config.RouterGenoFile))
+        if (File.Exists(genoPath))
         {
-            var candidate = JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype();
+            var candidate = JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(genoPath))!.ToGenotype();
             if (candidate.Fitness > 0)
             {
                 routerSeed = candidate;
-                Console.WriteLine($"  Seeding from {Config.RouterGenoFile}: {routerSeed}");
+                Console.WriteLine($"  Seeding from {genoPath}: {routerSeed}");
             }
         }
 
@@ -542,17 +553,21 @@ static class LongTrainCommands
             .Run(btcRegimeSeries, ethRegimeSeries, allTrades, routerSeed);
 
         Console.WriteLine($"\nFrozen router genotype:\n  {routerBest}\n");
-        File.WriteAllText(Config.RouterGenoFile,
+        File.WriteAllText(genoPath,
             JsonSerializer.Serialize(RegimeRouterGenotypeDto.From(routerBest),
                 new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved → {Config.RouterGenoFile}");
+        Console.WriteLine($"  Saved → {genoPath}");
         Console.WriteLine($"\nNext: dotnet run -- backtest");
     }
 
-    public static async Task RunDipLongTrain(BybitRestClient client)
+    public static async Task RunDipLongTrain(BybitRestClient client, string[]? args = null)
     {
         const int TrainWindowH1 = 12_960;
-        Console.WriteLine($"=== Gravity-gen2 | DIPLONGTRAIN (bull pullback, 1h setup + 15m entry/exit, {Config.BacktestCoins.Length} coins, last 18 months) ===\n");
+        string variant  = TrainCommands.ResolveVariant(args);
+        var    cfg      = FitnessConfig.Load();
+        string genoPath = TrainCommands.VariantGenoPath("dip_long", variant, Config.DipLongGenoFile);
+        Console.WriteLine($"=== Gravity-gen2 | DIPLONGTRAIN (bull pullback, 1h setup + 15m entry/exit, {Config.BacktestCoins.Length} coins, last 18 months) ===");
+        Console.WriteLine($"Training DipLong / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
 
         Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins (15m → 1h, ~3yr)...");
         var semDl = new SemaphoreSlim(4);
@@ -658,7 +673,7 @@ static class LongTrainCommands
         else
             Console.WriteLine("  Training from scratch (18-month window — old 3yr genotype intentionally not seeded)");
 
-        var dlBest = new DipLongGA(80, 150, verbose: true).Run(dlCoins, dlSeed);
+        var dlBest = new DipLongGA(80, 150, verbose: true, cfg: cfg).Run(dlCoins, dlSeed);
 
         Console.WriteLine("\n─── Bayesian refinement for DipLong (60 TPE iterations) ───");
         var dlRng = new Random(42);
@@ -686,9 +701,9 @@ static class LongTrainCommands
         else Console.WriteLine($"  GA elite kept");
 
         Console.WriteLine($"\nFrozen genotype:\n  {dlBest}\n");
-        File.WriteAllText(Config.DipLongGenoFile, JsonSerializer.Serialize(DipLongGenotypeDto.From(dlBest),
+        File.WriteAllText(genoPath, JsonSerializer.Serialize(DipLongGenotypeDto.From(dlBest, cfg),
             new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved → {Config.DipLongGenoFile}");
+        Console.WriteLine($"  Saved → {genoPath}");
 
         Console.WriteLine("\n─── Overfit check ───");
         var dlTRaw = dlCoins.Where(cd => cd.TrainH1.Length > 0)
@@ -725,9 +740,13 @@ static class LongTrainCommands
         Console.WriteLine($"\nNext: dotnet run -- backtest");
     }
 
-    public static async Task RunSwingLongTrain(BybitRestClient client)
+    public static async Task RunSwingLongTrain(BybitRestClient client, string[]? args = null)
     {
-        Console.WriteLine($"=== Gravity-gen2 | SWINGLONG TRAIN (bull divergence long, 1h+15m, {Config.BacktestCoins.Length} coins, ~3yr) ===\n");
+        string variant  = TrainCommands.ResolveVariant(args);
+        var    cfg      = FitnessConfig.Load();
+        string genoPath = TrainCommands.VariantGenoPath("swing_long", variant, Config.SwingLongGenoFile);
+        Console.WriteLine($"=== Gravity-gen2 | SWINGLONG TRAIN (bull divergence long, 1h+15m, {Config.BacktestCoins.Length} coins, ~3yr) ===");
+        Console.WriteLine($"Training SwingLong / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
 
         Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins (15m → 1h, ~3yr)...");
         var sem = new SemaphoreSlim(4);
@@ -762,14 +781,14 @@ static class LongTrainCommands
         if (coins.Count == 0) { Console.WriteLine("No data."); return; }
 
         SwingLongGenotype? seed = null;
-        if (File.Exists(Config.SwingLongGenoFile))
+        if (File.Exists(genoPath))
         {
             var candidate = JsonSerializer.Deserialize<SwingLongGenotypeDto>(
-                File.ReadAllText(Config.SwingLongGenoFile))!.ToGenotype();
+                File.ReadAllText(genoPath))!.ToGenotype();
             if (candidate.Fitness > 0) { seed = candidate; Console.WriteLine($"  Seeding: {seed}"); }
         }
 
-        var best = new SwingLongGA(80, 150, verbose: true).Run(coins, seed);
+        var best = new SwingLongGA(80, 150, verbose: true, cfg: cfg).Run(coins, seed);
 
         Console.WriteLine("\n─── Bayesian refinement (60 TPE iterations) ───");
         var slRng = new Random(42);
@@ -797,10 +816,10 @@ static class LongTrainCommands
         else Console.WriteLine($"  GA elite kept");
 
         Console.WriteLine($"\nFrozen genotype:\n  {best}\n");
-        File.WriteAllText(Config.SwingLongGenoFile,
-            JsonSerializer.Serialize(SwingLongGenotypeDto.From(best),
+        File.WriteAllText(genoPath,
+            JsonSerializer.Serialize(SwingLongGenotypeDto.From(best, cfg),
                 new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved → {Config.SwingLongGenoFile}");
+        Console.WriteLine($"  Saved → {genoPath}");
 
         // Quick overfit check
         var tRet = coins.Where(cd => cd.TrainH1.Length > 0)

@@ -91,6 +91,13 @@ static class CombinedBacktest
         var dlFullCoins    = new List<(string Sym, Candle[] H1, Candle[] M15, double Conf)>();
         var slFullCoins    = new List<(string Sym, Candle[] H1, Candle[] M15, double Conf)>();
 
+        // Per-coin val returns for statistical tests (router-gated where applicable).
+        var swingCoinRet = new List<(string Label, List<double> Returns)>();
+        var gridCoinRet  = new List<(string Label, List<double> Returns)>();
+        var flCoinRet    = new List<(string Label, List<double> Returns)>();
+        var dlCoinRet    = new List<(string Label, List<double> Returns)>();
+        var slCoinRet    = new List<(string Label, List<double> Returns)>();
+
         Console.WriteLine($"══ SWING (1h setup + 15m exec) ══════════════════════════════════════════════");
         Console.WriteLine($"{"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
         Console.WriteLine(new string('-', 82));
@@ -119,9 +126,9 @@ static class CombinedBacktest
             var screenH1  = h1Train.Length >= 4380 ? h1Train : h1;
             var screenM15 = screenH1.Length == h1.Length ? m15 : m15Train;
             var tRet  = FadeShortSimulator.GetFadeShortReturns(swingG, screenH1, screenM15).Select(t => t.Return).ToList();
-            double tExp  = tRet.Count >= 5 ? tRet.Average() : double.NegativeInfinity;
-            double tSort = tRet.Count >= 5 ? Simulator.SortinoRatio(tRet, screenH1.Length * 12) : double.NegativeInfinity;
-            double tPF   = tRet.Count >= 5 ? Simulator.ProfitFactor(tRet) : 0;
+            double tExp  = tRet.Count >= 20 ? tRet.Average() : double.NegativeInfinity;
+            double tSort = tRet.Count >= 20 ? Simulator.SortinoRatio(tRet, screenH1.Length * 12) : double.NegativeInfinity;
+            double tPF   = tRet.Count >= 20 ? Simulator.ProfitFactor(tRet) : 0;
             if (tExp <= 0 || tSort < 0.3 || tPF < 1.2)
             {
                 Console.WriteLine($"  {sym,-16}  skip (exp={tExp:+0.00;-0.00}% sort={tSort:F2} pf={tPF:F2})");
@@ -142,6 +149,7 @@ static class CombinedBacktest
 
             Console.WriteLine($"  {sym,-16} {conf,6:P1}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%");
             swingCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
+            swingCoinRet.Add((sym, vRet));
             swingFullCoins.Add((sym, h1, m15, conf));
             foreach (var (t, ret, _) in vSwing)
             {
@@ -174,9 +182,9 @@ static class CombinedBacktest
             var h1Val   = h1[split..];
 
             var tRet  = GridSimulator.GetGridReturns(gridG, h1Train).Select(t => t.Return).ToList();
-            double tExp  = tRet.Count >= 5 ? tRet.Average()               : double.NegativeInfinity;
-            double tPF   = tRet.Count >= 5 ? Simulator.ProfitFactor(tRet)  : 0;
-            double tSort = tRet.Count >= 5 ? Simulator.SortinoRatio(tRet, h1Train.Length)  : double.NegativeInfinity;
+            double tExp  = tRet.Count >= 20 ? tRet.Average()               : double.NegativeInfinity;
+            double tPF   = tRet.Count >= 20 ? Simulator.ProfitFactor(tRet)  : 0;
+            double tSort = tRet.Count >= 20 ? Simulator.SortinoRatio(tRet, h1Train.Length)  : double.NegativeInfinity;
             if (tExp <= 0 || tSort < 0.3 || tPF < 1.2)
             {
                 Console.WriteLine($"  {sym,-16}  skip (exp={tExp:+0.00;-0.00}% pf={tPF:F2} sort={tSort:F2})");
@@ -198,13 +206,16 @@ static class CombinedBacktest
             Console.WriteLine($"  {sym,-16} {conf,6:P1}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%");
             gridCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
             gridFullCoins.Add((sym, h1, conf));
+            var gridGated = new List<double>();
             foreach (var (t, ret, _) in vGrid)
             {
                 allTradesNoRouter.Add((t, ret, conf, "grid"));
                 if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.Grid, t)) continue;
                 gridTrades.Add((t, ret, conf));
                 allTrades.Add((t, ret, conf, "grid"));
+                gridGated.Add(ret);
             }
+            gridCoinRet.Add((sym, gridGated));
         }
 
         if (flG != null)
@@ -252,6 +263,7 @@ static class CombinedBacktest
 
                 Console.WriteLine($"  {sym,-16} {conf,6:P1}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%  -{gatedOut,4}");
                 flCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
+                flCoinRet.Add((sym, vRet));
                 flFullCoins.Add((sym, h1, m15, conf));
                 foreach (var t in raw)
                     allTradesNoRouter.Add((t.Time, t.Return, conf, "fadelong"));
@@ -308,6 +320,7 @@ static class CombinedBacktest
 
                 Console.WriteLine($"  {sym,-16} {conf,6:P1}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%  -{gatedOut,4}");
                 dlCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
+                dlCoinRet.Add((sym, vRet));
                 dlFullCoins.Add((sym, h1, m15, conf));
                 foreach (var t in raw)
                     allTradesNoRouter.Add((t.Time, t.Return, conf, "diplong"));
@@ -364,6 +377,7 @@ static class CombinedBacktest
 
                 Console.WriteLine($"  {sym,-16} {conf,6:P1}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%  -{gatedOut,4}");
                 slCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
+                slCoinRet.Add((sym, vRet));
                 slFullCoins.Add((sym, h1, m15, conf));
                 foreach (var t in raw)
                     allTradesNoRouter.Add((t.Time, t.Return, conf, "swing_long"));
@@ -740,40 +754,74 @@ static class CombinedBacktest
         Console.WriteLine($"\n── Full 3yr history DD (train + val, router-gated) ──────────────────────────");
         var fullHistTrades = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold)>();
 
-        foreach (var (_, h1f, m15f, conf) in swingFullCoins)
-            foreach (var (t, ret, _) in FadeShortSimulator.GetFadeShortReturns(swingG, h1f, m15f))
-                fullHistTrades.Add((t, ret, conf, TimeSpan.FromHours(swingG.MaxHoldCandles)));
+        // Per-coin full-history returns for statistical tests (more trades → PBO meaningful for sparse strategies).
+        var swingFullCoinRet = new List<(string Label, List<double> Returns)>();
+        var gridFullCoinRet  = new List<(string Label, List<double> Returns)>();
+        var flFullCoinRet    = new List<(string Label, List<double> Returns)>();
+        var dlFullCoinRet    = new List<(string Label, List<double> Returns)>();
+        var slFullCoinRet    = new List<(string Label, List<double> Returns)>();
 
-        foreach (var (_, h1f, conf) in gridFullCoins)
+        foreach (var (sym, h1f, m15f, conf) in swingFullCoins)
+        {
+            var coinRet = new List<double>();
+            foreach (var (t, ret, _) in FadeShortSimulator.GetFadeShortReturns(swingG, h1f, m15f))
+            {
+                fullHistTrades.Add((t, ret, conf, TimeSpan.FromHours(swingG.MaxHoldCandles)));
+                coinRet.Add(ret);
+            }
+            if (coinRet.Count > 0) swingFullCoinRet.Add((sym, coinRet));
+        }
+
+        foreach (var (sym, h1f, conf) in gridFullCoins)
+        {
+            var coinRet = new List<double>();
             foreach (var (t, ret, _) in GridSimulator.GetGridReturns(gridG, h1f))
             {
                 if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.Grid, t)) continue;
                 fullHistTrades.Add((t, ret, conf, TimeSpan.FromHours(gridG.MaxHoldCandles)));
+                coinRet.Add(ret);
             }
+            if (coinRet.Count > 0) gridFullCoinRet.Add((sym, coinRet));
+        }
 
         if (flG != null)
-            foreach (var (_, h1f, m15f, conf) in flFullCoins)
+            foreach (var (sym, h1f, m15f, conf) in flFullCoins)
+            {
+                var coinRet = new List<double>();
                 foreach (var t in FadeLongSimulator.GetFadeLongReturns(flG, h1f, m15f))
                 {
                     if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)) continue;
                     fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(flG.MaxHoldCandles)));
+                    coinRet.Add(t.Return);
                 }
+                if (coinRet.Count > 0) flFullCoinRet.Add((sym, coinRet));
+            }
 
         if (dlG != null)
-            foreach (var (_, h1f, m15f, conf) in dlFullCoins)
+            foreach (var (sym, h1f, m15f, conf) in dlFullCoins)
+            {
+                var coinRet = new List<double>();
                 foreach (var t in DipLongSimulator.GetDipLongReturns(dlG, h1f, m15f))
                 {
                     if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)) continue;
                     fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(dlG.MaxHoldCandles)));
+                    coinRet.Add(t.Return);
                 }
+                if (coinRet.Count > 0) dlFullCoinRet.Add((sym, coinRet));
+            }
 
         if (slG != null)
-            foreach (var (_, h1f, m15f, conf) in slFullCoins)
+            foreach (var (sym, h1f, m15f, conf) in slFullCoins)
+            {
+                var coinRet = new List<double>();
                 foreach (var t in SwingLongSimulator.GetSwingLongReturns(slG, h1f, m15f))
                 {
                     if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)) continue;
                     fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(slG.MaxHoldCandles)));
+                    coinRet.Add(t.Return);
                 }
+                if (coinRet.Count > 0) slFullCoinRet.Add((sym, coinRet));
+            }
 
         fullHistTrades.Sort((a, b) => a.Time.CompareTo(b.Time));
 
@@ -792,5 +840,58 @@ static class CombinedBacktest
             Console.WriteLine($"  Kelly  · {Config.MaxTotalExposurePct:P0} total:  End {fhRetE:+0.0;-0.0}%  ann {fhAnnE:+0.0;-0.0}%  DD {fhPortKel.MaxDrawdownPct:F1}%");
         }
         else Console.WriteLine("  Not enough trades for full-history simulation.");
+
+        // ── Multiple-testing analysis ─────────────────────────────────────────
+        // DSR corrects the Sharpe for non-normality and GA selection bias.
+        // PBO asks: across CPCV splits, does the IS-best coin win OOS?
+        // WRC asks: is the best coin's edge explainable by random data-snooping?
+        //
+        // GA trial estimates (upper bounds — correlated trials → effective T < nominal):
+        //   FadeShort / Grid / SwingLong : ~50 pop × 200 gen = 10,000
+        //   FadeLong / DipLong           : coevolve 8 rounds × 30 gen × 50 pop = 12,000
+        //   Interpretation: use T=1,000 as optimistic, T=10,000 as nominal,
+        //   T=100,000 as conservative worst-case.
+        Console.WriteLine($"\n\n{new string('═', 70)}");
+        Console.WriteLine("  MULTIPLE-TESTING ANALYSIS");
+        Console.WriteLine("  Deflated SR · Probability of Backtest Overfitting · White's Reality Check");
+        Console.WriteLine($"{new string('═', 70)}");
+
+        // Statistical tests use full 3yr history per coin (IS + val) so regime-conditional
+        // strategies (FadeLong, DipLong) have enough trades per coin for PBO to be meaningful.
+        var statRng = new Random(42);
+        if (swingFullCoinRet.Count >= 2) StatisticalTests.PrintReport(swingFullCoinRet, "FadeShort",  gaTrials: 10_000, rng: statRng);
+        if (gridFullCoinRet.Count  >= 2) StatisticalTests.PrintReport(gridFullCoinRet,  "Grid",       gaTrials: 10_000, rng: statRng);
+        if (flFullCoinRet.Count    >= 2) StatisticalTests.PrintReport(flFullCoinRet,    "FadeLong",   gaTrials: 12_000, rng: statRng);
+        if (dlFullCoinRet.Count    >= 2) StatisticalTests.PrintReport(dlFullCoinRet,    "DipLong",    gaTrials: 12_000, rng: statRng);
+        if (slFullCoinRet.Count    >= 2) StatisticalTests.PrintReport(slFullCoinRet,    "SwingLong",  gaTrials: 10_000, rng: statRng);
+
+        // Combined portfolio: DSR on full-history returns + WRC across all coin×strategy configs.
+        var allFullRet = swingFullCoinRet.Concat(gridFullCoinRet).Concat(flFullCoinRet)
+                                         .Concat(dlFullCoinRet).Concat(slFullCoinRet)
+                                         .SelectMany(c => c.Returns).ToList();
+        if (allFullRet.Count >= 10)
+        {
+            Console.WriteLine($"\n── Combined portfolio  ({allFullRet.Count} trades, full history) ──────────────────────");
+            Console.WriteLine("  DSR  (H₀: true SR ≤ 0 after selection from T trials across all strategies)");
+            Console.WriteLine($"  {"T (trials)",12}  {"SR̂",7}  {"E[maxSR]",9}  {"PSR₀",6}  {"DSR",6}  verdict");
+            foreach (int T in new[] { 10_000, 50_000, 500_000 })
+            {
+                var (dsr, psr0, eMaxSr, srHat) = StatisticalTests.DeflatedSharpeRatio(allFullRet, T);
+                string v = dsr >= 0.95 ? "✓ significant" : dsr >= 0.80 ? "⚠ borderline" : "✗ not significant";
+                Console.WriteLine($"  {T,12:N0}  {srHat,+7:F4}  {eMaxSr,+9:F4}  {psr0,6:F3}  {dsr,6:F3}  {v}");
+            }
+            var allCoinConfigs = swingFullCoinRet.Concat(gridFullCoinRet).Concat(flFullCoinRet)
+                                                 .Concat(dlFullCoinRet).Concat(slFullCoinRet).ToList();
+            if (allCoinConfigs.Count >= 2)
+            {
+                double pVal = StatisticalTests.WhitesRealityCheck(allCoinConfigs, rng: statRng);
+                if (!double.IsNaN(pVal))
+                {
+                    string v = pVal < 0.05 ? "✓ rejects H₀ (genuine edge)"
+                             : pVal < 0.20 ? "⚠ weak evidence" : "✗ H₀ not rejected";
+                    Console.WriteLine($"  WRC  (all {allCoinConfigs.Count} coin×strategy configs, 1000 bootstrap):  p={pVal:F3}  [{v}]");
+                }
+            }
+        }
     }
 }

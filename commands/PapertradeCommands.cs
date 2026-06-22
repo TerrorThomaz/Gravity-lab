@@ -83,17 +83,31 @@ static class PapertradeCommands
             Console.Clear();
             Console.WriteLine($"=== Gravity-gen2 | PAPER TRADE  [{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC]  Ctrl+C to stop ===\n");
 
-            var coinData = new List<(string Sym, Candle[]? H1, Candle[]? M15, bool Passes, double AtrPct, double VolM)>();
-            foreach (var sym in coins)
+            // Fetch all coins in parallel (4 concurrent), then trim to last 2000 m15 bars.
+            // Full CSV history (~28 000 h1 bars) is never loaded into simulator arrays —
+            // 500 h1 / 2000 m15 gives a 2× margin over the worst-case warmup (FadeLong 212 bars).
+            const int PtM15Window = 2000;
+            var sem = new SemaphoreSlim(4);
+            var fetchTasks = coins.Select(async sym =>
             {
-                if (cts.Token.IsCancellationRequested) break;
-                var m15Raw = await CandleFetcher.FetchFifteenMinCandlesCached(client, sym, batches: 5);
-                if (m15Raw.Count < 200) { coinData.Add((sym, null, null, false, 0, 0)); continue; }
-                var m15 = m15Raw.ToArray();
-                var h1  = FadeShortSimulator.AggregateCandles(m15, 4);
-                var (passes, atrPct, volM) = CandleFetcher.CheckSwingCriteria(m15Raw);
-                coinData.Add((sym, h1, m15, passes, atrPct, volM));
-            }
+                await sem.WaitAsync(cts.Token);
+                try
+                {
+                    var m15Raw = await CandleFetcher.FetchFifteenMinCandlesCached(client, sym, batches: 5);
+                    if (m15Raw.Count < 200) return (sym, (Candle[]?)null, (Candle[]?)null, false, 0.0, 0.0);
+                    var trimmed = m15Raw.Count > PtM15Window
+                        ? m15Raw.GetRange(m15Raw.Count - PtM15Window, PtM15Window)
+                        : m15Raw;
+                    var (passes, atrPct, volM) = CandleFetcher.CheckSwingCriteria(m15Raw);
+                    var m15 = trimmed.ToArray();
+                    var h1  = FadeShortSimulator.AggregateCandles(m15, 4);
+                    return (sym, (Candle[]?)h1, (Candle[]?)m15, passes, atrPct, volM);
+                }
+                finally { sem.Release(); }
+            }).ToList();
+            var coinData = (await Task.WhenAll(fetchTasks))
+                .Select(r => (Sym: r.sym, H1: r.Item2, M15: r.Item3, Passes: r.Item4, AtrPct: r.Item5, VolM: r.Item6))
+                .ToList();
 
             // ── Regime routing (BTC primary · ETH secondary) ─────────────────────
             StrategyActivation? ptRouting = null;

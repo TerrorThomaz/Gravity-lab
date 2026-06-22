@@ -5,6 +5,48 @@ namespace TradingGA;
 
 static class CombinedBacktest
 {
+    // ── Variant loading helper ────────────────────────────────────────────────
+    // Scans genotypes/ for all files matching {strategyKey}_*_genotype.json and the
+    // plain {strategyKey}_genotype.json default.  Builds a VariantSpec<TG>[] array
+    // with one entry per file found (AtrLow/AtrHigh come from the DTO).
+    static VariantSpec<TG>[] LoadVariants<TDto, TG>(
+        string strategyKey,
+        Func<TDto, TG> toGenotype,
+        Func<TDto, (double Low, double High)> getRange)
+        where TG : class
+    {
+        var files = Directory.Exists("genotypes")
+            ? Directory.GetFiles("genotypes", $"{strategyKey}_*_genotype.json")
+            : Array.Empty<string>();
+        string defaultFile = $"genotypes/{strategyKey}_genotype.json";
+        if (File.Exists(defaultFile))
+            files = files.Append(defaultFile).Distinct().ToArray();
+        if (files.Length == 0) return Array.Empty<VariantSpec<TG>>();
+        return files.Select(f =>
+        {
+            var dto = JsonSerializer.Deserialize<TDto>(File.ReadAllText(f))!;
+            var (lo, hi) = getRange(dto);
+            string variantId = Path.GetFileNameWithoutExtension(f)
+                .Replace($"{strategyKey}_", "").Replace("_genotype", "");
+            return new VariantSpec<TG>(variantId, lo, hi, toGenotype(dto));
+        }).ToArray();
+    }
+
+    // Selects a genotype from variants using the last-bar ATR ratio of the m15 array.
+    // Falls back to the first variant's genotype when VariantRouter.Select returns null
+    // (insufficient baseline history) or the array is empty.
+    static TG? SelectVariant<TG>(VariantSpec<TG>[] variants, Candle[] m15)
+        where TG : class
+    {
+        if (variants.Length == 0) return null;
+        double[] highs  = m15.Select(c => c.High).ToArray();
+        double[] lows   = m15.Select(c => c.Low).ToArray();
+        double[] closes = m15.Select(c => c.Close).ToArray();
+        double[] atr    = Indicators.Atr(highs, lows, closes, 14);
+        int      bar    = atr.Length - 1;
+        return VariantRouter.Select(atr, bar, variants) ?? variants[0].Genotype;
+    }
+
     public static async Task RunCombinedBacktest(BybitRestClient client)
     {
         Console.WriteLine($"=== Gravity-gen2 | COMBINED BACKTEST (all strategies, router-gated, {Config.BacktestCoins.Length} coins, val 20%) ===\n");
@@ -12,21 +54,36 @@ static class CombinedBacktest
         if (!File.Exists(Config.FadeShortGenoFile)) { Console.WriteLine($"Missing FadeShort genotype — run 'train' first.");     return; }
         if (!File.Exists(Config.GridGenoFile))      { Console.WriteLine($"Missing grid genotype — run 'gridtrain' first."); return; }
 
-        var swingG = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype();
-        var gridG  = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(Config.GridGenoFile))!.ToGenotype();
+        // Load variant arrays (currently one entry each; infrastructure ready for multi-variant)
+        var fsVariants = LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(
+            "fade_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var gridVariants = LoadVariants<GridGenotypeDto, GridGenotype>(
+            "grid_best", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var flVariants = LoadVariants<FadeLongGenotypeDto, FadeLongGenotype>(
+            "fade_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var dlVariants = LoadVariants<DipLongGenotypeDto, DipLongGenotype>(
+            "dip_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var slVariants = LoadVariants<SwingLongGenotypeDto, SwingLongGenotype>(
+            "swing_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
 
-        FadeLongGenotype?     flG     = File.Exists(Config.FadeLongGenoFile)  ? JsonSerializer.Deserialize<FadeLongGenotypeDto>(File.ReadAllText(Config.FadeLongGenoFile))!.ToGenotype()   : null;
-        DipLongGenotype?      dlG     = File.Exists(Config.DipLongGenoFile)   ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(Config.DipLongGenoFile))!.ToGenotype()     : null;
-        SwingLongGenotype?    slG     = File.Exists(Config.SwingLongGenoFile) ? JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(Config.SwingLongGenoFile))!.ToGenotype() : null;
+        // Representative single genotypes (for portfolio hold-time calcs and logging)
+        var swingG = fsVariants.Length > 0 ? fsVariants[0].Genotype! : null;
+        var gridG  = gridVariants.Length > 0 ? gridVariants[0].Genotype! : null;
+        if (swingG == null) { Console.WriteLine("Missing FadeShort genotype — run 'train' first."); return; }
+        if (gridG  == null) { Console.WriteLine("Missing grid genotype — run 'gridtrain' first.");  return; }
+
+        FadeLongGenotype?     flG     = flVariants.Length > 0  ? flVariants[0].Genotype  : null;
+        DipLongGenotype?      dlG     = dlVariants.Length > 0  ? dlVariants[0].Genotype  : null;
+        SwingLongGenotype?    slG     = slVariants.Length > 0  ? slVariants[0].Genotype  : null;
         RegimeRouterGenotype? routerG = File.Exists(Config.RouterGenoFile)    ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype() : null;
 
-        Console.WriteLine($"FadeShort: {swingG}");
-        Console.WriteLine($"Grid:      {gridG}");
-        if (flG     != null) Console.WriteLine($"FadeLong:  {flG}{(flG.Fitness < 0 ? " ⚠ negative fitness" : "")}");
+        Console.WriteLine($"FadeShort: {swingG}  [{fsVariants.Length} variant(s)]");
+        Console.WriteLine($"Grid:      {gridG}  [{gridVariants.Length} variant(s)]");
+        if (flG     != null) Console.WriteLine($"FadeLong:  {flG}{(flG.Fitness < 0 ? " ⚠ negative fitness" : "")}  [{flVariants.Length} variant(s)]");
         else                 Console.WriteLine("FadeLong:  not found — skipping");
-        if (dlG     != null) Console.WriteLine($"DipLong:   {dlG}");
+        if (dlG     != null) Console.WriteLine($"DipLong:   {dlG}  [{dlVariants.Length} variant(s)]");
         else                 Console.WriteLine("DipLong:   not found — skipping");
-        if (slG     != null) Console.WriteLine($"SwingLong: {slG}");
+        if (slG     != null) Console.WriteLine($"SwingLong: {slG}  [{slVariants.Length} variant(s)]");
         else                 Console.WriteLine("SwingLong: not found — skipping");
         if (routerG != null) Console.WriteLine($"Router:    {routerG}");
         else                 Console.WriteLine("Router:    not found — strategies run without regime gate");
@@ -125,7 +182,8 @@ static class CombinedBacktest
 
             var screenH1  = h1Train.Length >= 4380 ? h1Train : h1;
             var screenM15 = screenH1.Length == h1.Length ? m15 : m15Train;
-            var tRet  = FadeShortSimulator.GetFadeShortReturns(swingG, screenH1, screenM15).Select(t => t.Return).ToList();
+            var coinFsG   = SelectVariant(fsVariants, m15) ?? swingG;
+            var tRet  = FadeShortSimulator.GetFadeShortReturns(coinFsG, screenH1, screenM15).Select(t => t.Return).ToList();
             double tExp  = tRet.Count >= 20 ? tRet.Average() : double.NegativeInfinity;
             double tSort = tRet.Count >= 20 ? Simulator.SortinoRatio(tRet, screenH1.Length * 12) : double.NegativeInfinity;
             double tPF   = tRet.Count >= 20 ? Simulator.ProfitFactor(tRet) : 0;
@@ -136,7 +194,7 @@ static class CombinedBacktest
             }
 
             double conf   = Simulator.ComputeConfidence(tRet);
-            var    vSwing = FadeShortSimulator.GetFadeShortReturns(swingG, h1Val, m15Val);
+            var    vSwing = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1Val, m15Val);
             var    vRet   = vSwing.Select(t => t.Return).ToList();
             int    vCC    = h1Val.Length * 12;
             swingTotalVCC += vCC;
@@ -163,7 +221,7 @@ static class CombinedBacktest
         Console.WriteLine($"{"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
         Console.WriteLine(new string('-', 82));
 
-        foreach (var (sym, _, h1) in fetched)
+        foreach (var (sym, m15Grid, h1) in fetched)
         {
             if (h1.Length < 300) { Console.WriteLine($"  {sym,-16}  skip (no data)"); continue; }
 
@@ -181,7 +239,9 @@ static class CombinedBacktest
             var h1Train = h1[..split];
             var h1Val   = h1[split..];
 
-            var tRet  = GridSimulator.GetGridReturns(gridG, h1Train).Select(t => t.Return).ToList();
+            // Select variant by ATR regime of the full m15 array
+            var coinGridG = SelectVariant(gridVariants, m15Grid) ?? gridG;
+            var tRet  = GridSimulator.GetGridReturns(coinGridG, h1Train).Select(t => t.Return).ToList();
             double tExp  = tRet.Count >= 20 ? tRet.Average()               : double.NegativeInfinity;
             double tPF   = tRet.Count >= 20 ? Simulator.ProfitFactor(tRet)  : 0;
             double tSort = tRet.Count >= 20 ? Simulator.SortinoRatio(tRet, h1Train.Length)  : double.NegativeInfinity;
@@ -192,7 +252,7 @@ static class CombinedBacktest
             }
 
             double conf  = Simulator.ComputeConfidence(tRet);
-            var    vGrid = GridSimulator.GetGridReturns(gridG, h1Val);
+            var    vGrid = GridSimulator.GetGridReturns(coinGridG, h1Val);
             var    vRet  = vGrid.Select(t => t.Return).ToList();
             int    vCC   = h1Val.Length * 12;
             gridTotalVCC += vCC;
@@ -241,7 +301,8 @@ static class CombinedBacktest
                 int    vCC = h1Val.Length * 12;
                 flTotalVCC += vCC;
 
-                var raw    = FadeLongSimulator.GetFadeLongReturns(flG, h1Val, m15Val);
+                var coinFlG = SelectVariant(flVariants, m15) ?? flG;
+                var raw    = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1Val, m15Val);
                 var gated  = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList()
                     : raw;
@@ -298,7 +359,8 @@ static class CombinedBacktest
                 int    vCC = h1Val.Length * 12;
                 dlTotalVCC += vCC;
 
-                var raw   = DipLongSimulator.GetDipLongReturns(dlG, h1Val, m15Val);
+                var coinDlG = SelectVariant(dlVariants, m15) ?? dlG;
+                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1Val, m15Val);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
@@ -355,7 +417,8 @@ static class CombinedBacktest
                 int    vCC = h1Val.Length * 12;
                 slTotalVCC += vCC;
 
-                var raw   = SwingLongSimulator.GetSwingLongReturns(slG, h1Val, m15Val);
+                var coinSlG = SelectVariant(slVariants, m15) ?? slG;
+                var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1Val, m15Val);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
@@ -763,10 +826,11 @@ static class CombinedBacktest
 
         foreach (var (sym, h1f, m15f, conf) in swingFullCoins)
         {
+            var coinFsGFull = SelectVariant(fsVariants, m15f) ?? swingG;
             var coinRet = new List<double>();
-            foreach (var (t, ret, _) in FadeShortSimulator.GetFadeShortReturns(swingG, h1f, m15f))
+            foreach (var (t, ret, _) in FadeShortSimulator.GetFadeShortReturns(coinFsGFull, h1f, m15f))
             {
-                fullHistTrades.Add((t, ret, conf, TimeSpan.FromHours(swingG.MaxHoldCandles)));
+                fullHistTrades.Add((t, ret, conf, TimeSpan.FromHours(coinFsGFull.MaxHoldCandles)));
                 coinRet.Add(ret);
             }
             if (coinRet.Count > 0) swingFullCoinRet.Add((sym, coinRet));
@@ -774,6 +838,7 @@ static class CombinedBacktest
 
         foreach (var (sym, h1f, conf) in gridFullCoins)
         {
+            // gridFullCoins doesn't store m15 — use the representative gridG for hold-time
             var coinRet = new List<double>();
             foreach (var (t, ret, _) in GridSimulator.GetGridReturns(gridG, h1f))
             {
@@ -787,11 +852,12 @@ static class CombinedBacktest
         if (flG != null)
             foreach (var (sym, h1f, m15f, conf) in flFullCoins)
             {
+                var coinFlGFull = SelectVariant(flVariants, m15f) ?? flG;
                 var coinRet = new List<double>();
-                foreach (var t in FadeLongSimulator.GetFadeLongReturns(flG, h1f, m15f))
+                foreach (var t in FadeLongSimulator.GetFadeLongReturns(coinFlGFull, h1f, m15f))
                 {
                     if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)) continue;
-                    fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(flG.MaxHoldCandles)));
+                    fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(coinFlGFull.MaxHoldCandles)));
                     coinRet.Add(t.Return);
                 }
                 if (coinRet.Count > 0) flFullCoinRet.Add((sym, coinRet));
@@ -800,11 +866,12 @@ static class CombinedBacktest
         if (dlG != null)
             foreach (var (sym, h1f, m15f, conf) in dlFullCoins)
             {
+                var coinDlGFull = SelectVariant(dlVariants, m15f) ?? dlG;
                 var coinRet = new List<double>();
-                foreach (var t in DipLongSimulator.GetDipLongReturns(dlG, h1f, m15f))
+                foreach (var t in DipLongSimulator.GetDipLongReturns(coinDlGFull, h1f, m15f))
                 {
                     if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)) continue;
-                    fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(dlG.MaxHoldCandles)));
+                    fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(coinDlGFull.MaxHoldCandles)));
                     coinRet.Add(t.Return);
                 }
                 if (coinRet.Count > 0) dlFullCoinRet.Add((sym, coinRet));
@@ -813,11 +880,12 @@ static class CombinedBacktest
         if (slG != null)
             foreach (var (sym, h1f, m15f, conf) in slFullCoins)
             {
+                var coinSlGFull = SelectVariant(slVariants, m15f) ?? slG;
                 var coinRet = new List<double>();
-                foreach (var t in SwingLongSimulator.GetSwingLongReturns(slG, h1f, m15f))
+                foreach (var t in SwingLongSimulator.GetSwingLongReturns(coinSlGFull, h1f, m15f))
                 {
                     if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)) continue;
-                    fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(slG.MaxHoldCandles)));
+                    fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(coinSlGFull.MaxHoldCandles)));
                     coinRet.Add(t.Return);
                 }
                 if (coinRet.Count > 0) slFullCoinRet.Add((sym, coinRet));

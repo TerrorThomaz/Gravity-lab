@@ -5,6 +5,42 @@ namespace TradingGA;
 
 static class OosBacktest
 {
+    // ── Variant loading helpers (mirrors CombinedBacktest) ────────────────────
+    static VariantSpec<TG>[] LoadVariants<TDto, TG>(
+        string strategyKey,
+        Func<TDto, TG> toGenotype,
+        Func<TDto, (double Low, double High)> getRange)
+        where TG : class
+    {
+        var files = Directory.Exists("genotypes")
+            ? Directory.GetFiles("genotypes", $"{strategyKey}_*_genotype.json")
+            : Array.Empty<string>();
+        string defaultFile = $"genotypes/{strategyKey}_genotype.json";
+        if (File.Exists(defaultFile))
+            files = files.Append(defaultFile).Distinct().ToArray();
+        if (files.Length == 0) return Array.Empty<VariantSpec<TG>>();
+        return files.Select(f =>
+        {
+            var dto = JsonSerializer.Deserialize<TDto>(File.ReadAllText(f))!;
+            var (lo, hi) = getRange(dto);
+            string variantId = Path.GetFileNameWithoutExtension(f)
+                .Replace($"{strategyKey}_", "").Replace("_genotype", "");
+            return new VariantSpec<TG>(variantId, lo, hi, toGenotype(dto));
+        }).ToArray();
+    }
+
+    static TG? SelectVariant<TG>(VariantSpec<TG>[] variants, Candle[] m15)
+        where TG : class
+    {
+        if (variants.Length == 0) return null;
+        double[] highs  = m15.Select(c => c.High).ToArray();
+        double[] lows   = m15.Select(c => c.Low).ToArray();
+        double[] closes = m15.Select(c => c.Close).ToArray();
+        double[] atr    = Indicators.Atr(highs, lows, closes, 14);
+        int      bar    = atr.Length - 1;
+        return VariantRouter.Select(atr, bar, variants) ?? variants[0].Genotype;
+    }
+
     public static async Task RunOosBacktest(BybitRestClient client)
     {
         Console.WriteLine($"=== Gravity-gen2 | OOS BACKTEST ({Config.OosCoins.Length} never-seen coins · full history · all strategies, router-gated) ===\n");
@@ -12,21 +48,36 @@ static class OosBacktest
         if (!File.Exists(Config.FadeShortGenoFile)) { Console.WriteLine("Missing FadeShort genotype — run 'train' first.");    return; }
         if (!File.Exists(Config.GridGenoFile))      { Console.WriteLine("Missing grid genotype — run 'gridtrain' first.");     return; }
 
-        var swingG = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype();
-        var gridG  = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(Config.GridGenoFile))!.ToGenotype();
+        // Load variant arrays (currently one entry each; infrastructure ready for multi-variant)
+        var fsVariants   = LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(
+            "fade_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var gridVariants = LoadVariants<GridGenotypeDto, GridGenotype>(
+            "grid_best", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var flVariants   = LoadVariants<FadeLongGenotypeDto, FadeLongGenotype>(
+            "fade_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var dlVariants   = LoadVariants<DipLongGenotypeDto, DipLongGenotype>(
+            "dip_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var slVariants   = LoadVariants<SwingLongGenotypeDto, SwingLongGenotype>(
+            "swing_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
 
-        FadeLongGenotype?     flG     = File.Exists(Config.FadeLongGenoFile)  ? JsonSerializer.Deserialize<FadeLongGenotypeDto>(File.ReadAllText(Config.FadeLongGenoFile))!.ToGenotype()   : null;
-        DipLongGenotype?      dlG     = File.Exists(Config.DipLongGenoFile)   ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(Config.DipLongGenoFile))!.ToGenotype()     : null;
-        SwingLongGenotype?    slG     = File.Exists(Config.SwingLongGenoFile) ? JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(Config.SwingLongGenoFile))!.ToGenotype() : null;
+        // Representative single genotypes (for logging and hold-time calcs)
+        var swingG = fsVariants.Length   > 0 ? fsVariants[0].Genotype!   : null;
+        var gridG  = gridVariants.Length > 0 ? gridVariants[0].Genotype! : null;
+        if (swingG == null) { Console.WriteLine("Missing FadeShort genotype — run 'train' first."); return; }
+        if (gridG  == null) { Console.WriteLine("Missing grid genotype — run 'gridtrain' first.");  return; }
+
+        FadeLongGenotype?     flG     = flVariants.Length > 0 ? flVariants[0].Genotype : null;
+        DipLongGenotype?      dlG     = dlVariants.Length > 0 ? dlVariants[0].Genotype : null;
+        SwingLongGenotype?    slG     = slVariants.Length > 0 ? slVariants[0].Genotype : null;
         RegimeRouterGenotype? routerG = File.Exists(Config.RouterGenoFile)    ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype() : null;
 
-        Console.WriteLine($"FadeShort: {swingG}");
-        Console.WriteLine($"Grid:      {gridG}");
-        if (flG     != null) Console.WriteLine($"FadeLong:  {flG}");
+        Console.WriteLine($"FadeShort: {swingG}  [{fsVariants.Length} variant(s)]");
+        Console.WriteLine($"Grid:      {gridG}  [{gridVariants.Length} variant(s)]");
+        if (flG     != null) Console.WriteLine($"FadeLong:  {flG}  [{flVariants.Length} variant(s)]");
         else                 Console.WriteLine("FadeLong:  not found — skipping");
-        if (dlG     != null) Console.WriteLine($"DipLong:   {dlG}");
+        if (dlG     != null) Console.WriteLine($"DipLong:   {dlG}  [{dlVariants.Length} variant(s)]");
         else                 Console.WriteLine("DipLong:   not found — skipping");
-        if (slG     != null) Console.WriteLine($"SwingLong: {slG}");
+        if (slG     != null) Console.WriteLine($"SwingLong: {slG}  [{slVariants.Length} variant(s)]");
         else                 Console.WriteLine("SwingLong: not found — skipping");
         if (routerG != null) Console.WriteLine($"Router:    {routerG}");
         else                 Console.WriteLine("Router:    not found — running ungated");
@@ -96,7 +147,8 @@ static class OosBacktest
             double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
             if (medVol < oosMinVol) { Console.WriteLine($"  {sym,-16}  skip (vol=${medVol:F2}M/h)"); continue; }
 
-            var trades = FadeShortSimulator.GetFadeShortReturns(swingG, h1, m15);
+            var coinFsG = SelectVariant(fsVariants, m15) ?? swingG;
+            var trades = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1, m15);
             var vRet   = trades.Select(t => t.Return).ToList();
             if (vRet.Count < 5) { Console.WriteLine($"  {sym,-16}  skip ({vRet.Count} trades)"); continue; }
 
@@ -123,7 +175,7 @@ static class OosBacktest
         Console.WriteLine($"{"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
         Console.WriteLine(new string('-', 82));
 
-        foreach (var (sym, _, h1) in oosFetched)
+        foreach (var (sym, m15Grid, h1) in oosFetched)
         {
             if (h1.Length < 300) continue;
 
@@ -131,7 +183,8 @@ static class OosBacktest
             double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
             if (medVol < oosMinVol) continue;
 
-            var raw   = GridSimulator.GetGridReturns(gridG, h1);
+            var coinGridG = SelectVariant(gridVariants, m15Grid) ?? gridG;
+            var raw   = GridSimulator.GetGridReturns(coinGridG, h1);
             var gated = session != null
                 ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList()
                 : raw;
@@ -170,7 +223,8 @@ static class OosBacktest
                 double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
                 if (medVol < oosMinVol) continue;
 
-                var raw   = FadeLongSimulator.GetFadeLongReturns(flG, h1, m15);
+                var coinFlG = SelectVariant(flVariants, m15) ?? flG;
+                var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1, m15);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList()
                     : raw;
@@ -212,7 +266,8 @@ static class OosBacktest
                 double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
                 if (medVol < oosMinVol) continue;
 
-                var raw   = DipLongSimulator.GetDipLongReturns(dlG, h1, m15);
+                var coinDlG = SelectVariant(dlVariants, m15) ?? dlG;
+                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1, m15);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
@@ -254,7 +309,8 @@ static class OosBacktest
                 double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
                 if (medVol < oosMinVol) continue;
 
-                var raw   = SwingLongSimulator.GetSwingLongReturns(slG, h1, m15);
+                var coinSlG = SelectVariant(slVariants, m15) ?? slG;
+                var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1, m15);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()  // SwingLong shares bull-regime gate with DipLong
                     : raw;
@@ -477,10 +533,23 @@ static class OosBacktest
         if (!File.Exists(Config.FadeShortGenoFile)) { Console.WriteLine("Missing FadeShort genotype."); return; }
         if (!File.Exists(Config.GridGenoFile))      { Console.WriteLine("Missing grid genotype.");      return; }
 
-        var swingG = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype();
-        var gridG  = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(Config.GridGenoFile))!.ToGenotype();
-        FadeLongGenotype?     flG     = File.Exists(Config.FadeLongGenoFile) ? JsonSerializer.Deserialize<FadeLongGenotypeDto>(File.ReadAllText(Config.FadeLongGenoFile))!.ToGenotype()   : null;
-        DipLongGenotype?      dlG     = File.Exists(Config.DipLongGenoFile)  ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(Config.DipLongGenoFile))!.ToGenotype()     : null;
+        // Variant arrays (reuse the class-level LoadVariants helper)
+        var fsVariantsAC   = LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(
+            "fade_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var gridVariantsAC = LoadVariants<GridGenotypeDto, GridGenotype>(
+            "grid_best", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var flVariantsAC   = LoadVariants<FadeLongGenotypeDto, FadeLongGenotype>(
+            "fade_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var dlVariantsAC   = LoadVariants<DipLongGenotypeDto, DipLongGenotype>(
+            "dip_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+
+        var swingG = fsVariantsAC.Length   > 0 ? fsVariantsAC[0].Genotype!   : null;
+        var gridG  = gridVariantsAC.Length > 0 ? gridVariantsAC[0].Genotype! : null;
+        if (swingG == null) { Console.WriteLine("Missing FadeShort genotype."); return; }
+        if (gridG  == null) { Console.WriteLine("Missing grid genotype.");      return; }
+
+        FadeLongGenotype?     flG     = flVariantsAC.Length > 0 ? flVariantsAC[0].Genotype : null;
+        DipLongGenotype?      dlG     = dlVariantsAC.Length > 0 ? dlVariantsAC[0].Genotype : null;
         RegimeRouterGenotype? routerG = File.Exists(Config.RouterGenoFile)   ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype() : null;
 
         Console.WriteLine($"FadeShort: {swingG}\nGrid:      {gridG}");
@@ -552,13 +621,14 @@ static class OosBacktest
 
             // FadeShort
             {
+                var coinFsGAC  = SelectVariant(fsVariantsAC, m15) ?? swingG;
                 var screenH1  = h1Train.Length >= 4380 ? h1Train : h1;
                 var screenM15 = screenH1.Length == h1.Length ? m15 : m15Train;
-                var tRet = FadeShortSimulator.GetFadeShortReturns(swingG, screenH1, screenM15).Select(t => t.Return).ToList();
+                var tRet = FadeShortSimulator.GetFadeShortReturns(coinFsGAC, screenH1, screenM15).Select(t => t.Return).ToList();
                 if (tRet.Count >= 5 && tRet.Average() > 0 && Simulator.ProfitFactor(tRet) >= 1.2 && Simulator.SortinoRatio(tRet, screenH1.Length * 12) >= 0.3)
                 {
                     double conf  = Simulator.ComputeConfidence(tRet);
-                    var    vRet  = FadeShortSimulator.GetFadeShortReturns(swingG, h1Val, m15Val);
+                    var    vRet  = FadeShortSimulator.GetFadeShortReturns(coinFsGAC, h1Val, m15Val);
                     btSwing++; btSwingT += vRet.Count;
                     foreach (var (t, ret, _) in vRet) allTrades.Add((t, ret, conf, "swing"));
                 }
@@ -566,11 +636,12 @@ static class OosBacktest
 
             // Grid
             {
-                var tRet = GridSimulator.GetGridReturns(gridG, h1Train).Select(t => t.Return).ToList();
+                var coinGridGAC = SelectVariant(gridVariantsAC, m15) ?? gridG;
+                var tRet = GridSimulator.GetGridReturns(coinGridGAC, h1Train).Select(t => t.Return).ToList();
                 if (tRet.Count >= 5 && tRet.Average() > 0 && Simulator.ProfitFactor(tRet) >= 1.2 && Simulator.SortinoRatio(tRet, h1Train.Length) >= 0.3)
                 {
                     double conf = Simulator.ComputeConfidence(tRet);
-                    var    vRet = GridSimulator.GetGridReturns(gridG, h1Val);
+                    var    vRet = GridSimulator.GetGridReturns(coinGridGAC, h1Val);
                     btGrid++; btGridT += vRet.Count(t => session == null || session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time));
                     foreach (var (t, ret, _) in vRet)
                     {
@@ -583,7 +654,8 @@ static class OosBacktest
             // FadeLong
             if (flG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
-                var raw   = FadeLongSimulator.GetFadeLongReturns(flG, h1Val, m15Val);
+                var coinFlGAC = SelectVariant(flVariantsAC, m15) ?? flG;
+                var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlGAC, h1Val, m15Val);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList() : raw;
                 if (gated.Count > 0)
                 {
@@ -596,7 +668,8 @@ static class OosBacktest
             // DipLong
             if (dlG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
-                var raw   = DipLongSimulator.GetDipLongReturns(dlG, h1Val, m15Val);
+                var coinDlGAC = SelectVariant(dlVariantsAC, m15) ?? dlG;
+                var raw   = DipLongSimulator.GetDipLongReturns(coinDlGAC, h1Val, m15Val);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
                 if (gated.Count > 0)
                 {
@@ -627,7 +700,8 @@ static class OosBacktest
 
             // FadeShort
             {
-                var trades = FadeShortSimulator.GetFadeShortReturns(swingG, h1, m15);
+                var coinFsGOos = SelectVariant(fsVariantsAC, m15) ?? swingG;
+                var trades = FadeShortSimulator.GetFadeShortReturns(coinFsGOos, h1, m15);
                 if (trades.Count >= 5)
                 {
                     double conf = Simulator.ComputeConfidence(trades.Select(t => t.Return).ToList());
@@ -638,7 +712,8 @@ static class OosBacktest
 
             // Grid
             {
-                var raw   = GridSimulator.GetGridReturns(gridG, h1);
+                var coinGridGOos = SelectVariant(gridVariantsAC, m15) ?? gridG;
+                var raw   = GridSimulator.GetGridReturns(coinGridGOos, h1);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList() : raw;
                 if (gated.Count >= 5)
                 {
@@ -651,7 +726,8 @@ static class OosBacktest
             // FadeLong
             if (flG != null && m15.Length >= 1200)
             {
-                var raw   = FadeLongSimulator.GetFadeLongReturns(flG, h1, m15);
+                var coinFlGOos = SelectVariant(flVariantsAC, m15) ?? flG;
+                var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlGOos, h1, m15);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList() : raw;
                 if (gated.Count > 0)
                 {
@@ -664,7 +740,8 @@ static class OosBacktest
             // DipLong
             if (dlG != null && m15.Length >= 1200)
             {
-                var raw   = DipLongSimulator.GetDipLongReturns(dlG, h1, m15);
+                var coinDlGOos = SelectVariant(dlVariantsAC, m15) ?? dlG;
+                var raw   = DipLongSimulator.GetDipLongReturns(coinDlGOos, h1, m15);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
                 if (gated.Count > 0)
                 {

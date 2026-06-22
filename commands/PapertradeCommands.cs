@@ -5,6 +5,44 @@ namespace TradingGA;
 
 static class PapertradeCommands
 {
+    // ── Variant loading helpers ───────────────────────────────────────────────
+    static VariantSpec<TG>[] LoadVariants<TDto, TG>(
+        string strategyKey,
+        Func<TDto, TG> toGenotype,
+        Func<TDto, (double Low, double High)> getRange)
+        where TG : class
+    {
+        var files = Directory.Exists("genotypes")
+            ? Directory.GetFiles("genotypes", $"{strategyKey}_*_genotype.json")
+            : Array.Empty<string>();
+        string defaultFile = $"genotypes/{strategyKey}_genotype.json";
+        if (File.Exists(defaultFile))
+            files = files.Append(defaultFile).Distinct().ToArray();
+        if (files.Length == 0) return Array.Empty<VariantSpec<TG>>();
+        return files.Select(f =>
+        {
+            var dto = JsonSerializer.Deserialize<TDto>(File.ReadAllText(f))!;
+            var (lo, hi) = getRange(dto);
+            string variantId = Path.GetFileNameWithoutExtension(f)
+                .Replace($"{strategyKey}_", "").Replace("_genotype", "");
+            return new VariantSpec<TG>(variantId, lo, hi, toGenotype(dto));
+        }).ToArray();
+    }
+
+    // Selects a genotype from variants using the last-bar ATR ratio of the m15 array.
+    // Returns null when no variants are loaded or insufficient history.
+    static TG? SelectVariant<TG>(VariantSpec<TG>[] variants, Candle[] m15)
+        where TG : class
+    {
+        if (variants.Length == 0) return null;
+        double[] highs  = m15.Select(c => c.High).ToArray();
+        double[] lows   = m15.Select(c => c.Low).ToArray();
+        double[] closes = m15.Select(c => c.Close).ToArray();
+        double[] atr    = Indicators.Atr(highs, lows, closes, 14);
+        int      bar    = atr.Length - 1;
+        return VariantRouter.Select(atr, bar, variants) ?? variants[0].Genotype;
+    }
+
     public static async Task RunPaperTrade(BybitRestClient client)
     {
         Console.WriteLine("=== Gravity-gen2 | PAPER TRADE (15m→1h candles) — Ctrl+C to stop ===\n");
@@ -14,8 +52,26 @@ static class PapertradeCommands
             Console.WriteLine($"No genotype at '{Config.FadeShortGenoFile}'. Run 'dotnet run -- train' first.");
             return;
         }
-        var gUniversalPt = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype();
-        Console.WriteLine($"Universal genotype: {gUniversalPt}");
+
+        // Load variant arrays at startup (currently single-element; ready for multi-variant)
+        var fsVariantsPt = LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(
+            "fade_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var gridVariantsPt = LoadVariants<GridGenotypeDto, GridGenotype>(
+            "grid_best", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var slVariantsPt = LoadVariants<SwingLongGenotypeDto, SwingLongGenotype>(
+            "swing_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var dlVariantsPt = LoadVariants<DipLongGenotypeDto, DipLongGenotype>(
+            "dip_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var flVariantsPt = LoadVariants<FadeLongGenotypeDto, FadeLongGenotype>(
+            "fade_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+
+        var gUniversalPt = fsVariantsPt.Length > 0 ? fsVariantsPt[0].Genotype! : null;
+        if (gUniversalPt == null)
+        {
+            Console.WriteLine($"No genotype at '{Config.FadeShortGenoFile}'. Run 'dotnet run -- train' first.");
+            return;
+        }
+        Console.WriteLine($"Universal genotype: {gUniversalPt}  [{fsVariantsPt.Length} variant(s)]");
 
         var clusterGenosPt = new Dictionary<CoinCluster, FadeShortGenotype>();
         foreach (CoinCluster cl in Enum.GetValues<CoinCluster>())
@@ -27,12 +83,9 @@ static class PapertradeCommands
             Console.WriteLine($"  [{CoinClusterHelper.Label(cl)}] {clusterGenosPt[cl]}");
         }
 
-        GridGenotype? gridGPt = null;
-        if (File.Exists(Config.GridGenoFile))
-        {
-            gridGPt = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(Config.GridGenoFile))!.ToGenotype();
-            Console.WriteLine($"Grid genotype:     {gridGPt}");
-        }
+        var gridGPt = gridVariantsPt.Length > 0 ? gridVariantsPt[0].Genotype : null;
+        if (gridGPt != null)
+            Console.WriteLine($"Grid genotype:     {gridGPt}  [{gridVariantsPt.Length} variant(s)]");
         else
             Console.WriteLine($"  (no grid genotype — run 'dotnet run -- gridtrain' to include grid)");
 
@@ -45,29 +98,17 @@ static class PapertradeCommands
         }
         else Console.WriteLine("  (no router genotype — using rule-based routing)");
 
-        SwingLongGenotype? slGenoPt = null;
-        if (File.Exists(Config.SwingLongGenoFile))
-        {
-            slGenoPt = JsonSerializer.Deserialize<SwingLongGenotypeDto>(
-                File.ReadAllText(Config.SwingLongGenoFile))!.ToGenotype();
-            Console.WriteLine($"SwingLong:         {slGenoPt}");
-        }
+        var slGenoPt = slVariantsPt.Length > 0 ? slVariantsPt[0].Genotype : null;
+        if (slGenoPt != null)
+            Console.WriteLine($"SwingLong:         {slGenoPt}  [{slVariantsPt.Length} variant(s)]");
 
-        DipLongGenotype? dlGenoPt = null;
-        if (File.Exists(Config.DipLongGenoFile))
-        {
-            dlGenoPt = JsonSerializer.Deserialize<DipLongGenotypeDto>(
-                File.ReadAllText(Config.DipLongGenoFile))!.ToGenotype();
-            Console.WriteLine($"DipLong:           {dlGenoPt}");
-        }
+        var dlGenoPt = dlVariantsPt.Length > 0 ? dlVariantsPt[0].Genotype : null;
+        if (dlGenoPt != null)
+            Console.WriteLine($"DipLong:           {dlGenoPt}  [{dlVariantsPt.Length} variant(s)]");
 
-        FadeLongGenotype? flGenoPt = null;
-        if (File.Exists(Config.FadeLongGenoFile))
-        {
-            flGenoPt = JsonSerializer.Deserialize<FadeLongGenotypeDto>(
-                File.ReadAllText(Config.FadeLongGenoFile))!.ToGenotype();
-            Console.WriteLine($"FadeLong:          {flGenoPt}");
-        }
+        var flGenoPt = flVariantsPt.Length > 0 ? flVariantsPt[0].Genotype : null;
+        if (flGenoPt != null)
+            Console.WriteLine($"FadeLong:          {flGenoPt}  [{flVariantsPt.Length} variant(s)]");
 
         Console.WriteLine();
 
@@ -139,7 +180,8 @@ static class PapertradeCommands
 
                 double px       = h1[^1].Close;
                 var    coinCl   = CoinClusterHelper.ClassifyByName(sym);
-                var    gForCoin = clusterGenosPt[coinCl];
+                // Use VariantRouter to select per-coin ATR-regime variant; fall back to cluster genotype
+                var    gForCoin = SelectVariant(fsVariantsPt, m15) ?? clusterGenosPt[coinCl];
                 var    st       = FadeShortSimulator.GetFadeShortTradeState(gForCoin, h1, m15);
 
                 string stateStr  = st.InTrade
@@ -170,8 +212,9 @@ static class PapertradeCommands
                     if (h1 == null) { Console.WriteLine($"  {sym,-18}  (no data)"); continue; }
                     if (!passes) { Console.WriteLine($"  {sym,-18}  skip  ATR={atrPct:F1}% vol=${volM:F0}M"); continue; }
 
-                    double px  = h1[^1].Close;
-                    var    gst = GridSimulator.GetGridTradeState(gridGPt, h1);
+                    double px       = h1[^1].Close;
+                    var    coinGridG = (m15 != null ? SelectVariant(gridVariantsPt, m15) : null) ?? gridGPt;
+                    var    gst = GridSimulator.GetGridTradeState(coinGridG, h1);
 
                     string stateStr  = gst.Active ? $"GRID L{gst.FilledLevels}" : "watching";
                     string anchorStr = gst.Active ? $"{gst.Anchor:F4}" : "—";
@@ -198,8 +241,9 @@ static class PapertradeCommands
                     if (cts.Token.IsCancellationRequested) break;
                     if (h1 == null || m15 == null) { Console.WriteLine($"  {sym,-18}  (no data)"); continue; }
                     if (!passes) { Console.WriteLine($"  {sym,-18}  skip  ATR={atrPct:F1}% vol=${volM:F0}M"); continue; }
-                    double px = h1[^1].Close;
-                    var st = SwingLongSimulator.GetSwingLongTradeState(slGenoPt, h1, m15);
+                    double px      = h1[^1].Close;
+                    var coinSlG    = SelectVariant(slVariantsPt, m15) ?? slGenoPt;
+                    var st = SwingLongSimulator.GetSwingLongTradeState(coinSlG, h1, m15);
                     string capTag = (st.InTrade && slOpen >= PortfolioReplay.DefaultCaps["swing_long"]) ? " [CAP]" : "";
                     if (st.InTrade) slOpen++;
                     string stateStr  = st.InTrade ? (st.TrailArmed ? "TRAIL ARMED" : $"LONG b{st.HoldCount}") : "watching";
@@ -224,8 +268,9 @@ static class PapertradeCommands
                     if (cts.Token.IsCancellationRequested) break;
                     if (h1 == null || m15 == null) { Console.WriteLine($"  {sym,-18}  (no data)"); continue; }
                     if (!passes) { Console.WriteLine($"  {sym,-18}  skip  ATR={atrPct:F1}% vol=${volM:F0}M"); continue; }
-                    double px = h1[^1].Close;
-                    var st = DipLongSimulator.GetDipLongTradeState(dlGenoPt, h1, m15);
+                    double px      = h1[^1].Close;
+                    var coinDlG    = SelectVariant(dlVariantsPt, m15) ?? dlGenoPt;
+                    var st = DipLongSimulator.GetDipLongTradeState(coinDlG, h1, m15);
                     string capTag = (st.InTrade && dlOpen >= PortfolioReplay.DefaultCaps["diplong"]) ? " [CAP]" : "";
                     if (st.InTrade) dlOpen++;
                     string stateStr  = st.InTrade ? (st.TrailArmed ? "TRAIL ARMED" : $"LONG b{st.HoldCount}") : "watching";
@@ -250,8 +295,9 @@ static class PapertradeCommands
                     if (cts.Token.IsCancellationRequested) break;
                     if (h1 == null || m15 == null) { Console.WriteLine($"  {sym,-18}  (no data)"); continue; }
                     if (!passes) { Console.WriteLine($"  {sym,-18}  skip  ATR={atrPct:F1}% vol=${volM:F0}M"); continue; }
-                    double px = h1[^1].Close;
-                    var st = FadeLongSimulator.GetFadeLongTradeState(flGenoPt, h1, m15);
+                    double px      = h1[^1].Close;
+                    var coinFlG    = SelectVariant(flVariantsPt, m15) ?? flGenoPt;
+                    var st = FadeLongSimulator.GetFadeLongTradeState(coinFlG, h1, m15);
                     string capTag = (st.InTrade && flOpen >= PortfolioReplay.DefaultCaps["fadelong"]) ? " [CAP]" : "";
                     if (st.InTrade) flOpen++;
                     string stateStr  = st.InTrade ? (st.TrailArmed ? "TRAIL ARMED" : $"LONG b{st.HoldCount}") : "watching";

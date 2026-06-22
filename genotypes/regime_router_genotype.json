@@ -1,0 +1,13 @@
+{
+  "BullMinBars": 125.60317645920436,
+  "BullMinConf": 0.6677298204941777,
+  "BearMinBars": 443.44990254508673,
+  "BearMinConf": 0.7678605401628679,
+  "GridMaxConf": 0.1,
+  "EthBlendWeight": 0.013223436638879723,
+  "Fitness": 3.864553692978716,
+  "TransitionSizeMult": 0,
+  "EarlyBullFromBearMult": 0.5292924857082525,
+  "EarlyBullFromRangingMult": 0.9444604358275588,
+  "EarlyBullBearCarry": 0.10942183086438793
+}

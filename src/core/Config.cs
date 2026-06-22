@@ -2,15 +2,15 @@ namespace TradingGA;
 
 static class Config
 {
-    public const string FadeShortGenoFile = "fade_short_genotype.json";
-    public const string GridGenoFile      = "grid_best_genotype.json";
-    public const string FadeLongGenoFile  = "fade_long_genotype.json";
-    public const string DipLongGenoFile   = "dip_long_genotype.json";
-    public const string RouterGenoFile    = "regime_router_genotype.json";
-    public const string SwingLongGenoFile = "swing_long_genotype.json";
-    public const string ExitModifierGenoFile   = "exit_modifier_genotype.json";
-    public const string DrawdownGuardGenoFile  = "drawdown_guard_genotype.json";
-    public const string DynamicGuardGenoFile   = "dynamic_guard_genotype.json";
+    public const string FadeShortGenoFile     = "genotypes/fade_short_genotype.json";
+    public const string GridGenoFile          = "genotypes/grid_best_genotype.json";
+    public const string FadeLongGenoFile      = "genotypes/fade_long_genotype.json";
+    public const string DipLongGenoFile       = "genotypes/dip_long_genotype.json";
+    public const string RouterGenoFile        = "genotypes/regime_router_genotype.json";
+    public const string SwingLongGenoFile     = "genotypes/swing_long_genotype.json";
+    public const string ExitModifierGenoFile  = "genotypes/exit_modifier_genotype.json";
+    public const string DrawdownGuardGenoFile = "genotypes/drawdown_guard_genotype.json";
+    public const string DynamicGuardGenoFile  = "genotypes/dynamic_guard_genotype.json";
 
     public const double MaxTotalExposurePct = 0.30;
     public const double MinMedianVolUsdM    = 0.5;

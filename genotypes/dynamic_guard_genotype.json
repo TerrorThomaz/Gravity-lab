@@ -1,0 +1,18 @@
+{
+  "AtrLookback": 6,
+  "AtrTrigger": 3.2257238674183997,
+  "MomLookback": 14.037726730143834,
+  "MomThreshold": -0.1463920516171753,
+  "SizeFloor": 0.6625046474535975,
+  "Fitness": 213.1693922567204,
+  "PanicTrigger": 4.229080409826752,
+  "RecoveryBars": 47.02908162116159,
+  "BullMomBypass": 0,
+  "EntryAtrGate": 999,
+  "DdEntryGatePct": 1,
+  "ConfLossCapMin": 1,
+  "ConfLossCapMax": 1,
+  "ProfitProtectThreshold": 1,
+  "ProfitProtectDrawback": 0.1,
+  "ProfitProtectFactor": 1
+}

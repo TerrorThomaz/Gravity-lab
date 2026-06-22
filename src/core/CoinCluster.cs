@@ -28,9 +28,9 @@ public static class CoinClusterHelper
     // File name for a cluster's swing genotype.
     public static string GenoFile(CoinCluster cluster) => cluster switch
     {
-        CoinCluster.Liquid  => "swing_best_genotype_liquid.json",
-        CoinCluster.Mid     => "swing_best_genotype_mid.json",
-        CoinCluster.HighVol => "swing_best_genotype_highvol.json",
+        CoinCluster.Liquid  => "genotypes/swing_best_genotype_liquid.json",
+        CoinCluster.Mid     => "genotypes/swing_best_genotype_mid.json",
+        CoinCluster.HighVol => "genotypes/swing_best_genotype_highvol.json",
         _ => throw new ArgumentOutOfRangeException(nameof(cluster))
     };
 

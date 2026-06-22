@@ -5,9 +5,13 @@ namespace TradingGA;
 
 static class DynamicGuardTrainCommands
 {
-    public static async Task RunDynamicGuardTrain(BybitRestClient client)
+    public static async Task RunDynamicGuardTrain(BybitRestClient client, string[]? args = null)
     {
+        string variant  = TrainCommands.ResolveVariant(args ?? []);
+        var    cfg      = FitnessConfig.Load();
+        Console.WriteLine($"Training DynamicGuard / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]");
         Console.WriteLine("=== Gravity-gen2 | DYNAMIC GUARD TRAIN (val 20% + OOS, BTC 4H ATR/momentum) ===\n");
+        string genoPath = TrainCommands.VariantGenoPath("dynamic_guard", variant, Config.DynamicGuardGenoFile);
 
         if (!File.Exists(Config.FadeShortGenoFile)) { Console.WriteLine("Missing FadeShort genotype."); return; }
         if (!File.Exists(Config.GridGenoFile))      { Console.WriteLine("Missing Grid genotype.");      return; }
@@ -225,8 +229,8 @@ static class DynamicGuardTrainCommands
             best.PanicTrigger, best.RecoveryBars, best.BullMomBypass, best.EntryAtrGate, best.DdEntryGatePct,
             best.ConfLossCapMin, best.ConfLossCapMax,
             best.ProfitProtectThreshold, best.ProfitProtectDrawback, best.ProfitProtectFactor);
-        File.WriteAllText(Config.DynamicGuardGenoFile,
+        File.WriteAllText(genoPath,
             System.Text.Json.JsonSerializer.Serialize(dto, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"\n  Saved → {Config.DynamicGuardGenoFile}");
+        Console.WriteLine($"\n  Saved → {genoPath}");
     }
 }

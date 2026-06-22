@@ -46,6 +46,12 @@ static class LongTrainCommands
         Console.WriteLine("=== Gravity-gen2 | COEVOLVETRAIN (FadeLong + DipLong + SwingLong + Router + DynamicGuard, 4 cycles) ===");
         Console.WriteLine($"Training Coevolve / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
 
+        string flPath = TrainCommands.VariantGenoPath("fade_long",     variant, Config.FadeLongGenoFile);
+        string dlPath = TrainCommands.VariantGenoPath("dip_long",      variant, Config.DipLongGenoFile);
+        string slPath = TrainCommands.VariantGenoPath("swing_long",    variant, Config.SwingLongGenoFile);
+        string rrPath = TrainCommands.VariantGenoPath("regime_router", variant, Config.RouterGenoFile);
+        string dgPath = TrainCommands.VariantGenoPath("dynamic_guard", variant, Config.DynamicGuardGenoFile);
+
         FadeShortGenotype? fsSeed = File.Exists(Config.FadeShortGenoFile)
             ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype()
             : null;
@@ -54,32 +60,32 @@ static class LongTrainCommands
         else
             Console.WriteLine($"  FadeShort seed  : {fsSeed}");
 
-        FadeLongGenotype? flSeed = File.Exists(Config.FadeLongGenoFile)
-            ? JsonSerializer.Deserialize<FadeLongGenotypeDto>(File.ReadAllText(Config.FadeLongGenoFile))!.ToGenotype()
+        FadeLongGenotype? flSeed = File.Exists(flPath)
+            ? JsonSerializer.Deserialize<FadeLongGenotypeDto>(File.ReadAllText(flPath))!.ToGenotype()
             : null;
         if (flSeed is { Fitness: > 0 }) Console.WriteLine($"  FadeLong seed   : {flSeed}");
         else { flSeed = null; Console.WriteLine("  FadeLong seed   : none (training from scratch)"); }
 
-        DipLongGenotype? dlSeed = File.Exists(Config.DipLongGenoFile)
-            ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(Config.DipLongGenoFile))!.ToGenotype()
+        DipLongGenotype? dlSeed = File.Exists(dlPath)
+            ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(dlPath))!.ToGenotype()
             : null;
         if (dlSeed is { Fitness: > 0 }) Console.WriteLine($"  DipLong seed    : {dlSeed}");
         else { dlSeed = null; Console.WriteLine("  DipLong seed    : none (training from scratch)"); }
 
-        SwingLongGenotype? slSeed = File.Exists(Config.SwingLongGenoFile)
-            ? JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(Config.SwingLongGenoFile))!.ToGenotype()
+        SwingLongGenotype? slSeed = File.Exists(slPath)
+            ? JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(slPath))!.ToGenotype()
             : null;
         if (slSeed is { Fitness: > 0 }) Console.WriteLine($"  SwingLong seed  : {slSeed}");
         else { slSeed = null; Console.WriteLine("  SwingLong seed  : none (training from scratch)"); }
 
-        RegimeRouterGenotype? routerSeed = File.Exists(Config.RouterGenoFile)
-            ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype()
+        RegimeRouterGenotype? routerSeed = File.Exists(rrPath)
+            ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(rrPath))!.ToGenotype()
             : null;
         if (routerSeed is { Fitness: > 0 }) Console.WriteLine($"  Router seed     : {routerSeed}");
         else { routerSeed = null; Console.WriteLine("  Router seed     : none (training from scratch)"); }
 
-        DynamicGuardGenotype? dgSeed = File.Exists(Config.DynamicGuardGenoFile)
-            ? JsonSerializer.Deserialize<DynamicGuardGenotypeDto>(File.ReadAllText(Config.DynamicGuardGenoFile))!.ToGenotype()
+        DynamicGuardGenotype? dgSeed = File.Exists(dgPath)
+            ? JsonSerializer.Deserialize<DynamicGuardGenotypeDto>(File.ReadAllText(dgPath))!.ToGenotype()
             : null;
         if (dgSeed != null) Console.WriteLine($"  DynamicGuard seed: {dgSeed}");
         else                Console.WriteLine("  DynamicGuard seed: none (training from scratch)");
@@ -178,33 +184,33 @@ static class LongTrainCommands
         var data   = new CoevolveGA.AllData(flCoins, dlCoins, slCoins, allCoins, btcSeries, ethSeries, btcEntry.H1, gridSeed);
         var result = new CoevolveGA().Run(data, fsSeed, flSeed, dlSeed, slSeed, routerSeed, dgSeed);
 
-        File.WriteAllText(Config.FadeLongGenoFile,
+        File.WriteAllText(flPath,
             JsonSerializer.Serialize(FadeLongGenotypeDto.From(result.FadeLong),
                 new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"\n  Saved FadeLong   → {Config.FadeLongGenoFile}  {result.FadeLong}");
+        Console.WriteLine($"\n  Saved FadeLong   → {flPath}  {result.FadeLong}");
 
-        File.WriteAllText(Config.DipLongGenoFile,
+        File.WriteAllText(dlPath,
             JsonSerializer.Serialize(DipLongGenotypeDto.From(result.DipLong),
                 new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved DipLong    → {Config.DipLongGenoFile}  {result.DipLong}");
+        Console.WriteLine($"  Saved DipLong    → {dlPath}  {result.DipLong}");
 
-        File.WriteAllText(Config.SwingLongGenoFile,
+        File.WriteAllText(slPath,
             JsonSerializer.Serialize(SwingLongGenotypeDto.From(result.SwingLong),
                 new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved SwingLong  → {Config.SwingLongGenoFile}  {result.SwingLong}");
+        Console.WriteLine($"  Saved SwingLong  → {slPath}  {result.SwingLong}");
 
-        File.WriteAllText(Config.RouterGenoFile,
+        File.WriteAllText(rrPath,
             JsonSerializer.Serialize(RegimeRouterGenotypeDto.From(result.Router),
                 new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved Router     → {Config.RouterGenoFile}  {result.Router}");
+        Console.WriteLine($"  Saved Router     → {rrPath}  {result.Router}");
 
         var dgDto = new DynamicGuardGenotypeDto(result.DynamicGuard.AtrLookback, result.DynamicGuard.AtrTrigger,
             result.DynamicGuard.MomLookback, result.DynamicGuard.MomThreshold,
             result.DynamicGuard.SizeFloor, result.DynamicGuard.Fitness,
             result.DynamicGuard.PanicTrigger, result.DynamicGuard.RecoveryBars);
-        File.WriteAllText(Config.DynamicGuardGenoFile,
+        File.WriteAllText(dgPath,
             JsonSerializer.Serialize(dgDto, new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved DynGuard   → {Config.DynamicGuardGenoFile}  {result.DynamicGuard}");
+        Console.WriteLine($"  Saved DynGuard   → {dgPath}  {result.DynamicGuard}");
 
         Console.WriteLine("\nNext: dotnet run -- fulltest");
     }

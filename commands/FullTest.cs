@@ -795,5 +795,63 @@ static class FullTest
             }
         }
         else Console.WriteLine("  No OOS trades — skipping.");
+
+        // Write fulltest_results.json
+        static object FtStratStats(List<double> r) => r.Count == 0
+            ? new { trades = 0, winRate = 0.0, pf = 0.0, avgRet = 0.0 }
+            : new
+            {
+                trades  = r.Count,
+                winRate = Math.Round((double)r.Count(x => x > 0) / r.Count * 100, 2),
+                pf      = Math.Round(Simulator.ProfitFactor(r), 4),
+                avgRet  = Math.Round(r.Average(), 4),
+            };
+
+        static object FtPortStats(Simulator.PortfolioResult p, bool hasData) => !hasData
+            ? new { ret = 0.0, maxDD = 0.0 }
+            : new
+            {
+                ret   = Math.Round(p.EndBalance - 100.0, 2),
+                maxDD = Math.Round(p.MaxDrawdownPct, 2),
+            };
+
+        var fulltestOutput = new
+        {
+            timestamp = DateTime.UtcNow.ToString("O"),
+            val = new
+            {
+                FadeShort = FtStratStats(valSwingRets),
+                Grid      = FtStratStats(valGridRets),
+                DipLong   = FtStratStats(valDlRets),
+                SwingLong = FtStratStats(valSlRets),
+                FadeLong  = FtStratStats(valFlRets),
+            },
+            oos = new
+            {
+                FadeShort = FtStratStats(oosSwingRets),
+                Grid      = FtStratStats(oosGridRets),
+                DipLong   = FtStratStats(oosDlRets),
+                SwingLong = FtStratStats(oosSlRets),
+                FadeLong  = FtStratStats(oosFlRets),
+            },
+            portfolio = new
+            {
+                val5pct   = FtPortStats(val5p,  valSim.Count > 0),
+                valKelly  = FtPortStats(valKel, valSim.Count > 0),
+                oos5pct   = FtPortStats(oos5p,  oosSim.Count > 0),
+                oosKelly  = FtPortStats(oosKel, oosSim.Count > 0),
+            },
+            routerImpact = new
+            {
+                valEdge5pct   = Math.Round(r5R  - r5NR,  2),
+                valEdgeKelly  = Math.Round(rKR  - rKNR,  2),
+                oosEdge5pct   = Math.Round(or5R - or5NR, 2),
+                oosEdgeKelly  = Math.Round(orKR - orKNR, 2),
+            },
+        };
+        File.WriteAllText("fulltest_results.json",
+            System.Text.Json.JsonSerializer.Serialize(fulltestOutput,
+                new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine("fulltest_results.json written.");
     }
 }

@@ -166,6 +166,22 @@ public class SwingLongGA
                 Console.WriteLine($"Gen {gen + 1,3} — elite: {eliteIsland.First()}{tag}");
             }
 
+            if (gen % 10 == 0)
+            {
+                var progress = new
+                {
+                    strategy    = "SwingLong",
+                    variant     = _cfg.VariantId,
+                    generation  = gen,
+                    bestFitness = eliteIsland.First().Fitness,
+                    meanFitness = Math.Round(population.Average(g => g.Fitness), 4),
+                    population  = population.Take(20).Select(g => Math.Round(g.Fitness, 3)).ToArray(),
+                };
+                File.WriteAllText("training_progress.json",
+                    System.Text.Json.JsonSerializer.Serialize(progress,
+                        new System.Text.Json.JsonSerializerOptions { WriteIndented = false }));
+            }
+
             var nextGen = new List<SwingLongGenotype>();
             nextGen.AddRange(eliteIsland.Take(5));
             while (nextGen.Count < _populationSize)

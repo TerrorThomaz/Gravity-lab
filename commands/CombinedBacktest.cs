@@ -893,5 +893,39 @@ static class CombinedBacktest
                 }
             }
         }
+
+        // Write structured JSON for frontend
+        static object StratStats(List<double> r, int vcc) => r.Count == 0
+            ? new { trades = 0, winRate = 0.0, sharpe = 0.0, pf = 0.0, avgRet = 0.0 }
+            : new
+            {
+                trades  = r.Count,
+                winRate = Math.Round((double)r.Count(x => x > 0) / r.Count * 100, 2),
+                sharpe  = Math.Round(Simulator.SharpeRatio(r, vcc), 4),
+                pf      = Math.Round(Simulator.ProfitFactor(r), 4),
+                avgRet  = Math.Round(r.Average(), 4),
+            };
+
+        var backtestResults = new
+        {
+            timestamp = DateTime.UtcNow.ToString("O"),
+            val = new Dictionary<string, object>
+            {
+                ["FadeShort"] = new Dictionary<string, object>
+                    { ["default"] = StratStats(swingRet, swingTotalVCC) },
+                ["Grid"] = new Dictionary<string, object>
+                    { ["default"] = StratStats(gridRet, gridTotalVCC) },
+                ["FadeLong"] = new Dictionary<string, object>
+                    { ["default"] = StratStats(flRet, flTotalVCC) },
+                ["DipLong"] = new Dictionary<string, object>
+                    { ["default"] = StratStats(dlRet, dlTotalVCC) },
+                ["SwingLong"] = new Dictionary<string, object>
+                    { ["default"] = StratStats(slRet, slTotalVCC) },
+            },
+        };
+        File.WriteAllText("backtest_results.json",
+            System.Text.Json.JsonSerializer.Serialize(backtestResults,
+                new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine("backtest_results.json written.");
     }
 }

@@ -421,6 +421,43 @@ static class OosBacktest
             foreach (var r in slCoinStats.OrderByDescending(c => c.Sharpe))
                 Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
         }
+
+        // Merge OOS section into backtest_results.json
+        static object OosStratStats(List<double> r, int vcc) => r.Count == 0
+            ? new { trades = 0, winRate = 0.0, sharpe = 0.0, pf = 0.0, avgRet = 0.0 }
+            : new
+            {
+                trades  = r.Count,
+                winRate = Math.Round((double)r.Count(x => x > 0) / r.Count * 100, 2),
+                sharpe  = Math.Round(Simulator.SharpeRatio(r, vcc), 4),
+                pf      = Math.Round(Simulator.ProfitFactor(r), 4),
+                avgRet  = Math.Round(r.Average(), 4),
+            };
+
+        var oosSection = new Dictionary<string, object>
+        {
+            ["FadeShort"] = new Dictionary<string, object>
+                { ["default"] = OosStratStats(swingRet, totalVCC) },
+            ["Grid"] = new Dictionary<string, object>
+                { ["default"] = OosStratStats(gridRet, totalVCC) },
+            ["FadeLong"] = new Dictionary<string, object>
+                { ["default"] = OosStratStats(flRet, totalVCC) },
+            ["DipLong"] = new Dictionary<string, object>
+                { ["default"] = OosStratStats(dlRet, totalVCC) },
+            ["SwingLong"] = new Dictionary<string, object>
+                { ["default"] = OosStratStats(slRet, totalVCC) },
+        };
+
+        string backtestPath = "backtest_results.json";
+        var existing = File.Exists(backtestPath)
+            ? System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(backtestPath))
+              ?? new Dictionary<string, object>()
+            : new Dictionary<string, object>();
+        existing["oos"]       = oosSection;
+        existing["timestamp"] = DateTime.UtcNow.ToString("O");
+        File.WriteAllText(backtestPath, System.Text.Json.JsonSerializer.Serialize(existing,
+            new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine("backtest_results.json updated with OOS results.");
     }
 
     public static async Task RunAllCoinsBacktest(BybitRestClient client)

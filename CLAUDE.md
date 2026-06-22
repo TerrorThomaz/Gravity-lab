@@ -34,6 +34,10 @@ dotnet run -- papertrade         # Live signals (1h refresh), all strategies, ro
 
 # Discord bot (requires .env)
 .venv/bin/python bot/discord_bot.py
+
+# Serve frontend + API server
+python3 -m uvicorn bot.api_server:app --port 8080
+# Then open: http://localhost:8080/Gravity%20Terminal.html
 ```
 
 No test suite for strategies. Validation is done by running `combinedbacktest` or `oosbacktest` after any simulator change.
@@ -63,7 +67,7 @@ commands/         Program (CLI entry), TrainCommands, LongTrainCommands, GridCom
                   FullTest
 
 genotypes/        All trained parameter JSON files (see table below)
-bot/              discord_bot.py, knowledge_bot.py, gather_genes.py, swing_autotrain.py
+bot/              discord_bot.py, knowledge_bot.py, gather_genes.py, swing_autotrain.py, api_server.py
 legacy/           Archived: DrawdownGuard*, ExitModifier*, Scenario*, StressTestCommands, test.cs
 docs/             README.md, REGIME_ARCHITECTURE.md, superpowers/plans+specs
 

@@ -18,8 +18,10 @@ class FadeShortGenotypeDto
     public int    MaxHoldCandles            { get; set; }
     public double PositionSizePct           { get; set; }
     public double Fitness                   { get; set; }
+    public double AtrLow                    { get; init; } = 0.0;
+    public double AtrHigh                   { get; init; } = 9999.0;
 
-    public static FadeShortGenotypeDto From(FadeShortGenotype g) => new()
+    public static FadeShortGenotypeDto From(FadeShortGenotype g, FitnessConfig? cfg = null) => new()
     {
         EmaPeriod      = g.EmaPeriod,
         RsiPeriod      = 7,
@@ -37,6 +39,8 @@ class FadeShortGenotypeDto
         MaxHoldCandles            = g.MaxHoldCandles,
         PositionSizePct           = g.PositionSizePct,
         Fitness                   = g.Fitness,
+        AtrLow                    = cfg?.AtrLow  ?? 0.0,
+        AtrHigh                   = cfg?.AtrHigh ?? 9999.0,
     };
 
     public FadeShortGenotype ToGenotype() => new FadeShortGenotype
@@ -77,8 +81,10 @@ class FadeLongGenotypeDto
     public double PositionSizePct          { get; set; }
     public int    RegimeSustainedBars      { get; set; }
     public double Fitness                  { get; set; }
+    public double AtrLow                   { get; init; } = 0.0;
+    public double AtrHigh                  { get; init; } = 9999.0;
 
-    public static FadeLongGenotypeDto From(FadeLongGenotype g) => new()
+    public static FadeLongGenotypeDto From(FadeLongGenotype g, FitnessConfig? cfg = null) => new()
     {
         RegimePeriod              = g.RegimePeriod,
         EmaPeriod                 = g.EmaPeriod,
@@ -96,6 +102,8 @@ class FadeLongGenotypeDto
         PositionSizePct           = g.PositionSizePct,
         RegimeSustainedBars       = g.RegimeSustainedBars,
         Fitness                   = g.Fitness,
+        AtrLow                    = cfg?.AtrLow  ?? 0.0,
+        AtrHigh                   = cfg?.AtrHigh ?? 9999.0,
     };
 
     public FadeLongGenotype ToGenotype() => new FadeLongGenotype
@@ -136,8 +144,10 @@ class DipLongGenotypeDto
     public double TimeStopLossPct             { get; set; }  // 0 = not in old JSON → use 0.99 (disabled)
     public int    RegimeSustainedBars         { get; set; }
     public double Fitness                     { get; set; }
+    public double AtrLow                      { get; init; } = 0.0;
+    public double AtrHigh                     { get; init; } = 9999.0;
 
-    public static DipLongGenotypeDto From(DipLongGenotype g) => new()
+    public static DipLongGenotypeDto From(DipLongGenotype g, FitnessConfig? cfg = null) => new()
     {
         RegimeLongEmaPeriod       = g.RegimeLongEmaPeriod,
         RegimeSlopeLookback       = g.RegimeSlopeLookback,
@@ -154,6 +164,8 @@ class DipLongGenotypeDto
         TimeStopLossPct           = g.TimeStopLossPct,
         RegimeSustainedBars       = g.RegimeSustainedBars,
         Fitness                   = g.Fitness,
+        AtrLow                    = cfg?.AtrLow  ?? 0.0,
+        AtrHigh                   = cfg?.AtrHigh ?? 9999.0,
     };
 
     public DipLongGenotype ToGenotype() => new DipLongGenotype
@@ -193,8 +205,10 @@ class SwingLongGenotypeDto
     public int    TimeStopBars              { get; set; }
     public double TimeStopLossPct           { get; set; }
     public double Fitness                   { get; set; }
+    public double AtrLow                    { get; init; } = 0.0;
+    public double AtrHigh                   { get; init; } = 9999.0;
 
-    public static SwingLongGenotypeDto From(SwingLongGenotype g) => new()
+    public static SwingLongGenotypeDto From(SwingLongGenotype g, FitnessConfig? cfg = null) => new()
     {
         EmaPeriod                 = g.EmaPeriod,
         AdxThreshold              = g.AdxThreshold,
@@ -211,6 +225,8 @@ class SwingLongGenotypeDto
         TimeStopBars              = g.TimeStopBars,
         TimeStopLossPct           = g.TimeStopLossPct,
         Fitness                   = g.Fitness,
+        AtrLow                    = cfg?.AtrLow  ?? 0.0,
+        AtrHigh                   = cfg?.AtrHigh ?? 9999.0,
     };
 
     public SwingLongGenotype ToGenotype() => new SwingLongGenotype
@@ -245,8 +261,10 @@ class GridGenotypeDto
     public double HardStopAtrMult   { get; set; }
     public int    MaxHoldCandles    { get; set; }
     public double Fitness           { get; set; }
+    public double AtrLow            { get; init; } = 0.0;
+    public double AtrHigh           { get; init; } = 9999.0;
 
-    public static GridGenotypeDto From(GridGenotype g) => new()
+    public static GridGenotypeDto From(GridGenotype g, FitnessConfig? cfg = null) => new()
     {
         AdxThreshold      = g.AdxThreshold,
         BbPeriod          = g.BbPeriod,
@@ -258,6 +276,8 @@ class GridGenotypeDto
         HardStopAtrMult   = g.HardStopAtrMult,
         MaxHoldCandles    = g.MaxHoldCandles,
         Fitness           = g.Fitness,
+        AtrLow            = cfg?.AtrLow  ?? 0.0,
+        AtrHigh           = cfg?.AtrHigh ?? 9999.0,
     };
 
     public GridGenotype ToGenotype() => new GridGenotype

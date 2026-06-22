@@ -227,11 +227,10 @@ public class RegimeRouterGA
     }
 
     // Keep only trades where the router would have activated that strategy at trade time.
-    // Transition windows (duration < MinBars):
-    //   - Grid: forced ON at TransitionSizeMult (neutral oscillation play)
-    //   - DipLong/SwingLong: blocked UNLESS previous regime was Bear (Bear→Bull reversal)
-    //     and BullFromBearLongMult > 0 — catches genuine reversals at reduced size.
-    //   - Bull→Bear / Ranging→Bull transitions stay hard-blocked for longs.
+    // Early-bull window (duration < BullMinBars):
+    //   - Grid: forced ON at TransitionSizeMult
+    //   - DipLong/SwingLong: EarlyBullFromBearMult if from Bear, EarlyBullFromRangingMult if from Ranging
+    //   - FadeLong: EarlyBullBearCarry fraction if source was Bear (bearish carryover)
     private static List<TradeRecord> FilterActive(
         RegimeRouterGenotype       router,
         IEnumerable<TradeRecord>   trades,
@@ -253,18 +252,20 @@ public class RegimeRouterGA
                                  || (btc.Regime == MarketRegime.Bear
                                      && btc.Duration < (int)router.BearMinBars);
 
-            // Previous regime: look back duration bars to the bar before this run started
-            bool prevWasBear = false;
-            if (inBullTransition && router.BullFromBearLongMult > 0)
+            // Previous regime: look back to the bar before this regime run started
+            MarketRegime prevRegime = MarketRegime.Ranging;
+            if (inBullTransition)
             {
-                int prevBar  = Math.Max(0, bar - btc.Duration);
-                prevWasBear  = btcSeries[prevBar].Regime == MarketRegime.Bear;
+                int prevBar = Math.Max(0, bar - btc.Duration);
+                prevRegime  = btcSeries[prevBar].Regime;
             }
 
-            bool bearToBullLong = inBullTransition
-                                  && prevWasBear
-                                  && blendedConf >= router.BullMinConf
-                                  && router.BullFromBearLongMult > 0;
+            bool earlyFromBear    = inBullTransition && prevRegime == MarketRegime.Bear
+                                    && blendedConf >= router.BullMinConf && router.EarlyBullFromBearMult > 0;
+            bool earlyFromRanging = inBullTransition && prevRegime == MarketRegime.Ranging
+                                    && blendedConf >= router.BullMinConf && router.EarlyBullFromRangingMult > 0;
+            bool bearCarry        = inBullTransition && prevRegime == MarketRegime.Bear
+                                    && router.EarlyBullBearCarry > 0;
 
             bool active = t.Kind switch
             {
@@ -275,10 +276,11 @@ public class RegimeRouterGA
                 StrategyKind.DipLong   => (btc.Regime == MarketRegime.Bull
                                            && btc.Duration >= (int)router.BullMinBars
                                            && blendedConf >= router.BullMinConf)
-                                          || bearToBullLong,
-                StrategyKind.FadeLong  => btc.Regime == MarketRegime.Bear
-                                          && btc.Duration >= (int)router.BearMinBars
-                                          && blendedConf >= router.BearMinConf,
+                                          || earlyFromBear || earlyFromRanging,
+                StrategyKind.FadeLong  => (btc.Regime == MarketRegime.Bear
+                                           && btc.Duration >= (int)router.BearMinBars
+                                           && blendedConf >= router.BearMinConf)
+                                          || bearCarry,
                 _                      => false,
             };
 
@@ -287,8 +289,12 @@ public class RegimeRouterGA
             double frac = t.Frac;
             if (t.Kind == StrategyKind.Grid && inTransition && router.TransitionSizeMult > 0)
                 frac *= router.TransitionSizeMult;
-            else if (t.Kind == StrategyKind.DipLong && bearToBullLong)
-                frac *= router.BullFromBearLongMult;
+            else if (t.Kind == StrategyKind.DipLong && earlyFromBear)
+                frac *= router.EarlyBullFromBearMult;
+            else if (t.Kind == StrategyKind.DipLong && earlyFromRanging)
+                frac *= router.EarlyBullFromRangingMult;
+            else if (t.Kind == StrategyKind.FadeLong && bearCarry)
+                frac *= router.EarlyBullBearCarry;
             result.Add(t with { Frac = frac });
         }
         return result;
@@ -349,10 +355,10 @@ public class RegimeRouterGA
     {
         long key = HourKey(t);
         if (idx.TryGetValue(key, out int bar)) return bar;
+        // Only search backwards — never return a future bar whose candle has not yet closed
         for (int delta = 1; delta <= 4; delta++)
         {
             if (idx.TryGetValue(key - delta, out bar)) return bar;
-            if (idx.TryGetValue(key + delta, out bar)) return bar;
         }
         return Math.Clamp(maxBar - 1, 0, maxBar - 1);
     }

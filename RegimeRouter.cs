@@ -117,10 +117,11 @@ public static class RegimeRouter
         return new(fadeShort, grid, dipLong, fadeLong, sizeMult, regime, conf);
     }
 
-    // Genotype-aware activation: uses trained thresholds + BTC duration gate.
-    // Transition window (duration < MinBars):
-    //   Grid is forced ON at TransitionSizeMult; directional longs are blocked except
-    //   on a confirmed Bear→Bull flip (prevRegime=Bear) where BullFromBearLongMult applies.
+    // Genotype-aware activation: uses trained thresholds + BTC duration gate + source-regime awareness.
+    // Early-bull window (duration < BullMinBars):
+    //   Grid forced ON at TransitionSizeMult.
+    //   Longs gated by source regime: EarlyBullFromBearMult (Bear→Bull) or EarlyBullFromRangingMult (Ranging→Bull).
+    //   FadeLong can carry over at EarlyBullBearCarry fraction when source was Bear.
     private static StrategyActivation ActivateWithGeno(
         MarketRegime regime, double conf, int duration,
         RegimeRouterGenotype geno, MarketRegime prevRegime = MarketRegime.Ranging)
@@ -132,10 +133,12 @@ public static class RegimeRouter
         bool inTransition     = inBullTransition
                              || (regime == MarketRegime.Bear && duration < (int)geno.BearMinBars);
 
-        bool bearToBull = inBullTransition
-                          && prevRegime == MarketRegime.Bear
-                          && conf >= geno.BullMinConf
-                          && geno.BullFromBearLongMult > 0;
+        bool earlyFromBear    = inBullTransition && prevRegime == MarketRegime.Bear
+                                && conf >= geno.BullMinConf && geno.EarlyBullFromBearMult > 0;
+        bool earlyFromRanging = inBullTransition && prevRegime == MarketRegime.Ranging
+                                && conf >= geno.BullMinConf && geno.EarlyBullFromRangingMult > 0;
+        bool bearCarry        = inBullTransition && prevRegime == MarketRegime.Bear
+                                && geno.EarlyBullBearCarry > 0;
 
         bool fadeShort = true;
         bool grid      = regime == MarketRegime.Ranging
@@ -144,19 +147,22 @@ public static class RegimeRouter
         bool dipLong   = (regime == MarketRegime.Bull
                           && duration >= (int)geno.BullMinBars
                           && conf >= geno.BullMinConf)
-                         || bearToBull;
-        bool fadeLong  = regime == MarketRegime.Bear
-                         && duration >= (int)geno.BearMinBars
-                         && conf >= geno.BearMinConf;
+                         || earlyFromBear || earlyFromRanging;
+        bool fadeLong  = (regime == MarketRegime.Bear
+                          && duration >= (int)geno.BearMinBars
+                          && conf >= geno.BearMinConf)
+                         || bearCarry;
 
         double sizeMult = regime == MarketRegime.Ranging
             ? 1.0
             : 0.60 + 0.40 * Math.Min(1.0, conf / 0.80);
 
-        if (inTransition && geno.TransitionSizeMult > 0 && !bearToBull)
+        if (inTransition && geno.TransitionSizeMult > 0 && !earlyFromBear && !earlyFromRanging)
             sizeMult *= geno.TransitionSizeMult;
-        else if (bearToBull)
-            sizeMult *= geno.BullFromBearLongMult;
+        else if (earlyFromBear)
+            sizeMult *= geno.EarlyBullFromBearMult;
+        else if (earlyFromRanging)
+            sizeMult *= geno.EarlyBullFromRangingMult;
 
         return new(fadeShort, grid, dipLong, fadeLong, sizeMult, regime, conf);
     }
@@ -204,13 +210,20 @@ public class RegimeRouterSession
                              || (btc.Regime == MarketRegime.Bear
                                  && btc.Duration < (int)_geno.BearMinBars);
 
-        // Previous regime for Bear→Bull detection
-        bool bearToBull = false;
-        if (inBullTransition && _geno.BullFromBearLongMult > 0 && conf >= _geno.BullMinConf)
+        // Previous regime for source-aware early-bull activation
+        MarketRegime prevRegime = MarketRegime.Ranging;
+        if (inBullTransition)
         {
             int prevBar = Math.Max(0, bar - btc.Duration);
-            bearToBull  = _btc[prevBar].Regime == MarketRegime.Bear;
+            prevRegime  = _btc[prevBar].Regime;
         }
+
+        bool earlyFromBear    = inBullTransition && prevRegime == MarketRegime.Bear
+                                && conf >= _geno.BullMinConf && _geno.EarlyBullFromBearMult > 0;
+        bool earlyFromRanging = inBullTransition && prevRegime == MarketRegime.Ranging
+                                && conf >= _geno.BullMinConf && _geno.EarlyBullFromRangingMult > 0;
+        bool bearCarry        = inBullTransition && prevRegime == MarketRegime.Bear
+                                && _geno.EarlyBullBearCarry > 0;
 
         return kind switch
         {
@@ -221,10 +234,11 @@ public class RegimeRouterSession
             RegimeRouterGA.StrategyKind.DipLong   => (btc.Regime == MarketRegime.Bull
                                                       && btc.Duration >= (int)_geno.BullMinBars
                                                       && conf >= _geno.BullMinConf)
-                                                     || bearToBull,
-            RegimeRouterGA.StrategyKind.FadeLong  => btc.Regime == MarketRegime.Bear
-                                                     && btc.Duration >= (int)_geno.BearMinBars
-                                                     && conf >= _geno.BearMinConf,
+                                                     || earlyFromBear || earlyFromRanging,
+            RegimeRouterGA.StrategyKind.FadeLong  => (btc.Regime == MarketRegime.Bear
+                                                      && btc.Duration >= (int)_geno.BearMinBars
+                                                      && conf >= _geno.BearMinConf)
+                                                     || bearCarry,
             _                                     => false,
         };
     }
@@ -299,10 +313,10 @@ public class RegimeRouterSession
     {
         long key = HourKey(t);
         if (_idx.TryGetValue(key, out int bar)) return bar;
+        // Only search backwards — never return a future bar whose candle has not yet closed
         for (int d = 1; d <= 4; d++)
         {
             if (_idx.TryGetValue(key - d, out bar)) return bar;
-            if (_idx.TryGetValue(key + d, out bar)) return bar;
         }
         return _btc.Length - 1;
     }

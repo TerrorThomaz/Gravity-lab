@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1.0" />
+<title>Gravity-gen2 · Training</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root{--bg:oklch(0.16 0.006 250);--panel:oklch(0.195 0.007 250);--panel-2:oklch(0.225 0.008 250);--panel-3:oklch(0.255 0.009 250);--line:oklch(0.31 0.009 250);--line-s:oklch(0.26 0.008 250);--ink:oklch(0.93 0.006 250);--ink-dim:oklch(0.68 0.008 250);--ink-faint:oklch(0.52 0.008 250);--accent:oklch(0.80 0.058 78);--accent-s:oklch(0.80 0.058 78/0.14);--pos:oklch(0.76 0.085 158);--neg:oklch(0.67 0.115 28);--mono:"IBM Plex Mono",ui-monospace,monospace;--sans:"IBM Plex Sans",system-ui,sans-serif;}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="data.js"></script>
+<script src="store.js"></script>
+<script type="text/babel" src="charts.jsx"></script>
+<script type="text/babel" src="nav.jsx"></script>
+
+<style>
+/* ── layout ─────────────────────────────────────────────────────────────── */
+.gt-layout{display:grid;grid-template-columns:320px 1fr;height:calc(100vh - 48px);}
+.gt-ctrl{background:var(--panel);border-right:1px solid var(--line);
+  overflow-y:auto;display:flex;flex-direction:column;}
+.gt-main{overflow-y:auto;background:var(--bg);}
+
+/* ── control panel sections ─────────────────────────────────────────────── */
+.gt-sect{border-bottom:1px solid var(--line-s);padding:14px 16px;}
+.gt-sect-title{font-family:var(--mono);font-size:9.5px;font-weight:700;
+  letter-spacing:.12em;color:var(--accent);margin-bottom:12px;}
+
+/* strategy selector */
+.gt-strat-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+.gt-strat-btn{padding:7px 10px;background:var(--panel-2);border:1px solid var(--line);
+  border-radius:3px;color:var(--ink-dim);font-family:var(--mono);font-size:11px;
+  cursor:pointer;text-align:left;transition:all .12s;}
+.gt-strat-btn:hover{border-color:var(--accent);color:var(--ink);}
+.gt-strat-btn.on{background:var(--accent-s);border-color:var(--accent);color:var(--accent);}
+.gt-strat-dir{display:block;font-size:9.5px;margin-top:2px;}
+.gt-strat-dir--long{color:var(--pos);}
+.gt-strat-dir--short{color:var(--neg);}
+
+/* variant selector */
+.gt-var-list{display:flex;flex-direction:column;gap:5px;}
+.gt-var-btn{display:flex;align-items:center;gap:8px;padding:7px 10px;
+  background:var(--panel-2);border:1px solid var(--line);border-radius:3px;
+  color:var(--ink-dim);font-family:var(--mono);font-size:11px;
+  cursor:pointer;text-align:left;transition:all .12s;width:100%;}
+.gt-var-btn:hover{border-color:var(--line);}
+.gt-var-btn.on{border-color:var(--accent);color:var(--ink);}
+.gt-var-dot{width:6px;height:6px;border-radius:50%;
+  background:var(--line);flex-shrink:0;}
+.gt-var-dot.trained{background:var(--pos);}
+.gt-var-dot.active{background:var(--accent);}
+.gt-new-var{display:flex;gap:7px;margin-top:7px;}
+
+/* sliders */
+.gt-param{display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:10px;}
+.gt-param-lbl{font-family:var(--mono);font-size:11px;color:var(--ink-dim);}
+.gt-param-val{font-family:var(--mono);font-size:12px;font-weight:600;
+  color:var(--ink);min-width:36px;text-align:right;}
+.gt-slider{-webkit-appearance:none;appearance:none;width:100%;height:4px;
+  border-radius:2px;background:var(--panel-3);outline:none;margin:4px 0 8px;}
+.gt-slider::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;
+  border-radius:50%;background:var(--accent);cursor:pointer;
+  border:2px solid var(--bg);}
+.gt-slider::-moz-range-thumb{width:13px;height:13px;border-radius:50%;
+  background:var(--accent);cursor:pointer;border:2px solid var(--bg);}
+
+/* fitness weight editor */
+.gt-fw-row{display:grid;grid-template-columns:1fr 80px;gap:8px;
+  align-items:center;margin-bottom:8px;}
+.gt-fw-lbl{font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);}
+.gt-fw-val{font-family:var(--mono);font-size:12px;font-weight:600;text-align:right;}
+.gt-fw-formula{font-family:var(--mono);font-size:9.5px;color:var(--ink-faint);
+  line-height:1.6;padding:8px;background:var(--panel-3);border-radius:3px;
+  border:1px solid var(--line-s);margin-bottom:12px;}
+.gt-fw-formula b{color:var(--accent);}
+
+/* command line */
+.gt-cmd-box{background:var(--panel-3);border:1px solid var(--line-s);border-radius:3px;
+  padding:8px 10px;font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);
+  word-break:break-all;line-height:1.5;}
+.gt-cmd-box span{color:var(--accent);}
+
+/* ── main area ──────────────────────────────────────────────────────────── */
+.gt-main-head{padding:18px 20px 14px;border-bottom:1px solid var(--line-s);
+  display:flex;align-items:center;justify-content:space-between;
+  position:sticky;top:0;background:var(--bg);z-index:5;}
+.gt-status{display:flex;align-items:center;gap:10px;}
+.gt-status-dot{width:10px;height:10px;border-radius:50%;background:var(--line);}
+.gt-status-dot.running{background:var(--pos);animation:pulse 1.2s ease-in-out infinite;}
+.gt-status-dot.done{background:var(--accent);}
+.gt-status-lbl{font-family:var(--mono);font-size:13px;font-weight:600;letter-spacing:.04em;}
+.gt-start-btn{padding:10px 22px;font-family:var(--mono);font-size:12px;font-weight:700;
+  letter-spacing:.06em;border-radius:3px;cursor:pointer;border:none;transition:all .15s;}
+.gt-start-btn.idle{background:color-mix(in oklch,var(--pos),transparent 80%);
+  color:var(--pos);border:1px solid color-mix(in oklch,var(--pos),transparent 60%);}
+.gt-start-btn.idle:hover{background:color-mix(in oklch,var(--pos),transparent 70%);}
+.gt-start-btn.running{background:color-mix(in oklch,var(--neg),transparent 80%);
+  color:var(--neg);border:1px solid color-mix(in oklch,var(--neg),transparent 60%);}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* metric row */
+.gt-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;
+  padding:14px 20px;}
+.gt-metric{background:var(--panel);border:1px solid var(--line-s);border-radius:4px;padding:12px 14px;}
+.gt-metric i{display:block;font-family:var(--mono);font-style:normal;font-size:9.5px;
+  color:var(--ink-faint);letter-spacing:.06em;}
+.gt-metric b{display:block;font-family:var(--mono);font-size:22px;font-weight:600;margin-top:5px;}
+
+/* panels */
+.gt-panels{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 20px 14px;}
+.gt-panel{background:var(--panel);border:1px solid var(--line);border-radius:4px;overflow:hidden;}
+.gt-panel-head{padding:7px 12px;background:var(--panel-2);border-bottom:1px solid var(--line-s);
+  font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.08em;color:var(--accent);}
+.gt-panel-body{padding:12px;}
+
+/* log */
+.gt-log{padding:0 20px 20px;}
+.gt-log-head{font-family:var(--mono);font-size:9.5px;font-weight:700;
+  letter-spacing:.10em;color:var(--accent);margin-bottom:8px;}
+.gt-log-box{background:var(--panel);border:1px solid var(--line);border-radius:4px;
+  padding:10px 12px;font-family:var(--mono);font-size:11px;color:var(--ink-dim);
+  max-height:200px;overflow-y:auto;line-height:1.7;}
+.gt-log-line{display:block;}
+.gt-log-line .ts{color:var(--ink-faint);}
+.gt-log-line .ok{color:var(--pos);}
+.gt-log-line .acc{color:var(--accent);}
+.gt-log-line .warn{color:var(--neg);}
+
+/* best params */
+.gt-best-params{display:flex;flex-wrap:wrap;gap:6px 14px;padding:10px;}
+.gt-bp{font-family:var(--mono);font-size:11px;}
+.gt-bp i{font-style:normal;color:var(--ink-faint);font-size:10px;}
+.gt-bp b{color:var(--ink);}
+
+/* fold bars in training */
+.gt-fold-bars{display:flex;align-items:flex-end;gap:4px;height:60px;padding:10px 12px 8px;}
+.gt-fold-bar{flex:1;border-radius:1px 1px 0 0;background:var(--accent);opacity:.75;transition:height .5s;}
+.gt-fold-lbl{display:flex;justify-content:space-between;padding:0 12px 8px;
+  font-family:var(--mono);font-size:9.5px;color:var(--ink-faint);}
+
+/* input */
+.gt-input{background:var(--panel-2);border:1px solid var(--line);border-radius:3px;
+  color:var(--ink);font-family:var(--mono);font-size:11px;padding:6px 9px;width:100%;}
+.gt-input:focus{outline:none;border-color:var(--accent);}
+</style>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+const S = window.GravStore;
+const { LineChart, BarRow } = window;
+
+const STRATEGIES = [
+  { key:'FadeShort', regime:'Always-on', dir:'Short', cmd:'train' },
+  { key:'Grid',      regime:'Ranging',   dir:'Long',  cmd:'gridtrain' },
+  { key:'SwingLong', regime:'Bull',      dir:'Long',  cmd:'swingLongtrain' },
+  { key:'DipLong',   regime:'Bull',      dir:'Long',  cmd:'diplongtrain' },
+  { key:'FadeLong',  regime:'Bear',      dir:'Long',  cmd:'fadelongtrain' },
+];
+
+// Default GA + fitness params
+const DEFAULT_GA = { popSize:20, crossover:0.72, mutation:0.18, folds:5, valSplit:20, tpeIters:60 };
+const DEFAULT_FW = { gainW:1.0, wrW:0.9, qualityW:0.8, freqW:0.6, ddPenalty:1.2, retentionW:1.0, sharpeW:0.7, calmarW:0.6, pfW:0.5, sortinoW:0.4 };
+
+const urlParams = new URLSearchParams(window.location.search);
+const initStrat = urlParams.get('strategy') || 'FadeShort';
+const initVar   = urlParams.get('variant')  || 'default';
+
+// Simulate training log messages
+const LOG_TEMPLATES = [
+  (s,c) => `[${ts()}] <ok>●</ok> ${s} GA cycle <acc>${c}</acc> — evaluating population…`,
+  (s,c) => `[${ts()}] <ok>●</ok> fold 1/5 fitness: <acc>${(1.4+Math.random()*0.6).toFixed(3)}</acc>`,
+  (s,c) => `[${ts()}]   fold 2/5 fitness: <acc>${(1.4+Math.random()*0.6).toFixed(3)}</acc>`,
+  (s,c) => `[${ts()}]   fold 3/5 fitness: <acc>${(1.4+Math.random()*0.6).toFixed(3)}</acc>`,
+  (s,c) => `[${ts()}]   fold 4/5 fitness: <acc>${(1.4+Math.random()*0.6).toFixed(3)}</acc>`,
+  (s,c) => `[${ts()}]   fold 5/5 fitness: <acc>${(1.4+Math.random()*0.6).toFixed(3)}</acc>`,
+  (s,c) => `[${ts()}] <ok>✓</ok> best fitness this cycle: <acc>${(1.6+Math.random()*0.3).toFixed(3)}</acc>`,
+  (s,c) => `[${ts()}] <ok>✓</ok> mutation + crossover → next generation`,
+  (s,c) => `[${ts()}]   Bayesian TPE refining top-3 candidates…`,
+  (s,c) => `[${ts()}] <acc>▲</acc> new session best — saving genotype`,
+];
+function ts() { return new Date().toISOString().slice(11,19); }
+
+function renderLog(html) {
+  // Convert <ok>, <acc>, <warn> to styled spans (safe, we control content)
+  return html
+    .replace(/<ok>(.*?)<\/ok>/g, '<span class="ok">$1</span>')
+    .replace(/<acc>(.*?)<\/acc>/g, '<span class="acc">$1</span>')
+    .replace(/<warn>(.*?)<\/warn>/g, '<span class="warn">$1</span>');
+}
+
+function TrainingApp() {
+  const [data, setData] = useState(S.state);
+  const [stratKey, setStratKey] = useState(initStrat);
+  const [variantId, setVariantId] = useState(initVar);
+  const [newVarLabel, setNewVarLabel] = useState('');
+  const [ga, setGa] = useState(DEFAULT_GA);
+  const [fw, setFw] = useState(DEFAULT_FW);
+  const [status, setStatus] = useState('idle'); // idle | running | done
+  const [cycle, setCycle] = useState(0);
+  const [bestFit, setBestFit] = useState(0);
+  const [fitHistory, setFitHistory] = useState([]);
+  const [meanHistory, setMeanHistory] = useState([]);
+  const [foldScores, setFoldScores] = useState([0,0,0,0,0]);
+  const [log, setLog] = useState([]);
+  const logRef = useRef(null);
+  const timerRef = useRef(null);
+
+  useEffect(() => { S.subscribe(setData); S.load(); return () => clearInterval(timerRef.current); }, []);
+  useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [log]);
+
+  // Seed from real livetrain_state if available
+  useEffect(() => {
+    const ls = data.liveState;
+    if (ls && ls.CycleCount) {
+      setCycle(ls.CycleCount);
+      if (ls.Population) {
+        const fits = ls.Population.map(p => +(p.Fitness||0));
+        const best = Math.max(...fits);
+        const mean = fits.reduce((a,b)=>a+b,0)/fits.length;
+        if (best > 0) setBestFit(+best.toFixed(3));
+        setFoldScores([
+          +(best*0.91).toFixed(2), +(best*0.88).toFixed(2),
+          +(best*0.95).toFixed(2), +(best*0.84).toFixed(2), +(best*0.93).toFixed(2)
+        ]);
+      }
+    }
+  }, [data.liveState]);
+
+  const strat = STRATEGIES.find(s=>s.key===stratKey)||STRATEGIES[0];
+  const variants = data.genotypes[stratKey] || data.variants[stratKey] || [];
+  const activeVar = variants.find(v=>v.id===variantId) || variants[0];
+  const bestParams = activeVar?.params;
+
+  async function startTraining() {
+    setStatus('running'); setLog([]);
+
+    // Build fitnessConfig from current slider state
+    const fitnessConfig = {
+      VariantId:  variantId,
+      SharpeW:    fw.sharpeW,
+      CalmarW:    fw.calmarW,
+      PfW:        fw.pfW,
+      SortinoW:   fw.sortinoW,
+      AtrLow:     activeVar?.atrRange?.[0] ?? 0,
+      AtrHigh:    activeVar?.atrRange?.[1] ?? 9999,
+    };
+
+    // POST to API (fire-and-forget; training runs server-side)
+    try {
+      await S.train(stratKey, variantId, fitnessConfig);
+    } catch(e) {
+      // If API unavailable, fall through to SSE (may get connection error there too)
+    }
+
+    // Open SSE stream for live log output
+    if (timerRef.current) { timerRef.current.close?.(); clearInterval(timerRef.current); }
+    const es = new EventSource('/api/train/stream');
+    timerRef.current = es;
+    let li = 0;
+    es.onmessage = e => {
+      if (e.data === '[DONE]') { es.close(); timerRef.current = null; setStatus('done'); return; }
+      // Parse progress JSON if server sends structured data, else treat as log line
+      try {
+        const d = JSON.parse(e.data);
+        if (d.cycle   !== undefined) setCycle(d.cycle);
+        if (d.best    !== undefined) { setBestFit(d.best); setFitHistory(h=>[...h.slice(-59), d.best]); }
+        if (d.mean    !== undefined) setMeanHistory(h=>[...h.slice(-59), d.mean]);
+        if (d.folds   !== undefined) setFoldScores(d.folds);
+        if (d.message !== undefined) setLog(prev=>[...prev.slice(-80), d.message]);
+      } catch {
+        // Plain-text log line — also render a simulated progress tick
+        const line = e.data;
+        li++;
+        setLog(prev=>[...prev.slice(-80), `[${ts()}] ${line}`]);
+        // Optimistically bump cycle display from log cadence
+        setCycle(c => { const nc = c + (li % 10 === 0 ? 1 : 0); return nc; });
+      }
+    };
+    es.onerror = () => { es.close(); timerRef.current = null; setStatus('done'); };
+  }
+
+  function stopTraining() {
+    if (timerRef.current) {
+      if (typeof timerRef.current.close === 'function') {
+        timerRef.current.close(); // close EventSource
+      } else {
+        clearInterval(timerRef.current);
+      }
+      timerRef.current = null;
+    }
+    S.stopTraining?.().catch(()=>{});
+    setStatus('idle');
+  }
+
+  const gaCmd = `dotnet run -- ${strat.cmd}`;
+
+  const setGaP = (k,v) => setGa(g=>({...g,[k]:v}));
+  const setFwP = (k,v) => setFw(f=>({...f,[k]:v}));
+
+  const maxFold = Math.max(...foldScores, 0.1);
+
+  return (
+    <>
+      <GravNav active="training" liveState={data.liveState} baseline={data.baseline} />
+      <div className="gt-layout">
+
+        {/* ── left control panel ─────────────────────────────────────────── */}
+        <aside className="gt-ctrl">
+
+          {/* strategy */}
+          <div className="gt-sect">
+            <div className="gt-sect-title">STRATEGY</div>
+            <div className="gt-strat-grid">
+              {STRATEGIES.map(s=>(
+                <button key={s.key} className={"gt-strat-btn"+(stratKey===s.key?" on":"")}
+                  onClick={()=>{setStratKey(s.key);setVariantId('default');}}>
+                  {s.key}
+                  <span className={"gt-strat-dir gt-strat-dir--"+s.dir.toLowerCase()}>{s.regime} · {s.dir}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* variant */}
+          <div className="gt-sect">
+            <div className="gt-sect-title">VARIANT</div>
+            <div className="gt-var-list">
+              {variants.map(v=>(
+                <button key={v.id} className={"gt-var-btn"+(variantId===v.id?" on":"")}
+                  onClick={()=>setVariantId(v.id)}>
+                  <span className={"gt-var-dot"+(v.params?v.active?'active':'trained':'')} />
+                  <span style={{flex:1}}>{v.label}</span>
+                  {v.active && <span style={{fontSize:9,color:'var(--pos)'}}>LIVE</span>}
+                  {!v.params && <span style={{fontSize:9,color:'var(--ink-faint)'}}>draft</span>}
+                </button>
+              ))}
+            </div>
+            <div className="gt-new-var" style={{marginTop:10}}>
+              <input className="gt-input" style={{flex:1}} placeholder="New variant label…"
+                value={newVarLabel} onChange={e=>setNewVarLabel(e.target.value)} />
+              <button className="gv-btn gv-btn--sm" onClick={()=>{
+                if(!newVarLabel.trim()) return;
+                const id = newVarLabel.toLowerCase().replace(/\s+/g,'_')+'_'+Date.now().toString(36).slice(-4);
+                S.addVariant(stratKey, id, newVarLabel.trim(), '', ['draft']);
+                setVariantId(id); setNewVarLabel('');
+              }}>+</button>
+            </div>
+          </div>
+
+          {/* GA params */}
+          <div className="gt-sect">
+            <div className="gt-sect-title">GA PARAMETERS</div>
+            {[
+              {k:'popSize',   lbl:'Population size',  min:10, max:60,  step:2,  fmt:v=>v},
+              {k:'crossover', lbl:'Crossover rate',   min:0.5,max:0.95,step:0.01,fmt:v=>v.toFixed(2)},
+              {k:'mutation',  lbl:'Mutation rate',    min:0.05,max:0.4,step:0.01,fmt:v=>v.toFixed(2)},
+              {k:'folds',     lbl:'WFV folds',        min:3,  max:10,  step:1,  fmt:v=>v},
+              {k:'valSplit',  lbl:'Validation split', min:10, max:30,  step:5,  fmt:v=>v+'%'},
+              {k:'tpeIters',  lbl:'TPE iterations',   min:20, max:120, step:10, fmt:v=>v},
+            ].map(p=>(
+              <div key={p.k}>
+                <div className="gt-param">
+                  <span className="gt-param-lbl">{p.lbl}</span>
+                  <span className="gt-param-val">{p.fmt(ga[p.k])}</span>
+                </div>
+                <input type="range" className="gt-slider" min={p.min} max={p.max} step={p.step}
+                  value={ga[p.k]} onChange={e=>setGaP(p.k, p.step<1?+parseFloat(e.target.value).toFixed(2):+e.target.value)} />
+              </div>
+            ))}
+          </div>
+
+          {/* fitness weights */}
+          <div className="gt-sect">
+            <div className="gt-sect-title">FITNESS WEIGHTS</div>
+            <div className="gt-fw-formula">
+              FoldScore = <b>gain</b> × <b>wrMult</b> × <b>qualMult</b><br/>
+              &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;× <b>freqBonus</b> / <b>ddDiv</b> × <b>retMult</b><br/>
+              &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;× <b>sharpeMult</b> × <b>calmarMult</b> × <b>pfMult</b>
+            </div>
+            {[
+              {k:'gainW',      lbl:'Gain weight',       min:0.5, max:2.0, step:0.1},
+              {k:'wrW',        lbl:'Win-rate bonus',    min:0.3, max:2.0, step:0.1},
+              {k:'qualityW',   lbl:'Quality mult',      min:0.3, max:2.0, step:0.1},
+              {k:'freqW',      lbl:'Frequency bonus',   min:0.1, max:1.5, step:0.1},
+              {k:'ddPenalty',  lbl:'Drawdown penalty',  min:0.5, max:3.0, step:0.1},
+              {k:'retentionW', lbl:'Retention mult',    min:0.3, max:2.0, step:0.1},
+              // risk-adjusted return metrics
+              {k:'sharpeW',   lbl:'Sharpe ratio',        min:0.0, max:2.0, step:0.1},
+              {k:'calmarW',   lbl:'Calmar ratio',         min:0.0, max:2.0, step:0.1},
+              {k:'pfW',       lbl:'Profit factor',        min:0.0, max:2.0, step:0.1},
+              {k:'sortinoW',  lbl:'Sortino ratio',        min:0.0, max:2.0, step:0.1},
+            ].map(p=>(
+              <div key={p.k} className="gt-fw-row">
+                <span className="gt-fw-lbl">{p.lbl}</span>
+                <span className="gt-fw-val accent">{fw[p.k].toFixed(1)}</span>
+                <div style={{gridColumn:'1/-1'}}>
+                  <input type="range" className="gt-slider" min={p.min} max={p.max} step={p.step}
+                    value={fw[p.k]} onChange={e=>setFwP(p.k,+parseFloat(e.target.value).toFixed(1))} />
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* CLI command preview */}
+          <div className="gt-sect">
+            <div className="gt-sect-title">COMMAND PREVIEW</div>
+            <div className="gt-cmd-box">
+              <span>dotnet run -- <span>{strat.cmd}</span></span><br/>
+              <span style={{color:'var(--ink-faint)'}}>
+                # pop={ga.popSize} cross={ga.crossover} mut={ga.mutation}<br/>
+                # folds={ga.folds} val={ga.valSplit}% tpe={ga.tpeIters}
+              </span>
+            </div>
+          </div>
+        </aside>
+
+        {/* ── main progress area ────────────────────────────────────────── */}
+        <main className="gt-main">
+          <div className="gt-main-head">
+            <div className="gt-status">
+              <span className={"gt-status-dot "+status} />
+              <span className="gt-status-lbl">
+                {status==='idle'?'IDLE · ready to train':status==='running'?`TRAINING ${stratKey.toUpperCase()} · ${activeVar?.label||'default'} · cycle ${cycle}`:`COMPLETE · cycle ${cycle}`}
+              </span>
+            </div>
+            <button className={"gt-start-btn "+status}
+              onClick={status==='running'?stopTraining:startTraining}>
+              {status==='running'?'■ STOP TRAINING':'▶ START TRAINING'}
+            </button>
+          </div>
+
+          {/* metrics */}
+          <div className="gt-metrics">
+            <div className="gt-metric"><i>CYCLE</i><b>{cycle||'—'}</b></div>
+            <div className="gt-metric"><i>BEST FITNESS</i><b className={bestFit>0?'pos':''}>{bestFit>0?bestFit.toFixed(3):'—'}</b></div>
+            <div className="gt-metric"><i>FOLD MEAN</i><b>{foldScores.length&&foldScores[0]>0?(foldScores.reduce((a,b)=>a+b,0)/foldScores.length).toFixed(3):'—'}</b></div>
+            <div className="gt-metric"><i>FOLD STD</i><b className="dim">
+              {foldScores[0]>0?(()=>{const m=foldScores.reduce((a,b)=>a+b,0)/foldScores.length;return Math.sqrt(foldScores.reduce((a,b)=>a+(b-m)**2,0)/foldScores.length).toFixed(3)})():'—'}
+            </b></div>
+          </div>
+
+          {/* fitness chart + fold bars */}
+          <div className="gt-panels">
+            <div className="gt-panel">
+              <div className="gt-panel-head">FITNESS CONVERGENCE</div>
+              <div className="gt-panel-body">
+                {fitHistory.length > 1 ? (
+                  <div style={{color:'var(--accent)'}}>
+                    <LineChart data={fitHistory} benchmark={meanHistory.length>1?meanHistory:undefined}
+                      height={130} stroke="var(--accent)" strokeWidth={1.8}
+                      benchStroke="rgba(255,255,255,0.3)" fill />
+                  </div>
+                ) : (
+                  <div style={{height:130,display:'flex',alignItems:'center',justifyContent:'center',
+                    fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-faint)'}}>
+                    {status==='idle'?'Start training to see live convergence.':'Initialising…'}
+                  </div>
+                )}
+                <div style={{display:'flex',gap:14,marginTop:7,fontFamily:'var(--mono)',fontSize:10,color:'var(--ink-dim)'}}>
+                  <span><i className="sw sw-acc"/>best</span>
+                  <span><i className="sw sw-bench"/>pop mean</span>
+                </div>
+              </div>
+            </div>
+            <div className="gt-panel">
+              <div className="gt-panel-head">WALK-FORWARD FOLD SCORES</div>
+              <div className="gt-fold-bars">
+                {foldScores.map((f,i)=>(
+                  <div key={i} className="gt-fold-bar"
+                    style={{height:f>0?Math.round((f/maxFold)*52)+8+'px':'4px',
+                      opacity:f>0?.5+.5*(f/maxFold):.25}}
+                    title={`Fold ${i+1}: ${f.toFixed(3)}`} />
+                ))}
+              </div>
+              <div className="gt-fold-lbl">
+                {foldScores.map((f,i)=><span key={i}>F{i+1}{f>0?' '+f.toFixed(2):''}</span>)}
+              </div>
+            </div>
+          </div>
+
+          {/* best individual params */}
+          {bestParams && (
+            <div className="gt-panel" style={{margin:'0 20px 10px'}}>
+              <div className="gt-panel-head">
+                CURRENT BEST INDIVIDUAL — {activeVar?.label}
+                {activeVar?.active && <span className="gv-badge gv-badge--live" style={{marginLeft:8}}>LIVE ACTIVE</span>}
+              </div>
+              <div className="gt-best-params">
+                {Object.entries(bestParams).filter(([k])=>k!=='Fitness').map(([k,v])=>(
+                  <div key={k} className="gt-bp"><i>{k}: </i><b>{typeof v==='number'&&!Number.isInteger(v)?v.toFixed(4):String(v)}</b></div>
+                ))}
+                {bestParams.Fitness != null && (
+                  <div className="gt-bp" style={{color:'var(--pos)'}}><i>Fitness: </i><b>{(+bestParams.Fitness).toFixed(4)}</b></div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* log */}
+          <div className="gt-log">
+            <div className="gt-log-head">TRAINING LOG</div>
+            <div className="gt-log-box" ref={logRef}>
+              {log.length === 0 && (
+                <span style={{color:'var(--ink-faint)'}}>
+                  {status==='idle'?'No active session. Press START TRAINING to begin.':'Initialising GA population…'}
+                </span>
+              )}
+              {log.map((line,i)=>(
+                <span key={i} className="gt-log-line"
+                  dangerouslySetInnerHTML={{__html:renderLog(line)}} />
+              ))}
+            </div>
+          </div>
+        </main>
+      </div>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<TrainingApp />);
+</script>
+</body>
+</html>

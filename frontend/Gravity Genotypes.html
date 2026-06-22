@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1.0" />
+<title>Gravity-gen2 · Genotypes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+/* minimal pre-paint tokens to avoid FOUC */
+:root{--bg:oklch(0.16 0.006 250);--panel:oklch(0.195 0.007 250);--panel-2:oklch(0.225 0.008 250);--panel-3:oklch(0.255 0.009 250);--line:oklch(0.31 0.009 250);--line-s:oklch(0.26 0.008 250);--ink:oklch(0.93 0.006 250);--ink-dim:oklch(0.68 0.008 250);--ink-faint:oklch(0.52 0.008 250);--accent:oklch(0.80 0.058 78);--accent-s:oklch(0.80 0.058 78/0.14);--pos:oklch(0.76 0.085 158);--neg:oklch(0.67 0.115 28);--mono:"IBM Plex Mono",ui-monospace,monospace;--sans:"IBM Plex Sans",system-ui,sans-serif;}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="data.js"></script>
+<script src="store.js"></script>
+<script type="text/babel" src="nav.jsx"></script>
+
+<style>
+/* ── page-specific ──────────────────────────────────────────────────────── */
+.gg-layout{display:grid;grid-template-columns:260px 1fr;gap:0;height:calc(100vh - 48px);}
+.gg-rail{background:var(--panel);border-right:1px solid var(--line);overflow-y:auto;padding:14px 0;}
+.gg-rail-title{font-family:var(--mono);font-size:9.5px;color:var(--ink-faint);
+  font-weight:700;letter-spacing:.12em;padding:0 16px 8px;}
+.gg-strat-btn{width:100%;text-align:left;padding:10px 16px;background:none;
+  border:none;border-left:3px solid transparent;color:var(--ink-dim);cursor:pointer;
+  font-family:var(--mono);font-size:12px;display:flex;align-items:center;gap:10px;
+  transition:all .12s;}
+.gg-strat-btn:hover{background:var(--panel-2);color:var(--ink);}
+.gg-strat-btn.on{background:var(--panel-2);color:var(--ink);
+  border-left-color:var(--accent);}
+.gg-strat-badge{font-size:10px;color:var(--ink-faint);margin-left:auto;}
+.gg-strat-dot{width:7px;height:7px;border-radius:50%;background:var(--line);flex-shrink:0;}
+.gg-strat-dot--active{background:var(--pos);}
+.gg-strat-dir{font-size:9.5px;letter-spacing:.03em;}
+.gg-strat-dir--long{color:var(--pos);}
+.gg-strat-dir--short{color:var(--neg);}
+
+.gg-main{overflow-y:auto;display:flex;flex-direction:column;}
+.gg-main-head{padding:18px 20px 12px;border-bottom:1px solid var(--line-s);
+  background:var(--panel);position:sticky;top:0;z-index:5;
+  display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;}
+.gg-main-title{font-size:18px;font-weight:700;letter-spacing:-.01em;}
+.gg-main-meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);}
+.gg-main-actions{display:flex;gap:8px;}
+
+.gg-variants{padding:14px 20px;}
+.gg-variant{background:var(--panel);border:1px solid var(--line);border-radius:4px;
+  margin-bottom:10px;overflow:hidden;transition:border-color .15s;}
+.gg-variant.selected{border-color:var(--accent);}
+.gg-variant-row{display:flex;align-items:center;gap:12px;padding:11px 14px;
+  cursor:pointer;user-select:none;}
+.gg-variant-row:hover{background:var(--panel-2);}
+.gg-v-active{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--line);flex-shrink:0;}
+.gg-v-active.on{background:var(--pos);border-color:var(--pos);}
+.gg-v-label{font-weight:600;font-size:13.5px;}
+.gg-v-tags{display:flex;gap:4px;flex-wrap:wrap;}
+.gg-v-fitness{font-family:var(--mono);font-size:13px;margin-left:auto;flex-shrink:0;}
+.gg-v-chevron{color:var(--ink-faint);font-size:11px;transition:transform .15s;}
+.gg-v-chevron.open{transform:rotate(90deg);}
+.gg-v-notes{padding:0 14px 12px;font-family:var(--mono);font-size:11px;
+  color:var(--ink-dim);border-top:1px solid var(--line-s);
+  background:var(--panel-2);padding-top:10px;}
+.gg-v-actions{display:flex;gap:8px;margin-top:10px;}
+
+/* param table */
+.gg-params{padding:14px 20px;}
+.gg-param-head{font-family:var(--mono);font-size:9.5px;font-weight:700;
+  letter-spacing:.10em;color:var(--accent);margin-bottom:10px;}
+.gg-ptbl{font-family:var(--mono);font-size:12px;}
+.gg-ptbl th{text-align:left;color:var(--ink-faint);font-size:10px;
+  font-weight:500;letter-spacing:.05em;padding:5px 10px;
+  border-bottom:1px solid var(--line-s);background:var(--panel-2);}
+.gg-ptbl td{padding:6px 10px;border-bottom:1px solid var(--line-s);}
+.gg-ptbl .param-name{color:var(--ink-dim);}
+.gg-ptbl .param-active{color:var(--ink);font-weight:600;}
+.gg-ptbl .param-null{color:var(--ink-faint);}
+.gg-ptbl tbody tr:hover{background:var(--panel-2);}
+.gg-ptbl .diff{background:color-mix(in oklch,var(--accent),transparent 88%);}
+
+/* add variant form */
+.gg-add-form{padding:14px 20px;border-top:1px solid var(--line-s);}
+.gg-form-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;}
+.gg-input{background:var(--panel-2);border:1px solid var(--line);border-radius:3px;
+  color:var(--ink);font-family:var(--mono);font-size:12px;padding:7px 10px;}
+.gg-input:focus{outline:none;border-color:var(--accent);}
+.gg-input--sm{width:160px;}
+
+/* summary overview bar */
+.gg-overview{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;
+  background:var(--line-s);border-bottom:1px solid var(--line);}
+.gg-ov-card{background:var(--panel);padding:10px 14px;cursor:pointer;transition:background .12s;}
+.gg-ov-card:hover{background:var(--panel-2);}
+.gg-ov-card.on{background:var(--panel-3);}
+.gg-ov-name{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.05em;}
+.gg-ov-regime{font-family:var(--mono);font-size:9.5px;color:var(--ink-faint);margin-top:2px;}
+.gg-ov-count{font-family:var(--mono);font-size:10px;color:var(--ink-dim);margin-top:6px;}
+</style>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+const S = window.GravStore;
+
+const STRATEGIES = [
+  { key:'FadeShort', regime:'Always-on', dir:'Short' },
+  { key:'Grid',      regime:'Ranging',   dir:'Long'  },
+  { key:'SwingLong', regime:'Bull',      dir:'Long'  },
+  { key:'DipLong',   regime:'Bull',      dir:'Long'  },
+  { key:'FadeLong',  regime:'Bear',      dir:'Long'  },
+];
+
+const fmtParam = v => {
+  if (v == null) return null;
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  if (typeof v === 'number') {
+    if (Number.isInteger(v)) return String(v);
+    return v.toFixed(4);
+  }
+  return String(v);
+};
+
+const SKIP_KEYS = new Set(['Fitness','fitness']);
+
+function ParamComparison({ strategy, variants }) {
+  const withParams = variants.filter(v => v.params);
+  if (!withParams.length) return (
+    <p className="dim mono" style={{fontSize:11,padding:'10px 0'}}>No trained genotypes yet — train a variant to compare parameters.</p>
+  );
+  const keys = Object.keys(withParams[0].params).filter(k => !SKIP_KEYS.has(k));
+  // Highlight params that differ between variants
+  const differs = k => {
+    const vals = withParams.map(v => v.params[k]);
+    return new Set(vals.map(x => fmtParam(x))).size > 1;
+  };
+  return (
+    <div className="gg-params">
+      <div className="gg-param-head">PARAMETER COMPARISON</div>
+      <div style={{overflowX:'auto'}}>
+        <table className="gg-ptbl" style={{width:'100%'}}>
+          <thead>
+            <tr>
+              <th style={{width:180}}>PARAMETER</th>
+              {variants.map(v => (
+                <th key={v.id}>
+                  {v.label}
+                  {v.active && <span className="gv-badge gv-badge--active" style={{marginLeft:6}}>LIVE</span>}
+                  {!v.params && <span className="gv-badge gv-badge--draft" style={{marginLeft:6}}>UNTRAINED</span>}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {keys.map(k => (
+              <tr key={k}>
+                <td className="param-name">{k}</td>
+                {variants.map(v => {
+                  const val = v.params ? fmtParam(v.params[k]) : null;
+                  return (
+                    <td key={v.id} className={`${v.active ? 'param-active' : ''} ${differs(k) && v.params ? 'diff' : ''} ${!v.params ? 'param-null' : ''}`}>
+                      {val ?? '—'}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+            <tr>
+              <td className="param-name">Fitness</td>
+              {variants.map(v => (
+                <td key={v.id} className={v.active ? 'param-active pos' : 'pos'}>
+                  {v.params?.Fitness != null ? (+v.params.Fitness || 0).toFixed(3) : '—'}
+                </td>
+              ))}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function VariantRow({ variant, isSelected, onSelect, onActivate, strategy }) {
+  const [open, setOpen] = useState(false);
+  const hasTrained = !!variant.params;
+  const fitness = variant.params?.Fitness;
+  return (
+    <div className={"gg-variant" + (isSelected ? " selected" : "")}>
+      <div className="gg-variant-row" onClick={() => { setOpen(o => !o); onSelect(); }}>
+        <span className={"gg-v-active" + (variant.active ? " on" : "")} title={variant.active ? "Active (live)" : "Inactive"} />
+        <span className="gg-v-label">{variant.label}</span>
+        <span className="gg-v-tags">
+          {variant.tags.map(t => <span key={t} className={"gv-pill" + (t==='draft'?' gv-pill--draft':t==='high-vol'?' gv-pill--hv':t==='bear'?' gv-pill--bear':'')}>{t}</span>)}
+          {hasTrained && <span className="gv-pill gv-pill--active">trained</span>}
+        </span>
+        <span className={"gg-v-fitness" + (fitness > 0 ? " pos" : fitness < 0 ? " neg" : " dim")}>
+          {hasTrained ? (fitness != null ? (+fitness).toFixed(3) : '—') : 'untrained'}
+        </span>
+        <span className={"gg-v-chevron" + (open ? " open" : "")}>›</span>
+      </div>
+      {open && (
+        <div className="gg-v-notes">
+          <div style={{marginBottom:8}}>{variant.notes || 'No description.'}</div>
+          {variant.params && (
+            <div style={{fontSize:10,color:'var(--ink-faint)',marginBottom:10}}>
+              {Object.entries(variant.params).filter(([k])=>!SKIP_KEYS.has(k)).slice(0,6).map(([k,v])=>(
+                <span key={k} style={{marginRight:14}}>{k}: <b style={{color:'var(--ink)'}}>{fmtParam(v)}</b></span>
+              ))}
+              {Object.keys(variant.params).filter(k=>!SKIP_KEYS.has(k)).length > 6 && <span className="dim">… and more</span>}
+            </div>
+          )}
+          <div className="gg-v-actions">
+            {!variant.active && hasTrained && (
+              <button className="gv-btn gv-btn--primary gv-btn--sm" onClick={() => onActivate(variant.id)}>
+                ● Set active
+              </button>
+            )}
+            {variant.active && <span className="gv-badge gv-badge--live">● LIVE ACTIVE</span>}
+            <button className="gv-btn gv-btn--sm" onClick={() => window.location='Gravity Training.html?strategy='+strategy+'&variant='+variant.id}>
+              ▶ Train
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AddVariantForm({ strategy, onAdd }) {
+  const [show, setShow] = useState(false);
+  const [label, setLabel] = useState('');
+  const [notes, setNotes] = useState('');
+  const [tags, setTags] = useState('');
+  function submit() {
+    if (!label.trim()) return;
+    const id = label.toLowerCase().replace(/\s+/g, '_') + '_' + Date.now().toString(36).slice(-4);
+    onAdd(id, label.trim(), notes.trim(), tags.split(',').map(t=>t.trim()).filter(Boolean));
+    setLabel(''); setNotes(''); setTags(''); setShow(false);
+  }
+  if (!show) return (
+    <button className="gv-btn gv-btn--sm" onClick={()=>setShow(true)}>+ New variant</button>
+  );
+  return (
+    <div style={{background:'var(--panel-2)',border:'1px solid var(--line-s)',borderRadius:4,padding:12}}>
+      <div style={{fontFamily:'var(--mono)',fontSize:10,color:'var(--accent)',letterSpacing:'.08em',marginBottom:10}}>NEW VARIANT</div>
+      <div className="gg-form-row">
+        <input className="gg-input gg-input--sm" placeholder="Label (e.g. High Vol)" value={label} onChange={e=>setLabel(e.target.value)} />
+        <input className="gg-input" style={{flex:1}} placeholder="Notes / intent" value={notes} onChange={e=>setNotes(e.target.value)} />
+        <input className="gg-input gg-input--sm" placeholder="Tags (comma-sep)" value={tags} onChange={e=>setTags(e.target.value)} />
+      </div>
+      <div style={{display:'flex',gap:8}}>
+        <button className="gv-btn gv-btn--primary gv-btn--sm" onClick={submit}>Create slot</button>
+        <button className="gv-btn gv-btn--sm" onClick={()=>setShow(false)}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function GenotypeApp() {
+  const [data, setData] = useState(S.state);
+  const [sel, setSel] = useState('FadeShort');
+  const [selVariant, setSelVariant] = useState(null);
+
+  useEffect(() => {
+    S.subscribe(setData);
+    S.load();
+  }, []);
+
+  const st = STRATEGIES.find(s => s.key === sel);
+  const variants = data.genotypes[sel] || data.variants[sel] || [];
+
+  function handleActivate(variantId) { S.setActive(sel, variantId); }
+  function handleAddVariant(id, label, notes, tags) { S.addVariant(sel, id, label, notes, tags); }
+
+  return (
+    <>
+      <GravNav active="genotypes" liveState={data.liveState} baseline={data.baseline} />
+
+      {/* strategy overview bar */}
+      <div className="gg-overview">
+        {STRATEGIES.map(s => {
+          const vars = data.genotypes[s.key] || data.variants[s.key] || [];
+          const trained = vars.filter(v => v.params).length;
+          const active = vars.find(v => v.active);
+          return (
+            <div key={s.key} className={"gg-ov-card" + (sel===s.key?" on":"")} onClick={()=>{setSel(s.key);setSelVariant(null);}}>
+              <div className="gg-ov-name">{s.key}</div>
+              <div className="gg-ov-regime">{s.regime} · <span className={s.dir==='Short'?'neg':'pos'}>{s.dir}</span></div>
+              <div className="gg-ov-count">{vars.length} variant{vars.length!==1?'s':''} · {trained} trained</div>
+              {active && <div style={{fontFamily:'var(--mono)',fontSize:9.5,color:'var(--pos)',marginTop:3}}>● {active.label} active</div>}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="gg-layout">
+        {/* left rail: strategy list */}
+        <aside className="gg-rail">
+          <div className="gg-rail-title">STRATEGIES</div>
+          {STRATEGIES.map(s => {
+            const vars = data.genotypes[s.key] || data.variants[s.key] || [];
+            const trained = vars.filter(v=>v.params).length;
+            return (
+              <button key={s.key} className={"gg-strat-btn"+(sel===s.key?" on":"")} onClick={()=>{setSel(s.key);setSelVariant(null);}}>
+                <span className={"gg-strat-dot"+(vars.some(v=>v.active)?" gg-strat-dot--active":"")} />
+                <span>
+                  <div>{s.key}</div>
+                  <div style={{fontSize:10,color:'var(--ink-faint)',marginTop:1}}>{s.regime} <span className={"gg-strat-dir gg-strat-dir--"+s.dir.toLowerCase()}>· {s.dir}</span></div>
+                </span>
+                <span className="gg-strat-badge">{vars.length}v · {trained}t</span>
+              </button>
+            );
+          })}
+          <div style={{borderTop:'1px solid var(--line-s)',margin:'14px 0',padding:'14px 16px 0'}}>
+            <div className="gg-rail-title">SHARED</div>
+            {[{key:'RegimeRouter',file:'genotypes/regime_router_genotype.json'},{key:'DynamicGuard',file:'genotypes/dynamic_guard_genotype.json'}].map(g=>(
+              <button key={g.key} className="gg-strat-btn" style={{fontSize:11,opacity:.75}}>
+                <span className="gg-strat-dot gg-strat-dot--active" />
+                {g.key}
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        {/* main content */}
+        <main className="gg-main">
+          <div className="gg-main-head">
+            <div>
+              <div className="gg-main-title">{sel}</div>
+              <div className="gg-main-meta">{st?.regime} · {st?.dir} · {variants.length} variant{variants.length!==1?'s':''} · {variants.filter(v=>v.params).length} trained</div>
+            </div>
+            <div className="gg-main-actions">
+              <button className="gv-btn gv-btn--sm" onClick={()=>window.location='Gravity Training.html?strategy='+sel}>
+                ▶ Train strategy
+              </button>
+            </div>
+          </div>
+
+          {data.loading && !variants.length && (
+            <div style={{padding:20,fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-faint)'}}>loading genotypes…</div>
+          )}
+
+          <div className="gg-variants">
+            {variants.map(v => (
+              <VariantRow key={v.id} variant={v} strategy={sel}
+                isSelected={selVariant===v.id}
+                onSelect={()=>setSelVariant(v.id)}
+                onActivate={handleActivate} />
+            ))}
+            <div style={{marginTop:12}}>
+              <AddVariantForm strategy={sel} onAdd={handleAddVariant} />
+            </div>
+          </div>
+
+          {variants.length > 0 && (
+            <ParamComparison strategy={sel} variants={variants} />
+          )}
+        </main>
+      </div>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<GenotypeApp />);
+</script>
+</body>
+</html>

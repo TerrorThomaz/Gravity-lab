@@ -60,11 +60,11 @@ src/
 
 commands/         Program (CLI entry), TrainCommands, LongTrainCommands, GridCommands,
                   BacktestCommands, PapertradeCommands, CombinedBacktest, OosBacktest,
-                  FullTest, StressTestCommands
+                  FullTest
 
 genotypes/        All trained parameter JSON files (see table below)
 bot/              discord_bot.py, knowledge_bot.py, gather_genes.py, swing_autotrain.py
-legacy/           Archived: DrawdownGuard*, ExitModifier*, Scenario*, test.cs
+legacy/           Archived: DrawdownGuard*, ExitModifier*, Scenario*, StressTestCommands, test.cs
 docs/             README.md, REGIME_ARCHITECTURE.md, superpowers/plans+specs
 
 Gravity-gen2.Tests/

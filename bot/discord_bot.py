@@ -39,7 +39,7 @@ from pathlib import Path
 
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).parent / ".env")
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 except ImportError:
     pass
 
@@ -51,7 +51,7 @@ DISCORD_TOKEN          = os.environ["DISCORD_TOKEN"]
 OUTPUT_CHANNEL_ID      = int(os.environ["DISCORD_OUTPUT_CHANNEL"])
 COMMAND_CHANNEL_ID     = int(os.environ["DISCORD_COMMAND_CHANNEL"])
 GUILD_ID               = int(os.environ["DISCORD_GUILD_ID"]) if os.environ.get("DISCORD_GUILD_ID") else None
-PROJECT_DIR            = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR            = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOTNET_DLL             = os.path.join(PROJECT_DIR, "bin", "Release", "net10.0", "Gravity-gen2.dll")
 INFO_TRIGGERS          = {"info", "more info", "full", "dump", "show"}
 LIVE_JOURNAL_FILE      = os.path.join(PROJECT_DIR, "live_journal.json")
@@ -338,15 +338,31 @@ async def autoevolve_loop() -> None:
 # ── Papertrade summary ────────────────────────────────────────────────────────
 GENO_LINE_RE = re.compile(r"^Genotype:\s+(.+)$")
 FITNESS_RE   = re.compile(r"F=([-\d.]+)")
-ROW_RE       = re.compile(
-    r"\s{2}(\w+USDT)\s{2,}(\S+)\s{2,}(\S+)\s{2,}(\S+)\s{2,}(\S+)\s{2,}(\S+)\s{2,}(\S+)"
+# State can be "watching", "TRAIL ARMED", or "SHORT b<n>" — all separated from neighbours by 2+ spaces.
+ROW_RE = re.compile(
+    r"^\s{2}(\w+USDT)\s{2,}"
+    r"(TRAIL ARMED|SHORT b\d+|watching)"
+    r"\s{2,}(\S+)"   # entry / anchor
+    r"\s{2,}(\S+)"   # current price
+    r"\s{2,}(\S+)"   # unrealised %
+)
+GRID_ROW_RE = re.compile(
+    r"^\s{2}(\w+USDT)\s{2,}"
+    r"(GRID L\d+)"
+    r"\s{2,}(\S+)"   # anchor
+    r"\s{2,}(\S+)"   # current price
+    r"\s{2,}(\S+)"   # unrealised %
 )
 
 def build_summary(lines: list[str]) -> discord.Embed:
     geno_str, fitness = "", ""
-    active: list[tuple] = []
-    watching: list[str] = []
+    active:      list[tuple] = []
+    grid_active: list[tuple] = []
+    watching:    list[str]   = []
     unrealised_vals: list[float] = []
+
+    in_fadeshort = False
+    in_grid      = False
 
     for line in lines:
         gm = GENO_LINE_RE.match(line)
@@ -356,21 +372,37 @@ def build_summary(lines: list[str]) -> discord.Embed:
             if fm:
                 fitness = fm.group(1)
             continue
-        rm = ROW_RE.match(line)
-        if not rm:
+
+        if line.startswith("── FadeShort"):
+            in_fadeshort, in_grid = True, False
             continue
-        coin, regime, state, entry, current, unrealised, mode = rm.groups()
-        if state.lower() == "watching":
-            watching.append(coin)
-        else:
-            active.append((coin, regime, state, entry, current, unrealised))
-            try:
-                unrealised_vals.append(float(unrealised.replace("%", "")))
-            except (ValueError, AttributeError):
-                pass
+        if line.startswith("── Grid"):
+            in_fadeshort, in_grid = False, True
+            continue
+
+        if in_fadeshort:
+            rm = ROW_RE.match(line)
+            if not rm:
+                continue
+            coin, state, entry, current, unrealised = rm.groups()
+            if state == "watching":
+                watching.append(coin)
+            else:
+                active.append((coin, state, entry, current, unrealised))
+                try:
+                    unrealised_vals.append(float(unrealised.replace("%", "")))
+                except (ValueError, AttributeError):
+                    pass
+
+        elif in_grid:
+            gm2 = GRID_ROW_RE.match(line)
+            if not gm2:
+                continue
+            coin, state, anchor, current, unrealised = gm2.groups()
+            grid_active.append((coin, state, anchor, current, unrealised))
 
     total_unreal = sum(unrealised_vals)
-    if active:
+    if active or grid_active:
         color = discord.Color.green() if total_unreal >= 0 else discord.Color.red()
     else:
         color = discord.Color.blurple()
@@ -385,16 +417,27 @@ def build_summary(lines: list[str]) -> discord.Embed:
 
     if active:
         pos_lines = []
-        for coin, regime, state, entry, current, unrealised in active[:12]:
+        for coin, state, entry, current, unrealised in active[:12]:
             arrow = "▲" if not unrealised.startswith("-") else "▼"
-            pos_lines.append(f"{arrow} `{coin:<16}` **{unrealised}**  {entry} → {current}")
+            pos_lines.append(f"{arrow} `{coin:<16}` **{unrealised}**  {entry} → {current}  [{state}]")
         embed.add_field(
-            name=f"Open ({len(active)})  —  {total_unreal:+.2f}% unrealised",
+            name=f"Short ({len(active)})  —  {total_unreal:+.2f}% unrealised",
             value="\n".join(pos_lines),
             inline=False,
         )
     else:
-        embed.add_field(name="Positions", value="*No open trades*", inline=True)
+        embed.add_field(name="Short", value="*No open shorts*", inline=True)
+
+    if grid_active:
+        grid_lines = []
+        for coin, state, anchor, current, unrealised in grid_active[:8]:
+            arrow = "▲" if not unrealised.startswith("-") else "▼"
+            grid_lines.append(f"{arrow} `{coin:<16}` **{unrealised}**  anchor {anchor} → {current}  [{state}]")
+        embed.add_field(
+            name=f"Grid ({len(grid_active)} active)",
+            value="\n".join(grid_lines),
+            inline=False,
+        )
 
     stats = compute_live_stats()
     n = stats.get("n", 0)

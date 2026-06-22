@@ -28,11 +28,11 @@ from pathlib import Path
 
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).parent / ".env")
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 except ImportError:
     pass
 
-DIR     = os.path.dirname(os.path.abspath(__file__))
+DIR     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DLL     = os.path.join(DIR, "bin", "Release", "net10.0", "Gravity-gen2.dll")
 LOG     = os.path.join(DIR, "logs", "gather_genes.log")
 ENV     = {**os.environ, "DOTNET_CLI_TELEMETRY_OPTOUT": "1"}

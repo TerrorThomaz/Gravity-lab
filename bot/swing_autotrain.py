@@ -28,11 +28,11 @@ from pathlib import Path
 
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).parent / ".env")
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 except ImportError:
     pass
 
-DIR      = Path(__file__).parent
+DIR      = Path(__file__).resolve().parent.parent
 DLL      = DIR / "bin" / "Release" / "net10.0" / "Gravity-gen2.dll"
 BEST     = DIR / "swing_best_genotype.json"
 CANDS    = DIR / "swing_candidates"

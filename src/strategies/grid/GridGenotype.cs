@@ -129,6 +129,43 @@ public class GridGenotype
         Fitness = Fitness,
     };
 
+    // ── Bayesian optimiser interface ──────────────────────────────────────────
+    // adxCeiling is dynamic (from swing genotype), so we use 20.0 as the static upper bound.
+    public static readonly double[,] Bounds =
+    {
+        {  8.0, 20.0 }, // AdxThreshold
+        {   10,   50 }, // BbPeriod
+        {  0.8,  2.5 }, // BbWidthMaxPct
+        {   10,  100 }, // EmaPeriod
+        {  0.3,  2.0 }, // GridStepAtrMult
+        {    1,    3 }, // GridLevels
+        {  0.5,  3.0 }, // TakeProfitAtrMult
+        {  1.5,  3.0 }, // HardStopAtrMult
+        {  1.0,  4.0 }, // BailOutAtrMult
+        {   24,  200 }, // MaxHoldCandles
+    };
+
+    public double[] ToVector() =>
+    [
+        AdxThreshold, BbPeriod, BbWidthMaxPct, EmaPeriod,
+        GridStepAtrMult, GridLevels, TakeProfitAtrMult,
+        HardStopAtrMult, BailOutAtrMult, MaxHoldCandles,
+    ];
+
+    public static GridGenotype FromVector(double[] v, double adxCeiling = 20.0) => new()
+    {
+        AdxThreshold      = Math.Clamp(v[0],  8.0, Math.Min(adxCeiling, 20.0)),
+        BbPeriod          = Math.Clamp((int)Math.Round(v[1]),  10,  50),
+        BbWidthMaxPct     = Math.Clamp(v[2],  0.8,  2.5),
+        EmaPeriod         = Math.Clamp((int)Math.Round(v[3]),  10, 100),
+        GridStepAtrMult   = Math.Clamp(v[4],  0.3,  2.0),
+        GridLevels        = Math.Clamp((int)Math.Round(v[5]),   1,   3),
+        TakeProfitAtrMult = Math.Clamp(v[6],  0.5,  3.0),
+        HardStopAtrMult   = Math.Clamp(v[7],  1.5,  3.0),
+        BailOutAtrMult    = Math.Clamp(v[8],  1.0,  4.0),
+        MaxHoldCandles    = Math.Clamp((int)Math.Round(v[9]),  24, 200),
+    };
+
     public override string ToString() =>
         $"ADX(14,{AdxThreshold:F0}) BB({BbPeriod},{BbWidthMaxPct:F1}%) EMA{EmaPeriod} " +
         $"Step={GridStepAtrMult:F2}A Lvl={GridLevels} TP={TakeProfitAtrMult:F2}A " +

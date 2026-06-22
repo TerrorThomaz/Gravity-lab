@@ -44,7 +44,7 @@ public static class GridSimulator
 
     // Per-fill returns — used for backtest display (trade count, per-trade stats).
     public static List<(DateTime Time, double Return, string Kind)> GetGridReturns(
-        GridGenotype g, Candle[] h1)
+        GridGenotype g, ReadOnlySpan<Candle> h1)
     {
         var (trades, _) = RunGrid(g, h1, sessionLevel: false);
         return trades;
@@ -53,7 +53,7 @@ public static class GridSimulator
     // Per-session returns — one record per grid activation, return = mean of all level fills.
     // Used by GridGA fitness to avoid inflating trade count and win-rate.
     public static List<(DateTime Time, double Return, string Kind)> GetGridSessionReturns(
-        GridGenotype g, Candle[] h1)
+        GridGenotype g, ReadOnlySpan<Candle> h1)
     {
         var (trades, _) = RunGrid(g, h1, sessionLevel: true);
         return trades;
@@ -61,7 +61,7 @@ public static class GridSimulator
 
     // Returns scored session trades — one per grid activation — for ranked portfolio sim.
     // Score = adxMargin × bbMargin: both factors in [0,1], higher = more clearly ranging.
-    public static List<ScoredTrade> GetScoredGridTrades(string coin, GridGenotype g, Candle[] h1)
+    public static List<ScoredTrade> GetScoredGridTrades(string coin, GridGenotype g, ReadOnlySpan<Candle> h1)
     {
         var scored = new List<ScoredTrade>();
         RunGrid(g, h1, sessionLevel: true, coin: coin, scoredOut: scored);
@@ -75,23 +75,24 @@ public static class GridSimulator
         double HardStop,
         int    HoldCount);
 
-    public static GridTradeState GetGridTradeState(GridGenotype g, Candle[] h1)
+    public static GridTradeState GetGridTradeState(GridGenotype g, ReadOnlySpan<Candle> h1)
     {
         var (_, state) = RunGrid(g, h1, sessionLevel: false);
         return state;
     }
 
     private static (List<(DateTime, double, string)> Trades, GridTradeState FinalState)
-        RunGrid(GridGenotype g, Candle[] candles, bool sessionLevel,
+        RunGrid(GridGenotype g, ReadOnlySpan<Candle> candles, bool sessionLevel,
                 string? coin = null, List<ScoredTrade>? scoredOut = null)
     {
         int warmup = Math.Max(Math.Max(Math.Max(g.EmaPeriod, AtrPeriod), AdxPeriod * 2 + 1), g.BbPeriod) + 2;
         if (candles.Length <= warmup + 5)
             return ([], new GridTradeState(false, 0, 0, 0, 0));
 
-        var closes = candles.Select(c => c.Close).ToArray();
-        var highs  = candles.Select(c => c.High).ToArray();
-        var lows   = candles.Select(c => c.Low).ToArray();
+        var closes = CandleExt.Closes(candles);
+        var highs  = CandleExt.Highs(candles);
+        var lows   = CandleExt.Lows(candles);
+        var times  = CandleExt.Times(candles);  // extracted upfront — spans can't be captured in local functions
 
         var ema     = Indicators.Ema(closes, g.EmaPeriod);
         var adx     = Indicators.Adx(highs, lows, closes, AdxPeriod);
@@ -115,15 +116,15 @@ public static class GridSimulator
         void AddReturn(int i, double ret, string kind)
         {
             if (sessionLevel) sessionFills.Add(ret);
-            else              result.Add((candles[i].Time, ret, kind));
+            else              result.Add((times[i], ret, kind));
         }
 
         void FlushSession(int i)
         {
             if (!sessionLevel || sessionFills.Count == 0) return;
             double avg = sessionFills.Average();
-            result.Add((candles[i].Time, avg, "grid_session"));
-            scoredOut?.Add(new ScoredTrade(coin!, "grid", sessionEntryTime, candles[i].Time, avg, sessionScore));
+            result.Add((times[i], avg, "grid_session"));
+            scoredOut?.Add(new ScoredTrade(coin!, "grid", sessionEntryTime, times[i], avg, sessionScore));
             sessionFills.Clear();
         }
 
@@ -245,7 +246,7 @@ public static class GridSimulator
                 atrAtStart        = proposedAtr;
                 hardStop          = proposedStop;
                 holdCount         = 0;
-                sessionEntryTime  = candles[i].Time;
+                sessionEntryTime  = times[i];
                 // Signal quality: both factors in [0,1]; higher = more clearly ranging/compressed.
                 double adxMargin = g.AdxThreshold > 1e-10 ? (g.AdxThreshold - adxNow) / g.AdxThreshold : 0;
                 double bbMargin  = g.BbWidthMaxPct > 1e-10 ? (g.BbWidthMaxPct - bbWidth[i]) / g.BbWidthMaxPct : 0;

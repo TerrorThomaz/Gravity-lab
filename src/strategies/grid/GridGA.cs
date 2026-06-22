@@ -1,7 +1,7 @@
 namespace TradingGA;
 
 // Genetic algorithm for grid trading (ranging-market long grid, 1h candles).
-// Structure mirrors SwingGeneticAlgorithm.
+// Structure mirrors FadeShortGA.
 //
 // FoldScore operates on per-SESSION returns (mean of all level fills per activation),
 // not per-fill returns. This prevents inflating WR and trade count when GridLevels > 1.
@@ -13,7 +13,7 @@ namespace TradingGA;
 // Fitness = mean(fold_scores) − 0.75 × std(fold_scores)
 public class GridGeneticAlgorithm
 {
-    public record CoinData(Candle[] TrainCandles, Candle[] ValCandles, double Weight = 1.0);
+    public record CoinData(ReadOnlyMemory<Candle> TrainCandles, ReadOnlyMemory<Candle> ValCandles, double Weight = 1.0);
 
     private readonly int    _populationSize;
     private readonly int    _generations;
@@ -79,7 +79,7 @@ public class GridGeneticAlgorithm
         if (useValidation || folds <= 1)
         {
             var all = validCoins
-                .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr).Select(t => t.Return))
+                .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr.Span).Select(t => t.Return))
                 .ToList();
             return FoldScore(all);
         }
@@ -90,7 +90,7 @@ public class GridGeneticAlgorithm
         if (k < 2)
         {
             var all = validCoins
-                .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr).Select(t => t.Return))
+                .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr.Span).Select(t => t.Return))
                 .ToList();
             return FoldScore(all);
         }
@@ -106,7 +106,7 @@ public class GridGeneticAlgorithm
             {
                 if (arr.Length < end) continue;
                 foldReturns.AddRange(
-                    GridSimulator.GetGridSessionReturns(ind, arr[start..end]).Select(t => t.Return));
+                    GridSimulator.GetGridSessionReturns(ind, arr.Slice(start, end - start).Span).Select(t => t.Return));
             }
             scores[f] = FoldScore(foldReturns);
         }
@@ -179,6 +179,29 @@ public class GridGeneticAlgorithm
                 nextGen.Add(child);
             }
             population = nextGen;
+        }
+
+        // ── Bayesian refinement ──────────────────────────────────────────────────
+        if (_verbose) Console.WriteLine("\n  BO refinement (30 iterations, TPE)...");
+        var boSeed = eliteIsland
+            .Select(g => (g.ToVector(), g.Fitness))
+            .ToList();
+
+        var boHistory = BayesianOptimizer.Refine(
+            seedObs:    boSeed,
+            bounds:     GridGenotype.Bounds,
+            evaluate:   v => { var g = GridGenotype.FromVector(v, adxCeiling); g.Fitness = Fitness(g, coins, useValidation: false); return g.Fitness; },
+            iterations: 30,
+            rng:        _rng);
+
+        var boChampion = boHistory.OrderByDescending(h => h.Fitness).First();
+        var boGeno     = GridGenotype.FromVector(boChampion.Params, adxCeiling);
+        boGeno.Fitness = Fitness(boGeno, coins, useValidation: false);
+        if (boGeno.Fitness > eliteIsland.Last().Fitness)
+        {
+            eliteIsland[eliteIsland.Count - 1] = boGeno;
+            eliteIsland = eliteIsland.OrderByDescending(g => g.Fitness).ToList();
+            if (_verbose) Console.WriteLine($"  BO improved elite: {boGeno}");
         }
 
         if (_verbose) Console.WriteLine("\n=== Held-out validation ===");

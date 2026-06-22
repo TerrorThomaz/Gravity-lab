@@ -1,3 +1,5 @@
+using System.Buffers;
+
 namespace TradingGA;
 
 // Genetic algorithm for swing trading (1h setup + 15m entry/exit).
@@ -14,7 +16,41 @@ namespace TradingGA;
 // Fitness  = mean(fold_scores) − 0.75 × std(fold_scores)  — penalises time-period fragility
 public class FadeShortGA
 {
-    public record CoinData(Candle[] TrainCandles, Candle[] ValCandles, double Weight = 1.0);
+    public record CoinData(ReadOnlyMemory<Candle> TrainCandles, ReadOnlyMemory<Candle> ValCandles, double Weight = 1.0);
+
+    // Pre-computed fixed-period indicators for a single candle array.
+    // RSI/ADX/ATR periods are constants in FadeShortSimulator, so these arrays
+    // are the same for every individual and only need to be built once per Run().
+    private sealed record CoinCache(
+        Candle[] Candles,
+        double[] Closes,
+        double[] Highs,
+        double[] Lows,
+        double[] Rsi,
+        double[] Adx,
+        double[] Atr,
+        double   Weight);
+
+    private static CoinCache BuildCache(ReadOnlyMemory<Candle> mem, double weight)
+    {
+        var candles = mem.ToArray();
+        var span    = mem.Span;
+        var closes  = new double[span.Length];
+        var highs   = new double[span.Length];
+        var lows    = new double[span.Length];
+        for (int i = 0; i < span.Length; i++)
+        {
+            closes[i] = span[i].Close;
+            highs[i]  = span[i].High;
+            lows[i]   = span[i].Low;
+        }
+        return new CoinCache(
+            candles, closes, highs, lows,
+            Indicators.Rsi(closes, FadeShortSimulator.RsiPeriod),
+            Indicators.Adx(highs, lows, closes, FadeShortSimulator.AdxPeriod),
+            Indicators.Atr(highs, lows, closes, FadeShortSimulator.AtrPeriod),
+            weight);
+    }
 
     private readonly int    _populationSize;
     private readonly int    _generations;
@@ -23,7 +59,7 @@ public class FadeShortGA
     private readonly bool   _verbose;
     private readonly Random _rng = new();
 
-    private const int MinTradesPerFold = 15;
+    private const int MinTradesPerFold = 30;
 
     public FadeShortGA(
         int  populationSize    = 50,
@@ -45,11 +81,17 @@ public class FadeShortGA
     {
         if (returns.Count < MinTradesPerFold) return -1.0;
 
-        double wr = (double)returns.Count(r => r > 0) / returns.Count;
+        // Single pass for win-rate, gross wins/losses, and avg win/loss
+        int    wins = 0;
+        double grossWins = 0, grossLoss = 0;
+        foreach (var r in returns)
+        {
+            if (r > 0) { wins++; grossWins += r; }
+            else         grossLoss -= r;
+        }
 
-        double grossWins = returns.Where(r => r > 0).DefaultIfEmpty(0).Sum();
-        double grossLoss = Math.Abs(returns.Where(r => r <= 0).DefaultIfEmpty(0).Sum());
-        double pf        = grossLoss > 1e-10 ? grossWins / grossLoss : (grossWins > 0 ? 5.0 : 0.0);
+        double wr = (double)wins / returns.Count;
+        double pf = grossLoss > 1e-10 ? grossWins / grossLoss : (grossWins > 0 ? 5.0 : 0.0);
 
         if (pf < 1.0) return pf - 2.0;  // continuous negative signal for losing folds
 
@@ -75,10 +117,9 @@ public class FadeShortGA
 
         // R:R multiplier: avgWin / avgLoss — pure size asymmetry, independent of WR.
         // 0 at R:R=1.0, ramps to 1.0 at R:R=2.5, bonus above.
-        var winList  = returns.Where(r => r > 0).ToList();
-        var lossList = returns.Where(r => r <= 0).ToList();
-        double avgWin  = winList.Count  > 0 ? winList.Average()            : 0;
-        double avgLoss = lossList.Count > 0 ? Math.Abs(lossList.Average()) : avgWin;
+        int    losses  = returns.Count - wins;
+        double avgWin  = wins   > 0 ? grossWins / wins   : 0;
+        double avgLoss = losses > 0 ? grossLoss / losses : avgWin;
         double rr      = avgLoss > 1e-10 ? avgWin / avgLoss : (avgWin > 0 ? 5.0 : 1.0);
         double rrMult  = rr < 2.5 ? (rr - 1.0) / 1.5 : 1.0 + (rr - 2.5) * 0.3;
 
@@ -91,61 +132,97 @@ public class FadeShortGA
         // Frequency bonus: mild log incentive for more trades
         double freqBonus = 1.0 + 0.15 * Math.Log(Math.Max(1.0, returns.Count / (double)MinTradesPerFold));
 
-        return gain * 100.0 * wrMult * qualityMult * freqBonus / ddDiv;
+        // Kept-profits: penalise giving back peak gains before period end
+        double peakGain      = peak - 1.0;
+        double retentionMult = peakGain > 0.01
+            ? Math.Max(0.2, (balance - 1.0) / peakGain)
+            : 1.0;
+
+        return gain * 100.0 * wrMult * qualityMult * freqBonus / ddDiv * retentionMult;
     }
 
     // Pool returns across ALL coins within each fold time-slot.
     // Per-coin fitness was flat (-1 everywhere) because each coin individually
     // produced too few trades per fold. Pooling 12 coins gives ~12× more trades
     // per fold while fold-to-fold std still guards temporal overfitting.
-    private double Fitness(FadeShortGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
+    //
+    // Uses pre-computed RSI/ADX/ATR caches and a caller-rented EMA buffer so that
+    // per-individual allocations are limited to the single EMA array per coin per fold.
+    private static double FitnessFromCache(
+        FadeShortGenotype      ind,
+        IReadOnlyList<CoinCache> caches,
+        bool                   useFolds,
+        int                    folds = 5)
     {
-        var validCoins = coins
-            .Select(c => (c, arr: useValidation ? c.ValCandles : c.TrainCandles))
-            .Where(x => x.arr.Length >= 100)
-            .ToList();
-        if (validCoins.Count == 0) return 0;
+        if (caches.Count == 0) return 0;
 
         double posFrac = Math.Clamp(ind.PositionSizePct, 0.01, 0.05);
 
-        if (useValidation || folds <= 1)
+        // Rent one EMA buffer large enough for any coin; reused across all coins for this individual.
+        int     maxLen    = caches.Max(c => c.Candles.Length);
+        double[] emaBuffer = ArrayPool<double>.Shared.Rent(maxLen);
+        try
         {
-            var all = validCoins
-                .SelectMany(x => FadeShortSimulator.GetFadeShortReturns(ind, x.arr).Select(t => t.Return))
-                .ToList();
-            return FoldScore(all, posFrac);
-        }
-
-        int minLen   = validCoins.Min(x => x.arr.Length);
-        int k        = Math.Min(folds, minLen / 40);
-
-        if (k < 2)
-        {
-            var all = validCoins
-                .SelectMany(x => FadeShortSimulator.GetFadeShortReturns(ind, x.arr).Select(t => t.Return))
-                .ToList();
-            return FoldScore(all, posFrac);
-        }
-
-        int      foldSize = minLen / k;
-        double[] scores   = new double[k];
-        for (int f = 0; f < k; f++)
-        {
-            int start       = f * foldSize;
-            int end         = f == k - 1 ? minLen : start + foldSize;
-            var foldReturns = new List<double>();
-            foreach (var (coin, arr) in validCoins)
+            if (!useFolds)
             {
-                if (arr.Length < end) continue;
-                foldReturns.AddRange(
-                    FadeShortSimulator.GetFadeShortReturns(ind, arr[start..end]).Select(t => t.Return));
+                // Full run on all caches (validation path)
+                var all = new List<double>(512);
+                foreach (var cache in caches)
+                {
+                    Indicators.EmaInto(cache.Closes, ind.EmaPeriod, emaBuffer);
+                    foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputed(
+                        ind, cache.Candles, cache.Closes, cache.Highs, cache.Lows,
+                        cache.Rsi, cache.Adx, cache.Atr, emaBuffer, 0, cache.Candles.Length))
+                        all.Add(t.Return);
+                }
+                return FoldScore(all, posFrac);
             }
-            scores[f] = FoldScore(foldReturns, posFrac);
-        }
 
-        double mean = scores.Average();
-        double std  = Math.Sqrt(scores.Select(s => (s - mean) * (s - mean)).Average());
-        return mean - 0.75 * std;
+            // Walk-forward fold CV on train caches
+            int minLen = caches.Min(c => c.Candles.Length);
+            int k      = Math.Min(folds, minLen / 40);
+
+            if (k < 2)
+            {
+                var all = new List<double>(512);
+                foreach (var cache in caches)
+                {
+                    Indicators.EmaInto(cache.Closes, ind.EmaPeriod, emaBuffer);
+                    foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputed(
+                        ind, cache.Candles, cache.Closes, cache.Highs, cache.Lows,
+                        cache.Rsi, cache.Adx, cache.Atr, emaBuffer, 0, cache.Candles.Length))
+                        all.Add(t.Return);
+                }
+                return FoldScore(all, posFrac);
+            }
+
+            int      foldSize = minLen / k;
+            double[] scores   = new double[k];
+            for (int f = 0; f < k; f++)
+            {
+                int fStart      = f * foldSize;
+                int fEnd        = f == k - 1 ? minLen : fStart + foldSize;
+                var foldReturns = new List<double>(512);
+                foreach (var cache in caches)
+                {
+                    if (cache.Candles.Length < fEnd) continue;
+                    Indicators.EmaInto(cache.Closes, ind.EmaPeriod, emaBuffer);
+                    foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputed(
+                        ind, cache.Candles, cache.Closes, cache.Highs, cache.Lows,
+                        cache.Rsi, cache.Adx, cache.Atr, emaBuffer, fStart, fEnd))
+                        foldReturns.Add(t.Return);
+                }
+                scores[f] = FoldScore(foldReturns, posFrac);
+            }
+
+            double mean = scores.Average();
+            double std  = Math.Sqrt(scores.Select(s => (s - mean) * (s - mean)).Average());
+            return mean - 0.75 * std;
+        }
+        finally
+        {
+            ArrayPool<double>.Shared.Return(emaBuffer);
+        }
     }
 
     public FadeShortGenotype Run(IReadOnlyList<CoinData> coins, FadeShortGenotype? seed = null)
@@ -160,6 +237,17 @@ public class FadeShortGA
                     $"train={coin.TrainCandles.Length} candles  val={coin.ValCandles.Length} candles");
             if (seed != null) Console.WriteLine($"  Seeding from: {seed}");
         }
+
+        // Pre-compute fixed-period indicators once per coin before the GA loop.
+        // Only EMA (EmaPeriod is a gene) is computed per individual inside FitnessFromCache.
+        var trainCaches = coins
+            .Select(c => BuildCache(c.TrainCandles, c.Weight))
+            .Where(c => c.Candles.Length >= 100)
+            .ToList();
+        var valCaches = coins
+            .Select(c => BuildCache(c.ValCandles, c.Weight))
+            .Where(c => c.Candles.Length >= 100)
+            .ToList();
 
         var population = Enumerable
             .Range(0, _populationSize)
@@ -186,7 +274,7 @@ public class FadeShortGA
             double mutationRate = stagnantGens >= 15 ? Math.Min(baseMutRate * 2.0, 0.9) : baseMutRate;
 
             Parallel.ForEach(population, ind =>
-                ind.Fitness = Fitness(ind, coins, useValidation: false));
+                ind.Fitness = FitnessFromCache(ind, trainCaches, useFolds: true));
 
             population  = population.OrderByDescending(g => g.Fitness).ToList();
             eliteIsland = population.Take(_eliteCount).ToList();
@@ -217,7 +305,7 @@ public class FadeShortGA
         // Re-score elite on held-out validation candles
         if (_verbose) Console.WriteLine("\n=== Held-out validation ===");
         Parallel.ForEach(eliteIsland, ind =>
-            ind.Fitness = Fitness(ind, coins, useValidation: true));
+            ind.Fitness = FitnessFromCache(ind, valCaches, useFolds: false));
 
         var best = eliteIsland.OrderByDescending(g => g.Fitness).First();
         if (_verbose) Console.WriteLine($"Best: {best}");

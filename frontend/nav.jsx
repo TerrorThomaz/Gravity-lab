@@ -83,6 +83,16 @@ table{border-collapse:collapse;width:100%;}
   animation:pulse 2s ease-in-out infinite;}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 
+/* ── mobile nav ──────────────────────────────────────────────────────────── */
+@media(max-width:640px){
+  .gn-bar{padding:0 10px;height:44px;}
+  .gn-brand{margin-right:10px;}
+  .gn-name{font-size:12px;letter-spacing:.02em;}
+  .gn-dot{width:7px;height:7px;}
+  .gn-tab{padding:0 10px;font-size:10px;letter-spacing:.06em;}
+  .gn-meta{display:none;}
+}
+
 /* shared page body */
 .gv-body{padding:14px 14px 40px;background:var(--bg);}
 .gv-section{margin-bottom:28px;}

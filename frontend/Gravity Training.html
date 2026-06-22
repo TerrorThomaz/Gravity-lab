@@ -152,6 +152,20 @@ body{background:var(--bg);color:var(--ink);font-family:var(--sans);}
 .gt-input{background:var(--panel-2);border:1px solid var(--line);border-radius:3px;
   color:var(--ink);font-family:var(--mono);font-size:11px;padding:6px 9px;width:100%;}
 .gt-input:focus{outline:none;border-color:var(--accent);}
+
+/* ── mobile responsive ───────────────────────────────────────────────────── */
+@media(max-width:640px){
+  /* stack sidebar above main content */
+  .gt-layout{grid-template-columns:1fr;height:auto;}
+  .gt-ctrl{max-height:55vh;border-right:none;border-bottom:1px solid var(--line);}
+  .gt-main{min-height:50vh;}
+  /* convergence chart: less tall */
+  .gt-chart-wrap svg{height:100px!important;}
+  /* log: shorter */
+  .gt-log{height:160px!important;}
+  /* pop bars: less tall */
+  .gt-pop-bars{height:60px!important;}
+}
 </style>
 
 <script type="text/babel">

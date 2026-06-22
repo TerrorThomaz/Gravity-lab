@@ -189,6 +189,37 @@ table{ border-collapse:collapse; width:100%; }
                margin-top:7px; padding-top:7px; border-top:1px solid var(--line-s); }
 .tm-mini-foot b{ color:var(--ink); margin-left:2px; }
 
+/* ── mobile responsive ───────────────────────────────────────────────────── */
+@media(max-width:640px){
+  /* stack all panels vertically */
+  .tm-grid{display:block;}
+  .tm-panel{margin-bottom:8px;}
+  .tm-sep{padding:10px 0 2px;}
+
+  /* ticker: scroll horizontally instead of clipping */
+  .tm-ticker{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+
+  /* KPIs: 3 columns instead of 6 */
+  .tm-kpis{grid-template-columns:repeat(3,1fr);}
+  .tm-kpi b{font-size:15px;}
+
+  /* shrink equity chart */
+  .tm-chart svg{height:90px!important;}
+
+  /* strategy dist: wrap to 2 per row */
+  .tm-strat-dists{flex-wrap:wrap;}
+  .tm-mini-strat{min-width:50%;border-right:none;border-bottom:1px solid var(--line-s);}
+  .tm-mini-strat:nth-child(odd){border-right:1px solid var(--line-s);}
+  .tm-mini-strat:last-child{border-bottom:none;}
+
+  /* WFV chart: less height */
+  .tm-wfv-bars{height:36px;}
+
+  /* tables: hide less critical columns */
+  .tm-tbl .r:not(:first-child){font-size:10.5px;}
+  .tm-note{max-width:90px;}
+}
+
 /* ── GA training ─────────────────────────────────────────────────────────── */
 .tm-train-kpis{ display:flex; gap:24px; margin-bottom:11px; }
 .tm-train-kpis i{ display:block; font-family:var(--mono); font-style:normal;

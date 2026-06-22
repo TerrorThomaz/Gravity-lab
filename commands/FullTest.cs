@@ -670,64 +670,7 @@ static class FullTest
         }
         else Console.WriteLine("  Insufficient val trades for projection.");
 
-        // ══════════════════════════════════════════════════════════════════════════
-        // SECTION 8: EXIT MODIFIER
-        // ══════════════════════════════════════════════════════════════════════════
-        Console.WriteLine($"\n{new string('═', 88)}");
-        Console.WriteLine($"  EXIT MODIFIER (context-aware position sizing)");
-        Console.WriteLine($"{new string('═', 88)}");
-
-        if (!File.Exists(Config.ExitModifierGenoFile))
-        {
-            Console.WriteLine("  No exit modifier genotype found — run 'exitmodifiertrain' to train one.");
-        }
-        else
-        {
-            var emG = JsonSerializer.Deserialize<ExitModifierGenotypeDto>(
-                File.ReadAllText(Config.ExitModifierGenoFile))!.ToGenotype();
-            Console.WriteLine($"  Genotype: {emG}\n");
-
-            var h1MapForEnrich = fetchedMap.ToDictionary(kv => kv.Key, kv => kv.Value.h1);
-
-            Console.WriteLine("  Enriching trades...");
-            var valEnriched = TradeEnricher.Enrich(valRawForEnrich, h1MapForEnrich);
-            var oosEnriched = TradeEnricher.Enrich(oosRawForEnrich, h1MapForEnrich);
-
-            var valBaseline = Simulator.SimulatePortfolioExposureCapped(
-                valEnriched.Select(t => (t.EntryTime, t.Return, t.CoinConf, t.HoldDuration)).OrderBy(t => t.EntryTime).ToList(),
-                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-            var oosBaseline = Simulator.SimulatePortfolioExposureCapped(
-                oosEnriched.Select(t => (t.EntryTime, t.Return, t.CoinConf, t.HoldDuration)).OrderBy(t => t.EntryTime).ToList(),
-                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-            var valModified = Simulator.SimulatePortfolioExposureCapped(
-                ExitModifierGA.ApplyModifier(emG, valEnriched),
-                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-            var oosModified = Simulator.SimulatePortfolioExposureCapped(
-                ExitModifierGA.ApplyModifier(emG, oosEnriched),
-                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-
-            string FmtPort(Simulator.PortfolioResult p) =>
-                $"ret={p.EndBalance - 100:+0.1;-0.1}%  DD={p.MaxDrawdownPct:F1}%  n={p.TradesCount}";
-
-            Console.WriteLine($"  {"",12}  {"── Val (20%) ─────────────────────",35}  {"── OOS ─────────────────────",28}");
-            Console.WriteLine($"  {"Baseline",-12}  {FmtPort(valBaseline),-35}  {FmtPort(oosBaseline),-28}");
-            Console.WriteLine($"  {"Modified",-12}  {FmtPort(valModified),-35}  {FmtPort(oosModified),-28}");
-
-            double valRetDelta = valModified.EndBalance - valBaseline.EndBalance;
-            double valDdDelta  = valModified.MaxDrawdownPct - valBaseline.MaxDrawdownPct;
-            Console.WriteLine($"\n  Val Δ: return {valRetDelta:+0.0;-0.0}%  DD {valDdDelta:+0.0;-0.0}pp");
-
-            Console.WriteLine($"\n  Avg context multiplier per strategy (val):");
-            foreach (var strat in new[] { "swing", "grid", "diplong", "swing_long", "fadelong" })
-            {
-                var forStrat = valEnriched.Where(t => t.Strategy == strat).ToList();
-                if (forStrat.Count == 0) continue;
-                double avgMult = forStrat.Average(t => emG.ComputeMult(t));
-                Console.WriteLine($"    {strat,-12}  {avgMult:F3}×  ({forStrat.Count} trades)");
-            }
-        }
-
-        // ── Section 9: Dynamic Guard ───────────────────────────────────────────────
+        // ── Section 8: Dynamic Guard ───────────────────────────────────────────────
         Console.WriteLine($"\n{new string('═', 88)}");
         Console.WriteLine($"  DYNAMIC GUARD (BTC 4H ATR/momentum · proactive · Grid/DipLong/SwingLong)");
         Console.WriteLine($"{new string('═', 88)}");

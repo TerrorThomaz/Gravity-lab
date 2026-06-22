@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <Compile Remove="Gravity-gen2.Tests/**" />
+    <Compile Remove="legacy/**" />
   </ItemGroup>
 
   <ItemGroup>

@@ -355,65 +355,6 @@ public static class Simulator
         return SimulatePortfolioExposureCapped(adapted, maxTotalExposurePct, startBalance, drawdownBrakeAt, kellyMultiplier: 1.0);
     }
 
-    // Drawdown-guard simulation: same as SimulatePortfolioExposureCapped but applies a
-    // DrawdownGuardGenotype multiplier to guarded strategies (Grid, DipLong, SwingLong)
-    // whenever portfolio equity is in drawdown. FadeShort and FadeLong are always exempt.
-    public static PortfolioResult SimulateWithDrawdownGuard(
-        List<(DateTime EntryTime, double Return, double CoinConf, TimeSpan HoldDuration, bool IsGuarded)> trades,
-        DrawdownGuardGenotype guard,
-        double maxTotalExposurePct = 0.30,
-        double maxPositionFrac     = 0.15)
-    {
-        const double startBalance = 100.0;
-        if (trades.Count == 0)
-            return new PortfolioResult(startBalance, startBalance, 0, startBalance, 0, 0, 0, 0, -1);
-
-        var sorted = trades.OrderBy(t => t.EntryTime).ToList();
-        double balance = startBalance, peak = startBalance, maxDd = 0, totalPosSizeEur = 0;
-        int tradesToTenPct = -1;
-        var openPos = new List<(DateTime Close, double EurAllocated)>();
-
-        for (int i = 0; i < sorted.Count; i++)
-        {
-            var (entryTime, ret, conf, hold, isGuarded) = sorted[i];
-
-            openPos.RemoveAll(p => p.Close <= entryTime);
-            double currentEurDeployed = openPos.Sum(p => p.EurAllocated);
-            double maxEurDeployable   = maxTotalExposurePct * balance;
-            double headroomEur        = Math.Max(0, maxEurDeployable - currentEurDeployed);
-
-            double currentDd  = peak > balance ? (peak - balance) / peak : 0.0;
-            double ddScale    = Math.Max(0.20, 1.0 - currentDd / Math.Max(1e-9, guard.DrawdownBrakeAt));
-            double guardMult  = isGuarded ? guard.ComputeMult(currentDd) : 1.0;
-
-            double desiredFrac = Math.Min(conf * ddScale * guardMult, maxPositionFrac);
-            double desiredEur  = desiredFrac * balance;
-            double posEur      = Math.Min(desiredEur, headroomEur);
-
-            openPos.Add((entryTime + hold, posEur));
-            totalPosSizeEur += posEur;
-            balance += ret / 100.0 * posEur;
-
-            if (tradesToTenPct < 0 && balance >= startBalance * 1.10)
-                tradesToTenPct = i + 1;
-
-            if (balance > peak) peak = balance;
-            double dd = peak > 0 ? (peak - balance) / peak * 100.0 : 0;
-            if (dd > maxDd) maxDd = dd;
-        }
-
-        return new PortfolioResult(
-            StartBalance:   startBalance,
-            EndBalance:     balance,
-            RealizedProfit: 0,
-            TotalValue:     balance,
-            MaxDrawdownPct: maxDd,
-            Confidence:     0,
-            AvgPositionEur: sorted.Count > 0 ? totalPosSizeEur / sorted.Count : 0,
-            TradesCount:    sorted.Count,
-            TradesToTenPct: tradesToTenPct);
-    }
-
     // Time-normalised Sharpe. candleCount = number of 5m-equivalent candles in the window;
     // 288 candles = 1 trading day. Returns 0 if < 5 trades or PF < 1.3.
     public static double SharpeRatio(List<double> returns, int candleCount)

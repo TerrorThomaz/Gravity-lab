@@ -15,7 +15,6 @@ switch (mode)
     case "rankedbacktest":   await GridCommands.RunRankedBacktest(client);                       break;
     case "test":             await BacktestCommands.RunTest(client);                             break;
     case "yearlybreakdown":  await BacktestCommands.RunYearlyBreakdown(client);                  break;
-    case "bulltrain":        await TrainCommands.RunMomLongTrain(client);                        break;
     case "fadelongtrain":    await LongTrainCommands.RunFadeLongTrain(client);                   break;
     case "diplongtrain":     await LongTrainCommands.RunDipLongTrain(client);                    break;
     case "swinglongtrain":   await LongTrainCommands.RunSwingLongTrain(client);                    break;
@@ -25,9 +24,6 @@ switch (mode)
     case "oosbacktest":      await OosBacktest.RunOosBacktest(client);                           break;
     case "allcoinsbacktest": await OosBacktest.RunAllCoinsBacktest(client);                      break;
     case "fulltest":         await FullTest.RunFullTest(client);                                break;
-    case "exitmodifiertrain": await ExitModifierTrainCommands.RunExitModifierTrain(client);   break;
-    case "stresstest":          await StressTestCommands.RunStressTest(client);                break;
-    case "drawdownguardtrain":  await DrawdownGuardTrainCommands.RunDrawdownGuardTrain(client); break;
     case "dynamicguardtrain":   await DynamicGuardTrainCommands.RunDynamicGuardTrain(client);  break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
@@ -40,7 +36,6 @@ switch (mode)
         Console.WriteLine("  dotnet run -- rankedbacktest     Ranked portfolio: top-N signals by quality");
         Console.WriteLine("  dotnet run -- test               Statistical edge validation");
         Console.WriteLine("  dotnet run -- yearlybreakdown    Per-year portfolio returns (full history)");
-        Console.WriteLine("  dotnet run -- bulltrain          Bull GA: momentum long, 53 coins, ~3yr");
         Console.WriteLine("  dotnet run -- fadelongtrain      FadeLong GA: oversold bounce, 53 coins, ~3yr");
         Console.WriteLine("  dotnet run -- diplongtrain       DipLong GA: bull pullback, regime-gated, 53 coins, ~3yr");
         Console.WriteLine("  dotnet run -- swingLongtrain      SwingLong GA: bull divergence+BoS long, 93 coins, ~3yr");
@@ -50,9 +45,6 @@ switch (mode)
         Console.WriteLine("  dotnet run -- oosbacktest        OOS backtest: 28 never-seen coins, full history, all strategies");
         Console.WriteLine("  dotnet run -- allcoinsbacktest   Portfolio sim: BacktestCoins (val 20%) + OOS coins (full history), concurrency analysis");
         Console.WriteLine("  dotnet run -- fulltest           Condensed master report: val+OOS, 7 sections, single candle fetch");
-        Console.WriteLine("  dotnet run -- exitmodifiertrain  Train context-aware position-size modifier");
-        Console.WriteLine("  dotnet run -- stresstest         Adversarial scenario GA: find worst-case crash drawdown");
-        Console.WriteLine("  dotnet run -- drawdownguardtrain Train drawdown-reactive panic manager (guards Grid/DipLong/SwingLong)");
         Console.WriteLine("  dotnet run -- dynamicguardtrain  Train BTC 4H ATR/momentum dynamic guard (proactive, corrects router)");
         break;
 }

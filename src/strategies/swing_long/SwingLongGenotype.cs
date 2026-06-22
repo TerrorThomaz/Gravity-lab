@@ -27,6 +27,11 @@ public class SwingLongGenotype
     public int    MaxHoldCandles            { get; set; }   // 24–120    h1 bars before forced exit
     public double PositionSizePct           { get; set; }   // 0.01–0.05 fraction of capital per trade
 
+    // Time-decay stop: after TimeStopBars h1 bars, tolerated loss narrows linearly from
+    // TimeStopLossPct down to 0% at MaxHoldCandles. Kills slow-bleeding losing positions.
+    public int    TimeStopBars    { get; set; }   // 10–80   h1 bars before decay activates
+    public double TimeStopLossPct { get; set; }   // 0.02–0.25  max loss ratio at TimeStopBars
+
     public double Fitness { get; set; } = double.MinValue;
 
     // Bounds for BayesianOptimizer — order matches ToVector/FromVector.
@@ -44,6 +49,8 @@ public class SwingLongGenotype
         { 1.0,  5.0 }, // TrailingStopAtrMult
         {  24, 120  }, // MaxHoldCandles
         {0.01, 0.05 }, // PositionSizePct
+        {  10,  80  }, // TimeStopBars
+        {0.02, 0.25 }, // TimeStopLossPct
     };
 
     public double[] ToVector() =>
@@ -51,6 +58,7 @@ public class SwingLongGenotype
         EmaPeriod, AdxThreshold, LookbackCandles, RsiOversold, RsiDivThreshold,
         MinDeclineAtrMult, StopLossAtrMult, TakeProfitAtrMult,
         TrailingActivationAtrMult, TrailingStopAtrMult, MaxHoldCandles, PositionSizePct,
+        TimeStopBars, TimeStopLossPct,
     ];
 
     public static SwingLongGenotype FromVector(double[] v) => new()
@@ -67,6 +75,8 @@ public class SwingLongGenotype
         TrailingStopAtrMult       = Math.Clamp(v[9],   1.0,  5.0),
         MaxHoldCandles            = Math.Clamp((int)Math.Round(v[10]), 24, 120),
         PositionSizePct           = Math.Clamp(v[11], 0.01, 0.05),
+        TimeStopBars              = Math.Clamp((int)Math.Round(v[12]), 10,  80),
+        TimeStopLossPct           = Math.Clamp(v[13], 0.02, 0.25),
     };
 
     public static SwingLongGenotype Random(System.Random rng, SwingLongGenotype? seed = null)
@@ -86,6 +96,8 @@ public class SwingLongGenotype
             TrailingStopAtrMult       = Seed(1.0  + rng.NextDouble() * 4.0,        seed?.TrailingStopAtrMult       ?? 2.0),
             MaxHoldCandles            = Seed(rng.Next(24, 121),                    seed?.MaxHoldCandles            ?? 42),
             PositionSizePct           = Seed(0.01 + rng.NextDouble() * 0.04,       seed?.PositionSizePct           ?? 0.03),
+            TimeStopBars              = Seed(rng.Next(10, 81),                      seed?.TimeStopBars              ?? 999),
+            TimeStopLossPct           = Seed(0.02 + rng.NextDouble() * 0.23,       seed?.TimeStopLossPct           ?? 0.99),
         };
     }
 
@@ -106,6 +118,8 @@ public class SwingLongGenotype
             TrailingStopAtrMult       = Pick(a.TrailingStopAtrMult,       b.TrailingStopAtrMult),
             MaxHoldCandles            = Pick(a.MaxHoldCandles,            b.MaxHoldCandles),
             PositionSizePct           = Pick(a.PositionSizePct,           b.PositionSizePct),
+            TimeStopBars              = Pick(a.TimeStopBars,              b.TimeStopBars),
+            TimeStopLossPct           = Pick(a.TimeStopLossPct,           b.TimeStopLossPct),
         };
     }
 
@@ -135,6 +149,8 @@ public class SwingLongGenotype
             TrailingStopAtrMult       = Nudge(TrailingStopAtrMult, 1.0, 5.0, 0.5),
             MaxHoldCandles            = NudgeInt(MaxHoldCandles,  24, 120, 12),
             PositionSizePct           = Nudge(PositionSizePct,    0.01, 0.05, 0.005),
+            TimeStopBars              = NudgeInt(TimeStopBars,    10, 80, 8),
+            TimeStopLossPct           = Nudge(TimeStopLossPct,   0.02, 0.25, 0.03),
         };
     }
 
@@ -152,6 +168,8 @@ public class SwingLongGenotype
         TrailingStopAtrMult       = Math.Clamp(TrailingStopAtrMult, 1.0, 5.0),
         MaxHoldCandles            = Math.Clamp(MaxHoldCandles,  24, 120),
         PositionSizePct           = Math.Clamp(PositionSizePct, 0.01, 0.05),
+        TimeStopBars              = Math.Clamp(TimeStopBars,    10,  80),
+        TimeStopLossPct           = Math.Clamp(TimeStopLossPct, 0.02, 0.25),
         Fitness = Fitness,
     };
 
@@ -160,5 +178,6 @@ public class SwingLongGenotype
         $"ADX(7,{AdxThreshold:F0}) Look={LookbackCandles} Decline≥{MinDeclineAtrMult:F1}A " +
         $"SL={StopLossAtrMult:F2}A TP={TakeProfitAtrMult:F2}A " +
         $"Trail({TrailingActivationAtrMult:F2}A/{TrailingStopAtrMult:F2}A) " +
-        $"MaxH={MaxHoldCandles}bars Pos={PositionSizePct:P0} F={Fitness:F4}";
+        $"MaxH={MaxHoldCandles}bars Pos={PositionSizePct:P0} " +
+        $"TStop({TimeStopBars}bars/{TimeStopLossPct:P0}) F={Fitness:F4}";
 }

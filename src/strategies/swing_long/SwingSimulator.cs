@@ -329,7 +329,8 @@ public static class FadeShortSimulator
                     double atrH1 = h1Atr[h1Ref] > 1e-10 ? h1Atr[h1Ref] : h1Closes[h1Ref] * 0.02;
 
                     // h4 ATR: exit sizing (matches the multi-day holding timeframe)
-                    int h4Ref = h1Ref / 4;
+                    // Use the previous completed h4 bar — the current h4 bar aggregates future h1 bars
+                    int h4Ref = Math.Max(0, h1Ref / 4 - 1);
                     double atrH4 = h4Ref < h4Atr.Length && h4Atr[h4Ref] > 1e-10
                                  ? h4Atr[h4Ref]
                                  : atrH1 * 4;
@@ -367,20 +368,24 @@ public static class FadeShortSimulator
                     }
                 }
 
-                // BoS on 15m: close below the previous 15m candle's low
+                // BoS on 15m: close below the previous 15m candle's low.
+                // Enter at the OPEN of the next 15m bar — the BoS is only confirmed at bar close,
+                // so the earliest realistic fill is the following bar's open.
                 if (cachedSetupMet && m15Closes[im15] < m15Lows[im15 - 1])
                 {
+                    int nextBar = im15 + 1;
+                    if (nextBar >= Math.Min(m15.Length, m15Limit)) continue;
                     inTrade    = true;
-                    entry      = m15Price;
+                    entry      = m15[nextBar].Open;
                     atrEntry   = cachedAtrRef;
                     hardStop   = cachedSwingHigh + g.StopLossAtrMult * atrEntry;
                     maeStop    = entry + g.MaeAtrMult * atrEntry;
                     target     = entry - g.TakeProfitAtrMult * atrEntry;
-                    trailLow   = m15Price;
+                    trailLow   = entry;
                     trailArmed = false;
-                    entryIH1   = ih1;
+                    entryIH1   = nextBar / 4;
                     entryScore = cachedScore;
-                    entryTime  = m15[im15].Time;
+                    entryTime  = m15[nextBar].Time;
                 }
             }
             else
@@ -538,7 +543,8 @@ public static class SwingLongSimulator
 
                     double atrH1 = h1Atr[h1Ref] > 1e-10 ? h1Atr[h1Ref] : h1Closes[h1Ref] * 0.02;
 
-                    int    h4Ref = h1Ref / 4;
+                    // Use the previous completed h4 bar — the current h4 bar aggregates future h1 bars
+                    int    h4Ref = Math.Max(0, h1Ref / 4 - 1);
                     double atrH4 = h4Ref < h4Atr.Length && h4Atr[h4Ref] > 1e-10
                                  ? h4Atr[h4Ref] : atrH1 * 4;
 
@@ -577,17 +583,20 @@ public static class SwingLongSimulator
                     }
                 }
 
-                // 15m bullish BoS: close above previous 15m candle's high
+                // 15m bullish BoS: close above previous 15m candle's high.
+                // Enter at the OPEN of the next 15m bar — the BoS is only confirmed at bar close.
                 if (cachedSetupMet && m15Closes[im15] > m15Highs[im15 - 1])
                 {
+                    int nextBar = im15 + 1;
+                    if (nextBar >= Math.Min(m15.Length, m15Limit)) continue;
                     inTrade    = true;
-                    entry      = m15Price;
+                    entry      = m15[nextBar].Open;
                     atrEntry   = cachedAtrRef;
                     hardStop   = cachedSwingLow - g.StopLossAtrMult * atrEntry;
                     target     = entry + g.TakeProfitAtrMult * atrEntry;
-                    trailHigh  = m15Price;
+                    trailHigh  = entry;
                     trailArmed = false;
-                    entryIH1   = ih1;
+                    entryIH1   = nextBar / 4;
                 }
             }
             else
@@ -603,15 +612,26 @@ public static class SwingLongSimulator
                 bool hitTrail  = trailArmed && m15Price < trailHigh - g.TrailingStopAtrMult * atrEntry;
                 bool timedOut  = holdH1 >= g.MaxHoldCandles;
 
-                if (hitStop || hitTarget || hitTrail || timedOut)
+                // Time-decay stop: after TimeStopBars bars, tolerated loss narrows linearly
+                // from TimeStopLossPct down to 0% at MaxHoldCandles.
+                bool hitTimeStop = false;
+                if (!hitStop && !hitTarget && !hitTrail && !timedOut
+                    && holdH1 >= g.TimeStopBars && g.MaxHoldCandles > g.TimeStopBars)
                 {
-                    double exitPx = hitStop   ? hardStop :
-                                    hitTarget ? target   : m15Price;
-                    double atrPct = atrEntry / entry * 100.0;
-                    double slip   = SlipK * atrPct;
+                    double progress     = (double)(holdH1 - g.TimeStopBars) / (g.MaxHoldCandles - g.TimeStopBars);
+                    double maxLossRatio = g.TimeStopLossPct * (1.0 - progress);
+                    hitTimeStop = (m15Price - entry) / entry < -maxLossRatio;
+                }
+
+                if (hitStop || hitTarget || hitTrail || timedOut || hitTimeStop)
+                {
+                    double exitPx   = hitStop   ? hardStop :
+                                      hitTarget ? target   : m15Price;
+                    double atrPct   = atrEntry / entry * 100.0;
+                    double slip     = SlipK * atrPct;
                     double stopSlip = hitStop ? SlipStopGap * atrPct : 0;
-                    double cost   = FeeExchange + slip * 2 + stopSlip;
-                    double ret    = (exitPx - entry) / entry * 100.0 - cost;
+                    double cost     = FeeExchange + slip * 2 + stopSlip;
+                    double ret      = (exitPx - entry) / entry * 100.0 - cost;
                     result.Add((m15[im15].Time, ret, "swing_long"));
                     inTrade = false;
                 }

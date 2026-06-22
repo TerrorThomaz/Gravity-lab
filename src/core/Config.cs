@@ -4,7 +4,6 @@ static class Config
 {
     public const string FadeShortGenoFile = "fade_short_genotype.json";
     public const string GridGenoFile      = "grid_best_genotype.json";
-    public const string MomLongGenoFile   = "mom_long_genotype.json";
     public const string FadeLongGenoFile  = "fade_long_genotype.json";
     public const string DipLongGenoFile   = "dip_long_genotype.json";
     public const string RouterGenoFile    = "regime_router_genotype.json";

@@ -447,16 +447,22 @@ public static class Simulator
     public static double CalmarRatio(List<double> returns)
     {
         if (returns.Count < 5) return 0;
-        double cumulative = 0, peak = 0, maxDd = 0;
+        // Build a synthetic equity curve at 1% fixed position so DD is in % of equity,
+        // not in absolute return-sum units (original bug: peak-trough was not normalised).
+        const double pos = 0.01;
+        double equity = 1.0, peak = 1.0, maxDdPct = 0;
         foreach (var r in returns)
         {
-            cumulative += r;
-            if (cumulative > peak) peak = cumulative;
-            double dd = peak - cumulative;
-            if (dd > maxDd) maxDd = dd;
+            equity += r / 100.0 * pos;
+            if (equity > peak) peak = equity;
+            double dd = (peak - equity) / peak * 100.0;   // percentage, not absolute
+            if (dd > maxDdPct) maxDdPct = dd;
         }
-        if (maxDd < 1e-10) return cumulative > 0 ? 99.99 : 0;
-        return cumulative * (252.0 / returns.Count) / maxDd;
+        // Rescale back to raw return space for the numerator so units are comparable across callers.
+        double totalRetPct = (equity - 1.0) / pos;
+        if (maxDdPct < 1e-10) return totalRetPct > 0 ? 99.99 : 0;
+        // Annualise by assumed 252 trade-equivalents per year (consistent cross-strategy proxy).
+        return totalRetPct * (252.0 / returns.Count) / maxDdPct;
     }
 
     public static int MaxConsecLosses(List<double> returns)

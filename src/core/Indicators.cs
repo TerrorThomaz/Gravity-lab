@@ -1,6 +1,6 @@
 namespace TradingGA;
 
-// Shared indicator implementations used by SwingSimulator and GridSimulator.
+// Shared indicator implementations used by FadeShortSimulator and GridSimulator.
 // All methods are pure functions on raw price arrays — no state, no allocation beyond the result.
 internal static class Indicators
 {
@@ -98,6 +98,15 @@ internal static class Indicators
         for (int i = adxStart + 1; i < n; i++)
             adx[i] = (adx[i - 1] * (period - 1) + dx[i]) / period;
         return adx;
+    }
+
+    // In-place EMA write — caller supplies a rented buffer (length ≥ closes.Length).
+    internal static void EmaInto(double[] closes, int period, double[] output)
+    {
+        double k = 2.0 / (period + 1);
+        output[0] = closes[0];
+        for (int i = 1; i < closes.Length; i++)
+            output[i] = closes[i] * k + output[i - 1] * (1 - k);
     }
 
     // Bollinger Band width = (Upper − Lower) / Middle × 100 = 4σ / SMA × 100.

@@ -7,7 +7,7 @@ namespace TradingGA;
 //   Mid    1.5–3.5%  — LINK, AVAX, OP, ARB-class; moderate volatility
 //   HighVol  ≥ 3.5%  — memes and new-issue tokens; high ATR, thin books
 //
-// The same SwingGeneticAlgorithm is reused per cluster; only the coin subset differs.
+// The same FadeShortGA is reused per cluster; only the coin subset differs.
 // Genotypes are saved to separate files so train/backtest/papertrade can load the
 // appropriate one per coin without touching the universal swing_best_genotype.json.
 public enum CoinCluster { Liquid, Mid, HighVol }

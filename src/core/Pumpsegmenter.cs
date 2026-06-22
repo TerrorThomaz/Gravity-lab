@@ -3,7 +3,7 @@ namespace TradingGA;
 /// <summary>
 /// One OHLCV candle — fill this from Binance.Net or a CSV.
 /// </summary>
-public record Candle(
+public readonly record struct Candle(
     DateTime Time,
     double Open,
     double High,
@@ -11,6 +11,18 @@ public record Candle(
     double Close,
     double Volume
 );
+
+// Zero-copy extraction helpers — work with ReadOnlySpan so callers can pass
+// Candle[] (implicit conversion) or ReadOnlyMemory<Candle>.Span without copying.
+public static class CandleExt
+{
+    public static double[] Closes(ReadOnlySpan<Candle> s) { var a = new double[s.Length]; for (int i = 0; i < s.Length; i++) a[i] = s[i].Close; return a; }
+    public static double[] Highs (ReadOnlySpan<Candle> s) { var a = new double[s.Length]; for (int i = 0; i < s.Length; i++) a[i] = s[i].High;  return a; }
+    public static double[] Lows  (ReadOnlySpan<Candle> s) { var a = new double[s.Length]; for (int i = 0; i < s.Length; i++) a[i] = s[i].Low;   return a; }
+    public static double[] Opens (ReadOnlySpan<Candle> s) { var a = new double[s.Length]; for (int i = 0; i < s.Length; i++) a[i] = s[i].Open;  return a; }
+    public static DateTime[] Times(ReadOnlySpan<Candle> s) { var a = new DateTime[s.Length]; for (int i = 0; i < s.Length; i++) a[i] = s[i].Time; return a; }
+    public static double[] Volumes(ReadOnlySpan<Candle> s) { var a = new double[s.Length]; for (int i = 0; i < s.Length; i++) a[i] = s[i].Volume; return a; }
+}
 
 /// <summary>
 /// Splits a candle series into discrete "pump segments" —

@@ -815,9 +815,35 @@ static class FullTest
                 maxDD = Math.Round(p.MaxDrawdownPct, 2),
             };
 
+        // Portfolio-level aggregate for the backtest object
+        var allValRets = valAll.Select(t => t.Return).ToList();
+        var allOosRets = oosAll.Select(t => t.Return).ToList();
+        var combinedRets = allValRets.Concat(allOosRets).ToList();
+        int combinedVCC = Math.Max(valCandleCount, oosCandleCount);
+        double btTrades  = combinedRets.Count;
+        double btWinRate = combinedRets.Count > 0 ? Math.Round((double)combinedRets.Count(r => r > 0) / combinedRets.Count * 100, 2) : 0;
+        double btSharpe  = combinedRets.Count >= 5 ? Math.Round(Simulator.SharpeRatio(combinedRets, combinedVCC), 4) : 0;
+        // Use val 5%cap portfolio for maxDD and CAGR (primary backtest result)
+        double btMaxDD   = valSim.Count > 0 ? Math.Round(-val5p.MaxDrawdownPct, 2) : 0;
+        double btCagr    = 0;
+        if (valSim.Count >= 2)
+        {
+            double valDays = (valSim[^1].Item1 - valSim[0].Item1).TotalDays;
+            double valRet  = (val5p.EndBalance - 100.0) / 100.0;
+            btCagr = valDays > 0 ? Math.Round((Math.Pow(1 + valRet, 365.0 / valDays) - 1) * 100, 2) : 0;
+        }
+
         var fulltestOutput = new
         {
             timestamp = DateTime.UtcNow.ToString("O"),
+            backtest = new
+            {
+                trades  = (int)btTrades,
+                winRate = btWinRate,
+                sharpe  = btSharpe,
+                maxDD   = btMaxDD,
+                cagr    = btCagr,
+            },
             val = new
             {
                 FadeShort = FtStratStats(valSwingRets),

@@ -423,15 +423,24 @@ static class OosBacktest
         }
 
         // Merge OOS section into backtest_results.json
+        static double OosComputeMaxDD(List<double> r)
+        {
+            if (r.Count == 0) return 0;
+            double eq = 100.0, peak = 100.0, maxDd = 0;
+            foreach (var ret in r) { eq += ret; if (eq > peak) peak = eq; double dd = (peak - eq) / peak * 100; if (dd > maxDd) maxDd = dd; }
+            return maxDd;
+        }
+
         static object OosStratStats(List<double> r, int vcc) => r.Count == 0
-            ? new { trades = 0, winRate = 0.0, sharpe = 0.0, pf = 0.0, avgRet = 0.0 }
+            ? new { trades = 0, winRate = 0.0, sharpe = 0.0, pf = 0.0, maxDD = 0.0, ret = 0.0 }
             : new
             {
                 trades  = r.Count,
                 winRate = Math.Round((double)r.Count(x => x > 0) / r.Count * 100, 2),
                 sharpe  = Math.Round(Simulator.SharpeRatio(r, vcc), 4),
                 pf      = Math.Round(Simulator.ProfitFactor(r), 4),
-                avgRet  = Math.Round(r.Average(), 4),
+                maxDD   = Math.Round(-OosComputeMaxDD(r), 2),
+                ret     = Math.Round(r.Sum(), 2),
             };
 
         var oosSection = new Dictionary<string, object>

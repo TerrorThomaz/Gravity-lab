@@ -1,5 +1,5 @@
 # bot/api_server.py
-import asyncio, json, os, subprocess, sys
+import asyncio, json, os, re, subprocess, sys
 from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
@@ -35,6 +35,8 @@ async def start_training(req: TrainRequest):
         raise HTTPException(409, "Training already in progress")
     if req.strategy not in STRATEGY_COMMANDS:
         raise HTTPException(400, f"Unknown strategy: {req.strategy}")
+    if not re.match(r'^[a-zA-Z0-9_-]+$', req.variant):
+        raise HTTPException(400, f"Invalid variant id: {req.variant!r}")
 
     # Write fitness_config.json
     cfg_path = ROOT / "fitness_config.json"

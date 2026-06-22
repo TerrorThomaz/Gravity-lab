@@ -185,17 +185,17 @@ static class LongTrainCommands
         var result = new CoevolveGA().Run(data, fsSeed, flSeed, dlSeed, slSeed, routerSeed, dgSeed);
 
         File.WriteAllText(flPath,
-            JsonSerializer.Serialize(FadeLongGenotypeDto.From(result.FadeLong),
+            JsonSerializer.Serialize(FadeLongGenotypeDto.From(result.FadeLong, cfg),
                 new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"\n  Saved FadeLong   → {flPath}  {result.FadeLong}");
 
         File.WriteAllText(dlPath,
-            JsonSerializer.Serialize(DipLongGenotypeDto.From(result.DipLong),
+            JsonSerializer.Serialize(DipLongGenotypeDto.From(result.DipLong, cfg),
                 new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"  Saved DipLong    → {dlPath}  {result.DipLong}");
 
         File.WriteAllText(slPath,
-            JsonSerializer.Serialize(SwingLongGenotypeDto.From(result.SwingLong),
+            JsonSerializer.Serialize(SwingLongGenotypeDto.From(result.SwingLong, cfg),
                 new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"  Saved SwingLong  → {slPath}  {result.SwingLong}");
 

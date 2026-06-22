@@ -9,7 +9,7 @@ static class GridCommands
     {
         string variant  = TrainCommands.ResolveVariant(args);
         var    cfg      = FitnessConfig.Load();
-        string genoPath = TrainCommands.VariantGenoPath("grid", variant, Config.GridGenoFile);
+        string genoPath = TrainCommands.VariantGenoPath("grid_best", variant, Config.GridGenoFile);
         Console.WriteLine("=== Gravity-gen2 | GRID TRAIN (ranging long grid, 1h candles, 26 coins) ===");
         Console.WriteLine($"Training Grid / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
 

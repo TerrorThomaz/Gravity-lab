@@ -186,7 +186,7 @@
 
             {/* regime router */}
             <Panel title="REGIME ROUTER" meta="BTC-anchored · ETH confirm" span={5} sect="live">
-              <div className="tm-reg-state">BULL</div>
+              <div className={"tm-reg-state " + (L.regime?.state === "Bull" ? "pos" : L.regime?.state === "Bear" ? "neg" : "")}>{L.regime?.state || "—"}</div>
               <div className="tm-reg-meta">confidence {safe(L.regime?.confidence, v => v.toFixed(2))} · {L.regime?.duration ?? 0} bars · size× {safe(L.router?.sizeMult, v => v.toFixed(2))}</div>
               <div className="tm-reg-src">BTC {L.regime.btc} · ETH {L.regime.eth}</div>
               <div className="tm-router">

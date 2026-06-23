@@ -56,7 +56,10 @@ static class CandleFetcher
         var cached = new SortedDictionary<DateTime, Candle>();
         if (File.Exists(cacheFile))
         {
-            foreach (var line in File.ReadLines(cacheFile))
+            using var fs = new FileStream(cacheFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var sr = new StreamReader(fs);
+            string? line;
+            while ((line = sr.ReadLine()) != null)
             {
                 var p = line.Split(',');
                 if (p.Length < 6) continue;
@@ -139,7 +142,8 @@ static class CandleFetcher
 
         if (dirty)
         {
-            using var sw = new System.IO.StreamWriter(cacheFile);
+            using var fs = new FileStream(cacheFile, FileMode.Create, FileAccess.Write, FileShare.Read);
+            using var sw = new StreamWriter(fs);
             foreach (var c in cached.Values)
             {
                 long ms = new DateTimeOffset(c.Time, TimeSpan.Zero).ToUnixTimeMilliseconds();
@@ -213,7 +217,10 @@ static class CandleFetcher
         var cached = new SortedDictionary<DateTime, double>();
         if (File.Exists(cacheFile))
         {
-            foreach (var line in File.ReadLines(cacheFile))
+            using var fs = new FileStream(cacheFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var sr = new StreamReader(fs);
+            string? line;
+            while ((line = sr.ReadLine()) != null)
             {
                 var p = line.Split(',');
                 if (p.Length < 2) continue;
@@ -258,7 +265,8 @@ static class CandleFetcher
 
         if (dirty)
         {
-            using var sw = new StreamWriter(cacheFile);
+            using var fs2 = new FileStream(cacheFile, FileMode.Create, FileAccess.Write, FileShare.Read);
+            using var sw = new StreamWriter(fs2);
             foreach (var (dt, rate) in cached)
             {
                 long ms = new DateTimeOffset(dt, TimeSpan.Zero).ToUnixTimeMilliseconds();

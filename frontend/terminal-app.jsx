@@ -79,9 +79,9 @@
         </div>
         <div className="tm-mini-foot">
           <span>μ <b className="pos">{pct(s.avgRet, 2)}</b></span>
-          <span>CVaR <b className="neg">{dist.cvar5.toFixed(1)}%</b></span>
-          <span>win <b>{s.win.toFixed(0)}%</b></span>
-          <span>SR <b>{s.sharpe.toFixed(2)}</b></span>
+          <span>CVaR <b className="neg">{safe(dist.cvar5, v => v.toFixed(1) + "%")}</b></span>
+          <span>win <b>{safe(s.win, v => v.toFixed(0) + "%")}</b></span>
+          <span>SR <b>{safe(s.sharpe, v => v.toFixed(2))}</b></span>
         </div>
       </div>
     );
@@ -200,14 +200,14 @@
                       <td className="dim">{s.regime}</td>
                       <td><span className={"tm-dir tm-dir--" + s.dir.toLowerCase()}>{s.dir}</span></td>
                       <td className="r mono">{s.trades}</td>
-                      <td className="r mono">{s.win.toFixed(1)}</td>
+                      <td className="r mono">{safe(s.win, v => v.toFixed(1))}</td>
                       <td className="r mono pos">{pct(s.avgRet, 2)}</td>
-                      <td className="r mono">{s.sharpe.toFixed(2)}</td>
-                      <td className="r mono">{s.pf.toFixed(2)}</td>
+                      <td className="r mono">{safe(s.sharpe, v => v.toFixed(2))}</td>
+                      <td className="r mono">{safe(s.pf, v => v.toFixed(2))}</td>
                       <td className="r mono b pos">{pct(s.ret, 1)}</td>
                       <td className="r mono neg">{pct(s.maxDD, 1)}</td>
-                      <td className="r mono dim">{(s.halfKelly * 100).toFixed(1)}%</td>
-                      <td className="r mono">{s.dsr.toFixed(2)}</td>
+                      <td className="r mono dim">{safe(s.halfKelly, v => (v * 100).toFixed(1) + "%")}</td>
+                      <td className="r mono">{safe(s.dsr, v => v.toFixed(2))}</td>
                       <td style={{ color: "var(--accent)", width: 90 }}><Sparkline data={s.spark} width={90} height={20} /></td>
                     </tr>
                   ))}

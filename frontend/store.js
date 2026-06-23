@@ -132,7 +132,7 @@
         const meta = STRATEGY_META[key] || {};
         if (!d || !d.trades) {
           const mock = G.strategies.find(s => s.key === key);
-          return mock || { key, ...meta, trades: 0 };
+          return mock || { key, ...meta, trades: 0, win: 0, avgRet: 0, sharpe: 0, pf: 0, ret: 0, maxDD: 0, kelly: 0, halfKelly: 0, dsr: 0, spark: [] };
         }
         return {
           key,

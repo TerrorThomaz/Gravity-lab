@@ -12,6 +12,7 @@ ROOT = Path(__file__).parent.parent   # repo root
 BASELINE_PATH    = ROOT / "backtest_baseline.json"
 FULLTEST_PATH    = ROOT / "fulltest_results.json"
 REFRESH_INTERVAL = 6 * 3600  # run fulltest every 6 hours
+LIVE_STATE_PATH  = ROOT / "live_state.json"
 
 # ── Training subprocess state ─────────────────────────────────────────────────
 _proc:      subprocess.Popen | None = None
@@ -20,6 +21,10 @@ _proc_info: dict = {}
 # ── Periodic baseline state ──────────────────────────────────────────────────
 _baseline_proc: asyncio.subprocess.Process | None = None
 _baseline_info: dict = {"status": "idle", "lastRun": None, "lastError": None}
+
+# ── Live papertrade subprocess state ─────────────────────────────────────────
+_live_proc: subprocess.Popen | None = None
+_live_info: dict = {"status": "idle", "pid": None, "startedAt": None, "lastError": None}
 
 STRATEGY_COMMANDS = {
     "FadeShort":  "train",
@@ -158,17 +163,80 @@ async def _baseline_loop():
         print(f"[baseline] next run in {REFRESH_INTERVAL}s", flush=True)
         await asyncio.sleep(REFRESH_INTERVAL)
 
+# ── Live papertrade background subprocess ────────────────────────────────────
+def _start_live_proc():
+    """Start the papertrade subprocess (long-running, writes live_state.json each cycle)."""
+    global _live_proc
+    if _live_proc is not None and _live_proc.poll() is None:
+        print("[live] already running", flush=True)
+        return
+    print("[live] starting papertrade subprocess", flush=True)
+    try:
+        _live_proc = subprocess.Popen(
+            ["dotnet", "run", "--", "papertrade"],
+            cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        _live_info["status"] = "running"
+        _live_info["pid"] = _live_proc.pid
+        _live_info["startedAt"] = datetime.now(timezone.utc).isoformat()
+        _live_info["lastError"] = None
+        print(f"[live] papertrade pid={_live_proc.pid}", flush=True)
+    except Exception as exc:
+        _live_info["status"] = "error"
+        _live_info["lastError"] = str(exc)
+        print(f"[live] failed to start: {exc}", flush=True)
+
+def _drain_live_stdout():
+    """Read stdout lines from papertrade (blocking, called from executor)."""
+    if _live_proc is None:
+        return
+    while True:
+        line = _live_proc.stdout.readline()
+        if not line:
+            break
+        print(f"[live] {line.rstrip()}", flush=True)
+
+async def _live_monitor_loop():
+    """Monitor papertrade subprocess, restart if it exits."""
+    await asyncio.sleep(10)
+    _start_live_proc()
+    loop = asyncio.get_event_loop()
+    while True:
+        if _live_proc is not None and _live_proc.poll() is None:
+            await loop.run_in_executor(None, _drain_live_stdout)
+            code = _live_proc.returncode
+            print(f"[live] papertrade exited code={code}", flush=True)
+            _live_info["status"] = "stopped"
+            if code != 0:
+                _live_info["lastError"] = f"exit code {code}"
+        await asyncio.sleep(30)
+        if _proc is not None and _proc.poll() is None:
+            print("[live] training in progress, deferring restart", flush=True)
+            await asyncio.sleep(60)
+            continue
+        _start_live_proc()
+
 # ── App lifecycle ────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app):
     print("[lifespan] starting baseline loop", flush=True)
-    task = asyncio.create_task(_baseline_loop())
+    baseline_task = asyncio.create_task(_baseline_loop())
+    print("[lifespan] starting live monitor loop", flush=True)
+    live_task = asyncio.create_task(_live_monitor_loop())
     yield
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    for t in (baseline_task, live_task):
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+    if _live_proc is not None and _live_proc.poll() is None:
+        _live_proc.terminate()
+        try:
+            _live_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _live_proc.kill()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -279,13 +347,37 @@ async def get_fulltest():
 @app.get("/api/live")
 async def get_live():
     """Return current live papertrade state from live_state.json."""
-    p = ROOT / "live_state.json"
     try:
-        return json.loads(p.read_text())
-    except FileNotFoundError:
-        return {}
-    except Exception:
-        return {}
+        data = json.loads(LIVE_STATE_PATH.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+    data["process"] = _live_info
+    return data
+
+@app.post("/api/live/start")
+async def start_live():
+    """Manually start the papertrade subprocess."""
+    if _live_proc is not None and _live_proc.poll() is None:
+        raise HTTPException(409, "Papertrade already running")
+    if _proc is not None and _proc.poll() is None:
+        raise HTTPException(409, "Training in progress — cannot start papertrade")
+    _start_live_proc()
+    return {"status": "started", "pid": _live_info.get("pid")}
+
+@app.post("/api/live/stop")
+async def stop_live():
+    """Stop the papertrade subprocess."""
+    global _live_proc
+    if _live_proc is None or _live_proc.poll() is not None:
+        return {"status": "not running"}
+    _live_proc.terminate()
+    try:
+        _live_proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        _live_proc.kill()
+    _live_info["status"] = "stopped"
+    _live_proc = None
+    return {"status": "stopped"}
 
 @app.get("/{filename:path}.json")
 async def serve_root_json(filename: str):

@@ -273,10 +273,17 @@
   // ── Merge live state into window.GRAV ─────────────────────────────────────
   function mergeLive(live) {
     const G = window.GRAV;
-    if (!live || !G || !live.timestamp) return;
+    if (!live || !G) return;
 
-    G.live.lastRefresh = live.timestamp;
+    if (live.timestamp) {
+      G.live.lastRefresh = live.timestamp;
+    }
     G.live.nextRefresh = live.nextRefresh || G.live.nextRefresh;
+    G.live.cycle = live.cycle ?? G.live.cycle;
+
+    if (live.process) {
+      G.live.process = live.process;
+    }
 
     if (live.positions && live.positions.length >= 0) {
       G.live.positions = live.positions.map(p => ({
@@ -294,12 +301,16 @@
       }));
     }
 
+    if (live.signals && live.signals.length > 0) {
+      G.live.signals = live.signals;
+    }
+
     if (live.regime) {
       G.live.regime = {
         state:      live.regime.state,
         confidence: live.regime.confidence,
         duration:   live.regime.duration,
-        btc:        `${live.regime.state} ${live.regime.confidence}`,
+        btc:        `${live.regime.state} ${(live.regime.confidence * 100).toFixed(0)}%`,
         eth:        '',
       };
       G.live.router = {

@@ -114,7 +114,7 @@ static class PapertradeCommands
 
         var coins = Config.BacktestCoins;
 
-        const int RefreshSeconds = 14400;
+        const int RefreshSeconds = 3600;
 
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
@@ -498,12 +498,9 @@ static class PapertradeCommands
                 }
             }
 
-            for (int s = RefreshSeconds; s > 0; s--)
-            {
-                if (cts.Token.IsCancellationRequested) break;
-                Console.Write($"\r  Next refresh in {s / 3600}h {s % 3600 / 60}m {s % 60:00}s  ");
-                await Task.Delay(1000, cts.Token).ContinueWith(_ => { });
-            }
+            Console.WriteLine($"\n  Next refresh in {RefreshSeconds / 60}m");
+            try { await Task.Delay(RefreshSeconds * 1000, cts.Token); }
+            catch (TaskCanceledException) { }
         }
 
         Console.WriteLine("\n\n  Paper trade stopped.");

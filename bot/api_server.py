@@ -67,7 +67,8 @@ def _run_fulltest_sync() -> tuple[int, str]:
     try:
         proc = subprocess.Popen(
             ["dotnet", "run", "--", "fulltest"],
-            cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
         )
     except Exception as exc:
         print(f"[baseline] Popen failed: {exc}", flush=True)

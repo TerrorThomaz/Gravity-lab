@@ -114,7 +114,7 @@ static class PapertradeCommands
 
         var coins = Config.BacktestCoins;
 
-        const int RefreshSeconds = 3600;
+        const int RefreshSeconds = 900;
 
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };

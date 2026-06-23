@@ -1,0 +1,17 @@
+{
+  "timestamp": "2026-06-23T21:28:12.6575278Z",
+  "cycle": 0,
+  "positions": [],
+  "regime": {
+    "state": "Bear",
+    "confidence": 1,
+    "FadeShort": true,
+    "Grid": false,
+    "SwingLong": false,
+    "DipLong": false,
+    "FadeLong": false,
+    "sizeMult": 1
+  },
+  "openCount": 0,
+  "nextRefresh": "21:43 UTC"
+}

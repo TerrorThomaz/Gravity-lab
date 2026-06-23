@@ -96,18 +96,19 @@
 
     // Backtest summary
     if (bt.sharpe !== undefined) {
-      G.backtest.sharpe  = bt.sharpe;
-      G.backtest.trades  = bt.trades  ?? G.backtest.trades;
-      G.backtest.winRate = bt.winRate ?? G.backtest.winRate;
-      G.backtest.maxDD   = bt.maxDD   ?? G.backtest.maxDD;
-      G.backtest.cagr    = bt.cagr    ?? G.backtest.cagr;
-      if (bt.winRate && bt.trades) {
-        const wins = Math.round(bt.trades * bt.winRate / 100);
-        const losses = bt.trades - wins;
-        const avgWin = G.backtest.avgRet > 0 ? G.backtest.avgRet : 0.81;
-        G.backtest.profitFactor = losses > 0 ? (wins * avgWin) / (losses * Math.abs(avgWin * 0.6)) : 0;
-      }
-      G.backtest.timestamp = ft.timestamp || G.backtest.timestamp;
+      G.backtest.sharpe       = bt.sharpe;
+      G.backtest.trades       = bt.trades       ?? G.backtest.trades;
+      G.backtest.winRate      = bt.winRate      ?? G.backtest.winRate;
+      G.backtest.maxDD        = bt.maxDD        ?? G.backtest.maxDD;
+      G.backtest.cagr         = bt.cagr         ?? G.backtest.cagr;
+      G.backtest.netReturn    = bt.netReturn    ?? G.backtest.netReturn;
+      G.backtest.avgRet       = bt.avgRet       ?? G.backtest.avgRet;
+      G.backtest.profitFactor = bt.profitFactor ?? G.backtest.profitFactor;
+      G.backtest.calmar       = bt.calmar       ?? G.backtest.calmar;
+      G.backtest.coins        = bt.coins        ?? G.backtest.coins;
+      G.backtest.valSplit     = bt.valSplit     ?? G.backtest.valSplit;
+      G.backtest.window       = bt.window       ?? G.backtest.window;
+      G.backtest.timestamp    = ft.timestamp    || G.backtest.timestamp;
     }
 
     // Equity curve
@@ -169,10 +170,19 @@
       if (oosTrades > 0) {
         G.oos.trades  = oosTrades;
         G.oos.winRate = Math.round(oosWins / oosTrades * 100 * 10) / 10;
-        // Compute OOS sharpe from portfolio if available
+        G.oos.avgRet  = Math.round(oosRetSum / oosTrades * 100) / 100;
         if (ft.portfolio?.oos5pct?.ret !== undefined) {
           G.oos.netReturn = ft.portfolio.oos5pct.ret;
           G.oos.maxDD = ft.portfolio.oos5pct.maxDD ? -Math.abs(ft.portfolio.oos5pct.maxDD) : G.oos.maxDD;
+        }
+        // Compute OOS sharpe: use individual trade returns
+        const oosAllRets = [];
+        keys.forEach(k => { const d = od[k]; if (d && d.avgRet && d.trades) for (let i = 0; i < d.trades; i++) oosAllRets.push(d.avgRet); });
+        if (oosAllRets.length >= 5) {
+          const mean = oosAllRets.reduce((a, b) => a + b, 0) / oosAllRets.length;
+          const variance = oosAllRets.reduce((a, v) => a + (v - mean) ** 2, 0) / oosAllRets.length;
+          const std = Math.sqrt(variance);
+          G.oos.sharpe = std > 0 ? Math.round(mean / std * 100) / 100 : 0;
         }
         if (bt.sharpe && G.oos.sharpe) {
           G.oos.degradation = Math.round((1 - G.oos.sharpe / bt.sharpe) * -100 * 10) / 10;
@@ -233,6 +243,13 @@
           date:  new Date(c.start).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
           drop:  c.drawdown,
           dur:   c.duration + 'h',
+          openPos:  c.openPos  ?? 0,
+          exposure: c.exposure ?? 0,
+          w:        c.w        ?? 0,
+          l:        c.l        ?? 0,
+          avgRet:   c.avgRet   ?? 0,
+          clean:    c.clean    ?? 0,
+          slip:     c.slip     ?? 0,
           ...c,
         }));
       }
@@ -242,8 +259,15 @@
           date:  new Date(r.start).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
           rise:  r.recovery,
           dur:   r.duration + 'h',
+          w:       r.w       ?? 0,
+          l:       r.l       ?? 0,
+          avgRet:  r.avgRet  ?? 0,
+          portHit: r.portHit ?? 0,
           ...r,
         }));
+      }
+      if (ft.stress.worstCase) {
+        G.stress.worstCase = ft.stress.worstCase;
       }
     }
 

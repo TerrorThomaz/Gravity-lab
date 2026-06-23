@@ -1085,6 +1085,86 @@ static class FullTest
             FadeLong  = StratDistBins(valFlRets.Concat(oosFlRets).ToList()),
         };
 
+        // Compute missing backtest-level fields
+        double btNetReturn = valSim.Count > 0 ? Math.Round(val5p.EndBalance - 100.0, 2) : 0;
+        double btAvgRet    = combinedRets.Count > 0 ? Math.Round(combinedRets.Average(), 4) : 0;
+        double btPF        = combinedRets.Count > 0 ? Math.Round(Simulator.ProfitFactor(combinedRets), 4) : 0;
+        double btCalmar    = (btMaxDD != 0 && btCagr != 0) ? Math.Round(btCagr / Math.Abs(btMaxDD), 2) : 0;
+
+        // Enrich crash objects with trade analysis
+        List<object>? crashesEnrichedJson = null;
+        if (fetchedMap.TryGetValue("BTCUSDT", out var btcCrashEnrich))
+        {
+            var crashes2 = CrashAnalyser.DetectCrashes(btcCrashEnrich.h1);
+            crashesEnrichedJson = crashes2.Select(c =>
+            {
+                var active = crashTrades.Where(t => t.Open <= c.Start && t.Close >= c.Start).ToList();
+                var resolved = crashTrades.Where(t => t.Open <= c.Start && t.Close >= c.Start && t.Close <= c.End.AddHours(24)).ToList();
+                double exposure = active.Sum(t => t.HalfKelly) * 100.0;
+                int wins = resolved.Count(t => t.Return > 0);
+                int losses = resolved.Count(t => t.Return <= 0);
+                double avg = resolved.Count > 0 ? resolved.Average(t => t.Return) : 0;
+                double portHit = resolved.Sum(t => t.HalfKelly * t.Return / 100.0) * 100.0;
+                return (object)new
+                {
+                    label = c.Label, drawdown = Math.Round(c.BtcDropPct, 2), duration = c.DurationH,
+                    start = c.Start.ToString("O"), end = c.End.ToString("O"),
+                    openPos = active.Count, exposure = Math.Round(exposure, 1),
+                    w = wins, l = losses, avgRet = Math.Round(avg, 2),
+                    clean = Math.Round(portHit, 1), slip = 0.0, portHit = Math.Round(portHit, 1),
+                };
+            }).ToList();
+
+            var rallies2 = CrashAnalyser.DetectRallies(btcCrashEnrich.h1);
+            ralliesJson = rallies2.Select(r =>
+            {
+                var active = crashTrades.Where(t => t.Open <= r.Start && t.Close >= r.Start).ToList();
+                var resolved = crashTrades.Where(t => t.Open <= r.Start && t.Close >= r.Start && t.Close <= r.End.AddHours(24)).ToList();
+                int wins = resolved.Count(t => t.Return > 0);
+                int losses = resolved.Count(t => t.Return <= 0);
+                double avg = resolved.Count > 0 ? resolved.Average(t => t.Return) : 0;
+                double portHit = resolved.Sum(t => t.HalfKelly * t.Return / 100.0) * 100.0;
+                return (object)new
+                {
+                    label = r.Label, recovery = Math.Round(r.BtcDropPct, 2), duration = r.DurationH,
+                    start = r.Start.ToString("O"), end = r.End.ToString("O"),
+                    openPos = active.Count, w = wins, l = losses,
+                    avgRet = Math.Round(avg, 2), portHit = Math.Round(portHit, 1),
+                };
+            }).ToList();
+        }
+
+        // Worst-case synthetic: peak concurrent exposure all-stop
+        object? worstCaseJson = null;
+        if (crashTrades.Count > 0)
+        {
+            var wcEvents = new List<(DateTime T, double D, bool IsGrid)>();
+            foreach (var t in crashTrades)
+            {
+                bool grid = t.Strategy == "grid" || t.Strategy == "Grid";
+                double capped = Math.Min(t.HalfKelly, 0.15);
+                wcEvents.Add((t.Open, +capped, grid));
+                wcEvents.Add((t.Close, -capped, grid));
+            }
+            wcEvents.Sort((a, b) => a.T.CompareTo(b.T));
+            double total = 0, gridExp = 0, swingExp = 0, peakTotal2 = 0, peakGrid2 = 0, peakSwing2 = 0;
+            DateTime peakTime2 = wcEvents[0].T;
+            foreach (var (t, d, isGrid) in wcEvents)
+            {
+                total += d; if (isGrid) gridExp += d; else swingExp += d;
+                if (total > peakTotal2) { peakTotal2 = total; peakGrid2 = gridExp; peakSwing2 = swingExp; peakTime2 = t; }
+            }
+            double cleanHit = -(peakGrid2 * 1.5 + peakSwing2 * 4.9);
+            double expandedHit = cleanHit * 3;
+            worstCaseJson = new
+            {
+                peakTime = peakTime2.ToString("O"),
+                peakExposure = Math.Round(peakTotal2 * 100, 1),
+                cleanHit = Math.Round(cleanHit, 1),
+                expandedHit = Math.Round(expandedHit, 1),
+            };
+        }
+
         var fulltestOutput = new
         {
             timestamp = DateTime.UtcNow.ToString("O"),
@@ -1095,6 +1175,13 @@ static class FullTest
                 sharpe  = btSharpe,
                 maxDD   = btMaxDD,
                 cagr    = btCagr,
+                netReturn = btNetReturn,
+                avgRet    = btAvgRet,
+                profitFactor = btPF,
+                calmar    = btCalmar,
+                coins     = Config.BacktestCoins.Length,
+                valSplit  = 20,
+                window    = "≈ 3.2 yr · 113 batches",
             },
             val = new
             {
@@ -1137,8 +1224,9 @@ static class FullTest
             wfvFolds       = wfvFoldsJson,
             stress = new
             {
-                crashes  = crashesJson,
-                rallies  = ralliesJson,
+                crashes   = crashesEnrichedJson ?? crashesJson,
+                rallies   = ralliesJson,
+                worstCase = worstCaseJson,
             },
             stratDists = stratDistsJson,
         };

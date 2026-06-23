@@ -245,10 +245,11 @@ table{ border-collapse:collapse; width:100%; }
 <script type="text/babel" src="charts.jsx"></script>
 <script type="text/babel" src="terminal-app.jsx"></script>
 <script type="text/babel">
-  window.GravStore.subscribe(() => {});
+  const root = ReactDOM.createRoot(document.getElementById("root"));
+  function renderApp() { root.render(React.createElement(window.TerminalApp)); }
+  window.GravStore.subscribe(renderApp);
   window.GravStore.load();
-  ReactDOM.createRoot(document.getElementById("root"))
-    .render(React.createElement(window.TerminalApp));
+  renderApp();
 </script>
 </body>
 </html>

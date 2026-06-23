@@ -263,7 +263,29 @@ from fastapi.responses import FileResponse
 SAFE_ROOT_FILES = {
     "backtest_baseline.json", "backtest_results.json", "fulltest_results.json",
     "livetrain_state.json", "live_journal.json", "training_progress.json",
+    "live_state.json",
 }
+
+@app.get("/api/fulltest")
+async def get_fulltest():
+    """Return full fulltest_results.json for frontend visualisation."""
+    try:
+        return json.loads(FULLTEST_PATH.read_text())
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+
+@app.get("/api/live")
+async def get_live():
+    """Return current live papertrade state from live_state.json."""
+    p = ROOT / "live_state.json"
+    try:
+        return json.loads(p.read_text())
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
 
 @app.get("/{filename:path}.json")
 async def serve_root_json(filename: str):

@@ -815,6 +815,55 @@ static class FullTest
                 maxDD = Math.Round(p.MaxDrawdownPct, 2),
             };
 
+        // Per-strategy detailed stats for the frontend
+        object FtStratDetailed(string name, List<double> r, int candleCount)
+        {
+            if (r.Count == 0)
+                return new { trades = 0, winRate = 0.0, avgRet = 0.0, sharpe = 0.0, pf = 0.0, ret = 0.0, maxDD = 0.0, kelly = 0.0, halfKelly = 0.0, dsr = 0.0, sparkline = Array.Empty<double>() };
+
+            var tt  = StrategyStats.OneSampleT(r);
+            double sh  = r.Count >= 5 ? Math.Round(Simulator.SharpeRatio(r, candleCount), 4) : 0;
+            double pf  = Math.Round(Simulator.ProfitFactor(r), 4);
+            double wr  = Math.Round((double)r.Count(x => x > 0) / r.Count * 100, 2);
+            double totalRet = Math.Round(r.Sum(), 4);
+            var (kelly, halfKelly) = StrategyStats.KellyFraction(r);
+            double dsr = r.Count >= 10 ? Math.Round(StrategyStats.DeflatedSharpe(r, candleCount), 4) : 0;
+
+            // MaxDD from cumulative equity
+            double cumBal = 100.0, cumPeak = 100.0, cumMaxDD = 0;
+            foreach (var ret in r)
+            {
+                cumBal += cumBal * ret / 100.0;
+                if (cumBal > cumPeak) cumPeak = cumBal;
+                double dd = (cumPeak - cumBal) / cumPeak * 100.0;
+                if (dd > cumMaxDD) cumMaxDD = dd;
+            }
+
+            // Sparkline: mini equity curve (cumulative balance), sampled to ~50 points
+            var eqFull = new List<double>(r.Count + 1);
+            double sBal = 100.0;
+            eqFull.Add(sBal);
+            foreach (var ret in r) { sBal += sBal * ret / 100.0; eqFull.Add(sBal); }
+            int sparkStep = Math.Max(1, eqFull.Count / 50);
+            var sparkline = eqFull.Where((_, i) => i % sparkStep == 0 || i == eqFull.Count - 1)
+                .Select(v => Math.Round(v, 2)).ToArray();
+
+            return new
+            {
+                trades    = r.Count,
+                winRate   = wr,
+                avgRet    = Math.Round(r.Average(), 4),
+                sharpe    = sh,
+                pf        = pf,
+                ret       = totalRet,
+                maxDD     = Math.Round(cumMaxDD, 2),
+                kelly     = Math.Round(kelly, 4),
+                halfKelly = Math.Round(halfKelly, 4),
+                dsr       = dsr,
+                sparkline = sparkline,
+            };
+        }
+
         // Portfolio-level aggregate for the backtest object
         var allValRets = valAll.Select(t => t.Return).ToList();
         var allOosRets = oosAll.Select(t => t.Return).ToList();
@@ -832,6 +881,209 @@ static class FullTest
             double valRet  = (val5p.EndBalance - 100.0) / 100.0;
             btCagr = valDays > 0 ? Math.Round((Math.Pow(1 + valRet, 365.0 / valDays) - 1) * 100, 2) : 0;
         }
+
+        // ── 1. Equity curve (val 5%cap) + BTC benchmark ──────────────────────
+        var (ecResult, ecDD, ecCurve) = valSim.Count > 0
+            ? Simulator.SimulateExposureCappedWithCurve(valSim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05)
+            : (default!, null, new List<(DateTime, double)>());
+
+        // Sample equity curve to max ~500 points
+        static List<object> SampleCurve(List<(DateTime Time, double Balance)> curve, int maxPts = 500)
+        {
+            if (curve.Count == 0) return new List<object>();
+            int step = Math.Max(1, curve.Count / maxPts);
+            return curve.Where((_, i) => i % step == 0 || i == curve.Count - 1)
+                .Select(p => (object)new { t = p.Time.ToString("O"), v = Math.Round(p.Balance, 2) }).ToList();
+        }
+        var equityCurveJson = SampleCurve(ecCurve);
+
+        // BTC buy-and-hold benchmark normalized to start at 100
+        var benchmarkCurveJson = new List<object>();
+        if (fetchedMap.TryGetValue("BTCUSDT", out var btcBench) && ecCurve.Count > 0)
+        {
+            var btcH1 = btcBench.h1;
+            var ecStart = ecCurve[0].Time;
+            var ecEnd   = ecCurve[^1].Time;
+            var btcWindow = btcH1.Where(c => c.Time >= ecStart && c.Time <= ecEnd).ToArray();
+            if (btcWindow.Length > 0)
+            {
+                double btcBase = btcWindow[0].Close;
+                int btcStep = Math.Max(1, btcWindow.Length / 500);
+                benchmarkCurveJson = btcWindow
+                    .Where((_, i) => i % btcStep == 0 || i == btcWindow.Length - 1)
+                    .Select(c => (object)new { t = c.Time.ToString("O"), v = Math.Round(c.Close / btcBase * 100, 2) })
+                    .ToList();
+            }
+        }
+
+        // ── 2. Monthly returns (val+oos combined) ────────────────────────────
+        var allTrades = valAll.Concat(oosAll).OrderBy(t => t.Time).ToList();
+        var monthlyReturnsJson = allTrades
+            .GroupBy(t => t.Time.ToString("yyyy-MM"))
+            .OrderBy(g => g.Key)
+            .Select(g => (object)new { month = g.Key, ret = Math.Round(g.Sum(t => t.Return), 2) })
+            .ToList();
+
+        // ── 3. Per-strategy detailed stats ───────────────────────────────────
+        var valDetailed = new
+        {
+            FadeShort = FtStratDetailed("FadeShort", valSwingRets, valCandleCount),
+            Grid      = FtStratDetailed("Grid",      valGridRets,  valCandleCount),
+            DipLong   = FtStratDetailed("DipLong",   valDlRets,    valCandleCount),
+            SwingLong = FtStratDetailed("SwingLong", valSlRets,    valCandleCount),
+            FadeLong  = FtStratDetailed("FadeLong",  valFlRets,    valCandleCount),
+        };
+        var oosDetailed = new
+        {
+            FadeShort = FtStratDetailed("FadeShort", oosSwingRets, oosCandleCount),
+            Grid      = FtStratDetailed("Grid",      oosGridRets,  oosCandleCount),
+            DipLong   = FtStratDetailed("DipLong",   oosDlRets,    oosCandleCount),
+            SwingLong = FtStratDetailed("SwingLong", oosSlRets,    oosCandleCount),
+            FadeLong  = FtStratDetailed("FadeLong",  oosFlRets,    oosCandleCount),
+        };
+
+        // ── 4. Statistical tests ─────────────────────────────────────────────
+        object? statsJson = null;
+        if (combinedRets.Count >= 10)
+        {
+            var stTt   = StrategyStats.OneSampleT(combinedRets);
+            var stBoot = StrategyStats.Bootstrap(combinedRets);
+            var stDist = StrategyStats.Distribution(combinedRets);
+            var (stKelly, stHalfKelly) = StrategyStats.KellyFraction(combinedRets);
+            double stDsr = StrategyStats.DeflatedSharpe(combinedRets, combinedVCC);
+            int nTrials = 1000;
+            var (dsrFull, _, eMaxSr, srHat) = StatisticalTests.DeflatedSharpeRatio(combinedRets, nTrials);
+
+            // VC analysis
+            int vcD = 15; // FadeShort genes as representative
+            var (vcRatio, vcVerdict) = ((double)combinedRets.Count / vcD, combinedRets.Count / (double)vcD < 5 ? "severely undersampled" : combinedRets.Count / (double)vcD < 10 ? "borderline" : combinedRets.Count / (double)vcD < 20 ? "ok" : "good");
+            double hoeffding = combinedRets.Count > 0
+                ? (combinedRets.Max() - combinedRets.Min()) * Math.Sqrt(Math.Log(2.0 / 0.05) / (2.0 * combinedRets.Count))
+                : 0;
+
+            statsJson = new
+            {
+                tTest = new { mean = Math.Round(stTt.Mean, 4), se = Math.Round(stTt.StdErr, 4), t = Math.Round(stTt.T, 4), p = Math.Round(stTt.PValue, 6), sig = stTt.Sig95 },
+                boot  = new { mean = Math.Round(stBoot.Mean, 4), lo95 = Math.Round(stBoot.Lo95, 4), hi95 = Math.Round(stBoot.Hi95, 4), probPos = Math.Round(stBoot.ProbPositive, 4) },
+                dist  = new { skew = Math.Round(stDist.Skewness, 4), exKurt = Math.Round(stDist.ExKurtosis, 4), cvar5 = Math.Round(stDist.CVaR5, 4), tailRatio = Math.Round(stDist.TailRatio, 4) },
+                kelly = new { full = Math.Round(stKelly, 4), half = Math.Round(stHalfKelly, 4), cap = 0.05 },
+                dsr   = Math.Round(stDsr, 4),
+                nTrials = nTrials,
+                vc    = new { d = vcD, ratio = Math.Round(vcRatio, 1), verdict = vcVerdict },
+                hoeffding = Math.Round(hoeffding, 4),
+            };
+        }
+
+        // ── 5. Bootstrap histogram bins ──────────────────────────────────────
+        List<object>? bootBinsJson = null;
+        if (combinedRets.Count >= 10)
+        {
+            // Re-run bootstrap to get samples for histogram
+            var arr = combinedRets.ToArray();
+            var rng2 = new Random(42);
+            int nBoot = 5000;
+            var bootMeans = new double[nBoot];
+            for (int i = 0; i < nBoot; i++)
+            {
+                double s = 0;
+                for (int j = 0; j < arr.Length; j++)
+                    s += arr[rng2.Next(arr.Length)];
+                bootMeans[i] = s / arr.Length;
+            }
+            Array.Sort(bootMeans);
+
+            // Bin into ~30 bins
+            int numBins = 30;
+            double bMin = bootMeans[0], bMax = bootMeans[^1];
+            double binW = (bMax - bMin) / numBins;
+            if (binW < 1e-12) binW = 1;
+            bootBinsJson = new List<object>();
+            for (int i = 0; i < numBins; i++)
+            {
+                double lo = bMin + i * binW;
+                double hi = lo + binW;
+                int cnt = bootMeans.Count(m => m >= lo && (i == numBins - 1 ? m <= hi : m < hi));
+                bootBinsJson.Add(new { x = Math.Round(lo + binW / 2, 4), y = cnt });
+            }
+        }
+
+        // ── 6. WFV fold scores (not available — fulltest uses time-split, not GA WFV) ──
+        // GA fold scores are computed during training, not during fulltest.
+        // Provide per-year breakdown as the closest equivalent.
+        var wfvFoldsJson = new Dictionary<string, List<double>>();
+        // Use year-by-year val returns as fold proxies
+        foreach (var (stratName, stratKey) in new[]
+        {
+            ("FadeShort", "swing"), ("Grid", "grid"), ("DipLong", "diplong"),
+            ("SwingLong", "swing_long"), ("FadeLong", "fadelong"),
+        })
+        {
+            var stratTrades = valAll.Where(t => t.Strategy == stratKey).ToList();
+            if (stratTrades.Count == 0) { wfvFoldsJson[stratName] = new List<double>(); continue; }
+            var years = stratTrades.Select(t => t.Time.Year).Distinct().OrderBy(y => y).ToList();
+            wfvFoldsJson[stratName] = years.Select(yr =>
+                Math.Round(stratTrades.Where(t => t.Time.Year == yr).Sum(t => t.Return), 2)
+            ).ToList();
+        }
+
+        // ── 7. Stress/crash data ─────────────────────────────────────────────
+        List<object>? crashesJson = null;
+        List<object>? ralliesJson = null;
+        if (fetchedMap.TryGetValue("BTCUSDT", out var btcStress))
+        {
+            var crashes = CrashAnalyser.DetectCrashes(btcStress.h1);
+            var rallies = CrashAnalyser.DetectRallies(btcStress.h1);
+
+            crashesJson = crashes.Select(c => (object)new
+            {
+                label    = c.Label,
+                drawdown = Math.Round(c.BtcDropPct, 2),
+                duration = c.DurationH,
+                start    = c.Start.ToString("O"),
+                end      = c.End.ToString("O"),
+            }).ToList();
+
+            ralliesJson = rallies.Select(r => (object)new
+            {
+                label    = r.Label,
+                recovery = Math.Round(r.BtcDropPct, 2),
+                duration = r.DurationH,
+                start    = r.Start.ToString("O"),
+                end      = r.End.ToString("O"),
+            }).ToList();
+        }
+
+        // ── 8. Per-strategy return distributions ─────────────────────────────
+        static object StratDistBins(List<double> rets)
+        {
+            if (rets.Count < 5) return new { bins = Array.Empty<object>(), cvar5 = 0.0 };
+            var sorted = rets.OrderBy(r => r).ToList();
+            int tail5 = Math.Max(1, (int)(0.05 * rets.Count));
+            double cvar = sorted.Take(tail5).Average();
+
+            int numBins = Math.Min(30, Math.Max(5, rets.Count / 10));
+            double rMin = sorted[0], rMax = sorted[^1];
+            double binW = (rMax - rMin) / numBins;
+            if (binW < 1e-12) binW = 1;
+            var bins = new List<object>();
+            for (int i = 0; i < numBins; i++)
+            {
+                double lo = rMin + i * binW;
+                double hi = lo + binW;
+                int cnt = sorted.Count(v => v >= lo && (i == numBins - 1 ? v <= hi : v < hi));
+                bins.Add(new { x = Math.Round(lo + binW / 2, 4), y = cnt });
+            }
+            return new { bins, cvar5 = Math.Round(cvar, 4) };
+        }
+
+        var stratDistsJson = new
+        {
+            FadeShort = StratDistBins(valSwingRets.Concat(oosSwingRets).ToList()),
+            Grid      = StratDistBins(valGridRets.Concat(oosGridRets).ToList()),
+            DipLong   = StratDistBins(valDlRets.Concat(oosDlRets).ToList()),
+            SwingLong = StratDistBins(valSlRets.Concat(oosSlRets).ToList()),
+            FadeLong  = StratDistBins(valFlRets.Concat(oosFlRets).ToList()),
+        };
 
         var fulltestOutput = new
         {
@@ -874,6 +1126,21 @@ static class FullTest
                 oosEdge5pct   = Math.Round(or5R - or5NR, 2),
                 oosEdgeKelly  = Math.Round(orKR - orKNR, 2),
             },
+            // ── New fields for frontend visualization ──
+            equityCurve    = equityCurveJson,
+            benchmarkCurve = benchmarkCurveJson,
+            monthlyReturns = monthlyReturnsJson,
+            valDetailed    = valDetailed,
+            oosDetailed    = oosDetailed,
+            stats          = statsJson,
+            bootBins       = bootBinsJson,
+            wfvFolds       = wfvFoldsJson,
+            stress = new
+            {
+                crashes  = crashesJson,
+                rallies  = ralliesJson,
+            },
+            stratDists = stratDistsJson,
         };
         File.WriteAllText("fulltest_results.json",
             System.Text.Json.JsonSerializer.Serialize(fulltestOutput,

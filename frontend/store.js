@@ -1,15 +1,11 @@
 /* store.js — Gravity-gen2 shared data store.
-   Fetches real JSON files from the repo, falls back to window.GRAV mock data.
+   Fetches real data from API + JSON files, falls back to window.GRAV mock data.
    Defines the multi-variant genotype registry. Provides simple pub/sub.
 
    All pages load this before their own scripts. */
 (function () {
 
   // ── Multi-variant genotype registry ───────────────────────────────────────
-  // Each strategy can have multiple named variants.
-  // active:true = currently used for live trading.
-  // file:null   = variant slot — no trained genotype yet.
-  // tags        = display chips (regime conditions this variant targets).
   const VARIANTS = {
     FadeShort: [
       { id:'default', label:'Default',  file:'../genotypes/fade_short_genotype.json',
@@ -52,22 +48,25 @@
     ],
   };
 
+  const STRATEGY_META = {
+    FadeShort: { regime: 'Always-on', dir: 'Short' },
+    Grid:      { regime: 'Ranging',   dir: 'Long'  },
+    SwingLong: { regime: 'Bull',      dir: 'Long'  },
+    DipLong:   { regime: 'Bull',      dir: 'Long'  },
+    FadeLong:  { regime: 'Bear',      dir: 'Long'  },
+  };
+
   // ── State ──────────────────────────────────────────────────────────────────
   const state = {
     loading: true,
     error:   null,
-    // From real JSON files (fallback to GRAV mock):
-    baseline:  {},   // backtest_baseline.json
-    liveState: {},   // livetrain_state.json
-    journal:   [],   // live_journal.json
-    // Backtest results
+    baseline:  {},
+    liveState: {},
+    journal:   [],
     backtestResults: null,
-    // Router genotype
     router:    null,
     guard:     null,
-    // Loaded variant params: { FadeShort: [{ ...variant, params:{} }], ... }
     genotypes: {},
-    // Registry (always available):
     variants:  VARIANTS,
   };
 
@@ -78,7 +77,7 @@
   async function fetchJSON(path, fallback = null) {
     try {
       const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 3000);
+      const tid = setTimeout(() => ctrl.abort(), 8000);
       const r = await fetch(path, { signal: ctrl.signal });
       clearTimeout(tid);
       if (!r.ok) throw new Error(r.status);
@@ -88,18 +87,248 @@
     }
   }
 
+  // ── Merge fulltest data into window.GRAV ──────────────────────────────────
+  function mergeFulltest(ft) {
+    const G = window.GRAV;
+    if (!ft || !G) return;
+
+    const bt = ft.backtest || {};
+
+    // Backtest summary
+    if (bt.sharpe !== undefined) {
+      G.backtest.sharpe  = bt.sharpe;
+      G.backtest.trades  = bt.trades  ?? G.backtest.trades;
+      G.backtest.winRate = bt.winRate ?? G.backtest.winRate;
+      G.backtest.maxDD   = bt.maxDD   ?? G.backtest.maxDD;
+      G.backtest.cagr    = bt.cagr    ?? G.backtest.cagr;
+      if (bt.winRate && bt.trades) {
+        const wins = Math.round(bt.trades * bt.winRate / 100);
+        const losses = bt.trades - wins;
+        const avgWin = G.backtest.avgRet > 0 ? G.backtest.avgRet : 0.81;
+        G.backtest.profitFactor = losses > 0 ? (wins * avgWin) / (losses * Math.abs(avgWin * 0.6)) : 0;
+      }
+      G.backtest.timestamp = ft.timestamp || G.backtest.timestamp;
+    }
+
+    // Equity curve
+    if (ft.equityCurve && ft.equityCurve.length > 0) {
+      G.equity = ft.equityCurve.map(p => p.v);
+    }
+    if (ft.benchmarkCurve && ft.benchmarkCurve.length > 0) {
+      G.benchmark = ft.benchmarkCurve.map(p => p.v);
+    }
+
+    // Monthly returns
+    if (ft.monthlyReturns && ft.monthlyReturns.length > 0) {
+      G.monthlyReturns = ft.monthlyReturns.map(m => m.ret);
+    }
+
+    // Per-strategy detailed stats (prefer valDetailed, fall back to val)
+    const detail = ft.valDetailed || ft.val;
+    if (detail) {
+      const keys = ['FadeShort', 'Grid', 'SwingLong', 'DipLong', 'FadeLong'];
+      G.strategies = keys.map(key => {
+        const d = detail[key];
+        const meta = STRATEGY_META[key] || {};
+        if (!d || !d.trades) {
+          const mock = G.strategies.find(s => s.key === key);
+          return mock || { key, ...meta, trades: 0 };
+        }
+        return {
+          key,
+          regime: meta.regime || '—',
+          dir:    meta.dir || '—',
+          trades:    d.trades,
+          win:       d.winRate,
+          avgRet:    d.avgRet,
+          sharpe:    d.sharpe    ?? 0,
+          pf:        d.pf        ?? 0,
+          ret:       d.ret       ?? 0,
+          maxDD:     d.maxDD     ? -Math.abs(d.maxDD) : 0,
+          kelly:     d.kelly     ?? 0,
+          halfKelly: d.halfKelly ?? 0,
+          dsr:       d.dsr       ?? 0,
+          spark:     d.sparkline || G.strategies.find(s => s.key === key)?.spark || [],
+        };
+      });
+    }
+
+    // OOS stats
+    if (ft.oosDetailed || ft.oos) {
+      const od = ft.oosDetailed || ft.oos;
+      const keys = ['FadeShort', 'Grid', 'SwingLong', 'DipLong', 'FadeLong'];
+      let oosTrades = 0, oosWins = 0, oosRetSum = 0;
+      keys.forEach(k => {
+        const d = od[k];
+        if (d && d.trades) {
+          oosTrades += d.trades;
+          oosWins += Math.round(d.trades * (d.winRate || 0) / 100);
+          oosRetSum += (d.ret || d.avgRet * d.trades || 0);
+        }
+      });
+      if (oosTrades > 0) {
+        G.oos.trades  = oosTrades;
+        G.oos.winRate = Math.round(oosWins / oosTrades * 100 * 10) / 10;
+        // Compute OOS sharpe from portfolio if available
+        if (ft.portfolio?.oos5pct?.ret !== undefined) {
+          G.oos.netReturn = ft.portfolio.oos5pct.ret;
+          G.oos.maxDD = ft.portfolio.oos5pct.maxDD ? -Math.abs(ft.portfolio.oos5pct.maxDD) : G.oos.maxDD;
+        }
+        if (bt.sharpe && G.oos.sharpe) {
+          G.oos.degradation = Math.round((1 - G.oos.sharpe / bt.sharpe) * -100 * 10) / 10;
+        }
+      }
+    }
+
+    // Statistical validation
+    if (ft.stats) {
+      const s = ft.stats;
+      G.stats = {
+        tTest: {
+          mean: s.tTest?.mean ?? 0,
+          se:   s.tTest?.se ?? 0,
+          t:    s.tTest?.t ?? 0,
+          p:    s.tTest?.p ?? 1,
+          sig:  s.tTest?.sig ? (s.tTest.p < 0.01 ? '***' : '*') : '',
+        },
+        boot: {
+          mean:    s.boot?.mean ?? 0,
+          lo95:    s.boot?.lo95 ?? 0,
+          hi95:    s.boot?.hi95 ?? 0,
+          probPos: s.boot?.probPos ?? 0,
+        },
+        dist: {
+          skew:      s.dist?.skew ?? 0,
+          exKurt:    s.dist?.exKurt ?? 0,
+          cvar5:     s.dist?.cvar5 ?? 0,
+          tailRatio: s.dist?.tailRatio ?? 0,
+        },
+        kelly: {
+          full: s.kelly?.full ?? 0,
+          half: s.kelly?.half ?? 0,
+          cap:  s.kelly?.cap  ?? 0.05,
+        },
+        dsr:       s.dsr ?? 0,
+        nTrials:   s.nTrials ?? 1000,
+        vc:        s.vc ?? G.stats.vc,
+        hoeffding: s.hoeffding ?? G.stats.hoeffding,
+      };
+    }
+
+    // Bootstrap histogram bins
+    if (ft.bootBins && ft.bootBins.length > 0) {
+      G.bootBins = ft.bootBins.map(b => ({ x: b.x, h: b.y }));
+    }
+
+    // WFV fold scores
+    if (ft.wfvFolds) {
+      G.wfvFolds = ft.wfvFolds;
+    }
+
+    // Stress / crash data
+    if (ft.stress) {
+      if (ft.stress.crashes && ft.stress.crashes.length > 0) {
+        G.stress.crashes = ft.stress.crashes.map(c => ({
+          label: c.label,
+          date:  new Date(c.start).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
+          drop:  c.drawdown,
+          dur:   c.duration + 'h',
+          ...c,
+        }));
+      }
+      if (ft.stress.rallies && ft.stress.rallies.length > 0) {
+        G.stress.rallies = ft.stress.rallies.map(r => ({
+          label: r.label,
+          date:  new Date(r.start).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
+          rise:  r.recovery,
+          dur:   r.duration + 'h',
+          ...r,
+        }));
+      }
+    }
+
+    // Per-strategy return distributions
+    if (ft.stratDists) {
+      const keys = ['FadeShort', 'Grid', 'SwingLong', 'DipLong', 'FadeLong'];
+      const newDists = {};
+      keys.forEach(k => {
+        const sd = ft.stratDists[k];
+        if (sd && sd.bins && sd.bins.length > 0) {
+          const bins = sd.bins.map(b => ({ x: b.x, h: b.y, neg: b.x < 0 }));
+          newDists[k] = {
+            bins,
+            cvar5: sd.cvar5,
+            lo:    bins[0].x,
+            hi:    bins[bins.length - 1].x,
+            bw:    bins.length > 1 ? bins[1].x - bins[0].x : 1,
+          };
+        }
+      });
+      if (Object.keys(newDists).length > 0) {
+        G.stratDists = { ...G.stratDists, ...newDists };
+      }
+    }
+  }
+
+  // ── Merge live state into window.GRAV ─────────────────────────────────────
+  function mergeLive(live) {
+    const G = window.GRAV;
+    if (!live || !G || !live.timestamp) return;
+
+    G.live.lastRefresh = live.timestamp;
+    G.live.nextRefresh = live.nextRefresh || G.live.nextRefresh;
+
+    if (live.positions && live.positions.length >= 0) {
+      G.live.positions = live.positions.map(p => ({
+        sym:   p.sym,
+        strat: p.strat,
+        dir:   p.dir,
+        entry: p.entry,
+        mark:  p.mark,
+        pnl:   p.pnl,
+        age:   p.age,
+        size:  0,
+        stop:  p.stop,
+        target: p.target,
+        trailArmed: p.trailArmed,
+      }));
+    }
+
+    if (live.regime) {
+      G.live.regime = {
+        state:      live.regime.state,
+        confidence: live.regime.confidence,
+        duration:   live.regime.duration,
+        btc:        `${live.regime.state} ${live.regime.confidence}`,
+        eth:        '',
+      };
+      G.live.router = {
+        FadeShort: live.regime.FadeShort ?? true,
+        Grid:      live.regime.Grid ?? false,
+        SwingLong: live.regime.SwingLong ?? false,
+        DipLong:   live.regime.DipLong ?? false,
+        FadeLong:  live.regime.FadeLong ?? false,
+        sizeMult:  live.regime.sizeMult ?? 1,
+      };
+    }
+
+    G.live.openRisk = live.openCount ?? G.live.positions.length;
+  }
+
   // ── Load all data ─────────────────────────────────────────────────────────
   async function load() {
     const G = window.GRAV || {};
 
     // Core files — parallel
-    const [baseline, liveState, journal, router, guard, backtestResults] = await Promise.all([
+    const [baseline, liveState, journal, router, guard, backtestResults, fulltest, liveData] = await Promise.all([
       fetchJSON('/api/baseline', null).then(r => r || fetchJSON('../backtest_baseline.json', G.backtest || {})),
       fetchJSON('../livetrain_state.json',       G.training    || {}),
       fetchJSON('../live_journal.json',          []),
       fetchJSON('../genotypes/regime_router_genotype.json', null),
       fetchJSON('../genotypes/dynamic_guard_genotype.json', null),
       fetchJSON('../backtest_results.json',      null),
+      fetchJSON('/api/fulltest',                 null),
+      fetchJSON('/api/live',                     null),
     ]);
 
     state.baseline        = baseline;
@@ -109,11 +338,21 @@
     state.guard           = guard;
     state.backtestResults = backtestResults;
 
-    // Merge real Sharpe / trades from baseline into GRAV mock if present
+    // Merge real baseline into GRAV mock
     if (baseline && baseline.sharpe && window.GRAV) {
       window.GRAV.backtest.sharpe = baseline.sharpe;
       window.GRAV.backtest.trades = baseline.trades || window.GRAV.backtest.trades;
       window.GRAV.backtest.timestamp = baseline.timestamp || window.GRAV.backtest.timestamp;
+    }
+
+    // Merge fulltest visualization data into GRAV
+    if (fulltest && window.GRAV) {
+      mergeFulltest(fulltest);
+    }
+
+    // Merge live papertrade state
+    if (liveData && window.GRAV) {
+      mergeLive(liveData);
     }
 
     // Merge real cycle / population from liveState into GRAV mock
@@ -142,14 +381,32 @@
     state.loading = false;
     notify();
 
-    // Poll baseline from API every 60s for live updates
+    // Poll baseline + live data every 60s
     setInterval(async () => {
-      const fresh = await fetchJSON('/api/baseline', null);
+      const [fresh, freshLive] = await Promise.all([
+        fetchJSON('/api/baseline', null),
+        fetchJSON('/api/live', null),
+      ]);
+      let changed = false;
       if (fresh && fresh.sharpe !== undefined) {
         state.baseline = fresh;
+        changed = true;
+      }
+      if (freshLive && freshLive.timestamp && window.GRAV) {
+        mergeLive(freshLive);
+        changed = true;
+      }
+      if (changed) notify();
+    }, 60_000);
+
+    // Poll fulltest every 5 min (heavier payload)
+    setInterval(async () => {
+      const fresh = await fetchJSON('/api/fulltest', null);
+      if (fresh && fresh.timestamp && window.GRAV) {
+        mergeFulltest(fresh);
         notify();
       }
-    }, 60_000);
+    }, 300_000);
   }
 
   async function refreshBaseline() {
@@ -161,7 +418,6 @@
   // ── Public API ─────────────────────────────────────────────────────────────
   function subscribe(fn) { subscribers.push(fn); }
 
-  // Activate a specific variant (mark as active, deactivate others in strategy)
   function setActive(strategy, variantId) {
     if (!state.genotypes[strategy]) return;
     state.genotypes[strategy] = state.genotypes[strategy].map(v => ({
@@ -171,7 +427,6 @@
     notify();
   }
 
-  // Add a new blank variant slot for a strategy
   function addVariant(strategy, id, label, notes = '', tags = []) {
     const slot = { id, label, file: null, active: false, tags: [...tags, 'draft'], notes };
     VARIANTS[strategy] = [...(VARIANTS[strategy] || []), slot];

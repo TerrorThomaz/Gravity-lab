@@ -312,6 +312,192 @@ static class PapertradeCommands
 
             if (cts.Token.IsCancellationRequested) break;
 
+            // ── Write live_state.json for frontend consumption ───────────────
+            {
+                var positions = new List<object>();
+                var signals   = new List<object>();
+
+                void CollectPositions(string strategy, string dir,
+                    IEnumerable<(string Sym, Candle[]? H1, Candle[]? M15, bool Passes, double AtrPct, double VolM)> data,
+                    Func<string, Candle[], Candle[], (bool InTrade, bool TrailArmed, double Entry, double HardStop, double MaeStop, double Target, int HoldCount)> getState)
+                {
+                    foreach (var (sym, h1, m15, passes, _, _) in data)
+                    {
+                        if (h1 == null || m15 == null || !passes) continue;
+                        var st = getState(sym, h1, m15);
+                        if (!st.InTrade) continue;
+                        double px = m15[^1].Close;
+                        double pnl = dir == "Short"
+                            ? (st.Entry - px) / st.Entry * 100.0
+                            : (px - st.Entry) / st.Entry * 100.0;
+                        double effStop = Math.Min(st.HardStop, st.MaeStop > 0 ? st.MaeStop : double.MaxValue);
+                        positions.Add(new
+                        {
+                            sym, strat = strategy, dir,
+                            entry = Math.Round(st.Entry, 6),
+                            mark  = Math.Round(px, 6),
+                            pnl   = Math.Round(pnl, 2),
+                            age   = $"{st.HoldCount}h",
+                            stop  = Math.Round(effStop, 6),
+                            target = Math.Round(st.Target, 6),
+                            trailArmed = st.TrailArmed,
+                        });
+                    }
+                }
+
+                // FadeShort positions
+                foreach (var (sym, h1, m15, passes, _, _) in coinData)
+                {
+                    if (h1 == null || m15 == null || !passes) continue;
+                    var coinCl = CoinClusterHelper.ClassifyByName(sym);
+                    var gForCoin = SelectVariant(fsVariantsPt, m15) ?? clusterGenosPt[coinCl];
+                    var st = FadeShortSimulator.GetFadeShortTradeState(gForCoin, h1, m15);
+                    if (!st.InTrade) continue;
+                    double px = m15[^1].Close;
+                    positions.Add(new
+                    {
+                        sym, strat = "FadeShort", dir = "Short",
+                        entry = Math.Round(st.Entry, 6),
+                        mark  = Math.Round(px, 6),
+                        pnl   = Math.Round((st.Entry - px) / st.Entry * 100.0, 2),
+                        age   = $"{st.HoldCount}h",
+                        stop  = Math.Round(Math.Min(st.HardStop, st.MaeStop), 6),
+                        target = Math.Round(st.Target, 6),
+                        trailArmed = st.TrailArmed,
+                    });
+                }
+
+                // Grid positions
+                if (gridGPt != null && gridRoutedOn)
+                {
+                    foreach (var (sym, h1, m15, passes, _, _) in coinData)
+                    {
+                        if (h1 == null || !passes) continue;
+                        var coinGridG = (m15 != null ? SelectVariant(gridVariantsPt, m15) : null) ?? gridGPt;
+                        var gst = GridSimulator.GetGridTradeState(coinGridG, h1);
+                        if (!gst.Active) continue;
+                        double px = h1[^1].Close;
+                        positions.Add(new
+                        {
+                            sym, strat = "Grid", dir = "Long",
+                            entry = Math.Round(gst.Anchor, 6),
+                            mark  = Math.Round(px, 6),
+                            pnl   = Math.Round((px - gst.Anchor) / gst.Anchor * 100.0, 2),
+                            age   = $"{gst.HoldCount}h",
+                            stop  = Math.Round(gst.HardStop, 6),
+                            target = 0.0,
+                            trailArmed = false,
+                        });
+                    }
+                }
+
+                // SwingLong positions
+                if (slGenoPt != null && slRoutedOn)
+                {
+                    foreach (var (sym, h1, m15, passes, _, _) in coinData)
+                    {
+                        if (h1 == null || m15 == null || !passes) continue;
+                        var coinSlG = SelectVariant(slVariantsPt, m15) ?? slGenoPt;
+                        var st = SwingLongSimulator.GetSwingLongTradeState(coinSlG, h1, m15);
+                        if (!st.InTrade) continue;
+                        double px = m15[^1].Close;
+                        positions.Add(new
+                        {
+                            sym, strat = "SwingLong", dir = "Long",
+                            entry = Math.Round(st.Entry, 6),
+                            mark  = Math.Round(px, 6),
+                            pnl   = Math.Round((px - st.Entry) / st.Entry * 100.0, 2),
+                            age   = $"{st.HoldCount}h",
+                            stop  = Math.Round(st.HardStop, 6),
+                            target = Math.Round(st.Target, 6),
+                            trailArmed = st.TrailArmed,
+                        });
+                    }
+                }
+
+                // DipLong positions
+                if (dlGenoPt != null && dlRoutedOn)
+                {
+                    foreach (var (sym, h1, m15, passes, _, _) in coinData)
+                    {
+                        if (h1 == null || m15 == null || !passes) continue;
+                        var coinDlG = SelectVariant(dlVariantsPt, m15) ?? dlGenoPt;
+                        var st = DipLongSimulator.GetDipLongTradeState(coinDlG, h1, m15);
+                        if (!st.InTrade) continue;
+                        double px = m15[^1].Close;
+                        positions.Add(new
+                        {
+                            sym, strat = "DipLong", dir = "Long",
+                            entry = Math.Round(st.Entry, 6),
+                            mark  = Math.Round(px, 6),
+                            pnl   = Math.Round((px - st.Entry) / st.Entry * 100.0, 2),
+                            age   = $"{st.HoldCount}h",
+                            stop  = Math.Round(st.HardStop, 6),
+                            target = Math.Round(st.Target, 6),
+                            trailArmed = st.TrailArmed,
+                        });
+                    }
+                }
+
+                // FadeLong positions
+                if (flGenoPt != null && flRoutedOn)
+                {
+                    foreach (var (sym, h1, m15, passes, _, _) in coinData)
+                    {
+                        if (h1 == null || m15 == null || !passes) continue;
+                        var coinFlG = SelectVariant(flVariantsPt, m15) ?? flGenoPt;
+                        var st = FadeLongSimulator.GetFadeLongTradeState(coinFlG, h1, m15);
+                        if (!st.InTrade) continue;
+                        double px = m15[^1].Close;
+                        positions.Add(new
+                        {
+                            sym, strat = "FadeLong", dir = "Long",
+                            entry = Math.Round(st.Entry, 6),
+                            mark  = Math.Round(px, 6),
+                            pnl   = Math.Round((px - st.Entry) / st.Entry * 100.0, 2),
+                            age   = $"{st.HoldCount}h",
+                            stop  = Math.Round(Math.Min(st.HardStop, st.MaeStop), 6),
+                            target = Math.Round(st.Target, 6),
+                            trailArmed = st.TrailArmed,
+                        });
+                    }
+                }
+
+                var regimeInfo = ptRouting != null ? new
+                {
+                    state      = ptRouting.Regime.ToString(),
+                    confidence = Math.Round(ptRouting.Confidence, 2),
+                    FadeShort  = ptRouting.FadeShortActive,
+                    Grid       = ptRouting.GridActive,
+                    SwingLong  = ptRouting.DipLongActive,
+                    DipLong    = ptRouting.DipLongActive,
+                    FadeLong   = ptRouting.FadeLongActive,
+                    sizeMult   = Math.Round(ptRouting.SizeMult, 2),
+                } : null;
+
+                var liveState = new
+                {
+                    timestamp   = DateTime.UtcNow.ToString("O"),
+                    cycle       = 0,
+                    positions,
+                    regime      = regimeInfo,
+                    openCount   = positions.Count,
+                    nextRefresh = DateTime.UtcNow.AddSeconds(RefreshSeconds).ToString("HH:mm 'UTC'"),
+                };
+
+                try
+                {
+                    File.WriteAllText("live_state.json",
+                        JsonSerializer.Serialize(liveState,
+                            new JsonSerializerOptions { WriteIndented = true }));
+                    Console.WriteLine($"\n  live_state.json written ({positions.Count} open positions)");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"\n  ⚠ Failed to write live_state.json: {ex.Message}");
+                }
+            }
+
             for (int s = RefreshSeconds; s > 0; s--)
             {
                 if (cts.Token.IsCancellationRequested) break;

@@ -121,7 +121,7 @@ static class PapertradeCommands
 
         while (!cts.Token.IsCancellationRequested)
         {
-            Console.Clear();
+            try { Console.Clear(); } catch (System.IO.IOException) { }
             Console.WriteLine($"=== Gravity-gen2 | PAPER TRADE  [{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC]  Ctrl+C to stop ===\n");
 
             // Fetch all coins in parallel (4 concurrent), then trim to last 2000 m15 bars.

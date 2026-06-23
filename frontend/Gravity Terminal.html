@@ -162,6 +162,52 @@ table{ border-collapse:collapse; width:100%; }
 .tm-mini{ font-family:var(--mono); font-size:10px; color:var(--ink-faint);
           line-height:1.5; margin-top:9px; letter-spacing:.02em; }
 
+/* ── interpretation badges + descriptions ─────────────────────────────── */
+.tm-badge{ display:inline-block; font-family:var(--mono); font-size:9px;
+           font-weight:700; letter-spacing:.08em; padding:2px 6px;
+           border-radius:2px; text-transform:uppercase; vertical-align:middle; }
+.tm-badge--strong{ color:#1a1a1a; background:var(--pos); }
+.tm-badge--good{ color:var(--pos);
+  border:1px solid color-mix(in oklch,var(--pos),transparent 50%);
+  background:color-mix(in oklch,var(--pos),transparent 88%); }
+.tm-badge--ok{ color:var(--accent);
+  border:1px solid color-mix(in oklch,var(--accent),transparent 50%);
+  background:color-mix(in oklch,var(--accent),transparent 88%); }
+.tm-badge--weak{ color:var(--neg);
+  border:1px solid color-mix(in oklch,var(--neg),transparent 50%);
+  background:color-mix(in oklch,var(--neg),transparent 88%); }
+.tm-badge--danger{ color:#1a1a1a; background:var(--neg); }
+
+.tm-verdict{ display:flex; align-items:flex-start; gap:8px;
+             margin-top:10px; padding:8px 10px;
+             background:var(--panel-2); border-radius:2px;
+             border-left:2px solid var(--accent); }
+.tm-verdict--strong{ border-left-color:var(--pos); }
+.tm-verdict--weak{ border-left-color:var(--neg); }
+.tm-verdict-text{ font-family:var(--sans); font-size:11px;
+                  color:var(--ink-dim); line-height:1.55; }
+.tm-verdict-text b{ color:var(--ink); }
+
+.tm-desc{ font-family:var(--sans); font-size:10.5px; color:var(--ink-faint);
+          line-height:1.55; margin-top:7px; }
+
+.tm-stat-grid{ display:grid; grid-template-columns:1fr 1fr; gap:6px 14px;
+               margin-top:8px; }
+.tm-stat-item{ display:flex; align-items:center; justify-content:space-between;
+               padding:4px 8px; background:var(--panel-2); border-radius:2px;
+               font-family:var(--mono); font-size:10.5px; }
+.tm-stat-item i{ font-style:normal; color:var(--ink-faint); font-size:10px; }
+.tm-stat-item b{ margin-left:6px; }
+
+.tm-interp{ display:flex; flex-direction:column; gap:5px; margin-top:10px;
+            padding-top:8px; border-top:1px solid var(--line-s); }
+.tm-interp-row{ display:flex; align-items:center; gap:8px;
+                font-family:var(--mono); font-size:10.5px; color:var(--ink-dim); }
+.tm-interp-row b{ color:var(--ink); min-width:52px; text-align:right; }
+.tm-interp-bar{ flex:1; height:4px; background:var(--panel-3); border-radius:2px;
+                overflow:hidden; position:relative; }
+.tm-interp-fill{ height:100%; border-radius:2px; }
+
 /* ── WFV fold bars ──────────────────────────────────────────────────────── */
 .tm-wfv{ display:flex; flex-direction:column; gap:2px; }
 .tm-wfv-row{ display:flex; align-items:flex-end; gap:9px; padding:7px 0;

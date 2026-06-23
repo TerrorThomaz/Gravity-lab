@@ -25,6 +25,20 @@ _baseline_info: dict = {"status": "idle", "lastRun": None, "lastError": None}
 # ── Live papertrade subprocess state ─────────────────────────────────────────
 _live_proc: subprocess.Popen | None = None
 _live_info: dict = {"status": "idle", "pid": None, "startedAt": None, "lastError": None}
+_live_paused: bool = False
+
+def _stop_live_proc():
+    """Stop the papertrade subprocess if running."""
+    global _live_proc
+    if _live_proc is not None and _live_proc.poll() is None:
+        print("[live] stopping papertrade for dotnet build", flush=True)
+        _live_proc.terminate()
+        try:
+            _live_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _live_proc.kill()
+        _live_info["status"] = "stopped"
+        _live_proc = None
 
 STRATEGY_COMMANDS = {
     "FadeShort":  "train",
@@ -95,6 +109,7 @@ async def _run_fulltest():
         return
 
     print(f"[baseline] starting fulltest at {datetime.now(timezone.utc).isoformat()}")
+    _stop_live_proc()
     _baseline_info["status"] = "running"
     try:
         loop = asyncio.get_event_loop()
@@ -211,8 +226,14 @@ async def _live_monitor_loop():
             if code != 0:
                 _live_info["lastError"] = f"exit code {code}"
         await asyncio.sleep(30)
+        if _live_paused:
+            continue
         if _proc is not None and _proc.poll() is None:
             print("[live] training in progress, deferring restart", flush=True)
+            await asyncio.sleep(60)
+            continue
+        if _baseline_info["status"] == "running":
+            print("[live] fulltest in progress, deferring restart", flush=True)
             await asyncio.sleep(60)
             continue
         _start_live_proc()
@@ -243,13 +264,16 @@ app = FastAPI(lifespan=lifespan)
 # ── API endpoints ─────────────────────────────────────────────────────────────
 @app.post("/api/train")
 async def start_training(req: TrainRequest):
-    global _proc, _proc_info
+    global _proc, _proc_info, _live_paused
     if _proc and _proc.poll() is None:
         raise HTTPException(409, "Training already in progress")
     if req.strategy not in STRATEGY_COMMANDS:
         raise HTTPException(400, f"Unknown strategy: {req.strategy}")
     if not re.match(r'^[a-zA-Z0-9_-]+$', req.variant):
         raise HTTPException(400, f"Invalid variant id: {req.variant!r}")
+
+    _live_paused = True
+    _stop_live_proc()
 
     cfg_path = ROOT / "fitness_config.json"
     cfg_path.write_text(json.dumps(req.fitnessConfig))
@@ -291,7 +315,7 @@ async def stream_training():
 
 @app.post("/api/stop")
 async def stop_training():
-    global _proc
+    global _proc, _live_paused
     if _proc is None or _proc.poll() is not None:
         return {"status": "not running"}
     _proc.terminate()
@@ -300,6 +324,7 @@ async def stop_training():
     except subprocess.TimeoutExpired:
         _proc.kill()
     _proc = None
+    _live_paused = False
     return {"status": "stopped"}
 
 @app.get("/api/status")

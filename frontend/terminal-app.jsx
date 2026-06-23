@@ -7,8 +7,9 @@
   const { LineChart, Sparkline, Histogram, BarRow, CIBar, NormalCurve, AnnotHistogram } = window;
 
   const sgn  = v => v > 0 ? "pos" : v < 0 ? "neg" : "";
-  const pct  = (v, d = 1) => (v > 0 ? "+" : "") + v.toFixed(d) + "%";
-  const num  = (v, d = 2) => v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+  const pct  = (v, d = 1) => { if (v == null || isNaN(v)) return "—"; return (v > 0 ? "+" : "") + v.toFixed(d) + "%"; };
+  const num  = (v, d = 2) => { if (v == null || isNaN(v)) return "—"; return v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d }); };
+  const safe = (v, fn) => (v == null || isNaN(v)) ? "—" : fn(v);
 
   /* ── Panel shell ─────────────────────────────────────────────────────────── */
   function Panel({ title, meta, span, flush, sect, children }) {
@@ -88,7 +89,11 @@
 
   /* ── Main terminal ──────────────────────────────────────────────────────── */
   function TerminalApp() {
-    const L = G.live, B = G.backtest, S = G.stats;
+    const L = G.live || {}, B = G.backtest || {}, S = G.stats || {};
+    if (!L.positions) L.positions = [];
+    if (!L.signals) L.signals = [];
+    if (!L.regime) L.regime = {};
+    if (!L.router) L.router = {};
 
     return (
       <div className="tm-app">
@@ -99,15 +104,15 @@
         <div className="tm-ticker">
           <Ti k="NAV"       v={"€" + num(L.equityEur)} />
           <Ti k="NET"       v={pct(B.netReturn, 0)} cls="pos" />
-          <Ti k="SHARPE"    v={B.sharpe.toFixed(2)} />
-          <Ti k="WIN"       v={B.winRate.toFixed(1) + "%"} />
-          <Ti k="PF"        v={B.profitFactor.toFixed(2)} />
+          <Ti k="SHARPE"    v={safe(B.sharpe, v => v.toFixed(2))} />
+          <Ti k="WIN"       v={safe(B.winRate, v => v.toFixed(1) + "%")} />
+          <Ti k="PF"        v={safe(B.profitFactor, v => v.toFixed(2))} />
           <Ti k="MAXDD"     v={pct(B.maxDD, 1)} cls="neg" />
-          <Ti k="CALMAR"    v={B.calmar.toFixed(2)} />
-          <Ti k="DSR"       v={S.dsr.toFixed(2)} />
-          <Ti k="OPEN RISK" v={L.openRisk.toFixed(1) + "%"} />
-          <Ti k="TRADES"    v={B.trades.toLocaleString()} />
-          <Ti k="COINS"     v={B.coins} />
+          <Ti k="CALMAR"    v={safe(B.calmar, v => v.toFixed(2))} />
+          <Ti k="DSR"       v={safe(S.dsr, v => v.toFixed(2))} />
+          <Ti k="OPEN RISK" v={safe(L.openRisk, v => v.toFixed(1) + "%")} />
+          <Ti k="TRADES"    v={B.trades != null ? B.trades.toLocaleString() : "—"} />
+          <Ti k="COINS"     v={B.coins ?? "—"} />
         </div>
 
         {/* body */}
@@ -140,7 +145,7 @@
             {/* regime router */}
             <Panel title="REGIME ROUTER" meta="BTC-anchored · ETH confirm" span={5} sect="live">
               <div className="tm-reg-state">BULL</div>
-              <div className="tm-reg-meta">confidence {L.regime.confidence.toFixed(2)} · {L.regime.duration} bars · size× {L.router.sizeMult.toFixed(2)}</div>
+              <div className="tm-reg-meta">confidence {safe(L.regime?.confidence, v => v.toFixed(2))} · {L.regime?.duration ?? 0} bars · size× {safe(L.router?.sizeMult, v => v.toFixed(2))}</div>
               <div className="tm-reg-src">BTC {L.regime.btc} · ETH {L.regime.eth}</div>
               <div className="tm-router">
                 {Object.entries(L.router).filter(([k]) => k !== "sizeMult").map(([k, on]) => (
@@ -153,11 +158,11 @@
             <Panel title="PORTFOLIO EQUITY" meta={B.window + " · val " + B.valSplit + "%"} span={7} sect="backtest">
               <div className="tm-kpis">
                 <div className="tm-kpi"><i>NET RETURN</i><b className="pos">{pct(B.netReturn, 0)}</b></div>
-                <div className="tm-kpi"><i>CAGR</i><b>{B.cagr.toFixed(1)}%</b></div>
-                <div className="tm-kpi"><i>SHARPE</i><b>{B.sharpe.toFixed(2)}</b></div>
+                <div className="tm-kpi"><i>CAGR</i><b>{safe(B.cagr, v => v.toFixed(1) + "%")}</b></div>
+                <div className="tm-kpi"><i>SHARPE</i><b>{safe(B.sharpe, v => v.toFixed(2))}</b></div>
                 <div className="tm-kpi"><i>MAX DD</i><b className="neg">{pct(B.maxDD, 1)}</b></div>
-                <div className="tm-kpi"><i>CALMAR</i><b>{B.calmar.toFixed(2)}</b></div>
-                <div className="tm-kpi"><i>PROFIT F.</i><b>{B.profitFactor.toFixed(2)}</b></div>
+                <div className="tm-kpi"><i>CALMAR</i><b>{safe(B.calmar, v => v.toFixed(2))}</b></div>
+                <div className="tm-kpi"><i>PROFIT F.</i><b>{safe(B.profitFactor, v => v.toFixed(2))}</b></div>
               </div>
               <div className="tm-chart" style={{ color: "var(--pos)" }}>
                 <LineChart data={G.equity} benchmark={G.benchmark} height={148} fill />

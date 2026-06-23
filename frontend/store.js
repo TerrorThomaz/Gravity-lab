@@ -94,7 +94,7 @@
 
     // Core files — parallel
     const [baseline, liveState, journal, router, guard, backtestResults] = await Promise.all([
-      fetchJSON('../backtest_baseline.json',     G.backtest    || {}),
+      fetchJSON('/api/baseline', null).then(r => r || fetchJSON('../backtest_baseline.json', G.backtest || {})),
       fetchJSON('../livetrain_state.json',       G.training    || {}),
       fetchJSON('../live_journal.json',          []),
       fetchJSON('../genotypes/regime_router_genotype.json', null),
@@ -141,6 +141,21 @@
 
     state.loading = false;
     notify();
+
+    // Poll baseline from API every 60s for live updates
+    setInterval(async () => {
+      const fresh = await fetchJSON('/api/baseline', null);
+      if (fresh && fresh.sharpe !== undefined) {
+        state.baseline = fresh;
+        notify();
+      }
+    }, 60_000);
+  }
+
+  async function refreshBaseline() {
+    try {
+      await fetch('/api/baseline/refresh', { method: 'POST' });
+    } catch {}
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
@@ -178,5 +193,5 @@
     return r.json();
   }
 
-  window.GravStore = { state, load, subscribe, setActive, addVariant, VARIANTS, train, stopTraining };
+  window.GravStore = { state, load, subscribe, setActive, addVariant, VARIANTS, train, stopTraining, refreshBaseline };
 })();

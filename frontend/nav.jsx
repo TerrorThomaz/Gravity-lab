@@ -11,6 +11,10 @@
     const cycle   = liveState?.CycleCount ?? liveState?.cycleCount ?? '—';
     const sharpe  = baseline?.sharpe  ?? '—';
     const trades  = baseline?.trades  ?? '—';
+    const refresh = baseline?.refresh;
+    const refreshing = refresh?.status === 'running';
+    const lastTs  = baseline?.timestamp || refresh?.lastRun;
+    const age     = lastTs ? Math.round((Date.now() - new Date(lastTs).getTime()) / 3600000) : null;
     return (
       <header className="gn-bar">
         <div className="gn-brand">
@@ -26,9 +30,12 @@
           ))}
         </nav>
         <div className="gn-meta">
-          <span className="gn-m"><i>CYCLE</i><b>{cycle}</b></span>
           <span className="gn-m"><i>SHARPE</i><b>{typeof sharpe === 'number' ? sharpe.toFixed(2) : sharpe}</b></span>
           <span className="gn-m"><i>TRADES</i><b>{typeof trades === 'number' ? trades.toLocaleString() : trades}</b></span>
+          {age !== null && <span className="gn-m"><i>AGE</i><b className={age > 12 ? 'neg' : 'dim'}>{age}h</b></span>}
+          <button className={"gn-refresh" + (refreshing ? " gn-refresh--spin" : "")}
+            title={refreshing ? "Fulltest running…" : "Run fulltest now"}
+            onClick={() => window.GravStore?.refreshBaseline?.()}>↻</button>
           <span className="gn-live"><span className="gn-live-dot" />LIVE</span>
         </div>
       </header>
@@ -82,6 +89,12 @@ table{border-collapse:collapse;width:100%;}
 .gn-live-dot{width:7px;height:7px;border-radius:50%;background:var(--pos);
   animation:pulse 2s ease-in-out infinite;}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.gn-refresh{background:none;border:1px solid var(--line);border-radius:3px;
+  color:var(--ink-dim);font-size:14px;width:26px;height:26px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;transition:all .15s;}
+.gn-refresh:hover{border-color:var(--accent);color:var(--accent);}
+.gn-refresh--spin{animation:spin 1s linear infinite;color:var(--accent);pointer-events:none;}
+@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 
 /* ── mobile nav ──────────────────────────────────────────────────────────── */
 @media(max-width:640px){

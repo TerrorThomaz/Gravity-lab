@@ -547,14 +547,13 @@ public static class SwingLongSimulator
                     bool strongTrend = h1Adx[h1Ref] >= g.AdxThreshold && h1Closes[h1Ref] > h1Ema[h1Ref];
                     if (strongTrend)
                     {
-                        var (swingLow, lowIdx, recentHigh) = Signals.SwingLowLookback(
+                        var (swingLow, _, recentHigh) = Signals.SwingLowLookback(
                             h1Closes, h1Highs, h1Lows, h1Ref, g.LookbackCandles);
 
                         // Min decline filter: real pullback, not noise
                         bool bigDrop = bigDropArr[h1Ref];
 
                         // RSI bullish divergence: swingLow RSI was oversold AND current RSI recovered
-                        double rsiAtLow = h1Rsi[lowIdx];
                         bool diverging  = bullDiv[h1Ref];
 
                         // 1h BoS: close above previous candle's high (bullish)

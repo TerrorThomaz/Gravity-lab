@@ -156,7 +156,7 @@ public static class FadeLongSimulator
                     {
                         var (swingHigh, _, _) = Signals.SwingHighLookback(
                             h1Closes, h1Highs, h1Lows, h1Ref, g.LookbackCandles);
-                        var (swingLow, lowIdx, _) = Signals.SwingLowLookback(
+                        var (swingLow, _, _) = Signals.SwingLowLookback(
                             h1Closes, h1Highs, h1Lows, h1Ref, g.LookbackCandles);
 
                         // Min drop: the fall from recent high to swing low must be meaningful

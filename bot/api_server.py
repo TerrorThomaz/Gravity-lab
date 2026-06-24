@@ -265,10 +265,9 @@ async def _live_monitor_loop():
         # Clean up finished run proc (handles case where SSE client never connected)
         if _run_proc is not None and _run_proc.poll() is not None:
             _run_proc = None
-            if _live_paused:
-                _live_paused = False
-                _run_info["status"] = "done"
-                print("[live] run proc exited naturally, resumed papertrade", flush=True)
+            _live_paused = False
+            _run_info["status"] = "done"
+            print("[live] run proc exited naturally, resumed papertrade", flush=True)
         if _baseline_info["status"] == "running":
             print("[live] fulltest in progress, deferring restart", flush=True)
             await asyncio.sleep(60)

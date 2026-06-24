@@ -389,14 +389,13 @@ function TrainingApp() {
     setLog([]);
 
     try {
-      await fetch('/api/run', {
+      const r = await fetch('/api/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command: cmdKey }),
       });
-    } catch(e) {
-      // fall through — SSE will surface the error
-    }
+      if (!r.ok) { setRunStatus('idle'); setRunName(''); return; }
+    } catch { setRunStatus('idle'); setRunName(''); return; }
 
     if (runESRef.current) { runESRef.current.close(); runESRef.current = null; }
     const es = new EventSource('/api/run/stream');

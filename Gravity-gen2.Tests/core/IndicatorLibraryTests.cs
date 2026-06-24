@@ -491,3 +491,19 @@ public class SignalsAdxTrendTests
         Assert.False(result[0]);
     }
 }
+
+public class SignalsSwingLowLookbackTests
+{
+    [Fact]
+    public void ReturnsCorrectLowIndexAndRecentHigh()
+    {
+        var closes = new double[] { 10, 5, 8, 12, 15 };
+        var highs  = new double[] { 11, 6, 9, 13, 16 };
+        var lows   = new double[] {  9, 4, 7, 11, 14 };
+        // lookback=4, i=4: scan [0,4) → lowest close=5 at idx=1, highest high=13 at idx=3
+        var (sl, li, rh) = Signals.SwingLowLookback(closes, highs, lows, i: 4, lookback: 4);
+        Assert.Equal(5.0, sl, precision: 8);
+        Assert.Equal(1, li);
+        Assert.Equal(13.0, rh, precision: 8);
+    }
+}

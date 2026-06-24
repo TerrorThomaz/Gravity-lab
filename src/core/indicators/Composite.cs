@@ -110,7 +110,7 @@ internal static class Signals
             int    start   = Math.Max(0, i - lookback);
             double maxUp   = upper[start];
             double minLow  = lower[start];
-            for (int j = start + 1; j <= i; j++)
+            for (int j = start + 1; j < i; j++)
             {
                 if (upper[j] > maxUp)  maxUp  = upper[j];
                 if (lower[j] < minLow) minLow = lower[j];

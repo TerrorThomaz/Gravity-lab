@@ -164,7 +164,6 @@ public static class FadeLongSimulator
                         if (!bigDrop) continue;
 
                         // RSI divergence: RSI was oversold at the swing low AND has now recovered
-                        double rsiAtLow = h1Rsi[lowIdx];
                         bool diverging  = bullDiv[h1Ref];
                         if (!diverging) continue;
 

@@ -240,7 +240,7 @@ public class TrendEmaIntoTests
     }
 
     [Fact]
-    public void Period1_OutputEqualsCLoses()
+    public void Period1_OutputEqualsCloses()
     {
         var closes = new double[] { 5, 10, 7, 12 };
         var output = new double[closes.Length];
@@ -429,24 +429,25 @@ public class SignalsMinMoveFilterTests
     [Fact]
     public void BigMove_ReturnsTrue()
     {
-        // upper=[100,110], lower=[100,90], atr=[5,5], lookback=2, minAtrMult=3
-        // move = 110-90 = 20, 20/5=4 ≥ 3 → true
-        var upper = new double[] { 100, 110 };
-        var lower = new double[] { 100,  90 };
-        var atr   = new double[] {   5,   5 };
-        var result = Signals.MinMoveFilter(upper, lower, atr, lookback: 2, minAtrMult: 3);
-        Assert.True(result[1]);
+        // 3-bar array. At i=2 (lookback=3): scan [0,2) = bars 0,1
+        // upper=[100,110], lower=[100,90] → maxUp=110, minLow=90, move=20, 20/5=4 ≥ 3 → true
+        var upper = new double[] { 100, 110, 108 };
+        var lower = new double[] { 100,  90,  92 };
+        var atr   = new double[] {   5,   5,   5 };
+        var result = Signals.MinMoveFilter(upper, lower, atr, lookback: 3, minAtrMult: 3);
+        Assert.True(result[2]);
     }
 
     [Fact]
     public void SmallMove_ReturnsFalse()
     {
-        var upper = new double[] { 100, 101 };
-        var lower = new double[] { 100,  99 };
-        var atr   = new double[] {   5,   5 };
-        var result = Signals.MinMoveFilter(upper, lower, atr, lookback: 2, minAtrMult: 3);
-        // move=2, 2/5=0.4 < 3 → false
-        Assert.False(result[1]);
+        // At i=2 (lookback=3): scan [0,2) = bars 0,1
+        // upper=[100,101], lower=[100,99] → move=2, 2/5=0.4 < 3 → false
+        var upper = new double[] { 100, 101, 102 };
+        var lower = new double[] { 100,  99,  98 };
+        var atr   = new double[] {   5,   5,   5 };
+        var result = Signals.MinMoveFilter(upper, lower, atr, lookback: 3, minAtrMult: 3);
+        Assert.False(result[2]);
     }
 }
 

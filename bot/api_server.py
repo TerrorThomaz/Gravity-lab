@@ -239,6 +239,7 @@ def _drain_live_stdout():
 
 async def _live_monitor_loop():
     """Monitor papertrade subprocess, restart if it exits."""
+    global _run_proc, _live_paused
     await asyncio.sleep(10)
     _start_live_proc()
     loop = asyncio.get_event_loop()
@@ -261,6 +262,13 @@ async def _live_monitor_loop():
             print("[live] command running, deferring restart", flush=True)
             await asyncio.sleep(60)
             continue
+        # Clean up finished run proc (handles case where SSE client never connected)
+        if _run_proc is not None and _run_proc.poll() is not None:
+            _run_proc = None
+            if _live_paused:
+                _live_paused = False
+                _run_info["status"] = "done"
+                print("[live] run proc exited naturally, resumed papertrade", flush=True)
         if _baseline_info["status"] == "running":
             print("[live] fulltest in progress, deferring restart", flush=True)
             await asyncio.sleep(60)
@@ -392,7 +400,7 @@ async def start_run(req: RunRequest):
 @app.get("/api/run/stream")
 async def stream_run():
     async def generate():
-        global _live_paused
+        global _live_paused, _run_proc
         if _run_proc is None:
             yield "data: No command running\n\n"
             return
@@ -403,6 +411,7 @@ async def stream_run():
                 _run_info["status"] = "done"
                 _live_paused = False
                 yield "data: [DONE]\n\n"
+                _run_proc = None
                 break
             stripped = line.rstrip()
             _run_info["lastLine"] = stripped

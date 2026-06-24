@@ -151,24 +151,12 @@ public static class FadeLongSimulator
                                  && h1RegimeEma[h1Ref] < h1RegimeEma[h1Ref - slopeLen];
                     if (regimeOk)
                     {
-                        int    lb        = g.LookbackCandles;
-                        int    lbStart   = Math.Max(0, h1Ref - lb);
-                        double swingHigh = h1Closes[lbStart];
-                        int    highIdx   = lbStart;
-                        double recentLow = h1Lows[lbStart];
-
-                        for (int j = lbStart; j < h1Ref; j++)
-                        {
-                            if (h1Closes[j] > swingHigh) { swingHigh = h1Closes[j]; highIdx = j; }
-                            if (h1Lows[j]   < recentLow) recentLow  = h1Lows[j];
-                        }
+                        var (swingHigh, _, _) = Signals.SwingHighLookback(
+                            h1Closes, h1Highs, h1Lows, h1Ref, g.LookbackCandles);
+                        var (swingLow, lowIdx, _) = Signals.SwingLowLookback(
+                            h1Closes, h1Highs, h1Lows, h1Ref, g.LookbackCandles);
 
                         // Min drop: the fall from recent high to swing low must be meaningful
-                        double swingLow = h1Closes[lbStart];
-                        int    lowIdx   = lbStart;
-                        for (int j = lbStart; j < h1Ref; j++)
-                            if (h1Closes[j] < swingLow) { swingLow = h1Closes[j]; lowIdx = j; }
-
                         bool bigDrop = (swingHigh - swingLow) >= g.MinDropAtrMult * atrH1;
                         if (!bigDrop) continue;
 

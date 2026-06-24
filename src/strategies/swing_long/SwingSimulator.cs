@@ -83,7 +83,7 @@ public static class FadeShortSimulator
         ReadOnlySpan<Candle>  candles,
         double[]  closes, double[] highs, double[] lows,
         double[]  rsi,    double[] adx,   double[] atr,
-        double[]  ema,   // caller fills this via Indicators.EmaInto before each call
+        double[]  ema,   // caller fills this via Trend.EmaInto before each call
         int       rangeStart, int rangeEnd)
     {
         int warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
@@ -128,17 +128,8 @@ public static class FadeShortSimulator
                 if (!strongTrend) continue;
 
                 // ── Find swing high in lookback window ────────────────────────────
-                int    lb        = g.LookbackCandles;
-                int    lbStart   = Math.Max(0, i - lb);
-                double swingHigh = closes[lbStart];
-                int    highIdx   = lbStart;
-                double recentLow = lows[lbStart];
-
-                for (int j = lbStart; j < i; j++)
-                {
-                    if (closes[j] > swingHigh) { swingHigh = closes[j]; highIdx = j; }
-                    if (lows[j]   < recentLow)   recentLow = lows[j];
-                }
+                var (swingHigh, highIdx, recentLow) = Signals.SwingHighLookback(
+                    closes, highs, lows, i, g.LookbackCandles);
 
                 // ── Min rally filter ──────────────────────────────────────────────
                 bool bigRally = (swingHigh - recentLow) >= g.MinRallyAtrMult * atrNow;
@@ -335,24 +326,18 @@ public static class FadeShortSimulator
                                  ? h4Atr[h4Ref]
                                  : atrH1 * 4;
 
-                    if (h1Adx[h1Ref] >= g.AdxThreshold && h1Closes[h1Ref] > h1Ema[h1Ref])
+                    bool strongTrend = h1Adx[h1Ref] >= g.AdxThreshold && h1Closes[h1Ref] > h1Ema[h1Ref];
+                    if (strongTrend)
                     {
-                        int    lb        = g.LookbackCandles;
-                        int    lbStart   = Math.Max(0, h1Ref - lb);
-                        double swingHigh = h1Closes[lbStart];
-                        int    highIdx   = lbStart;
-                        double recentLow = h1Lows[lbStart];
-
-                        for (int j = lbStart; j < h1Ref; j++)
-                        {
-                            if (h1Closes[j] > swingHigh) { swingHigh = h1Closes[j]; highIdx = j; }
-                            if (h1Lows[j]   < recentLow)   recentLow = h1Lows[j];
-                        }
+                        var (swingHigh, highIdx, recentLow) = Signals.SwingHighLookback(
+                            h1Closes, h1Highs, h1Lows, h1Ref, g.LookbackCandles);
 
                         double rsiAtHigh = h1Rsi[highIdx];
-                        if ((swingHigh - recentLow) >= g.MinRallyAtrMult * atrH1
-                            && rsiAtHigh >= g.RsiOverbought
-                            && h1Rsi[h1Ref] <= rsiAtHigh - g.RsiDivThreshold)
+                        bool bigRally = (swingHigh - recentLow) >= g.MinRallyAtrMult * atrH1;
+                        bool diverging = rsiAtHigh >= g.RsiOverbought
+                                      && h1Rsi[h1Ref] <= rsiAtHigh - g.RsiDivThreshold;
+
+                        if (bigRally && diverging)
                         {
                             cachedSetupMet  = true;
                             cachedSwingHigh = swingHigh;
@@ -362,7 +347,7 @@ public static class FadeShortSimulator
                             // Each factor > 1 at entry (threshold is the floor, not the target).
                             double rsiExcess  = rsiAtHigh - g.RsiOverbought;
                             double adxRatio   = h1Adx[h1Ref] / g.AdxThreshold;
-                            double rallyRatio  = (swingHigh - recentLow) / (g.MinRallyAtrMult * atrH1);
+                            double rallyRatio = (swingHigh - recentLow) / (g.MinRallyAtrMult * atrH1);
                             cachedScore = rsiExcess * adxRatio * rallyRatio;
                         }
                     }
@@ -549,19 +534,11 @@ public static class SwingLongSimulator
                                  ? h4Atr[h4Ref] : atrH1 * 4;
 
                     // Trend gate: price above EMA and ADX trending
-                    if (h1Adx[h1Ref] >= g.AdxThreshold && h1Closes[h1Ref] > h1Ema[h1Ref])
+                    bool strongTrend = h1Adx[h1Ref] >= g.AdxThreshold && h1Closes[h1Ref] > h1Ema[h1Ref];
+                    if (strongTrend)
                     {
-                        int    lb         = g.LookbackCandles;
-                        int    lbStart    = Math.Max(0, h1Ref - lb);
-                        double swingLow   = h1Closes[lbStart];
-                        int    lowIdx     = lbStart;
-                        double recentHigh = h1Highs[lbStart];
-
-                        for (int j = lbStart; j < h1Ref; j++)
-                        {
-                            if (h1Closes[j] < swingLow)  { swingLow = h1Closes[j]; lowIdx = j; }
-                            if (h1Highs[j]  > recentHigh)  recentHigh = h1Highs[j];
-                        }
+                        var (swingLow, lowIdx, recentHigh) = Signals.SwingLowLookback(
+                            h1Closes, h1Highs, h1Lows, h1Ref, g.LookbackCandles);
 
                         // Min decline filter: real pullback, not noise
                         bool bigDrop = (recentHigh - swingLow) >= g.MinDeclineAtrMult * atrH1;
@@ -571,7 +548,7 @@ public static class SwingLongSimulator
                         bool diverging  = rsiAtLow <= g.RsiOversold
                                        && h1Rsi[h1Ref] >= rsiAtLow + g.RsiDivThreshold;
 
-                        // 1h BoS: close above previous candle's high (bullish)
+                        // 1h BoS: close above previous candle's high (bullish) — stays inline (single-bar check)
                         bool h1Bos = h1Closes[h1Ref] > h1Highs[h1Ref - 1];
 
                         if (bigDrop && diverging && h1Bos)

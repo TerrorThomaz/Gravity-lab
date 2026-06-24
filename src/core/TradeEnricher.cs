@@ -42,7 +42,7 @@ public static class TradeEnricher
         var sorted = rawTrades.OrderBy(t => t.Time).ToList();
         var result = new List<EnrichedTrade>(sorted.Count);
 
-        // Precompute per-symbol ATR and time arrays (avoid repeated Indicators.Atr calls)
+        // Precompute per-symbol ATR and time arrays (avoid repeated Volatility.Atr calls)
         var symbolCache = new Dictionary<string, (double[] Atr, double[] Vol, DateTime[] Times, Candle[] H1)>();
         foreach (var sym in sorted.Select(t => t.Symbol).Distinct())
         {

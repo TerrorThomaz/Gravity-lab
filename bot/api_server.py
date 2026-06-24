@@ -31,6 +31,11 @@ _live_paused: bool = False
 _run_proc: subprocess.Popen | None = None
 _run_info: dict = {"status": "idle", "command": None, "startedAt": None, "lastLine": "", "lastError": None}
 
+# ── Live signal log (derived from position diffs across papertrade cycles) ─────
+from collections import deque
+_prev_live_positions: dict = {}   # key = "SYM:strat", value = position dict
+_signal_log: deque = deque(maxlen=40)
+
 def _stop_live_proc():
     """Stop the papertrade subprocess if running."""
     global _live_proc
@@ -480,11 +485,44 @@ async def get_fulltest():
 
 @app.get("/api/live")
 async def get_live():
-    """Return current live papertrade state from live_state.json."""
+    """Return current live papertrade state, augmented with derived signals."""
+    global _prev_live_positions, _signal_log
     try:
         data = json.loads(LIVE_STATE_PATH.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         data = {}
+
+    # Derive OPEN/CLOSE signals by diffing positions against previous cycle
+    current_positions = {
+        f"{p['sym']}:{p['strat']}": p
+        for p in data.get("positions", [])
+    }
+    now_str = datetime.now(timezone.utc).strftime("%H:%M UTC")
+
+    if _prev_live_positions:
+        for key, pos in current_positions.items():
+            if key not in _prev_live_positions:
+                _signal_log.appendleft({
+                    "time":  now_str,
+                    "sym":   pos["sym"],
+                    "strat": pos["strat"],
+                    "action": "OPEN",
+                    "note":  f"{pos['dir']} · entry {pos['entry']}",
+                })
+        for key, pos in _prev_live_positions.items():
+            if key not in current_positions:
+                pnl = pos.get("pnl", 0)
+                _signal_log.appendleft({
+                    "time":  now_str,
+                    "sym":   pos["sym"],
+                    "strat": pos["strat"],
+                    "action": "CLOSE",
+                    "note":  f"{'trail stop' if pos.get('trailArmed') else 'exited'} · {pnl:+.1f}%",
+                })
+
+    _prev_live_positions = current_positions
+
+    data["signals"] = list(_signal_log)
     data["process"] = _live_info
     return data
 

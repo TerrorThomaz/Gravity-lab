@@ -145,7 +145,7 @@
         {/* sticky ticker */}
         <div className="tm-ticker">
           <Ti k="NAV"       v={"€" + num(L.equityEur)} />
-          <Ti k="NET"       v={pct(B.netReturn, 0)} cls="pos" />
+          <Ti k="VAL RET"   v={pct(B.netReturn, 0)} cls="pos" />
           <Ti k="SHARPE"    v={safe(B.sharpe, v => v.toFixed(2))} cls={B.sharpe >= 3 ? "pos" : B.sharpe < 1 ? "neg" : ""} />
           <Ti k="WIN"       v={safe(B.winRate, v => v.toFixed(1) + "%")} cls={B.winRate >= 55 ? "pos" : B.winRate < 50 ? "neg" : ""} />
           <Ti k="PF"        v={safe(B.profitFactor, v => v.toFixed(2))} cls={B.profitFactor >= 1.5 ? "pos" : B.profitFactor < 1.2 ? "neg" : ""} />
@@ -164,7 +164,7 @@
             <Sep label="LIVE TRADING" />
 
             {/* live positions */}
-            <Panel title="LIVE POSITIONS" meta={L.positions.length + " open · half-Kelly sized"} span={7} sect="live">
+            <Panel title="LIVE POSITIONS" meta={L.positions.length + " open · half-Kelly sized" + (L.lastRefresh ? " · " + new Date(L.lastRefresh).toUTCString().slice(17, 22) + " UTC" : "")} span={7} sect="live">
               <table className="tm-tbl">
                 <thead><tr><th>SYMBOL</th><th>STRAT</th><th>DIR</th><th className="r">ENTRY</th><th className="r">MARK</th><th className="r">P&L</th><th className="r">SIZE</th><th className="r">AGE</th></tr></thead>
                 <tbody>
@@ -197,9 +197,9 @@
             </Panel>
 
             {/* equity curve */}
-            <Panel title="PORTFOLIO EQUITY" meta={B.window + " · val " + B.valSplit + "%"} span={7} sect="backtest">
+            <Panel title="PORTFOLIO EQUITY" meta={B.window + " · val " + B.valSplit + "% (" + Math.round(3.2 * (B.valSplit ?? 20) / 100 * 12) + " mo held-out)"} span={7} sect="backtest">
               <div className="tm-kpis">
-                <div className="tm-kpi"><i>NET RETURN</i><b className="pos">{pct(B.netReturn, 0)}</b></div>
+                <div className="tm-kpi"><i>{"VAL RETURN · " + (B.valSplit ?? 20) + "%"}</i><b className="pos">{pct(B.netReturn, 0)}</b></div>
                 <div className="tm-kpi"><i>CAGR</i><b>{safe(B.cagr, v => v.toFixed(1) + "%")}</b></div>
                 <div className="tm-kpi"><i>SHARPE {B.sharpe != null && <Badge level={sharpeTier(B.sharpe)} label={sharpeLabel(B.sharpe)} />}</i><b>{safe(B.sharpe, v => v.toFixed(2))}</b></div>
                 <div className="tm-kpi"><i>MAX DD {B.maxDD != null && <Badge level={ddTier(B.maxDD)} label={Math.abs(B.maxDD) <= 10 ? "LOW" : Math.abs(B.maxDD) <= 20 ? "MODERATE" : "HIGH"} />}</i><b className="neg">{pct(B.maxDD, 1)}</b></div>
@@ -219,20 +219,23 @@
             </Panel>
 
             {/* latest signals */}
-            <Panel title="LATEST SIGNALS" meta="1h refresh · router-gated" span={5} sect="live">
-              <table className="tm-tbl">
-                <tbody>
-                  {L.signals.map((s, i) => (
-                    <tr key={i}>
-                      <td className="dim mono">{s.time}</td>
-                      <td><span className={"tm-act tm-act--" + s.action.toLowerCase()}>{s.action}</span></td>
-                      <td className="b">{s.sym}</td>
-                      <td className="dim">{s.strat}</td>
-                      <td className="dim tm-note">{s.note}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <Panel title="LATEST SIGNALS" meta={"1h refresh · router-gated" + (L.nextRefresh ? " · next " + L.nextRefresh : "")} span={5} sect="live">
+              {L.signals.length === 0
+                ? <div className="dim" style={{padding:"12px 0",fontSize:11}}>Signals accumulate as papertrade cycles run. Start papertrade to populate.</div>
+                : <table className="tm-tbl">
+                    <tbody>
+                      {L.signals.map((s, i) => (
+                        <tr key={i}>
+                          <td className="dim mono">{s.time}</td>
+                          <td><span className={"tm-act tm-act--" + s.action.toLowerCase()}>{s.action}</span></td>
+                          <td className="b">{s.sym}</td>
+                          <td className="dim">{s.strat}</td>
+                          <td className="dim tm-note">{s.note}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+              }
             </Panel>
 
             <Sep label="STRATEGY BREAKDOWN" />

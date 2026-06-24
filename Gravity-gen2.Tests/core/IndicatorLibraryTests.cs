@@ -507,3 +507,54 @@ public class SignalsSwingLowLookbackTests
         Assert.Equal(13.0, rh, precision: 8);
     }
 }
+
+public class SignalsEmaStackTests
+{
+    [Fact]
+    public void BullishStack_ReturnsTrue()
+    {
+        // Rising series: fast EMA (period=2) > mid EMA (period=5) > slow EMA (period=10)
+        var closes = Enumerable.Range(0, 30).Select(i => (double)(100 + i)).ToArray();
+        var result = Signals.EmaStack(closes, fastPeriod: 2, midPeriod: 5, slowPeriod: 10);
+        // At the tail of a rising series, fast > mid > slow should hold
+        Assert.True(result[29]);
+    }
+
+    [Fact]
+    public void FlatSeries_StackIsFalse()
+    {
+        // Flat series: all EMAs converge to the same value → not strictly greater
+        var closes = Enumerable.Repeat(100.0, 30).ToArray();
+        var result = Signals.EmaStack(closes, fastPeriod: 2, midPeriod: 5, slowPeriod: 10);
+        Assert.False(result[29]);
+    }
+}
+
+public class SignalsAtrExpansionTests
+{
+    [Fact]
+    public void ExpandingVol_ReturnsTrue()
+    {
+        // First 20 bars calm (range=1), last 30 bars volatile (range=20).
+        // Short ATR (7) adapts faster → short ATR > long ATR → ratio > 1
+        var calm     = Enumerable.Range(0, 20).Select(i => (h: 100.5, l: 99.5, c: 100.0));
+        var volatile_ = Enumerable.Range(0, 30).Select(i => (h: 110.0, l: 90.0, c: 100.0));
+        var all = calm.Concat(volatile_).ToArray();
+        var h  = all.Select(x => x.h).ToArray();
+        var l  = all.Select(x => x.l).ToArray();
+        var cl = all.Select(x => x.c).ToArray();
+        var result = Signals.AtrExpansion(h, l, cl, shortPeriod: 7, longPeriod: 100, threshold: 1.0);
+        Assert.True(result[49]);
+    }
+
+    [Fact]
+    public void FlatSeries_ReturnsFalse()
+    {
+        var closes = Enumerable.Repeat(100.0, 120).ToArray();
+        var highs  = Enumerable.Repeat(100.0, 120).ToArray();
+        var lows   = Enumerable.Repeat(100.0, 120).ToArray();
+        var result = Signals.AtrExpansion(highs, lows, closes, shortPeriod: 14, longPeriod: 100, threshold: 1.5);
+        // Flat = both ATRs ≈ 0, ratio ≈ 1.0 < 1.5
+        Assert.False(result[119]);
+    }
+}

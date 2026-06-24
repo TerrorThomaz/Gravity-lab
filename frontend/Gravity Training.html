@@ -92,6 +92,19 @@ body{background:var(--bg);color:var(--ink);font-family:var(--sans);}
 .gt-preset-btn:hover{border-color:var(--accent);color:var(--ink);}
 .gt-preset-btn.on{background:var(--accent-s);border-color:var(--accent);color:var(--accent);}
 
+/* run command buttons */
+.gt-run-cat{font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.12em;
+  color:var(--ink-faint);text-transform:uppercase;margin:10px 0 5px;}
+.gt-run-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;}
+.gt-run-btn{padding:6px 8px;background:var(--panel-2);border:1px solid var(--line);
+  border-radius:3px;color:var(--ink-dim);font-family:var(--mono);font-size:10px;
+  cursor:pointer;text-align:left;transition:all .12s;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;}
+.gt-run-btn:hover:not(:disabled){border-color:var(--accent);color:var(--ink);}
+.gt-run-btn:disabled{opacity:.4;cursor:not-allowed;}
+.gt-run-btn.running{background:color-mix(in oklch,var(--neg),transparent 82%);
+  border-color:color-mix(in oklch,var(--neg),transparent 50%);color:var(--neg);}
+
 /* command line */
 .gt-cmd-box{background:var(--panel-3);border:1px solid var(--line-s);border-radius:3px;
   padding:8px 10px;font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);
@@ -198,6 +211,36 @@ const FW_PRESETS = {
   aggressive:   { gainW:1.3, wrW:0.4, qualityW:0.3, freqW:1.2, ddPenalty:0.7, retentionW:0.4, sharpeW:0.0, calmarW:0.0, pfW:0.0, sortinoW:0.0 },
 };
 
+const RUN_CMD_GROUPS = [
+  {
+    cat: 'SYSTEM TRAINS',
+    cmds: [
+      { key:'routertrain',       label:'Router' },
+      { key:'coevolvetrain',     label:'Coevolve' },
+      { key:'dynamicguardtrain', label:'DynGuard' },
+      { key:'retrain',           label:'Retrain' },
+    ],
+  },
+  {
+    cat: 'BACKTESTS',
+    cmds: [
+      { key:'backtest',         label:'Backtest' },
+      { key:'gridbacktest',     label:'Grid BT' },
+      { key:'combinedbacktest', label:'Combined' },
+      { key:'oosbacktest',      label:'OOS BT' },
+      { key:'allcoinsbacktest', label:'All Coins' },
+      { key:'yearlybreakdown',  label:'Yearly' },
+    ],
+  },
+  {
+    cat: 'ANALYSIS',
+    cmds: [
+      { key:'fulltest', label:'Full Test' },
+      { key:'test',     label:'Edge Test' },
+    ],
+  },
+];
+
 const urlParams = new URLSearchParams(window.location.search);
 const initStrat = urlParams.get('strategy') || 'FadeShort';
 const initVar   = urlParams.get('variant')  || 'default';
@@ -240,8 +283,11 @@ function TrainingApp() {
   const [meanHistory, setMeanHistory] = useState([]);
   const [foldScores, setFoldScores] = useState([0,0,0,0,0]);
   const [log, setLog] = useState([]);
+  const [runStatus, setRunStatus] = useState('idle'); // idle | running | done
+  const [runName, setRunName] = useState('');
   const logRef = useRef(null);
   const timerRef = useRef(null);
+  const runESRef = useRef(null);
 
   useEffect(() => { S.subscribe(setData); S.load(); return () => clearInterval(timerRef.current); }, []);
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [log]);
@@ -334,6 +380,41 @@ function TrainingApp() {
     }
     S.stopTraining?.().catch(()=>{});
     setStatus('idle');
+  }
+
+  async function startRun(cmdKey) {
+    if (status === 'running' || runStatus === 'running') return;
+    setRunStatus('running');
+    setRunName(cmdKey);
+    setLog([]);
+
+    try {
+      await fetch('/api/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: cmdKey }),
+      });
+    } catch(e) {
+      // fall through — SSE will surface the error
+    }
+
+    if (runESRef.current) { runESRef.current.close(); runESRef.current = null; }
+    const es = new EventSource('/api/run/stream');
+    runESRef.current = es;
+    es.onmessage = e => {
+      if (e.data === '[DONE]') {
+        es.close(); runESRef.current = null; setRunStatus('done'); return;
+      }
+      setLog(prev => [...prev.slice(-120), `[${ts()}] ${e.data}`]);
+    };
+    es.onerror = () => { es.close(); runESRef.current = null; setRunStatus('done'); };
+  }
+
+  function stopRun() {
+    if (runESRef.current) { runESRef.current.close(); runESRef.current = null; }
+    fetch('/api/run/stop', { method: 'POST' }).catch(() => {});
+    setRunStatus('idle');
+    setRunName('');
   }
 
   const gaCmd = `dotnet run -- ${strat.cmd}`;
@@ -464,18 +545,45 @@ function TrainingApp() {
               </span>
             </div>
           </div>
+
+          {/* run commands */}
+          <div className="gt-sect">
+            <div className="gt-sect-title">COMMANDS</div>
+            {RUN_CMD_GROUPS.map(group => (
+              <div key={group.cat}>
+                <div className="gt-run-cat">{group.cat}</div>
+                <div className="gt-run-grid">
+                  {group.cmds.map(c => (
+                    <button key={c.key}
+                      className={"gt-run-btn"+(runStatus==='running'&&runName===c.key?' running':'')}
+                      disabled={status==='running'||(runStatus==='running'&&runName!==c.key)}
+                      onClick={()=> runStatus==='running'&&runName===c.key ? stopRun() : startRun(c.key)}>
+                      {runStatus==='running'&&runName===c.key ? '■ '+c.label : c.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
         </aside>
 
         {/* ── main progress area ────────────────────────────────────────── */}
         <main className="gt-main">
           <div className="gt-main-head">
             <div className="gt-status">
-              <span className={"gt-status-dot "+status} />
+              <span className={"gt-status-dot "+(runStatus==='running'?'running':status)} />
               <span className="gt-status-lbl">
-                {status==='idle'?'IDLE · ready to train':status==='running'?`TRAINING ${stratKey.toUpperCase()} · ${activeVar?.label||'default'} · cycle ${cycle}`:`COMPLETE · cycle ${cycle}`}
+                {runStatus==='running'
+                  ? `RUNNING ${runName.toUpperCase()}`
+                  : status==='idle'
+                    ? 'IDLE · ready to train'
+                    : status==='running'
+                      ? `TRAINING ${stratKey.toUpperCase()} · ${activeVar?.label||'default'} · cycle ${cycle}`
+                      : `COMPLETE · cycle ${cycle}`}
               </span>
             </div>
             <button className={"gt-start-btn "+status}
+              disabled={runStatus==='running'}
               onClick={status==='running'?stopTraining:startTraining}>
               {status==='running'?'■ STOP TRAINING':'▶ START TRAINING'}
             </button>
@@ -550,7 +658,9 @@ function TrainingApp() {
 
           {/* log */}
           <div className="gt-log">
-            <div className="gt-log-head">TRAINING LOG</div>
+            <div className="gt-log-head">
+              {runStatus==='running' ? `RUN LOG · ${runName.toUpperCase()}` : 'TRAINING LOG'}
+            </div>
             <div className="gt-log-box" ref={logRef}>
               {log.length === 0 && (
                 <span style={{color:'var(--ink-faint)'}}>

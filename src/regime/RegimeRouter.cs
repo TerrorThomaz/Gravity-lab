@@ -106,7 +106,7 @@ public static class RegimeRouter
             return new(true, false, false, false, 0.5, regime, conf);
 
         bool fadeShort = true;
-        bool grid      = regime == MarketRegime.Ranging || conf < DirectionalMinConf;
+        bool grid      = true;
         bool dipLong   = regime == MarketRegime.Bull    && conf >= DirectionalMinConf;
         bool fadeLong  = regime == MarketRegime.Bear    && conf >= DirectionalMinConf;
 
@@ -130,34 +130,26 @@ public static class RegimeRouter
             return new(true, false, false, false, 0.5, regime, conf);
 
         bool inBullTransition = regime == MarketRegime.Bull && duration < (int)geno.BullMinBars;
-        bool inTransition     = inBullTransition
-                             || (regime == MarketRegime.Bear && duration < (int)geno.BearMinBars);
 
         bool earlyFromBear    = inBullTransition && prevRegime == MarketRegime.Bear
                                 && conf >= geno.BullMinConf && geno.EarlyBullFromBearMult > 0;
         bool earlyFromRanging = inBullTransition && prevRegime == MarketRegime.Ranging
                                 && conf >= geno.BullMinConf && geno.EarlyBullFromRangingMult > 0;
-        bool bearCarry        = inBullTransition && prevRegime == MarketRegime.Bear
-                                && geno.EarlyBullBearCarry > 0;
 
         bool fadeShort = true;
-        bool grid      = regime == MarketRegime.Ranging
-                         || conf < geno.GridMaxConf
-                         || (inTransition && geno.TransitionSizeMult > 0);
+        bool grid      = true;
         bool dipLong   = (regime == MarketRegime.Bull
                           && duration >= (int)geno.BullMinBars
                           && conf >= geno.BullMinConf)
                          || earlyFromBear || earlyFromRanging;
-        bool fadeLong  = (regime == MarketRegime.Bear
-                          && duration >= (int)geno.BearMinBars
-                          && conf >= geno.BearMinConf)
-                         || bearCarry;
+        bool fadeLong  = regime == MarketRegime.Bear
+                          && conf >= geno.BearMinConf;
 
         double sizeMult = regime == MarketRegime.Ranging
             ? 1.0
             : 0.60 + 0.40 * Math.Min(1.0, conf / 0.80);
 
-        if (inTransition && geno.TransitionSizeMult > 0 && !earlyFromBear && !earlyFromRanging)
+        if (inBullTransition && geno.TransitionSizeMult > 0 && !earlyFromBear && !earlyFromRanging)
             sizeMult *= geno.TransitionSizeMult;
         else if (earlyFromBear)
             sizeMult *= geno.EarlyBullFromBearMult;

@@ -193,9 +193,9 @@ const STRATEGIES = [
 const DEFAULT_GA = { popSize:20, crossover:0.72, mutation:0.18, folds:5, valSplit:20, tpeIters:60 };
 const DEFAULT_FW = { gainW:1.0, wrW:0.9, qualityW:0.8, freqW:0.6, ddPenalty:1.2, retentionW:1.0, sharpeW:0.7, calmarW:0.6, pfW:0.5, sortinoW:0.4 };
 const FW_PRESETS = {
-  Conservative: { gainW:1.2, wrW:1.2, qualityW:1.0, freqW:0.4, ddPenalty:2.0, retentionW:1.2, sharpeW:1.2, calmarW:1.2, pfW:0.8, sortinoW:1.0 },
-  Balanced:     { gainW:1.0, wrW:0.9, qualityW:0.8, freqW:0.6, ddPenalty:1.2, retentionW:1.0, sharpeW:0.7, calmarW:0.6, pfW:0.5, sortinoW:0.4 },
-  Aggressive:   { gainW:1.5, wrW:0.6, qualityW:0.6, freqW:1.0, ddPenalty:0.8, retentionW:0.8, sharpeW:0.3, calmarW:0.2, pfW:0.3, sortinoW:0.2 },
+  conservative: { gainW:1.2, wrW:1.2, qualityW:1.0, freqW:0.4, ddPenalty:2.0, retentionW:1.2, sharpeW:1.2, calmarW:1.2, pfW:0.8, sortinoW:1.0 },
+  balanced:     { gainW:1.0, wrW:0.9, qualityW:0.8, freqW:0.6, ddPenalty:1.2, retentionW:1.0, sharpeW:0.7, calmarW:0.6, pfW:0.5, sortinoW:0.4 },
+  aggressive:   { gainW:1.5, wrW:0.6, qualityW:0.6, freqW:1.0, ddPenalty:0.8, retentionW:0.8, sharpeW:0.3, calmarW:0.2, pfW:0.3, sortinoW:0.2 },
 };
 
 const urlParams = new URLSearchParams(window.location.search);
@@ -232,7 +232,7 @@ function TrainingApp() {
   const [newVarLabel, setNewVarLabel] = useState('');
   const [ga, setGa] = useState(DEFAULT_GA);
   const [fw, setFw] = useState(DEFAULT_FW);
-  const [activePreset, setActivePreset] = useState('Balanced');
+  const [activePreset, setActivePreset] = useState('');
   const [status, setStatus] = useState('idle'); // idle | running | done
   const [cycle, setCycle] = useState(0);
   const [bestFit, setBestFit] = useState(0);

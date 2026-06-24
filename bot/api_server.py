@@ -27,6 +27,10 @@ _live_proc: subprocess.Popen | None = None
 _live_info: dict = {"status": "idle", "pid": None, "startedAt": None, "lastError": None}
 _live_paused: bool = False
 
+# ── Run command subprocess state (backtests, analysis, system trains) ─────────
+_run_proc: subprocess.Popen | None = None
+_run_info: dict = {"status": "idle", "command": None, "startedAt": None, "lastLine": "", "lastError": None}
+
 def _stop_live_proc():
     """Stop the papertrade subprocess if running."""
     global _live_proc
@@ -48,10 +52,31 @@ STRATEGY_COMMANDS = {
     "FadeLong":   "fadelongtrain",
 }
 
+RUN_COMMANDS = {
+    # System trains (no variant/fitnessConfig concept)
+    "routertrain":        "routertrain",
+    "coevolvetrain":      "coevolvetrain",
+    "dynamicguardtrain":  "dynamicguardtrain",
+    "retrain":            "retrain",
+    # Backtests
+    "backtest":           "backtest",
+    "gridbacktest":       "gridbacktest",
+    "combinedbacktest":   "combinedbacktest",
+    "oosbacktest":        "oosbacktest",
+    "allcoinsbacktest":   "allcoinsbacktest",
+    "yearlybreakdown":    "yearlybreakdown",
+    # Analysis
+    "fulltest":           "fulltest",
+    "test":               "test",
+}
+
 class TrainRequest(BaseModel):
     strategy:      str
     variant:       str = "default"
     fitnessConfig: dict = {}
+
+class RunRequest(BaseModel):
+    command: str
 
 # ── Parse structured progress from GA stdout lines ──────────────────────────
 _GEN_RE = re.compile(r'Gen\s+(\d+)\s.*?F=([\d,.-]+)')
@@ -232,6 +257,10 @@ async def _live_monitor_loop():
             print("[live] training in progress, deferring restart", flush=True)
             await asyncio.sleep(60)
             continue
+        if _run_proc is not None and _run_proc.poll() is None:
+            print("[live] command running, deferring restart", flush=True)
+            await asyncio.sleep(60)
+            continue
         if _baseline_info["status"] == "running":
             print("[live] fulltest in progress, deferring restart", flush=True)
             await asyncio.sleep(60)
@@ -331,6 +360,76 @@ async def stop_training():
 async def get_status():
     running = _proc is not None and _proc.poll() is None
     return {"running": running, **_proc_info}
+
+@app.post("/api/run")
+async def start_run(req: RunRequest):
+    global _run_proc, _run_info, _live_paused
+    if _run_proc is not None and _run_proc.poll() is None:
+        raise HTTPException(409, "Command already running")
+    if _proc is not None and _proc.poll() is None:
+        raise HTTPException(409, "Training in progress")
+    if req.command not in RUN_COMMANDS:
+        raise HTTPException(400, f"Unknown command: {req.command!r}")
+
+    _live_paused = True
+    _stop_live_proc()
+
+    cmd = ["dotnet", "run", "--", RUN_COMMANDS[req.command]]
+    _run_proc = subprocess.Popen(
+        cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1, encoding="utf-8", errors="replace",
+    )
+    _run_info = {
+        "status":    "running",
+        "command":   req.command,
+        "startedAt": datetime.utcnow().isoformat(),
+        "lastLine":  "",
+        "lastError": None,
+    }
+    return {"status": "started", "pid": _run_proc.pid}
+
+
+@app.get("/api/run/stream")
+async def stream_run():
+    async def generate():
+        global _live_paused
+        if _run_proc is None:
+            yield "data: No command running\n\n"
+            return
+        loop = asyncio.get_event_loop()
+        while True:
+            line = await loop.run_in_executor(None, _run_proc.stdout.readline)
+            if not line:
+                _run_info["status"] = "done"
+                _live_paused = False
+                yield "data: [DONE]\n\n"
+                break
+            stripped = line.rstrip()
+            _run_info["lastLine"] = stripped
+            yield f"data: {stripped}\n\n"
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.post("/api/run/stop")
+async def stop_run():
+    global _run_proc, _live_paused
+    if _run_proc is None or _run_proc.poll() is not None:
+        return {"status": "not running"}
+    _run_proc.terminate()
+    try:
+        _run_proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        _run_proc.kill()
+    _run_proc = None
+    _run_info["status"] = "stopped"
+    _live_paused = False
+    return {"status": "stopped"}
+
+
+@app.get("/api/run/status")
+async def get_run_status():
+    running = _run_proc is not None and _run_proc.poll() is None
+    return {"running": running, **_run_info}
 
 @app.get("/api/baseline")
 async def get_baseline():

@@ -117,6 +117,9 @@ public static class FadeLongSimulator
         double cachedAtrRef   = 0;
         int    cachedRegimeBars = 0;
 
+        var bullDiv    = Signals.BullishDivergence(h1Rsi, h1Closes, g.LookbackCandles, g.RsiOversold, g.RsiDivThreshold);
+        var bigDropArr = Signals.MinMoveFilter(h1Closes, h1Closes, h1Atr, g.LookbackCandles, g.MinDropAtrMult);
+
         int m15Start = (h1Warmup + 1) * 4;
         int m15Limit = h1.Length * 4;
 
@@ -157,13 +160,12 @@ public static class FadeLongSimulator
                             h1Closes, h1Highs, h1Lows, h1Ref, g.LookbackCandles);
 
                         // Min drop: the fall from recent high to swing low must be meaningful
-                        bool bigDrop = (swingHigh - swingLow) >= g.MinDropAtrMult * atrH1;
+                        bool bigDrop = bigDropArr[h1Ref];
                         if (!bigDrop) continue;
 
                         // RSI divergence: RSI was oversold at the swing low AND has now recovered
                         double rsiAtLow = h1Rsi[lowIdx];
-                        bool diverging  = rsiAtLow <= g.RsiOversold
-                                       && h1Rsi[h1Ref] >= rsiAtLow + g.RsiDivThreshold;
+                        bool diverging  = bullDiv[h1Ref];
                         if (!diverging) continue;
 
                         cachedSetupMet  = true;

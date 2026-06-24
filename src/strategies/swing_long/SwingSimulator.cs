@@ -106,6 +106,11 @@ public static class FadeShortSimulator
     {
         var result = new List<(DateTime, double, string)>();
 
+        var bearBos        = Signals.BearishBoS(closes, lows);
+        var bearDiv        = Signals.BearishDivergence(rsi, closes, g.LookbackCandles, g.RsiOverbought, g.RsiDivThreshold);
+        var bigRallyArr    = Signals.MinMoveFilter(closes, lows, atr, g.LookbackCandles, g.MinRallyAtrMult);
+        var strongTrendArr = Signals.AdxTrend(adx, closes, ema, g.AdxThreshold);
+
         bool   inTrade    = false;
         double entry      = 0;
         double hardStop   = 0;
@@ -124,7 +129,7 @@ public static class FadeShortSimulator
             if (!inTrade)
             {
                 // ── Regime check ─────────────────────────────────────────────────
-                bool strongTrend = adx[i] >= g.AdxThreshold && price > ema[i];
+                bool strongTrend = strongTrendArr[i];
                 if (!strongTrend) continue;
 
                 // ── Find swing high in lookback window ────────────────────────────
@@ -132,17 +137,16 @@ public static class FadeShortSimulator
                     closes, highs, lows, i, g.LookbackCandles);
 
                 // ── Min rally filter ──────────────────────────────────────────────
-                bool bigRally = (swingHigh - recentLow) >= g.MinRallyAtrMult * atrNow;
+                bool bigRally = bigRallyArr[i];
                 if (!bigRally) continue;
 
                 // ── RSI divergence ────────────────────────────────────────────────
                 double rsiAtHigh = rsi[highIdx];
-                bool diverging   = rsiAtHigh >= g.RsiOverbought
-                                && rsi[i] <= rsiAtHigh - g.RsiDivThreshold;
+                bool diverging   = bearDiv[i];
                 if (!diverging) continue;
 
                 // ── Structure break: close below previous candle's low ────────────
-                bool bos = closes[i] < lows[i - 1];
+                bool bos = bearBos[i];
                 if (!bos) continue;
 
                 // ── Enter short ───────────────────────────────────────────────────
@@ -296,6 +300,9 @@ public static class FadeShortSimulator
         double   entryScore = 0;
         DateTime entryTime  = default;
 
+        var bearDiv    = Signals.BearishDivergence(h1Rsi, h1Closes, g.LookbackCandles, g.RsiOverbought, g.RsiDivThreshold);
+        var bigRallyArr = Signals.MinMoveFilter(h1Closes, h1Lows, h1Atr, g.LookbackCandles, g.MinRallyAtrMult);
+
         int m15Start = (h1Warmup + 1) * 4;
         int m15Limit = h1.Length * 4;
 
@@ -333,9 +340,8 @@ public static class FadeShortSimulator
                             h1Closes, h1Highs, h1Lows, h1Ref, g.LookbackCandles);
 
                         double rsiAtHigh = h1Rsi[highIdx];
-                        bool bigRally = (swingHigh - recentLow) >= g.MinRallyAtrMult * atrH1;
-                        bool diverging = rsiAtHigh >= g.RsiOverbought
-                                      && h1Rsi[h1Ref] <= rsiAtHigh - g.RsiDivThreshold;
+                        bool bigRally = bigRallyArr[h1Ref];
+                        bool diverging = bearDiv[h1Ref];
 
                         if (bigRally && diverging)
                         {
@@ -507,6 +513,10 @@ public static class SwingLongSimulator
         double cachedSwingLow = 0;
         double cachedAtrRef   = 0;
 
+        var bullDiv    = Signals.BullishDivergence(h1Rsi, h1Closes, g.LookbackCandles, g.RsiOversold, g.RsiDivThreshold);
+        var bigDropArr = Signals.MinMoveFilter(h1Highs, h1Closes, h1Atr, g.LookbackCandles, g.MinDeclineAtrMult);
+        var h1BullBos  = Signals.BullishBoS(h1Closes, h1Highs);
+
         int m15Start = (h1Warmup + 1) * 4;
         int m15Limit = h1.Length * 4;
 
@@ -541,15 +551,14 @@ public static class SwingLongSimulator
                             h1Closes, h1Highs, h1Lows, h1Ref, g.LookbackCandles);
 
                         // Min decline filter: real pullback, not noise
-                        bool bigDrop = (recentHigh - swingLow) >= g.MinDeclineAtrMult * atrH1;
+                        bool bigDrop = bigDropArr[h1Ref];
 
                         // RSI bullish divergence: swingLow RSI was oversold AND current RSI recovered
                         double rsiAtLow = h1Rsi[lowIdx];
-                        bool diverging  = rsiAtLow <= g.RsiOversold
-                                       && h1Rsi[h1Ref] >= rsiAtLow + g.RsiDivThreshold;
+                        bool diverging  = bullDiv[h1Ref];
 
-                        // 1h BoS: close above previous candle's high (bullish) — stays inline (single-bar check)
-                        bool h1Bos = h1Closes[h1Ref] > h1Highs[h1Ref - 1];
+                        // 1h BoS: close above previous candle's high (bullish)
+                        bool h1Bos = h1BullBos[h1Ref];
 
                         if (bigDrop && diverging && h1Bos)
                         {

@@ -93,10 +93,10 @@ public static class DipLongSimulator
         int[] bullRegimeBarsAtBar = new int[h1.Length];
         int bullRunning = 0;
         int slopeLen = g.RegimeSlopeLookback;
+        var regimeSlope = Signals.EmaSlope(h1RegimeEma, g.RegimeSlopeLookback);
         for (int i = h1Warmup; i < h1.Length; i++)
         {
-            bool regimeBar = h1Closes[i] > h1RegimeEma[i]
-                          && h1RegimeEma[i] > h1RegimeEma[i - slopeLen];
+            bool regimeBar = h1Closes[i] > h1RegimeEma[i] && regimeSlope[i] > 0;
             bullRunning = regimeBar ? bullRunning + 1 : 0;
             bullRegimeBarsAtBar[i] = bullRunning;
         }

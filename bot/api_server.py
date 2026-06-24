@@ -303,6 +303,8 @@ async def start_training(req: TrainRequest):
     global _proc, _proc_info, _live_paused
     if _proc and _proc.poll() is None:
         raise HTTPException(409, "Training already in progress")
+    if _run_proc is not None and _run_proc.poll() is None:
+        raise HTTPException(409, "Command already running")
     if req.strategy not in STRATEGY_COMMANDS:
         raise HTTPException(400, f"Unknown strategy: {req.strategy}")
     if not re.match(r'^[a-zA-Z0-9_-]+$', req.variant):

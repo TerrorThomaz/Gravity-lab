@@ -7,8 +7,8 @@ namespace TradingGA;
 //   Layer 1 — BTC regime → which strategy POOL is active (this class)
 //   Layer 2 — per-coin internal gates (ADX, EMA slope, ATR filter) → which coins qualify within the pool
 //
-// This means FadeShort is always on (it has its own internal gate per coin),
-// while DipLong / FadeLong only activate when BTC clearly signals their regime.
+// FadeShort is router-gated: it is suppressed in confirmed Bull regimes (same threshold as DipLong),
+// so shorting does not fight an established uptrend. In Bear/Ranging/HighVol it is always active.
 //
 // ETH acts as a secondary confirmer:
 //   Agreement  → weighted blend (BTC 70% + ETH 30%), boosting confidence
@@ -105,7 +105,7 @@ public static class RegimeRouter
         if (regime == MarketRegime.HighVol)
             return new(true, false, false, false, 0.5, regime, conf);
 
-        bool fadeShort = true;
+        bool fadeShort = !(regime == MarketRegime.Bull   && conf >= DirectionalMinConf);
         bool grid      = true;
         bool dipLong   = regime == MarketRegime.Bull    && conf >= DirectionalMinConf;
         bool fadeLong  = regime == MarketRegime.Bear    && conf >= DirectionalMinConf;
@@ -136,7 +136,9 @@ public static class RegimeRouter
         bool earlyFromRanging = inBullTransition && prevRegime == MarketRegime.Ranging
                                 && conf >= geno.BullMinConf && geno.EarlyBullFromRangingMult > 0;
 
-        bool fadeShort = true;
+        bool fadeShort = !(regime == MarketRegime.Bull
+                           && duration >= (int)geno.BullMinBars
+                           && conf >= geno.BullMinConf);
         bool grid      = true;
         bool dipLong   = (regime == MarketRegime.Bull
                           && duration >= (int)geno.BullMinBars
@@ -219,7 +221,9 @@ public class RegimeRouterSession
 
         return kind switch
         {
-            RegimeRouterGA.StrategyKind.FadeShort => true,
+            RegimeRouterGA.StrategyKind.FadeShort => !(btc.Regime == MarketRegime.Bull
+                                                       && btc.Duration >= (int)_geno.BullMinBars
+                                                       && conf >= _geno.BullMinConf),
             RegimeRouterGA.StrategyKind.Grid      => btc.Regime == MarketRegime.Ranging
                                                      || conf < _geno.GridMaxConf
                                                      || (inTransition && _geno.TransitionSizeMult > 0),
@@ -263,7 +267,7 @@ public class RegimeRouterSession
                 MarketRegime.Bear when conf > StepCutoffConf => 0.0,
                 _                                             => 0.0,
             },
-            RegimeRouterGA.StrategyKind.FadeShort => 1.0,
+            RegimeRouterGA.StrategyKind.FadeShort => btc.Regime == MarketRegime.Bull && conf > StepCutoffConf ? 0.0 : 1.0,
             RegimeRouterGA.StrategyKind.Grid      => 1.0,
             _                                     => 0.0,
         };

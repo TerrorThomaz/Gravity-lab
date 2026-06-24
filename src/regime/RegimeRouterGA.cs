@@ -269,7 +269,9 @@ public class RegimeRouterGA
 
             bool active = t.Kind switch
             {
-                StrategyKind.FadeShort => true,
+                StrategyKind.FadeShort => !(btc.Regime == MarketRegime.Bull
+                                            && btc.Duration >= (int)router.BullMinBars
+                                            && blendedConf >= router.BullMinConf),
                 StrategyKind.Grid      => btc.Regime == MarketRegime.Ranging
                                           || blendedConf < router.GridMaxConf
                                           || (inTransition && router.TransitionSizeMult > 0),

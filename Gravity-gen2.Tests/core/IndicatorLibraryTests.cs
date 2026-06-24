@@ -334,3 +334,160 @@ public class MomentumRsiTests
         Assert.Equal(closes.Length, rsi.Length);
     }
 }
+
+// ── Signals ──────────────────────────────────────────────────────────────────
+
+public class SignalsBearishDivergenceTests
+{
+    [Fact]
+    public void FiresWhenRsiOverboughtAndDiverging()
+    {
+        // closes: 90, 95, 100, 98, 96 — swing high at i=2 (close=100)
+        // rsi: 60, 70, 80, 75, 65 — RSI at swing high=80, current=65, diff=15 ≥ threshold=10
+        var closes = new double[] { 90, 95, 100, 98, 96 };
+        var rsi    = new double[] { 60, 70,  80, 75, 65 };
+        var result = Signals.BearishDivergence(rsi, closes, lookback: 4, rsiOverbought: 75, divThreshold: 10);
+        Assert.True(result[4]);
+    }
+
+    [Fact]
+    public void DoesNotFireWhenRsiNotOverbought()
+    {
+        var closes = new double[] { 90, 95, 100, 98, 96 };
+        var rsi    = new double[] { 50, 60,  70, 65, 55 };
+        // rsiOverbought=75: swing RSI=70 < 75 → no divergence
+        var result = Signals.BearishDivergence(rsi, closes, lookback: 4, rsiOverbought: 75, divThreshold: 5);
+        Assert.False(result[4]);
+    }
+}
+
+public class SignalsBullishDivergenceTests
+{
+    [Fact]
+    public void FiresWhenRsiOversoldAndRecovered()
+    {
+        // closes: 100, 95, 90, 93, 96 — swing low at i=2 (close=90)
+        // rsi: 50, 35, 20, 30, 40 — RSI at swing low=20, current=40, diff=20 ≥ threshold=15
+        var closes = new double[] { 100, 95, 90, 93, 96 };
+        var rsi    = new double[] {  50, 35, 20, 30, 40 };
+        var result = Signals.BullishDivergence(rsi, closes, lookback: 4, rsiOversold: 30, divThreshold: 15);
+        Assert.True(result[4]);
+    }
+
+    [Fact]
+    public void DoesNotFireWhenNoRecovery()
+    {
+        var closes = new double[] { 100, 95, 90, 93, 96 };
+        var rsi    = new double[] {  50, 35, 20, 22, 25 };
+        // recovery = 25-20=5, threshold=15 → no divergence
+        var result = Signals.BullishDivergence(rsi, closes, lookback: 4, rsiOversold: 30, divThreshold: 15);
+        Assert.False(result[4]);
+    }
+}
+
+public class SignalsBosTests
+{
+    [Fact]
+    public void BearishBoS_FiresWhenCloseBelowPrevLow()
+    {
+        var closes = new double[] { 100, 98, 95 };
+        var lows   = new double[] {  97, 96, 93 };
+        var result = Signals.BearishBoS(closes, lows);
+        Assert.False(result[1]); // 98 < 97 = false
+        Assert.True(result[2]);  // 95 < 96 = true
+    }
+
+    [Fact]
+    public void BullishBoS_FiresWhenCloseAbovePrevHigh()
+    {
+        var closes = new double[] { 100, 103, 101 };
+        var highs  = new double[] { 102, 101, 104 };
+        var result = Signals.BullishBoS(closes, highs);
+        Assert.True(result[1]);  // 103 > 102 = true
+        Assert.False(result[2]); // 101 < 101 = false
+    }
+}
+
+public class SignalsSwingHighLookbackTests
+{
+    [Fact]
+    public void ReturnsCorrectHighIndexAndRecentLow()
+    {
+        var closes = new double[] { 10, 20, 15, 12, 8 };
+        var highs  = new double[] { 11, 21, 16, 13, 9 };
+        var lows   = new double[] {  9, 19, 14, 11, 7 };
+        // lookback=4, i=4: scan [0,4) → highest close=20 at idx=1, lowest low=9 at idx=0
+        var (sh, hi, rl) = Signals.SwingHighLookback(closes, highs, lows, i: 4, lookback: 4);
+        Assert.Equal(20.0, sh, precision: 8);
+        Assert.Equal(1, hi);
+        Assert.Equal(9.0, rl, precision: 8);
+    }
+}
+
+public class SignalsMinMoveFilterTests
+{
+    [Fact]
+    public void BigMove_ReturnsTrue()
+    {
+        // upper=[100,110], lower=[100,90], atr=[5,5], lookback=2, minAtrMult=3
+        // move = 110-90 = 20, 20/5=4 ≥ 3 → true
+        var upper = new double[] { 100, 110 };
+        var lower = new double[] { 100,  90 };
+        var atr   = new double[] {   5,   5 };
+        var result = Signals.MinMoveFilter(upper, lower, atr, lookback: 2, minAtrMult: 3);
+        Assert.True(result[1]);
+    }
+
+    [Fact]
+    public void SmallMove_ReturnsFalse()
+    {
+        var upper = new double[] { 100, 101 };
+        var lower = new double[] { 100,  99 };
+        var atr   = new double[] {   5,   5 };
+        var result = Signals.MinMoveFilter(upper, lower, atr, lookback: 2, minAtrMult: 3);
+        // move=2, 2/5=0.4 < 3 → false
+        Assert.False(result[1]);
+    }
+}
+
+public class SignalsEmaSlopeTests
+{
+    [Fact]
+    public void RisingEma_PositiveSlope()
+    {
+        var ema = new double[] { 100, 102, 104, 106 };
+        var slope = Signals.EmaSlope(ema, lookback: 2);
+        Assert.True(slope[3] > 0);
+    }
+
+    [Fact]
+    public void FlatEma_ZeroSlope()
+    {
+        var ema = new double[] { 100, 100, 100, 100 };
+        var slope = Signals.EmaSlope(ema, lookback: 2);
+        Assert.Equal(0.0, slope[3], precision: 8);
+    }
+}
+
+public class SignalsAdxTrendTests
+{
+    [Fact]
+    public void AboveThresholdAndAboveEma_True()
+    {
+        var adx    = new double[] { 30 };
+        var closes = new double[] { 110 };
+        var ema    = new double[] { 100 };
+        var result = Signals.AdxTrend(adx, closes, ema, threshold: 25);
+        Assert.True(result[0]);
+    }
+
+    [Fact]
+    public void BelowEma_FalseEvenIfAdxHigh()
+    {
+        var adx    = new double[] { 30 };
+        var closes = new double[] { 90 };
+        var ema    = new double[] { 100 };
+        var result = Signals.AdxTrend(adx, closes, ema, threshold: 25);
+        Assert.False(result[0]);
+    }
+}

@@ -109,12 +109,12 @@ public static class RegimeClassifier
         var highs  = CandleExt.Highs(h1);
         var lows   = CandleExt.Lows(h1);
 
-        var ema20  = Indicators.Ema(closes, 20);
-        var ema50  = Indicators.Ema(closes, 50);
-        var ema200 = Indicators.Ema(closes, 200);
-        var atr14  = Indicators.Atr(highs, lows, closes, 14);
-        var atr100 = Indicators.Atr(highs, lows, closes, 100);
-        var adx    = Indicators.Adx(highs, lows, closes, 14);
+        var ema20  = Trend.Ema(closes, 20);
+        var ema50  = Trend.Ema(closes, 50);
+        var ema200 = Trend.Ema(closes, 200);
+        var atr14  = Volatility.Atr(highs, lows, closes, 14);
+        var atr100 = Volatility.Atr(highs, lows, closes, 100);
+        var adx    = Trend.Adx(highs, lows, closes, 14);
 
         var result       = new RegimeBar[n];
         var prevRegime   = MarketRegime.Ranging;
@@ -241,12 +241,12 @@ public static class RegimeClassifier
         var highs  = CandleExt.Highs(h1);
         var lows   = CandleExt.Lows(h1);
 
-        var ema20Arr  = Indicators.Ema(closes, 20);
-        var ema50Arr  = Indicators.Ema(closes, 50);
-        var ema200Arr = Indicators.Ema(closes, 200);
-        var atr14Arr  = Indicators.Atr(highs, lows, closes, 14);
-        var atr100Arr = Indicators.Atr(highs, lows, closes, 100);
-        var adxArr    = Indicators.Adx(highs, lows, closes, 14);
+        var ema20Arr  = Trend.Ema(closes, 20);
+        var ema50Arr  = Trend.Ema(closes, 50);
+        var ema200Arr = Trend.Ema(closes, 200);
+        var atr14Arr  = Volatility.Atr(highs, lows, closes, 14);
+        var atr100Arr = Volatility.Atr(highs, lows, closes, 100);
+        var adxArr    = Trend.Adx(highs, lows, closes, 14);
 
         double price   = closes[n - 1];
         double ema20   = ema20Arr[n - 1];

@@ -38,7 +38,7 @@ static class PapertradeCommands
         double[] highs  = m15.Select(c => c.High).ToArray();
         double[] lows   = m15.Select(c => c.Low).ToArray();
         double[] closes = m15.Select(c => c.Close).ToArray();
-        double[] atr    = Indicators.Atr(highs, lows, closes, 14);
+        double[] atr    = Volatility.Atr(highs, lows, closes, 14);
         int      bar    = atr.Length - 1;
         return VariantRouter.Select(atr, bar, variants) ?? variants[0].Genotype;
     }

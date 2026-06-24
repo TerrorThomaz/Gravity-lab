@@ -127,7 +127,7 @@ public class FadeLongGA
         if (_cfg.AtrLow > 0.0 || _cfg.AtrHigh < 9999.0)
         {
             var m15Arr = validCoins.SelectMany(x => x.m15.ToArray()).ToArray();
-            var atr = Indicators.Atr(
+            var atr = Volatility.Atr(
                 m15Arr.Select(c => c.High).ToArray(),
                 m15Arr.Select(c => c.Low).ToArray(),
                 m15Arr.Select(c => c.Close).ToArray(), 14);

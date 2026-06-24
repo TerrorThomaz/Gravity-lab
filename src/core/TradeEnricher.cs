@@ -51,7 +51,7 @@ public static class TradeEnricher
             var highs  = CandleExt.Highs(h1);
             var lows   = CandleExt.Lows(h1);
             symbolCache[sym] = (
-                Indicators.Atr(highs, lows, closes, 14),
+                Volatility.Atr(highs, lows, closes, 14),
                 h1.Select(c => c.Volume).ToArray(),
                 h1.Select(c => c.Time).ToArray(),
                 h1);

@@ -9,7 +9,7 @@ public class EmaTests
     public void FlatSeries_ReturnsConstant()
     {
         var closes = Enumerable.Repeat(100.0, 20).ToArray();
-        var ema = Indicators.Ema(closes, 5);
+        var ema = Trend.Ema(closes, 5);
         // Seeded from closes[0]=100, any constant input stays at 100
         foreach (var v in ema)
             Assert.Equal(100.0, v, precision: 8);
@@ -19,7 +19,7 @@ public class EmaTests
     public void Period1_EqualsTodaysClose()
     {
         var closes = new double[] { 10, 20, 30, 25, 15 };
-        var ema = Indicators.Ema(closes, 1);
+        var ema = Trend.Ema(closes, 1);
         // k = 2/(1+1) = 1 → EMA[i] = closes[i]
         for (int i = 0; i < closes.Length; i++)
             Assert.Equal(closes[i], ema[i], precision: 8);
@@ -31,7 +31,7 @@ public class EmaTests
         // k = 2/(3+1) = 0.5
         // EMA[0] = 10, EMA[1] = 20*0.5 + 10*0.5 = 15, EMA[2] = 30*0.5 + 15*0.5 = 22.5
         var closes = new double[] { 10, 20, 30 };
-        var ema = Indicators.Ema(closes, 3);
+        var ema = Trend.Ema(closes, 3);
         Assert.Equal(10.0,  ema[0], precision: 8);
         Assert.Equal(15.0,  ema[1], precision: 8);
         Assert.Equal(22.5,  ema[2], precision: 8);
@@ -41,7 +41,7 @@ public class EmaTests
     public void OutputLength_MatchesInput()
     {
         var closes = new double[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
-        var ema = Indicators.Ema(closes, 5);
+        var ema = Trend.Ema(closes, 5);
         Assert.Equal(closes.Length, ema.Length);
     }
 }
@@ -53,7 +53,7 @@ public class RsiTests
     {
         // All gains → avgLoss=0 → RSI=100
         var closes = Enumerable.Range(1, 20).Select(i => (double)i * 10).ToArray();
-        var rsi = Indicators.Rsi(closes, 7);
+        var rsi = Momentum.Rsi(closes, 7);
         for (int i = 7; i < rsi.Length; i++)
             Assert.Equal(100.0, rsi[i], precision: 6);
     }
@@ -63,7 +63,7 @@ public class RsiTests
     {
         // period=2, closes=[100, 101, 100]: after warmup avgGain=0.5, avgLoss=0.5 → RSI=50
         var closes = new double[] { 100, 101, 100 };
-        var rsi = Indicators.Rsi(closes, 2);
+        var rsi = Momentum.Rsi(closes, 2);
         Assert.Equal(50.0, rsi[2], precision: 6);
     }
 
@@ -72,7 +72,7 @@ public class RsiTests
     {
         // avgGain=0, avgLoss=0 → RSI=100 (no losses at all)
         var closes = Enumerable.Repeat(100.0, 15).ToArray();
-        var rsi = Indicators.Rsi(closes, 7);
+        var rsi = Momentum.Rsi(closes, 7);
         for (int i = 7; i < rsi.Length; i++)
             Assert.Equal(100.0, rsi[i], precision: 6);
     }
@@ -85,7 +85,7 @@ public class RsiTests
         // RSI[2]=50; i=3: d=-1, avgGain=(0.5*1+0)/2=0.25, avgLoss=(0.5*1+1)/2=0.75
         // RSI[3]=100-100/(1+0.25/0.75)=100-75=25
         var closes = new double[] { 100, 101, 100, 99 };
-        var rsi = Indicators.Rsi(closes, 2);
+        var rsi = Momentum.Rsi(closes, 2);
         Assert.Equal(25.0, rsi[3], precision: 6);
     }
 
@@ -93,7 +93,7 @@ public class RsiTests
     public void OutputLength_MatchesInput()
     {
         var closes = Enumerable.Range(1, 30).Select(i => (double)i).ToArray();
-        var rsi = Indicators.Rsi(closes, 14);
+        var rsi = Momentum.Rsi(closes, 14);
         Assert.Equal(closes.Length, rsi.Length);
     }
 }
@@ -115,7 +115,7 @@ public class AtrTests
         var h = c.Select(x => x.High).ToArray();
         var l = c.Select(x => x.Low).ToArray();
         var cl = c.Select(x => x.Close).ToArray();
-        var atr = Indicators.Atr(h, l, cl, 14);
+        var atr = Volatility.Atr(h, l, cl, 14);
         for (int i = 14; i < atr.Length; i++)
             Assert.Equal(0.0, atr[i], precision: 8);
     }
@@ -131,7 +131,7 @@ public class AtrTests
         var h  = candles.Select(c => c.High).ToArray();
         var l  = candles.Select(c => c.Low).ToArray();
         var cl = candles.Select(c => c.Close).ToArray();
-        var atr = Indicators.Atr(h, l, cl, 14);
+        var atr = Volatility.Atr(h, l, cl, 14);
         Assert.Equal(5.0, atr[29], precision: 6);
     }
 
@@ -139,7 +139,7 @@ public class AtrTests
     public void OutputLength_MatchesInput()
     {
         var c = Flat(50, 20);
-        var atr = Indicators.Atr(c.Select(x => x.High).ToArray(),
+        var atr = Volatility.Atr(c.Select(x => x.High).ToArray(),
                                   c.Select(x => x.Low).ToArray(),
                                   c.Select(x => x.Close).ToArray(), 14);
         Assert.Equal(c.Length, atr.Length);
@@ -158,7 +158,7 @@ public class AdxTests
         var h  = candles.Select(c => c.High).ToArray();
         var l  = candles.Select(c => c.Low).ToArray();
         var cl = candles.Select(c => c.Close).ToArray();
-        var adx = Indicators.Adx(h, l, cl, 14);
+        var adx = Trend.Adx(h, l, cl, 14);
         // After full warmup (period*2) ADX should be 0 for a flat series
         for (int i = 28; i < adx.Length; i++)
             Assert.Equal(0.0, adx[i], precision: 6);
@@ -175,7 +175,7 @@ public class AdxTests
         var h  = candles.Select(c => c.High).ToArray();
         var l  = candles.Select(c => c.Low).ToArray();
         var cl = candles.Select(c => c.Close).ToArray();
-        var adx = Indicators.Adx(h, l, cl, 14);
+        var adx = Trend.Adx(h, l, cl, 14);
         Assert.True(adx[79] > 25, $"Expected ADX > 25 in strong trend, got {adx[79]:F2}");
     }
 
@@ -187,7 +187,7 @@ public class AdxTests
         var h  = Enumerable.Range(0, n).Select(i => (double)(100 + i)).ToArray();
         var l  = Enumerable.Range(0, n).Select(i => (double)(99  + i)).ToArray();
         var cl = Enumerable.Range(0, n).Select(i => (double)(100 + i)).ToArray();
-        var adx = Indicators.Adx(h, l, cl, 14);
+        var adx = Trend.Adx(h, l, cl, 14);
         Assert.Equal(n, adx.Length);
     }
 }
@@ -198,7 +198,7 @@ public class BbWidthTests
     public void FlatSeries_WidthIsZero()
     {
         var closes = Enumerable.Repeat(100.0, 30).ToArray();
-        var width = Indicators.BbWidth(closes, 20);
+        var width = Volatility.BbWidth(closes, 20);
         for (int i = 19; i < width.Length; i++)
             Assert.Equal(0.0, width[i], precision: 8);
     }
@@ -209,7 +209,7 @@ public class BbWidthTests
         // period=3, closes=[9,10,11]: mean=10, variance=(1+0+1)/3=2/3, std=sqrt(2/3)
         // BbWidth = 4*std/mean*100 = 4*sqrt(2/3)/10*100 = 40*sqrt(2/3)
         var closes = new double[] { 9.0, 10.0, 11.0 };
-        var width = Indicators.BbWidth(closes, 3);
+        var width = Volatility.BbWidth(closes, 3);
         double expected = 4.0 * Math.Sqrt(2.0 / 3.0) / 10.0 * 100.0;
         Assert.Equal(expected, width[2], precision: 6);
     }
@@ -218,7 +218,7 @@ public class BbWidthTests
     public void OutputLength_MatchesInput()
     {
         var closes = Enumerable.Range(1, 40).Select(i => (double)i).ToArray();
-        var width = Indicators.BbWidth(closes, 20);
+        var width = Volatility.BbWidth(closes, 20);
         Assert.Equal(closes.Length, width.Length);
     }
 }

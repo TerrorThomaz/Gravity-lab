@@ -188,7 +188,7 @@ static class CandleFetcher
         int warmup = emaPeriod + slopeLookback;
         if (h1.Length < warmup + minBars) return (-1, -1);
         var closes = h1.Select(c => c.Close).ToArray();
-        var ema    = Indicators.Ema(closes, emaPeriod);
+        var ema    = Trend.Ema(closes, emaPeriod);
         bool IsReg(int j) => wantBull
             ? closes[j] > ema[j] && ema[j] > ema[j - slopeLookback]
             : closes[j] < ema[j] && ema[j] < ema[j - slopeLookback];

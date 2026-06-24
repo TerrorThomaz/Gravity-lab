@@ -94,10 +94,10 @@ public static class GridSimulator
         var lows   = CandleExt.Lows(candles);
         var times  = CandleExt.Times(candles);  // extracted upfront — spans can't be captured in local functions
 
-        var ema     = Indicators.Ema(closes, g.EmaPeriod);
-        var adx     = Indicators.Adx(highs, lows, closes, AdxPeriod);
-        var atr     = Indicators.Atr(highs, lows, closes, AtrPeriod);
-        var bbWidth = Indicators.BbWidth(closes, g.BbPeriod);
+        var ema     = Trend.Ema(closes, g.EmaPeriod);
+        var adx     = Trend.Adx(highs, lows, closes, AdxPeriod);
+        var atr     = Volatility.Atr(highs, lows, closes, AtrPeriod);
+        var bbWidth = Volatility.BbWidth(closes, g.BbPeriod);
 
         var result       = new List<(DateTime, double, string)>();
         var sessionFills = new List<double>();

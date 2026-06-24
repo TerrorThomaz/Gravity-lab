@@ -46,9 +46,9 @@ public class FadeShortGA
         }
         return new CoinCache(
             candles, closes, highs, lows,
-            Indicators.Rsi(closes, FadeShortSimulator.RsiPeriod),
-            Indicators.Adx(highs, lows, closes, FadeShortSimulator.AdxPeriod),
-            Indicators.Atr(highs, lows, closes, FadeShortSimulator.AtrPeriod),
+            Momentum.Rsi(closes, FadeShortSimulator.RsiPeriod),
+            Trend.Adx(highs, lows, closes, FadeShortSimulator.AdxPeriod),
+            Volatility.Atr(highs, lows, closes, FadeShortSimulator.AtrPeriod),
             weight);
     }
 
@@ -184,7 +184,7 @@ public class FadeShortGA
                 var all = new List<double>(512);
                 foreach (var cache in caches)
                 {
-                    Indicators.EmaInto(cache.Closes, ind.EmaPeriod, emaBuffer);
+                    Trend.EmaInto(cache.Closes, ind.EmaPeriod, emaBuffer);
                     foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputed(
                         ind, cache.Candles, cache.Closes, cache.Highs, cache.Lows,
                         cache.Rsi, cache.Adx, cache.Atr, emaBuffer, 0, cache.Candles.Length))
@@ -203,7 +203,7 @@ public class FadeShortGA
                 var all = new List<double>(512);
                 foreach (var cache in caches)
                 {
-                    Indicators.EmaInto(cache.Closes, ind.EmaPeriod, emaBuffer);
+                    Trend.EmaInto(cache.Closes, ind.EmaPeriod, emaBuffer);
                     foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputed(
                         ind, cache.Candles, cache.Closes, cache.Highs, cache.Lows,
                         cache.Rsi, cache.Adx, cache.Atr, emaBuffer, 0, cache.Candles.Length))
@@ -223,7 +223,7 @@ public class FadeShortGA
                 foreach (var cache in caches)
                 {
                     if (cache.Candles.Length < fEnd) continue;
-                    Indicators.EmaInto(cache.Closes, ind.EmaPeriod, emaBuffer);
+                    Trend.EmaInto(cache.Closes, ind.EmaPeriod, emaBuffer);
                     foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputed(
                         ind, cache.Candles, cache.Closes, cache.Highs, cache.Lows,
                         cache.Rsi, cache.Adx, cache.Atr, emaBuffer, fStart, fEnd))

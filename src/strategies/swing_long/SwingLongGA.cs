@@ -62,7 +62,7 @@ public class SwingLongGA
             var highs  = m15.ToArray().Select(c => c.High).ToArray();
             var lows   = m15.ToArray().Select(c => c.Low).ToArray();
             var closes = m15.ToArray().Select(c => c.Close).ToArray();
-            var atr    = Indicators.Atr(highs, lows, closes, 14);
+            var atr    = Volatility.Atr(highs, lows, closes, 14);
             volWeight  = VariantRouter.VolCoverage(atr, 0, atr.Length, cfg.AtrLow, cfg.AtrHigh);
         }
 

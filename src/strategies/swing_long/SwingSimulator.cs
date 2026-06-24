@@ -67,10 +67,10 @@ public static class FadeShortSimulator
         var highs  = CandleExt.Highs(candles);
         var lows   = CandleExt.Lows(candles);
 
-        var ema = Indicators.Ema(closes, g.EmaPeriod);
-        var rsi = Indicators.Rsi(closes, RsiPeriod);
-        var adx = Indicators.Adx(highs, lows, closes, AdxPeriod);
-        var atr = Indicators.Atr(highs, lows, closes, AtrPeriod);
+        var ema = Trend.Ema(closes, g.EmaPeriod);
+        var rsi = Momentum.Rsi(closes, RsiPeriod);
+        var adx = Trend.Adx(highs, lows, closes, AdxPeriod);
+        var atr = Volatility.Atr(highs, lows, closes, AtrPeriod);
 
         return SimulateCore(g, candles, closes, highs, lows, rsi, adx, atr, ema, warmup, candles.Length);
     }
@@ -268,17 +268,17 @@ public static class FadeShortSimulator
         var h1Highs  = CandleExt.Highs(h1);
         var h1Lows   = CandleExt.Lows(h1);
 
-        var h1Ema = Indicators.Ema(h1Closes, g.EmaPeriod);
-        var h1Rsi = Indicators.Rsi(h1Closes, RsiPeriod);
-        var h1Adx = Indicators.Adx(h1Highs, h1Lows, h1Closes, AdxPeriod);
-        var h1Atr = Indicators.Atr(h1Highs, h1Lows, h1Closes, AtrPeriod);
+        var h1Ema = Trend.Ema(h1Closes, g.EmaPeriod);
+        var h1Rsi = Momentum.Rsi(h1Closes, RsiPeriod);
+        var h1Adx = Trend.Adx(h1Highs, h1Lows, h1Closes, AdxPeriod);
+        var h1Atr = Volatility.Atr(h1Highs, h1Lows, h1Closes, AtrPeriod);
 
         // h4 ATR — exit sizing scaled to holding timeframe, not entry precision
         var h4      = AggregateCandles(h1.ToArray(), 4);
         var h4Highs = CandleExt.Highs(h4);
         var h4Lows  = CandleExt.Lows(h4);
         var h4Cls   = CandleExt.Closes(h4);
-        var h4Atr   = Indicators.Atr(h4Highs, h4Lows, h4Cls, AtrPeriod);
+        var h4Atr   = Volatility.Atr(h4Highs, h4Lows, h4Cls, AtrPeriod);
 
         var m15Closes = CandleExt.Closes(m15);
         var m15Lows   = CandleExt.Lows(m15);
@@ -492,16 +492,16 @@ public static class SwingLongSimulator
         var h1Highs  = CandleExt.Highs(h1);
         var h1Lows   = CandleExt.Lows(h1);
 
-        var h1Ema = Indicators.Ema(h1Closes, g.EmaPeriod);
-        var h1Rsi = Indicators.Rsi(h1Closes, RsiPeriod);
-        var h1Adx = Indicators.Adx(h1Highs, h1Lows, h1Closes, AdxPeriod);
-        var h1Atr = Indicators.Atr(h1Highs, h1Lows, h1Closes, AtrPeriod);
+        var h1Ema = Trend.Ema(h1Closes, g.EmaPeriod);
+        var h1Rsi = Momentum.Rsi(h1Closes, RsiPeriod);
+        var h1Adx = Trend.Adx(h1Highs, h1Lows, h1Closes, AdxPeriod);
+        var h1Atr = Volatility.Atr(h1Highs, h1Lows, h1Closes, AtrPeriod);
 
         var h4      = FadeShortSimulator.AggregateCandles(h1.ToArray(), 4);
         var h4Highs = CandleExt.Highs(h4);
         var h4Lows  = CandleExt.Lows(h4);
         var h4Cls   = CandleExt.Closes(h4);
-        var h4Atr   = Indicators.Atr(h4Highs, h4Lows, h4Cls, AtrPeriod);
+        var h4Atr   = Volatility.Atr(h4Highs, h4Lows, h4Cls, AtrPeriod);
 
         var m15Closes = CandleExt.Closes(m15);
         var m15Highs  = CandleExt.Highs(m15);

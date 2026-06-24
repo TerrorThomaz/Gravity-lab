@@ -204,7 +204,6 @@ public class VolatilityAtrRatioTests
     {
         // First 20 bars calm (range=1), last 30 bars volatile (range=10)
         // Short ATR (7) adapts faster → short > long → ratio > 1
-        var t = DateTime.UtcNow;
         var calm     = Enumerable.Range(0, 20).Select(i => (h: 100.5, l: 99.5, c: 100.0));
         var volatile_ = Enumerable.Range(0, 30).Select(i => (h: 105.0, l: 95.0, c: 100.0));
         var all = calm.Concat(volatile_).ToArray();
@@ -222,5 +221,116 @@ public class VolatilityAtrRatioTests
         var ratio = Volatility.AtrRatio(closes, closes, closes, 14, 100);
         for (int i = 100; i < closes.Length; i++)
             Assert.Equal(1.0, ratio[i], precision: 3);
+    }
+}
+
+// ── Trend: EmaInto ────────────────────────────────────────────────────────────
+
+public class TrendEmaIntoTests
+{
+    [Fact]
+    public void ProducesSameResultAsEma()
+    {
+        var closes = new double[] { 10, 20, 30, 25, 15 };
+        var ema    = Trend.Ema(closes, 3);
+        var output = new double[closes.Length];
+        Trend.EmaInto(closes, 3, output);
+        for (int i = 0; i < closes.Length; i++)
+            Assert.Equal(ema[i], output[i], precision: 8);
+    }
+
+    [Fact]
+    public void Period1_OutputEqualsCLoses()
+    {
+        var closes = new double[] { 5, 10, 7, 12 };
+        var output = new double[closes.Length];
+        Trend.EmaInto(closes, 1, output);
+        for (int i = 0; i < closes.Length; i++)
+            Assert.Equal(closes[i], output[i], precision: 8);
+    }
+}
+
+// ── Trend: Adx ────────────────────────────────────────────────────────────────
+
+public class TrendAdxTests
+{
+    [Fact]
+    public void FlatCandles_AdxIsZero()
+    {
+        var t = DateTime.UtcNow;
+        var candles = Enumerable.Range(0, 60)
+            .Select(i => new Candle(t.AddHours(i), 100, 100, 100, 100, 1000))
+            .ToArray();
+        var h  = candles.Select(c => c.High).ToArray();
+        var l  = candles.Select(c => c.Low).ToArray();
+        var cl = candles.Select(c => c.Close).ToArray();
+        var adx = Trend.Adx(h, l, cl, 14);
+        for (int i = 28; i < adx.Length; i++)
+            Assert.Equal(0.0, adx[i], precision: 6);
+    }
+
+    [Fact]
+    public void StrongUptrend_AdxAbove25()
+    {
+        var t = DateTime.UtcNow;
+        var candles = Enumerable.Range(0, 80)
+            .Select(i => new Candle(t.AddHours(i), 100 + i, 101 + i, 99 + i, 100.5 + i, 1000))
+            .ToArray();
+        var h  = candles.Select(c => c.High).ToArray();
+        var l  = candles.Select(c => c.Low).ToArray();
+        var cl = candles.Select(c => c.Close).ToArray();
+        var adx = Trend.Adx(h, l, cl, 14);
+        Assert.True(adx[79] > 25, $"Expected ADX > 25 in strong trend, got {adx[79]:F2}");
+    }
+
+    [Fact]
+    public void OutputLength_MatchesInput()
+    {
+        var h  = Enumerable.Range(0, 50).Select(i => (double)(100 + i)).ToArray();
+        var l  = Enumerable.Range(0, 50).Select(i => (double)(99  + i)).ToArray();
+        var cl = Enumerable.Range(0, 50).Select(i => (double)(100 + i)).ToArray();
+        var adx = Trend.Adx(h, l, cl, 14);
+        Assert.Equal(50, adx.Length);
+    }
+}
+
+// ── Momentum: Rsi ─────────────────────────────────────────────────────────────
+
+public class MomentumRsiTests
+{
+    [Fact]
+    public void AllRising_Returns100()
+    {
+        var closes = Enumerable.Range(1, 20).Select(i => (double)i * 10).ToArray();
+        var rsi = Momentum.Rsi(closes, 7);
+        for (int i = 7; i < rsi.Length; i++)
+            Assert.Equal(100.0, rsi[i], precision: 6);
+    }
+
+    [Fact]
+    public void SymmetricUpDown_Returns50AtWarmup()
+    {
+        var closes = new double[] { 100, 101, 100 };
+        var rsi = Momentum.Rsi(closes, 2);
+        Assert.Equal(50.0, rsi[2], precision: 6);
+    }
+
+    [Fact]
+    public void WilderSmoothing_ThreeDownAfterUp()
+    {
+        // period=2, closes=[100, 101, 100, 99]
+        // After warmup: RSI[2]=50; i=3: avgGain=(0.5*1+0)/2=0.25, avgLoss=(0.5*1+1)/2=0.75
+        // RSI[3]=100-100/(1+0.25/0.75)=25
+        var closes = new double[] { 100, 101, 100, 99 };
+        var rsi = Momentum.Rsi(closes, 2);
+        Assert.Equal(25.0, rsi[3], precision: 6);
+    }
+
+    [Fact]
+    public void OutputLength_MatchesInput()
+    {
+        var closes = Enumerable.Range(1, 30).Select(i => (double)i).ToArray();
+        var rsi = Momentum.Rsi(closes, 14);
+        Assert.Equal(closes.Length, rsi.Length);
     }
 }

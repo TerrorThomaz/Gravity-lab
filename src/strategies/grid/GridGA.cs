@@ -235,12 +235,17 @@ public class GridGeneticAlgorithm
             if (_verbose) Console.WriteLine($"  BO improved elite: {boGeno}");
         }
 
-        if (_verbose) Console.WriteLine("\n=== Held-out validation ===");
-        Parallel.ForEach(eliteIsland, ind =>
-            ind.Fitness = Fitness(ind, coins, useValidation: true));
+        if (_verbose) Console.WriteLine("\n=== Held-out validation (report-only, not used for selection) ===");
 
-        var best = eliteIsland.OrderByDescending(g => g.Fitness).First();
-        if (_verbose) Console.WriteLine($"Best: {best}");
+        // Select winner by train fitness (best taken from elite sorted by train fitness)
+        var best = eliteIsland.First();
+        double trainFit = best.Fitness;
+
+        // Compute validation score for the winner only
+        best.Fitness = Fitness(best, coins, useValidation: true);
+
+        if (_verbose) Console.WriteLine($"Best (selected on train): train={trainFit:F3}  val={best.Fitness:F3}");
+        if (_verbose) Console.WriteLine($"  {best}");
         return best;
     }
 

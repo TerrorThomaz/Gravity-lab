@@ -162,13 +162,18 @@ public class RegimeRouterGA
         }
 
         // ── Val scoring ───────────────────────────────────────────────────────
-        if (_verbose) Console.WriteLine("\n=== Held-out validation ===");
-        Parallel.ForEach(eliteIsland, ind =>
-            ind.Fitness = Fitness(ind, btcSeries, ethSeries, btcTimeIndex,
-                                  validTrades, useValidation: true, trainCutBar, folds));
+        if (_verbose) Console.WriteLine("\n=== Held-out validation (report-only, not used for selection) ===");
 
-        var best = eliteIsland.OrderByDescending(g => g.Fitness).First();
-        if (_verbose) Console.WriteLine($"Best: {best}");
+        // Select winner by train fitness (best taken from elite sorted by train fitness)
+        var best = eliteIsland[0];
+        double trainFit = best.Fitness;
+
+        // Compute validation score for the winner only
+        best.Fitness = Fitness(best, btcSeries, ethSeries, btcTimeIndex,
+                              validTrades, useValidation: true, trainCutBar, folds);
+
+        if (_verbose) Console.WriteLine($"Best (selected on train): train={trainFit:F3}  val={best.Fitness:F3}");
+        if (_verbose) Console.WriteLine($"  {best}");
         return best;
     }
 

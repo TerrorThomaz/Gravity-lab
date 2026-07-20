@@ -94,10 +94,12 @@ static class CandleFetcher
                 foreach (var k in result.Data.List)
                 {
                     var dt = k.StartTime;
-                    if (!cached.ContainsKey(dt))
+                    var newCandle = new Candle(dt, (double)k.OpenPrice, (double)k.HighPrice,
+                                               (double)k.LowPrice, (double)k.ClosePrice, (double)k.Volume);
+                    // In-progress bar is cached but overwritten on each fetch; frozen partials are corrected.
+                    if (!cached.TryGetValue(dt, out var existing) || !existing.Equals(newCandle))
                     {
-                        cached[dt] = new Candle(dt, (double)k.OpenPrice, (double)k.HighPrice,
-                                                (double)k.LowPrice, (double)k.ClosePrice, (double)k.Volume);
+                        cached[dt] = newCandle;
                         dirty = true;
                     }
                 }
@@ -108,8 +110,9 @@ static class CandleFetcher
         }
 
         // Forward fill: fetch new candles from "now" back to the last cached entry.
-        bool cacheIsFresh = cached.Count > 0 &&
-            (DateTime.UtcNow - cached.Keys.Max()).TotalHours < 1.0;
+        DateTime now = DateTime.UtcNow;
+        DateTime lastClosedStart = new DateTime(now.Ticks - now.Ticks % TimeSpan.FromMinutes(15).Ticks, DateTimeKind.Utc) - TimeSpan.FromMinutes(15);
+        bool cacheIsFresh = cached.Count > 0 && cached.Keys.Max() >= lastClosedStart;
         if (!cacheIsFresh)
         {
             DateTime stopAt = cached.Count > 0 ? cached.Keys.Max() : DateTime.MinValue;
@@ -152,7 +155,10 @@ static class CandleFetcher
             }
         }
 
-        return cached.Values.ToList();
+        // Exclude in-progress bar from returned list (cached for overwrite on next fetch).
+        DateTime nowFinal = DateTime.UtcNow;
+        DateTime currentBarStart = new DateTime(nowFinal.Ticks - nowFinal.Ticks % TimeSpan.FromMinutes(15).Ticks, DateTimeKind.Utc);
+        return cached.Where(kv => kv.Key < currentBarStart).Select(kv => kv.Value).ToList();
     }
 
     // Coin filter: median ATR% and USD volume over the candle window.

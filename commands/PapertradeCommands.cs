@@ -43,6 +43,32 @@ static class PapertradeCommands
         return VariantRouter.Select(atr, bar, variants) ?? variants[0].Genotype;
     }
 
+    // Replays a saved journal to the set of currently-open positions (entry not yet
+    // followed by an exit), so restarts don't re-emit "entry" events for open trades.
+    static Dictionary<string, (string Dir, double Entry)> OpenKeysFromJournal(List<JsonElement> journal)
+    {
+        var open = new Dictionary<string, (string Dir, double Entry)>();
+        foreach (var e in journal)
+        {
+            if (e.ValueKind != JsonValueKind.Object) continue;
+            if (!e.TryGetProperty("evt", out var evtP)) continue;
+            if (!e.TryGetProperty("strat", out var stratP) || !e.TryGetProperty("sym", out var symP)) continue;
+            string key = $"{stratP.GetString()}:{symP.GetString()}";
+            switch (evtP.GetString())
+            {
+                case "entry":
+                    string dir   = e.TryGetProperty("dir", out var dP) ? dP.GetString() ?? "" : "";
+                    double entry = e.TryGetProperty("entry", out var enP) && enP.ValueKind == JsonValueKind.Number ? enP.GetDouble() : 0;
+                    open[key] = (dir, entry);
+                    break;
+                case "exit":
+                    open.Remove(key);
+                    break;
+            }
+        }
+        return open;
+    }
+
     public static async Task RunPaperTrade(BybitRestClient client)
     {
         Console.WriteLine("=== Gravity-gen2 | PAPER TRADE (15m→1h candles) — Ctrl+C to stop ===\n");
@@ -116,6 +142,21 @@ static class PapertradeCommands
 
         const int RefreshSeconds = 900;
 
+        // ── Stateful trade journal ───────────────────────────────────────────────
+        // prevOpen tracks the previous cycle's open positions to diff entries/exits.
+        // Seeded from any persisted journal so restarts don't re-emit open trades.
+        var journal = new List<JsonElement>();
+        try
+        {
+            if (File.Exists("live_journal.json"))
+                journal = JsonSerializer.Deserialize<List<JsonElement>>(File.ReadAllText("live_journal.json")) ?? new List<JsonElement>();
+        }
+        catch { journal = new List<JsonElement>(); }
+
+        var prevOpen = new Dictionary<string, (string Dir, double Entry, DateTime FirstSeen, double LastMark, double LastPnl)>();
+        foreach (var kv in OpenKeysFromJournal(journal))
+            prevOpen[kv.Key] = (kv.Value.Dir, kv.Value.Entry, DateTime.UtcNow, kv.Value.Entry, 0.0);
+
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
@@ -139,7 +180,13 @@ static class PapertradeCommands
                     var trimmed = m15Raw.Count > PtM15Window
                         ? m15Raw.GetRange(m15Raw.Count - PtM15Window, PtM15Window)
                         : m15Raw;
-                    var (passes, atrPct, volM) = CandleFetcher.CheckSwingCriteria(m15Raw);
+                    // Screen on median 1h USD volume over full history (matches CombinedBacktest).
+                    // h1Full/volM are screening + display only; simulators use the trimmed h1 below.
+                    var (_, atrPct, _) = CandleFetcher.CheckSwingCriteria(m15Raw);
+                    var h1Full  = FadeShortSimulator.AggregateCandles(m15Raw.ToArray(), 4);
+                    var volUsd  = h1Full.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
+                    double volM = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
+                    bool   passes = volM >= Config.MinMedianVolUsdM;
                     var m15 = trimmed.ToArray();
                     var h1  = FadeShortSimulator.AggregateCandles(m15, 4);
                     return (sym, (Candle[]?)h1, (Candle[]?)m15, passes, atrPct, volM);
@@ -168,33 +215,38 @@ static class PapertradeCommands
             }
 
             // ── FadeShort ─────────────────────────────────────────────────────────
-            Console.WriteLine($"── FadeShort {new string('─', 93)}");
-            Console.WriteLine($"{"Coin",-18}  {"State",-14} {"Entry",12}  {"Current",12}  {"Unrealised",11}  {"Bars",5}  {"Stop",12}  {"Target",12}");
-            Console.WriteLine(new string('-', 105));
-
-            foreach (var (sym, h1, m15, passes, atrPct, volM) in coinData)
+            // Router-gated (suppressed in confirmed Bull), mirroring the backtests.
+            bool fsRoutedOn = ptRouting == null || ptRouting.FadeShortActive;
+            if (fsRoutedOn && !cts.Token.IsCancellationRequested)
             {
-                if (cts.Token.IsCancellationRequested) break;
-                if (h1 == null || m15 == null) { Console.WriteLine($"  {sym,-18}  (no data)"); continue; }
-                if (!passes) { Console.WriteLine($"  {sym,-18}  skip  ATR={atrPct:F1}% vol=${volM:F0}M"); continue; }
+                Console.WriteLine($"── FadeShort {new string('─', 93)}");
+                Console.WriteLine($"{"Coin",-18}  {"State",-14} {"Entry",12}  {"Current",12}  {"Unrealised",11}  {"Bars",5}  {"Stop",12}  {"Target",12}");
+                Console.WriteLine(new string('-', 105));
 
-                double px       = h1[^1].Close;
-                var    coinCl   = CoinClusterHelper.ClassifyByName(sym);
-                // Use VariantRouter to select per-coin ATR-regime variant; fall back to cluster genotype
-                var    gForCoin = SelectVariant(fsVariantsPt, m15) ?? clusterGenosPt[coinCl];
-                var    st       = FadeShortSimulator.GetFadeShortTradeState(gForCoin, h1, m15);
+                foreach (var (sym, h1, m15, passes, atrPct, volM) in coinData)
+                {
+                    if (cts.Token.IsCancellationRequested) break;
+                    if (h1 == null || m15 == null) { Console.WriteLine($"  {sym,-18}  (no data)"); continue; }
+                    if (!passes) { Console.WriteLine($"  {sym,-18}  skip  ATR={atrPct:F1}% vol=${volM:F0}M"); continue; }
 
-                string stateStr  = st.InTrade
-                    ? (st.TrailArmed ? "TRAIL ARMED" : $"SHORT b{st.HoldCount}")
-                    : "watching";
-                string entryStr  = st.InTrade ? $"{st.Entry:F4}" : "—";
-                string unreal    = st.InTrade ? $"{(st.Entry - px) / st.Entry * 100.0:+0.00}%" : "—";
-                double effStop   = st.InTrade ? Math.Min(st.HardStop, st.MaeStop) : 0;
-                string stopStr   = st.InTrade ? $"{effStop:F4}" : "—";
-                string targetStr = st.InTrade ? $"{st.Target:F4}" : "—";
-                string barsStr   = st.InTrade ? $"{st.HoldCount}" : "—";
+                    double px       = h1[^1].Close;
+                    var    coinCl   = CoinClusterHelper.ClassifyByName(sym);
+                    // Use VariantRouter to select per-coin ATR-regime variant; fall back to cluster genotype
+                    var    gForCoin = SelectVariant(fsVariantsPt, m15) ?? clusterGenosPt[coinCl];
+                    var    st       = FadeShortSimulator.GetFadeShortTradeState(gForCoin, h1, m15);
 
-                Console.WriteLine($"  {sym,-18}  {stateStr,-14} {entryStr,12}  {px,12:F4}  {unreal,11}  {barsStr,5}  {stopStr,12}  {targetStr,12}");
+                    string stateStr  = st.InTrade
+                        ? (st.TrailArmed ? "TRAIL ARMED" : $"SHORT b{st.HoldCount}")
+                        : "watching";
+                    string entryStr  = st.InTrade ? $"{st.Entry:F4}" : "—";
+                    string unreal    = st.InTrade ? $"{(st.Entry - px) / st.Entry * 100.0:+0.00}%" : "—";
+                    double effStop   = st.InTrade ? Math.Min(st.HardStop, st.MaeStop) : 0;
+                    string stopStr   = st.InTrade ? $"{effStop:F4}" : "—";
+                    string targetStr = st.InTrade ? $"{st.Target:F4}" : "—";
+                    string barsStr   = st.InTrade ? $"{st.HoldCount}" : "—";
+
+                    Console.WriteLine($"  {sym,-18}  {stateStr,-14} {entryStr,12}  {px,12:F4}  {unreal,11}  {barsStr,5}  {stopStr,12}  {targetStr,12}");
+                }
             }
 
             // ── Grid ──────────────────────────────────────────────────────────────
@@ -315,56 +367,30 @@ static class PapertradeCommands
             // ── Write live_state.json for frontend consumption ───────────────
             {
                 var positions = new List<object>();
-                var signals   = new List<object>();
 
-                void CollectPositions(string strategy, string dir,
-                    IEnumerable<(string Sym, Candle[]? H1, Candle[]? M15, bool Passes, double AtrPct, double VolM)> data,
-                    Func<string, Candle[], Candle[], (bool InTrade, bool TrailArmed, double Entry, double HardStop, double MaeStop, double Target, int HoldCount)> getState)
+                // FadeShort positions
+                if (fsRoutedOn)
                 {
-                    foreach (var (sym, h1, m15, passes, _, _) in data)
+                    foreach (var (sym, h1, m15, passes, _, _) in coinData)
                     {
                         if (h1 == null || m15 == null || !passes) continue;
-                        var st = getState(sym, h1, m15);
+                        var coinCl = CoinClusterHelper.ClassifyByName(sym);
+                        var gForCoin = SelectVariant(fsVariantsPt, m15) ?? clusterGenosPt[coinCl];
+                        var st = FadeShortSimulator.GetFadeShortTradeState(gForCoin, h1, m15);
                         if (!st.InTrade) continue;
                         double px = m15[^1].Close;
-                        double pnl = dir == "Short"
-                            ? (st.Entry - px) / st.Entry * 100.0
-                            : (px - st.Entry) / st.Entry * 100.0;
-                        double effStop = Math.Min(st.HardStop, st.MaeStop > 0 ? st.MaeStop : double.MaxValue);
                         positions.Add(new
                         {
-                            sym, strat = strategy, dir,
+                            sym, strat = "FadeShort", dir = "Short",
                             entry = Math.Round(st.Entry, 6),
                             mark  = Math.Round(px, 6),
-                            pnl   = Math.Round(pnl, 2),
+                            pnl   = Math.Round((st.Entry - px) / st.Entry * 100.0, 2),
                             age   = $"{st.HoldCount}h",
-                            stop  = Math.Round(effStop, 6),
+                            stop  = Math.Round(Math.Min(st.HardStop, st.MaeStop), 6),
                             target = Math.Round(st.Target, 6),
                             trailArmed = st.TrailArmed,
                         });
                     }
-                }
-
-                // FadeShort positions
-                foreach (var (sym, h1, m15, passes, _, _) in coinData)
-                {
-                    if (h1 == null || m15 == null || !passes) continue;
-                    var coinCl = CoinClusterHelper.ClassifyByName(sym);
-                    var gForCoin = SelectVariant(fsVariantsPt, m15) ?? clusterGenosPt[coinCl];
-                    var st = FadeShortSimulator.GetFadeShortTradeState(gForCoin, h1, m15);
-                    if (!st.InTrade) continue;
-                    double px = m15[^1].Close;
-                    positions.Add(new
-                    {
-                        sym, strat = "FadeShort", dir = "Short",
-                        entry = Math.Round(st.Entry, 6),
-                        mark  = Math.Round(px, 6),
-                        pnl   = Math.Round((st.Entry - px) / st.Entry * 100.0, 2),
-                        age   = $"{st.HoldCount}h",
-                        stop  = Math.Round(Math.Min(st.HardStop, st.MaeStop), 6),
-                        target = Math.Round(st.Target, 6),
-                        trailArmed = st.TrailArmed,
-                    });
                 }
 
                 // Grid positions
@@ -495,6 +521,57 @@ static class PapertradeCommands
                 catch (Exception ex)
                 {
                     Console.WriteLine($"\n  ⚠ Failed to write live_state.json: {ex.Message}");
+                }
+
+                // ── Journal: diff this cycle's open set against the previous one ──
+                var currentOpen = new Dictionary<string, (string Strat, string Sym, string Dir, double Entry, double Mark, double Pnl)>();
+                foreach (var p in positions.Select(o => JsonSerializer.SerializeToElement(o)))
+                {
+                    string strat = p.GetProperty("strat").GetString()!;
+                    string sym   = p.GetProperty("sym").GetString()!;
+                    currentOpen[$"{strat}:{sym}"] = (strat, sym, p.GetProperty("dir").GetString()!,
+                        p.GetProperty("entry").GetDouble(), p.GetProperty("mark").GetDouble(), p.GetProperty("pnl").GetDouble());
+                }
+
+                var newEvents  = new List<object>();
+                string nowIso  = DateTime.UtcNow.ToString("O");
+                string? regime = ptRouting?.Regime.ToString();
+
+                foreach (var kv in currentOpen)
+                    if (!prevOpen.ContainsKey(kv.Key))
+                        newEvents.Add(new { time = nowIso, evt = "entry", strat = kv.Value.Strat, sym = kv.Value.Sym,
+                            dir = kv.Value.Dir, entry = kv.Value.Entry, mark = kv.Value.Mark, pnl = kv.Value.Pnl, regime });
+
+                foreach (var kv in prevOpen)
+                    if (!currentOpen.ContainsKey(kv.Key))
+                    {
+                        var parts = kv.Key.Split(':', 2);
+                        newEvents.Add(new { time = nowIso, evt = "exit", strat = parts[0], sym = parts[1],
+                            dir = kv.Value.Dir, entry = kv.Value.Entry, mark = kv.Value.LastMark, pnl = kv.Value.LastPnl, regime });
+                    }
+
+                // Carry FirstSeen forward for still-open keys; cache last mark/pnl for future exits.
+                var nextOpen = new Dictionary<string, (string Dir, double Entry, DateTime FirstSeen, double LastMark, double LastPnl)>();
+                foreach (var kv in currentOpen)
+                {
+                    DateTime firstSeen = prevOpen.TryGetValue(kv.Key, out var old) ? old.FirstSeen : DateTime.UtcNow;
+                    nextOpen[kv.Key] = (kv.Value.Dir, kv.Value.Entry, firstSeen, kv.Value.Mark, kv.Value.Pnl);
+                }
+                prevOpen = nextOpen;
+
+                if (newEvents.Count > 0)
+                {
+                    try
+                    {
+                        foreach (var ev in newEvents) journal.Add(JsonSerializer.SerializeToElement(ev));
+                        File.WriteAllText("live_journal.json",
+                            JsonSerializer.Serialize(journal, new JsonSerializerOptions { WriteIndented = true }));
+                        Console.WriteLine($"  live_journal.json: +{newEvents.Count} event(s)");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"\n  ⚠ Failed to write live_journal.json: {ex.Message}");
+                    }
                 }
             }
 

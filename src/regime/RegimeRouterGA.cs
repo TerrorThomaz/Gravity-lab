@@ -17,7 +17,8 @@ namespace TradingGA;
 // cannot learn useful DipLong thresholds from a genotype that has no edge.
 public class RegimeRouterGA
 {
-    public enum StrategyKind { FadeShort, Grid, DipLong, FadeLong }
+    // RipShort appended at the end so existing serialized StrategyKind values don't shift.
+    public enum StrategyKind { FadeShort, Grid, DipLong, FadeLong, RipShort }
 
     public record TradeRecord(StrategyKind Kind, DateTime Time, double Return, double Frac);
 

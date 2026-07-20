@@ -17,6 +17,7 @@ switch (mode)
     case "yearlybreakdown":  await BacktestCommands.RunYearlyBreakdown(client);                        break;
     case "fadelongtrain":    await LongTrainCommands.RunFadeLongTrain(client, args);                   break;
     case "diplongtrain":     await LongTrainCommands.RunDipLongTrain(client, args);                    break;
+    case "ripshorttrain":    await LongTrainCommands.RunRipShortTrain(client, args);                   break;
     case "swinglongtrain":   await LongTrainCommands.RunSwingLongTrain(client, args);                  break;
     case "routertrain":      await LongTrainCommands.RunRegimeRouterTrain(client, args);               break;
     case "coevolvetrain":    await LongTrainCommands.RunCoevolve(client, args);                        break;
@@ -38,6 +39,7 @@ switch (mode)
         Console.WriteLine("  dotnet run -- yearlybreakdown    Per-year portfolio returns (full history)");
         Console.WriteLine("  dotnet run -- fadelongtrain      FadeLong GA: oversold bounce, 53 coins, ~3yr");
         Console.WriteLine("  dotnet run -- diplongtrain       DipLong GA: bull pullback, regime-gated, 53 coins, ~3yr");
+        Console.WriteLine("  dotnet run -- ripshorttrain      RipShort GA: bear-regime relief-rally short, 53 coins, ~3yr");
         Console.WriteLine("  dotnet run -- swingLongtrain      SwingLong GA: bull divergence+BoS long, 93 coins, ~3yr");
         Console.WriteLine("  dotnet run -- routertrain        RegimeRouter GA: train routing thresholds + duration gates");
         Console.WriteLine("  dotnet run -- coevolvetrain      Red-Queen coevolve: Router (profit) ↔ Guard (risk), 8 rounds parallel — strategies frozen");

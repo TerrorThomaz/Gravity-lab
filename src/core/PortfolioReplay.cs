@@ -17,6 +17,7 @@ public static class PortfolioReplay
         ["swing_long"] = 8,
         ["diplong"]    = 8,
         ["fadelong"]   = 8,
+        ["ripshort"]   = 8,
         ["grid"]       = 12,
     };
 

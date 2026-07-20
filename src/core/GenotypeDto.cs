@@ -188,6 +188,67 @@ class DipLongGenotypeDto
     }.ClampToBounds();
 }
 
+class RipShortGenotypeDto
+{
+    public int    RegimeLongEmaPeriod         { get; set; }
+    public int    RegimeSlopeLookback         { get; set; }
+    public int    EmaPeriod                   { get; set; }
+    public double AdxThreshold                { get; set; }
+    public double RsiRallyThreshold           { get; set; }
+    public double StopLossAtrMult             { get; set; }
+    public double TakeProfitAtrMult           { get; set; }
+    public double TrailingActivationAtrMult   { get; set; }
+    public double TrailingStopAtrMult         { get; set; }
+    public int    MaxHoldCandles              { get; set; }
+    public double PositionSizePct             { get; set; }
+    public int    TimeStopBars                { get; set; }  // 0 = not in old JSON → use 999 (disabled)
+    public double TimeStopLossPct             { get; set; }  // 0 = not in old JSON → use 0.99 (disabled)
+    public int    RegimeSustainedBars         { get; set; }
+    public double Fitness                     { get; set; }
+    public double AtrLow                      { get; init; } = 0.0;
+    public double AtrHigh                     { get; init; } = 9999.0;
+
+    public static RipShortGenotypeDto From(RipShortGenotype g, FitnessConfig? cfg = null) => new()
+    {
+        RegimeLongEmaPeriod       = g.RegimeLongEmaPeriod,
+        RegimeSlopeLookback       = g.RegimeSlopeLookback,
+        EmaPeriod                 = g.EmaPeriod,
+        AdxThreshold              = g.AdxThreshold,
+        RsiRallyThreshold         = g.RsiRallyThreshold,
+        StopLossAtrMult           = g.StopLossAtrMult,
+        TakeProfitAtrMult         = g.TakeProfitAtrMult,
+        TrailingActivationAtrMult = g.TrailingActivationAtrMult,
+        TrailingStopAtrMult       = g.TrailingStopAtrMult,
+        MaxHoldCandles            = g.MaxHoldCandles,
+        PositionSizePct           = g.PositionSizePct,
+        TimeStopBars              = g.TimeStopBars,
+        TimeStopLossPct           = g.TimeStopLossPct,
+        RegimeSustainedBars       = g.RegimeSustainedBars,
+        Fitness                   = g.Fitness,
+        AtrLow                    = cfg?.AtrLow  ?? 0.0,
+        AtrHigh                   = cfg?.AtrHigh ?? 9999.0,
+    };
+
+    public RipShortGenotype ToGenotype() => new RipShortGenotype
+    {
+        RegimeLongEmaPeriod       = RegimeLongEmaPeriod > 0 ? RegimeLongEmaPeriod : 200,
+        RegimeSlopeLookback       = RegimeSlopeLookback > 0 ? RegimeSlopeLookback : 30,
+        EmaPeriod                 = EmaPeriod           > 0 ? EmaPeriod           : 50,
+        AdxThreshold              = AdxThreshold        > 0 ? AdxThreshold        : 25.0,
+        RsiRallyThreshold         = RsiRallyThreshold   > 0 ? RsiRallyThreshold   : 52.0,
+        StopLossAtrMult           = StopLossAtrMult           > 0 ? StopLossAtrMult           : 0.8,
+        TakeProfitAtrMult         = TakeProfitAtrMult         > 0 ? TakeProfitAtrMult         : 7.0,
+        TrailingActivationAtrMult = TrailingActivationAtrMult > 0 ? TrailingActivationAtrMult : 2.5,
+        TrailingStopAtrMult       = TrailingStopAtrMult       > 0 ? TrailingStopAtrMult       : 2.0,
+        MaxHoldCandles            = MaxHoldCandles      > 0 ? MaxHoldCandles      : 30,
+        PositionSizePct           = PositionSizePct     > 0 ? PositionSizePct     : 0.03,
+        TimeStopBars              = TimeStopBars        > 0 ? TimeStopBars        : 999,  // 0 in old JSON → disabled
+        TimeStopLossPct           = TimeStopLossPct     > 0 ? TimeStopLossPct     : 0.99,
+        RegimeSustainedBars       = RegimeSustainedBars > 0 ? RegimeSustainedBars : 30,
+        Fitness                   = Fitness,
+    }.ClampToBounds();
+}
+
 class SwingLongGenotypeDto
 {
     public int    EmaPeriod                 { get; set; }

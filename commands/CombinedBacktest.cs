@@ -65,6 +65,8 @@ static class CombinedBacktest
             "dip_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
         var slVariants = LoadVariants<SwingLongGenotypeDto, SwingLongGenotype>(
             "swing_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var rsVariants = LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
+            "rip_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
 
         // Representative single genotypes (for portfolio hold-time calcs and logging)
         var swingG = fsVariants.Length > 0 ? fsVariants[0].Genotype! : null;
@@ -75,6 +77,7 @@ static class CombinedBacktest
         FadeLongGenotype?     flG     = flVariants.Length > 0  ? flVariants[0].Genotype  : null;
         DipLongGenotype?      dlG     = dlVariants.Length > 0  ? dlVariants[0].Genotype  : null;
         SwingLongGenotype?    slG     = slVariants.Length > 0  ? slVariants[0].Genotype  : null;
+        RipShortGenotype?     rsG     = rsVariants.Length > 0  ? rsVariants[0].Genotype  : null;
         RegimeRouterGenotype? routerG = File.Exists(Config.RouterGenoFile)    ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype() : null;
 
         Console.WriteLine($"FadeShort: {swingG}  [{fsVariants.Length} variant(s)]");
@@ -85,6 +88,8 @@ static class CombinedBacktest
         else                 Console.WriteLine("DipLong:   not found — skipping");
         if (slG     != null) Console.WriteLine($"SwingLong: {slG}  [{slVariants.Length} variant(s)]");
         else                 Console.WriteLine("SwingLong: not found — skipping");
+        if (rsG     != null) Console.WriteLine($"RipShort:  {rsG}{(rsG.Fitness < 0 ? " ⚠ negative fitness" : "")}  [{rsVariants.Length} variant(s)]");
+        else                 Console.WriteLine("RipShort:  not found — skipping");
         if (routerG != null) Console.WriteLine($"Router:    {routerG}");
         else                 Console.WriteLine("Router:    not found — strategies run without regime gate");
         Console.WriteLine();
@@ -127,6 +132,7 @@ static class CombinedBacktest
         var flTrades          = new List<(DateTime Time, double Return, double Conf)>();
         var dlTrades          = new List<(DateTime Time, double Return, double Conf)>();
         var slTrades          = new List<(DateTime Time, double Return, double Conf)>();
+        var rsTrades          = new List<(DateTime Time, double Return, double Conf)>();
         var allTrades         = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
         var allTradesNoRouter = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
 
@@ -135,18 +141,21 @@ static class CombinedBacktest
         var flCoinStats    = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
         var dlCoinStats    = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
         var slCoinStats    = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
+        var rsCoinStats    = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
 
         int swingTotalVCC = 0;
         int gridTotalVCC  = 0;
         int flTotalVCC    = 0;
         int dlTotalVCC    = 0;
         int slTotalVCC    = 0;
+        int rsTotalVCC    = 0;
 
         var swingFullCoins = new List<(string Sym, Candle[] H1, Candle[] M15, double Conf)>();
         var gridFullCoins  = new List<(string Sym, Candle[] H1, double Conf)>();
         var flFullCoins    = new List<(string Sym, Candle[] H1, Candle[] M15, double Conf)>();
         var dlFullCoins    = new List<(string Sym, Candle[] H1, Candle[] M15, double Conf)>();
         var slFullCoins    = new List<(string Sym, Candle[] H1, Candle[] M15, double Conf)>();
+        var rsFullCoins    = new List<(string Sym, Candle[] H1, Candle[] M15, double Conf)>();
 
         // Per-coin val returns for statistical tests (router-gated where applicable).
         var swingCoinRet = new List<(string Label, List<double> Returns)>();
@@ -154,6 +163,7 @@ static class CombinedBacktest
         var flCoinRet    = new List<(string Label, List<double> Returns)>();
         var dlCoinRet    = new List<(string Label, List<double> Returns)>();
         var slCoinRet    = new List<(string Label, List<double> Returns)>();
+        var rsCoinRet    = new List<(string Label, List<double> Returns)>();
 
         Console.WriteLine($"══ SWING (1h setup + 15m exec) ══════════════════════════════════════════════");
         Console.WriteLine($"{"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
@@ -452,6 +462,64 @@ static class CombinedBacktest
             }
         }
 
+        if (rsG != null)
+        {
+            Console.WriteLine($"\n══ RIPSHORT (bear-regime relief-rally short, router-gated) ═══════════════════");
+            Console.WriteLine($"{"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}  {"Gated",6}");
+            Console.WriteLine(new string('-', 90));
+
+            foreach (var (sym, m15, h1) in fetched)
+            {
+                if (h1.Length < 300 || m15.Length < 1200) { continue; }
+
+                var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
+                double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
+                if (medVol < Config.MinMedianVolUsdM) continue;
+
+                int h1Split  = (int)(h1.Length * 0.8);
+                int m15Split = h1Split * 4;
+                var h1Val    = h1[h1Split..];
+                var m15Val   = m15[Math.Min(m15Split, m15.Length)..];
+                if (h1Val.Length < 100 || m15Val.Length < 400) continue;
+
+                int    vCC = h1Val.Length * 12;
+                rsTotalVCC += vCC;
+
+                var coinRsG = SelectVariant(rsVariants, m15) ?? rsG;
+                var raw    = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val);
+                var gated  = session != null
+                    ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList()
+                    : raw;
+                var vRet   = gated.Select(t => t.Return).ToList();
+
+                int gatedOut = raw.Count - gated.Count;
+                if (vRet.Count == 0)
+                {
+                    Console.WriteLine($"  {sym,-16}  skip (0 trades after gate, {raw.Count} raw)");
+                    continue;
+                }
+
+                double conf = Simulator.ComputeConfidence(vRet);
+                double sh   = Simulator.SharpeRatio(vRet, vCC);
+                double sort = Simulator.SortinoRatio(vRet, vCC);
+                double pf   = Simulator.ProfitFactor(vRet);
+                double wr   = (double)vRet.Count(r => r > 0) / vRet.Count;
+                double avg  = vRet.Average();
+
+                Console.WriteLine($"  {sym,-16} {conf,6:P1}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%  -{gatedOut,4}");
+                rsCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
+                rsCoinRet.Add((sym, vRet));
+                rsFullCoins.Add((sym, h1, m15, conf));
+                foreach (var t in raw)
+                    allTradesNoRouter.Add((t.Time, t.Return, conf, "ripshort"));
+                foreach (var t in gated)
+                {
+                    rsTrades.Add((t.Time, t.Return, conf));
+                    allTrades.Add((t.Time, t.Return, conf, "ripshort"));
+                }
+            }
+        }
+
         if (allTrades.Count == 0) { Console.WriteLine("No trades."); return; }
 
         swingTrades.Sort((a, b)       => a.Time.CompareTo(b.Time));
@@ -459,6 +527,7 @@ static class CombinedBacktest
         flTrades.Sort((a, b)          => a.Time.CompareTo(b.Time));
         dlTrades.Sort((a, b)          => a.Time.CompareTo(b.Time));
         slTrades.Sort((a, b)          => a.Time.CompareTo(b.Time));
+        rsTrades.Sort((a, b)          => a.Time.CompareTo(b.Time));
         allTrades.Sort((a, b)         => a.Time.CompareTo(b.Time));
         allTradesNoRouter.Sort((a, b) => a.Time.CompareTo(b.Time));
 
@@ -467,6 +536,7 @@ static class CombinedBacktest
         var flRet    = flTrades.Select(t => t.Return).ToList();
         var dlRet    = dlTrades.Select(t => t.Return).ToList();
         var slRet    = slTrades.Select(t => t.Return).ToList();
+        var rsRet    = rsTrades.Select(t => t.Return).ToList();
         var allRet   = allTrades.Select(t => t.Return).ToList();
 
         Console.WriteLine($"\n{new string('═', 70)}");
@@ -586,15 +656,37 @@ static class CombinedBacktest
                 Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
         }
 
-        int totalWins = allRet.Count(r => r > 0);
-        int totalVCC  = new[] { swingTotalVCC, gridTotalVCC, flTotalVCC, dlTotalVCC, slTotalVCC }.Max();
+        if (rsRet.Count > 0)
+        {
+            Console.WriteLine($"\n{new string('═', 70)}");
+            Console.WriteLine($"  RIPSHORT SUMMARY  (val 20%, {rsCoinStats.Count} coins, {rsRet.Count} trades, router-gated)");
+            Console.WriteLine($"{new string('═', 70)}");
+            int rw = rsRet.Count(r => r > 0);
+            Console.WriteLine($"  Win rate:     {(double)rw / rsRet.Count:P1}  ({rw}W / {rsRet.Count - rw}L)");
+            Console.WriteLine($"  Avg return:   {rsRet.Average():+0.00}%");
+            Console.WriteLine($"  Sharpe:       {Simulator.SharpeRatio(rsRet, rsTotalVCC):F2}");
+            Console.WriteLine($"  Sortino:      {Simulator.SortinoRatio(rsRet, rsTotalVCC):F2}");
+            Console.WriteLine($"  Profit factor:{Simulator.ProfitFactor(rsRet):F2}");
+            var rsPort = Simulator.SimulatePortfolio(rsTrades.Select(t => (t.Return, t.Conf)).ToList());
+            Console.WriteLine($"  Portfolio:    €{rsPort.EndBalance:F2}  ({(rsPort.EndBalance - 100) / 100 * 100:+0.0;-0.0}%)  DD={rsPort.MaxDrawdownPct:F1}%");
+            Console.WriteLine();
+            Console.WriteLine($"  Per-coin (sorted by Sharpe):");
+            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+            Console.WriteLine($"  {new string('-', 75)}");
+            foreach (var r in rsCoinStats.OrderByDescending(c => c.Sharpe))
+                Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
+        }
 
-        static TimeSpan StrategyHold(string strat, FadeShortGenotype swG, GridGenotype grG, FadeLongGenotype? flG, DipLongGenotype? dlG, SwingLongGenotype? slG) => strat switch
+        int totalWins = allRet.Count(r => r > 0);
+        int totalVCC  = new[] { swingTotalVCC, gridTotalVCC, flTotalVCC, dlTotalVCC, slTotalVCC, rsTotalVCC }.Max();
+
+        static TimeSpan StrategyHold(string strat, FadeShortGenotype swG, GridGenotype grG, FadeLongGenotype? flG, DipLongGenotype? dlG, SwingLongGenotype? slG, RipShortGenotype? rsG) => strat switch
         {
             "swing"      => TimeSpan.FromHours(swG.MaxHoldCandles),
             "fadelong"   => TimeSpan.FromHours(flG?.MaxHoldCandles ?? swG.MaxHoldCandles),
             "diplong"    => TimeSpan.FromHours(dlG?.MaxHoldCandles ?? swG.MaxHoldCandles),
             "swing_long" => TimeSpan.FromHours(slG?.MaxHoldCandles ?? swG.MaxHoldCandles),
+            "ripshort"   => TimeSpan.FromHours(rsG?.MaxHoldCandles ?? swG.MaxHoldCandles),
             _            => TimeSpan.FromHours(grG.MaxHoldCandles),
         };
 
@@ -609,6 +701,7 @@ static class CombinedBacktest
                     "swing_long" => TimeSpan.FromHours(48),
                     "diplong"    => TimeSpan.FromHours(48),
                     "fadelong"   => TimeSpan.FromHours(72),
+                    "ripshort"   => TimeSpan.FromHours(72),
                     "grid"       => TimeSpan.FromHours(72),
                     _            => TimeSpan.FromHours(48),
                 },
@@ -622,7 +715,7 @@ static class CombinedBacktest
         }
 
         var allTradesForExposure = allTrades
-            .Select(t => (t.Time, t.Return, t.Conf, StrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG)))
+            .Select(t => (t.Time, t.Return, t.Conf, StrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG)))
             .ToList();
 
         var port5cap   = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
@@ -640,6 +733,8 @@ static class CombinedBacktest
             Console.WriteLine($"  DipLong:   {dlRet.Count,4} trades  PF={Simulator.ProfitFactor(dlRet):F2}  {Pct(dlRet)}");
         if (slRet.Count > 0)
             Console.WriteLine($"  SwingLong: {slRet.Count,4} trades  PF={Simulator.ProfitFactor(slRet):F2}  {Pct(slRet)}");
+        if (rsRet.Count > 0)
+            Console.WriteLine($"  RipShort:  {rsRet.Count,4} trades  PF={Simulator.ProfitFactor(rsRet):F2}  {Pct(rsRet)}");
         Console.WriteLine($"  Total:     {allRet.Count,4} trades  PF={Simulator.ProfitFactor(allRet):F2}  {Pct(allRet)}");
         Console.WriteLine();
         Console.WriteLine($"  Sharpe (combined):  {Simulator.SharpeRatio(allRet, totalVCC):F2}");
@@ -699,7 +794,7 @@ static class CombinedBacktest
             }
 
             Console.WriteLine($"\n── Monthly trade activity (val window, router-gated) ────────────────────────");
-            Console.WriteLine($"  {"Month",-9}  {"Regime",7}  {"Swing",5}  {"Grid",5}  {"DipLong",8}  {"FadeLong",9}  {"Total",5}");
+            Console.WriteLine($"  {"Month",-9}  {"Regime",7}  {"Swing",5}  {"Grid",5}  {"DipLong",8}  {"FadeLong",9}  {"RipShort",9}  {"Total",5}");
             Console.WriteLine($"  {new string('-', 60)}");
 
             int gridGapMonths   = 0;
@@ -710,6 +805,7 @@ static class CombinedBacktest
                 int gr = grp.Count(t => t.Strategy == "grid");
                 int dl = grp.Count(t => t.Strategy == "diplong");
                 int fl = grp.Count(t => t.Strategy == "fadelong");
+                int rs = grp.Count(t => t.Strategy == "ripshort");
 
                 string regLabel = monthRegime.TryGetValue(grp.Key, out var rm)
                     ? (rm.HVPct >= 20 ? $"{rm.Label}+HV" : rm.Label) : "?";
@@ -718,7 +814,7 @@ static class CombinedBacktest
                 if (hasGrid && gr == 0) { flag += " ← Grid dark"; gridGapMonths++; }
                 if (grp.Count() <= 5)   { flag += " ← sparse"; totalSilentMonths++; }
 
-                Console.WriteLine($"  {grp.Key:yyyy-MM}  {regLabel,7}  {sw,5}  {gr,5}  {dl,8}  {fl,9}  {grp.Count(),5}{flag}");
+                Console.WriteLine($"  {grp.Key:yyyy-MM}  {regLabel,7}  {sw,5}  {gr,5}  {dl,8}  {fl,9}  {rs,9}  {grp.Count(),5}{flag}");
             }
 
             if (hasGrid && gridGapMonths > 0)
@@ -750,7 +846,7 @@ static class CombinedBacktest
 
         {
             var nrExposure = allTradesNoRouter
-                .Select(t => (t.Time, t.Return, t.Conf, StrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG)))
+                .Select(t => (t.Time, t.Return, t.Conf, StrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG)))
                 .ToList();
 
             var nrPort5cap  = Simulator.SimulatePortfolioExposureCapped(nrExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
@@ -760,6 +856,7 @@ static class CombinedBacktest
             int nrDipLong   = allTradesNoRouter.Count(t => t.Strategy == "diplong");
             int nrFadeLong  = allTradesNoRouter.Count(t => t.Strategy == "fadelong");
             int nrSwingLong = allTradesNoRouter.Count(t => t.Strategy == "swing_long");
+            int nrRipShort  = allTradesNoRouter.Count(t => t.Strategy == "ripshort");
 
             double r5R   = (port5cap.EndBalance   - 100) / 100 * 100;
             double r5NR  = (nrPort5cap.EndBalance  - 100) / 100 * 100;
@@ -775,6 +872,8 @@ static class CombinedBacktest
             Console.WriteLine($"  {"FadeLong",-12}  {flRet.Count,11}  {nrFadeLong,9}  {nrFadeLong - flRet.Count,+7}");
             if (slRet.Count > 0 || nrSwingLong > 0)
                 Console.WriteLine($"  {"SwingLong",-12}  {slRet.Count,11}  {nrSwingLong,9}  {nrSwingLong - slRet.Count,+7}");
+            if (rsRet.Count > 0 || nrRipShort > 0)
+                Console.WriteLine($"  {"RipShort",-12}  {rsRet.Count,11}  {nrRipShort,9}  {nrRipShort - rsRet.Count,+7}");
             Console.WriteLine($"  {"Total",-12}  {allTrades.Count,11}  {allTradesNoRouter.Count,9}");
             Console.WriteLine();
             Console.WriteLine($"  {"Scenario",-30}  {"Return",8}  {"DD",6}");
@@ -823,6 +922,7 @@ static class CombinedBacktest
         var flFullCoinRet    = new List<(string Label, List<double> Returns)>();
         var dlFullCoinRet    = new List<(string Label, List<double> Returns)>();
         var slFullCoinRet    = new List<(string Label, List<double> Returns)>();
+        var rsFullCoinRet    = new List<(string Label, List<double> Returns)>();
 
         foreach (var (sym, h1f, m15f, conf) in swingFullCoins)
         {
@@ -891,6 +991,20 @@ static class CombinedBacktest
                 if (coinRet.Count > 0) slFullCoinRet.Add((sym, coinRet));
             }
 
+        if (rsG != null)
+            foreach (var (sym, h1f, m15f, conf) in rsFullCoins)
+            {
+                var coinRsGFull = SelectVariant(rsVariants, m15f) ?? rsG;
+                var coinRet = new List<double>();
+                foreach (var t in RipShortSimulator.GetRipShortReturns(coinRsGFull, h1f, m15f))
+                {
+                    if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)) continue;
+                    fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(coinRsGFull.MaxHoldCandles)));
+                    coinRet.Add(t.Return);
+                }
+                if (coinRet.Count > 0) rsFullCoinRet.Add((sym, coinRet));
+            }
+
         fullHistTrades.Sort((a, b) => a.Time.CompareTo(b.Time));
 
         if (fullHistTrades.Count >= 10)
@@ -932,10 +1046,11 @@ static class CombinedBacktest
         if (flFullCoinRet.Count    >= 2) StatisticalTests.PrintReport(flFullCoinRet,    "FadeLong",   gaTrials: 12_000, rng: statRng);
         if (dlFullCoinRet.Count    >= 2) StatisticalTests.PrintReport(dlFullCoinRet,    "DipLong",    gaTrials: 12_000, rng: statRng);
         if (slFullCoinRet.Count    >= 2) StatisticalTests.PrintReport(slFullCoinRet,    "SwingLong",  gaTrials: 10_000, rng: statRng);
+        if (rsFullCoinRet.Count    >= 2) StatisticalTests.PrintReport(rsFullCoinRet,    "RipShort",   gaTrials: 12_000, rng: statRng);
 
         // Combined portfolio: DSR on full-history returns + WRC across all coin×strategy configs.
         var allFullRet = swingFullCoinRet.Concat(gridFullCoinRet).Concat(flFullCoinRet)
-                                         .Concat(dlFullCoinRet).Concat(slFullCoinRet)
+                                         .Concat(dlFullCoinRet).Concat(slFullCoinRet).Concat(rsFullCoinRet)
                                          .SelectMany(c => c.Returns).ToList();
         if (allFullRet.Count >= 10)
         {
@@ -949,7 +1064,7 @@ static class CombinedBacktest
                 Console.WriteLine($"  {T,12:N0}  {srHat,+7:F4}  {eMaxSr,+9:F4}  {psr0,6:F3}  {dsr,6:F3}  {v}");
             }
             var allCoinConfigs = swingFullCoinRet.Concat(gridFullCoinRet).Concat(flFullCoinRet)
-                                                 .Concat(dlFullCoinRet).Concat(slFullCoinRet).ToList();
+                                                 .Concat(dlFullCoinRet).Concat(slFullCoinRet).Concat(rsFullCoinRet).ToList();
             if (allCoinConfigs.Count >= 2)
             {
                 double pVal = StatisticalTests.WhitesRealityCheck(allCoinConfigs, rng: statRng);
@@ -998,6 +1113,8 @@ static class CombinedBacktest
                     { ["default"] = StratStats(dlRet, dlTotalVCC) },
                 ["SwingLong"] = new Dictionary<string, object>
                     { ["default"] = StratStats(slRet, slTotalVCC) },
+                ["RipShort"] = new Dictionary<string, object>
+                    { ["default"] = StratStats(rsRet, rsTotalVCC) },
             },
         };
         File.WriteAllText("backtest_results.json",

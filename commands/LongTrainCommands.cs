@@ -405,6 +405,191 @@ static class LongTrainCommands
         Console.WriteLine($"\nNext: dotnet run -- backtest");
     }
 
+    public static async Task RunRipShortTrain(BybitRestClient client, string[]? args = null)
+    {
+        string variant  = TrainCommands.ResolveVariant(args);
+        var    cfg      = FitnessConfig.Load();
+        string genoPath = TrainCommands.VariantGenoPath("rip_short", variant, Config.RipShortGenoFile);
+        Console.WriteLine($"=== Gravity-gen2 | RIPSHORTTRAIN (bear-regime relief-rally short, 1h setup + 15m entry/exit, {Config.BacktestCoins.Length} coins, ~3yr) ===");
+        Console.WriteLine($"Training RipShort / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
+
+        Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins (15m → 1h, ~3yr)...");
+        var semRs = new SemaphoreSlim(4);
+        var rsFetchTasks = Config.BacktestCoins.Select(async sym =>
+        {
+            await semRs.WaitAsync();
+            try
+            {
+                var m15 = await CandleFetcher.FetchFifteenMinCandlesCached(client, sym, batches: 113);
+                var h1  = FadeShortSimulator.AggregateCandles(m15.ToArray(), 4);
+                Console.WriteLine($"  {sym}: {m15.Count} 15m → {h1.Length} h1 (~{h1.Length / 24.0:F0}d)");
+                return (sym, h1, m15.ToArray());
+            }
+            finally { semRs.Release(); }
+        });
+        var rsFetched = await Task.WhenAll(rsFetchTasks);
+
+        // Load router genotype to align bear-window thresholds with live routing
+        RegimeRouterGenotype? rsRouterG = File.Exists(Config.RouterGenoFile)
+            ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype()
+            : null;
+        int    bearMinBars = rsRouterG != null ? (int)rsRouterG.BearMinBars : BearWindowMinBars;
+        double bearMinConf = rsRouterG != null ? rsRouterG.BearMinConf      : 0.0;
+        Console.WriteLine(rsRouterG != null
+            ? $"  Router bear thresholds: ≥{bearMinBars} bars / conf≥{bearMinConf:F2}"
+            : $"  No router genotype — using default ≥{bearMinBars} bars");
+
+        // Build BTC bear windows to restrict training data to regime-relevant periods
+        var btcFetched = rsFetched.FirstOrDefault(f => f.sym == "BTCUSDT");
+        var bearWindows = new List<(DateTime Start, DateTime End)>();
+        if (btcFetched.h1 is { Length: > 220 })
+        {
+            var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcFetched.h1);
+            bearWindows = GetBearWindows(btcSeries, bearMinBars, bearMinConf);
+            Console.WriteLine($"  BTC bear windows ({bearMinBars}+ bar runs, conf≥{bearMinConf:F2}): {bearWindows.Count}");
+            foreach (var (s, e) in bearWindows)
+                Console.WriteLine($"    {s:yyyy-MM-dd} → {e:yyyy-MM-dd}  ({(e - s).TotalDays:F0}d)");
+        }
+        else
+        {
+            Console.WriteLine("  BTC data insufficient for bear-window filtering — using full history");
+            // Fetch BTC separately if not in BacktestCoins
+            var btcM15 = await CandleFetcher.FetchFifteenMinCandlesCached(client, "BTCUSDT", batches: 113);
+            var btcH1  = FadeShortSimulator.AggregateCandles(btcM15.ToArray(), 4);
+            if (btcH1.Length > 220)
+            {
+                var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcH1);
+                bearWindows = GetBearWindows(btcSeries, bearMinBars, bearMinConf);
+                Console.WriteLine($"  BTC bear windows ({bearMinBars}+ bar runs, conf≥{bearMinConf:F2}): {bearWindows.Count}");
+            }
+        }
+
+        var rsPassed = new List<(string Sym, Candle[] H1, Candle[] M15)>();
+        foreach (var (sym, h1, m15) in rsFetched)
+        {
+            if (h1.Length < 150) { Console.WriteLine($"  {sym}: skip (insufficient data)"); continue; }
+            var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
+            double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
+            if (medVol < Config.MinMedianVolUsdM) { Console.WriteLine($"  {sym}: skip (vol=${medVol:F2}M/h)"); continue; }
+            rsPassed.Add((sym, h1, m15));
+        }
+
+        var rsCoins = new List<RipShortGA.CoinData>();
+        int rsHeld = 0, rsRegime = 0, rsFallback = 0;
+        for (int ci = 0; ci < rsPassed.Count; ci++)
+        {
+            var (sym, h1, m15) = rsPassed[ci];
+            if (ci % 5 == 0)
+            {
+                rsCoins.Add(new RipShortGA.CoinData(Array.Empty<Candle>(), h1, Array.Empty<Candle>(), m15));
+                rsHeld++;
+                Console.WriteLine($"  {sym}: held-out OOS ({h1.Length} h1 bars)");
+            }
+            else
+            {
+                var (valStart, valEnd) = CandleFetcher.FindLastRegimeBlock(h1, wantBull: false);
+                if (valStart >= 0)
+                {
+                    int m15ValEnd = Math.Min((valEnd + 1) * 4, m15.Length);
+
+                    // Apply bear-window filter to training candles
+                    var h1TrainFiltered  = FilterToWindows(h1[..valStart],        c => c.Time, bearWindows);
+                    var m15TrainFiltered = FilterToWindows(m15[..(valStart * 4)], c => c.Time, bearWindows);
+
+                    if (h1TrainFiltered.Length < 50)
+                    {
+                        Console.WriteLine($"  {sym}: skip training (< 50 bear-window bars after filter)");
+                        rsHeld++;
+                        continue;
+                    }
+
+                    rsCoins.Add(new RipShortGA.CoinData(
+                        h1TrainFiltered,               h1[valStart..(valEnd + 1)],
+                        m15TrainFiltered,              m15[(valStart * 4)..m15ValEnd]));
+                    rsRegime++;
+                    Console.WriteLine($"  {sym}: regime-val bars [{valStart}..{valEnd}] ({valEnd - valStart + 1} bear bars)  train={h1TrainFiltered.Length} bear-window h1 bars");
+                }
+                else
+                {
+                    rsCoins.Add(new RipShortGA.CoinData(Array.Empty<Candle>(), h1, Array.Empty<Candle>(), m15));
+                    rsHeld++;
+                    Console.WriteLine($"  {sym}: held-out OOS (no sustained bear block — excluded from training)");
+                }
+            }
+        }
+        if (rsCoins.Count == 0) { Console.WriteLine("No data."); return; }
+        Console.WriteLine($"\n  {rsCoins.Count} coins: {rsCoins.Count - rsHeld} training ({rsRegime} regime-split + {rsFallback} fallback) · {rsHeld} held-out OOS\n");
+
+        RipShortGenotype? rsSeed = null;
+        if (File.Exists(genoPath))
+        {
+            var candidate = JsonSerializer.Deserialize<RipShortGenotypeDto>(File.ReadAllText(genoPath))!.ToGenotype();
+            if (candidate.Fitness > 0) { rsSeed = candidate; Console.WriteLine($"  Seeding from {genoPath}: {rsSeed}"); }
+            else Console.WriteLine("  Skipping seed (fitness ≤ 0 — training from scratch)");
+        }
+
+        var rsBest = new RipShortGA(80, 150, verbose: true, cfg: cfg).Run(rsCoins, rsSeed);
+
+        Console.WriteLine("\n─── Bayesian refinement for RipShort (60 TPE iterations) ───");
+        var rsRng = new Random(42);
+        var rsBoHistory = new List<(double[] Params, double Fitness)>
+        {
+            (rsBest.ToVector(), rsBest.Fitness)
+        };
+        var rsBoResult = BayesianOptimizer.Refine(
+            rsBoHistory,
+            RipShortGenotype.Bounds,
+            v =>
+            {
+                var g  = RipShortGenotype.FromVector(v);
+                var ts = rsCoins.Where(cd => cd.TrainH1.Length > 0)
+                                .SelectMany(cd => RipShortSimulator.GetRipShortReturns(g, cd.TrainH1.Span, cd.TrainM15.Span))
+                                .Select(t => t.Return).ToList();
+                return ts.Count > 0 ? ts.Average() : -1.0;
+            },
+            iterations: 60,
+            rng: rsRng);
+        var rsBoParams = rsBoResult.OrderByDescending(h => h.Fitness).First().Params;
+        var rsBoGeno   = RipShortGenotype.FromVector(rsBoParams);
+        rsBoGeno.Fitness = rsBoResult.OrderByDescending(h => h.Fitness).First().Fitness;
+        if (rsBoGeno.Fitness > rsBest.Fitness) { rsBest = rsBoGeno; Console.WriteLine($"  TPE improved: {rsBest}"); }
+        else Console.WriteLine($"  GA elite kept");
+
+        Console.WriteLine($"\nFrozen genotype:\n  {rsBest}\n");
+        File.WriteAllText(genoPath, JsonSerializer.Serialize(RipShortGenotypeDto.From(rsBest, cfg),
+            new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"  Saved → {genoPath}");
+
+        Console.WriteLine("\n─── Overfit check ───");
+        // NOTE: GetRipShortReturns yields (Time, Return, Kind) — no per-trade RegimeBarsActive,
+        // so this check is expectancy-based (unlike FadeLong's regime-valid segment counts).
+        var rsTRet = rsCoins.Where(cd => cd.TrainH1.Length > 0)
+                     .SelectMany(cd => RipShortSimulator.GetRipShortReturns(rsBest, cd.TrainH1.Span, cd.TrainM15.Span))
+                     .Select(t => t.Return).ToList();
+        var rsVRet = rsCoins.Where(cd => cd.TrainH1.Length > 0)
+                     .SelectMany(cd => RipShortSimulator.GetRipShortReturns(rsBest, cd.ValH1.Span,   cd.ValM15.Span  ))
+                     .Select(t => t.Return).ToList();
+        var rsHRet = rsCoins.Where(cd => cd.TrainH1.Length == 0)
+                     .SelectMany(cd => RipShortSimulator.GetRipShortReturns(rsBest, cd.ValH1.Span,   cd.ValM15.Span  ))
+                     .Select(t => t.Return).ToList();
+        int rsTCC = rsCoins.Where(cd => cd.TrainH1.Length > 0).Sum(cd => cd.TrainH1.Length) * 12;
+        int rsVCC = rsCoins.Where(cd => cd.TrainH1.Length > 0).Sum(cd => cd.ValH1.Length)   * 12;
+        int rsHCC = rsCoins.Where(cd => cd.TrainH1.Length == 0).Sum(cd => cd.ValH1.Length)  * 12;
+        CandleFetcher.PrintSplitStats("Train segs", rsTRet, rsTCC);
+        CandleFetcher.PrintSplitStats("Val segs  ", rsVRet, rsVCC);
+        CandleFetcher.PrintSplitStats("Held-out  ", rsHRet, rsHCC);
+        double rsvExp = rsVRet.Count > 0 ? rsVRet.Average() : 0;
+        double rstExp = rsTRet.Count > 0 ? rsTRet.Average() : 0;
+        double rshExp = rsHRet.Count > 0 ? rsHRet.Average() : 0;
+        Console.WriteLine(rsvExp < rstExp * 0.4 || rsvExp <= 0
+            ? "\n  !! Possible overfit — val expectancy < 40% of train"
+            : "\n  OK — val expectancy within acceptable range");
+        Console.WriteLine(rshExp > 0
+            ? "  Held-out OOS: positive expectancy ✓"
+            : "  Held-out OOS: negative expectancy — strategy not generalising cross-asset");
+        Console.WriteLine($"\nNext: dotnet run -- backtest");
+    }
+
     public static async Task RunRegimeRouterTrain(BybitRestClient client, string[]? args = null)
     {
         string variant  = TrainCommands.ResolveVariant(args);

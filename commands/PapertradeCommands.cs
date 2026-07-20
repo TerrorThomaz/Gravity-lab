@@ -90,6 +90,8 @@ static class PapertradeCommands
             "dip_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
         var flVariantsPt = LoadVariants<FadeLongGenotypeDto, FadeLongGenotype>(
             "fade_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var rsVariantsPt = LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
+            "rip_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
 
         var gUniversalPt = fsVariantsPt.Length > 0 ? fsVariantsPt[0].Genotype! : null;
         if (gUniversalPt == null)
@@ -135,6 +137,10 @@ static class PapertradeCommands
         var flGenoPt = flVariantsPt.Length > 0 ? flVariantsPt[0].Genotype : null;
         if (flGenoPt != null)
             Console.WriteLine($"FadeLong:          {flGenoPt}  [{flVariantsPt.Length} variant(s)]");
+
+        var rsGenoPt = rsVariantsPt.Length > 0 ? rsVariantsPt[0].Genotype : null;
+        if (rsGenoPt != null)
+            Console.WriteLine($"RipShort:          {rsGenoPt}  [{rsVariantsPt.Length} variant(s)]");
 
         Console.WriteLine();
 
@@ -278,7 +284,7 @@ static class PapertradeCommands
                 }
             }
 
-            int slOpen = 0, dlOpen = 0, flOpen = 0;
+            int slOpen = 0, dlOpen = 0, flOpen = 0, rsOpen = 0;
 
             // ── SwingLong ─────────────────────────────────────────────────────────
             bool slRoutedOn = ptRouting == null || ptRouting.DipLongActive;
@@ -357,6 +363,34 @@ static class PapertradeCommands
                     string unreal    = st.InTrade ? $"{(px - st.Entry) / st.Entry * 100.0:+0.00}%" : "—";
                     // FadeLong has both HardStop and MaeStop — display the tighter one
                     string stopStr   = st.InTrade ? $"{Math.Min(st.HardStop, st.MaeStop):F4}" : "—";
+                    string targetStr = st.InTrade ? $"{st.Target:F4}" : "—";
+                    Console.WriteLine($"  {sym,-18}  {stateStr + capTag,-14} {entryStr,12}  {px,12:F4}  {unreal,11}  {(st.InTrade ? st.HoldCount.ToString() : "—"),5}  {stopStr,12}  {targetStr,12}");
+                }
+            }
+
+            // ── RipShort ──────────────────────────────────────────────────────────
+            bool rsRoutedOn = ptRouting == null || ptRouting.RipShortActive;
+            if (rsGenoPt != null && rsRoutedOn && !cts.Token.IsCancellationRequested)
+            {
+                Console.WriteLine();
+                Console.WriteLine($"── RipShort {new string('─', 93)}");
+                Console.WriteLine($"{"Coin",-18}  {"State",-14} {"Entry",12}  {"Current",12}  {"Unrealised",11}  {"Bars",5}  {"Stop",12}  {"Target",12}");
+                Console.WriteLine(new string('-', 105));
+                foreach (var (sym, h1, m15, passes, atrPct, volM) in coinData)
+                {
+                    if (cts.Token.IsCancellationRequested) break;
+                    if (h1 == null || m15 == null) { Console.WriteLine($"  {sym,-18}  (no data)"); continue; }
+                    if (!passes) { Console.WriteLine($"  {sym,-18}  skip  ATR={atrPct:F1}% vol=${volM:F0}M"); continue; }
+                    double px      = h1[^1].Close;
+                    var coinRsG    = SelectVariant(rsVariantsPt, m15) ?? rsGenoPt;
+                    var st = RipShortSimulator.GetRipShortTradeState(coinRsG, h1, m15);
+                    string capTag = (st.InTrade && rsOpen >= PortfolioReplay.DefaultCaps["ripshort"]) ? " [CAP]" : "";
+                    if (st.InTrade) rsOpen++;
+                    string stateStr  = st.InTrade ? (st.TrailArmed ? "TRAIL ARMED" : $"SHORT b{st.HoldCount}") : "watching";
+                    string entryStr  = st.InTrade ? $"{st.Entry:F4}" : "—";
+                    // Short position: profit when price falls below entry
+                    string unreal    = st.InTrade ? $"{(st.Entry - px) / st.Entry * 100.0:+0.00}%" : "—";
+                    string stopStr   = st.InTrade ? $"{st.HardStop:F4}" : "—";
                     string targetStr = st.InTrade ? $"{st.Target:F4}" : "—";
                     Console.WriteLine($"  {sym,-18}  {stateStr + capTag,-14} {entryStr,12}  {px,12:F4}  {unreal,11}  {(st.InTrade ? st.HoldCount.ToString() : "—"),5}  {stopStr,12}  {targetStr,12}");
                 }
@@ -489,6 +523,30 @@ static class PapertradeCommands
                     }
                 }
 
+                // RipShort positions
+                if (rsGenoPt != null && rsRoutedOn)
+                {
+                    foreach (var (sym, h1, m15, passes, _, _) in coinData)
+                    {
+                        if (h1 == null || m15 == null || !passes) continue;
+                        var coinRsG = SelectVariant(rsVariantsPt, m15) ?? rsGenoPt;
+                        var st = RipShortSimulator.GetRipShortTradeState(coinRsG, h1, m15);
+                        if (!st.InTrade) continue;
+                        double px = m15[^1].Close;
+                        positions.Add(new
+                        {
+                            sym, strat = "RipShort", dir = "Short",
+                            entry = Math.Round(st.Entry, 6),
+                            mark  = Math.Round(px, 6),
+                            pnl   = Math.Round((st.Entry - px) / st.Entry * 100.0, 2),
+                            age   = $"{st.HoldCount}h",
+                            stop  = Math.Round(st.HardStop, 6),
+                            target = Math.Round(st.Target, 6),
+                            trailArmed = st.TrailArmed,
+                        });
+                    }
+                }
+
                 var regimeInfo = ptRouting != null ? new
                 {
                     state      = ptRouting.Regime.ToString(),
@@ -498,6 +556,7 @@ static class PapertradeCommands
                     SwingLong  = ptRouting.DipLongActive,
                     DipLong    = ptRouting.DipLongActive,
                     FadeLong   = ptRouting.FadeLongActive,
+                    RipShort   = ptRouting.RipShortActive,
                     sizeMult   = Math.Round(ptRouting.SizeMult, 2),
                 } : null;
 

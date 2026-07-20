@@ -448,17 +448,18 @@ static class OosBacktest
         Console.WriteLine($"  Sortino: {Simulator.SortinoRatio(allRet, totalVCC):F2}");
         Console.WriteLine($"  Calmar:  {Simulator.CalmarRatio(allRet):F2}");
 
-        static TimeSpan OosStrategyHold(string strat, FadeShortGenotype swG, GridGenotype grG, FadeLongGenotype? flG, DipLongGenotype? dlG, SwingLongGenotype? slG) => strat switch
+        static TimeSpan OosStrategyHold(string strat, FadeShortGenotype swG, GridGenotype grG, FadeLongGenotype? flG, DipLongGenotype? dlG, SwingLongGenotype? slG, RipShortGenotype? rsG) => strat switch
         {
             "swing"      => TimeSpan.FromHours(swG.MaxHoldCandles),
             "swing_long" => TimeSpan.FromHours(slG?.MaxHoldCandles ?? swG.MaxHoldCandles),
             "fadelong"   => TimeSpan.FromHours(flG?.MaxHoldCandles ?? swG.MaxHoldCandles),
             "diplong"    => TimeSpan.FromHours(dlG?.MaxHoldCandles ?? swG.MaxHoldCandles),
+            "ripshort"   => TimeSpan.FromHours(rsG?.MaxHoldCandles ?? swG.MaxHoldCandles),
             _            => TimeSpan.FromHours(grG.MaxHoldCandles),
         };
 
         var allTradesForExposure = allTrades
-            .Select(t => (t.Time, t.Return, t.Conf, OosStrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG)))
+            .Select(t => (t.Time, t.Return, t.Conf, OosStrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG)))
             .ToList();
 
         var port5cap  = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
@@ -533,6 +534,15 @@ static class OosBacktest
                 Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
         }
 
+        if (rsCoinStats.Count > 0)
+        {
+            Console.WriteLine($"\n  Per-coin breakdown (RipShort · sorted by Sharpe):");
+            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+            Console.WriteLine($"  {new string('-', 75)}");
+            foreach (var r in rsCoinStats.OrderByDescending(c => c.Sharpe))
+                Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
+        }
+
         // Merge OOS section into backtest_results.json
         static double OosComputeMaxDD(List<double> r)
         {
@@ -566,6 +576,8 @@ static class OosBacktest
                 { ["default"] = OosStratStats(dlRet, totalVCC) },
             ["SwingLong"] = new Dictionary<string, object>
                 { ["default"] = OosStratStats(slRet, totalVCC) },
+            ["RipShort"] = new Dictionary<string, object>
+                { ["default"] = OosStratStats(rsRet, totalVCC) },
         };
 
         string backtestPath = "backtest_results.json";
@@ -597,6 +609,8 @@ static class OosBacktest
             "fade_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
         var dlVariantsAC   = LoadVariants<DipLongGenotypeDto, DipLongGenotype>(
             "dip_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var rsVariantsAC   = LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
+            "rip_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
 
         var swingG = fsVariantsAC.Length   > 0 ? fsVariantsAC[0].Genotype!   : null;
         var gridG  = gridVariantsAC.Length > 0 ? gridVariantsAC[0].Genotype! : null;
@@ -605,11 +619,13 @@ static class OosBacktest
 
         FadeLongGenotype?     flG     = flVariantsAC.Length > 0 ? flVariantsAC[0].Genotype : null;
         DipLongGenotype?      dlG     = dlVariantsAC.Length > 0 ? dlVariantsAC[0].Genotype : null;
+        RipShortGenotype?     rsG     = rsVariantsAC.Length > 0 ? rsVariantsAC[0].Genotype : null;
         RegimeRouterGenotype? routerG = File.Exists(Config.RouterGenoFile)   ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype() : null;
 
         Console.WriteLine($"FadeShort: {swingG}\nGrid:      {gridG}");
         if (flG != null)     Console.WriteLine($"FadeLong:  {flG}");
         if (dlG != null)     Console.WriteLine($"DipLong:   {dlG}");
+        if (rsG != null)     Console.WriteLine($"RipShort:  {rsG}");
         if (routerG != null) Console.WriteLine($"Router:    {routerG}");
         Console.WriteLine();
 
@@ -646,18 +662,19 @@ static class OosBacktest
 
         var allTrades = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
 
-        static TimeSpan AcHold(string s, FadeShortGenotype sw, GridGenotype gr, FadeLongGenotype? fl, DipLongGenotype? dl) => s switch
+        static TimeSpan AcHold(string s, FadeShortGenotype sw, GridGenotype gr, FadeLongGenotype? fl, DipLongGenotype? dl, RipShortGenotype? rs) => s switch
         {
             "swing"    => TimeSpan.FromHours(sw.MaxHoldCandles),
             "fadelong" => TimeSpan.FromHours(fl?.MaxHoldCandles ?? sw.MaxHoldCandles),
             "diplong"  => TimeSpan.FromHours(dl?.MaxHoldCandles ?? sw.MaxHoldCandles),
+            "ripshort" => TimeSpan.FromHours(rs?.MaxHoldCandles ?? sw.MaxHoldCandles),
             _          => TimeSpan.FromHours(gr.MaxHoldCandles),
         };
 
         // ── BacktestCoins — val 20%, seed-screened ─────────────────────────────
         var btFetched = fetchedAll.Where(f => Config.BacktestCoins.Contains(f.sym)).ToArray();
-        int btSwing = 0, btGrid = 0, btFL = 0, btDL = 0;
-        int btSwingT = 0, btGridT = 0, btFLT = 0, btDLT = 0;
+        int btSwing = 0, btGrid = 0, btFL = 0, btDL = 0, btRS = 0;
+        int btSwingT = 0, btGridT = 0, btFLT = 0, btDLT = 0, btRST = 0;
 
         Console.WriteLine("── BacktestCoins (val 20%, seed-screened) ──────────────────────────────────");
         foreach (var (sym, m15, h1) in btFetched)
@@ -733,17 +750,32 @@ static class OosBacktest
                     foreach (var t in gated) allTrades.Add((t.Time, t.Return, conf, "diplong"));
                 }
             }
+
+            // RipShort
+            if (rsG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
+            {
+                var coinRsGAC = SelectVariant(rsVariantsAC, m15) ?? rsG;
+                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGAC, h1Val, m15Val);
+                var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList() : raw;
+                if (gated.Count > 0)
+                {
+                    double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
+                    btRS++; btRST += gated.Count;
+                    foreach (var t in gated) allTrades.Add((t.Time, t.Return, conf, "ripshort"));
+                }
+            }
         }
         Console.WriteLine($"  FadeShort: {btSwing,3} coins → {btSwingT,4} trades");
         Console.WriteLine($"  Grid:      {btGrid,3} coins → {btGridT,4} trades");
         if (flG != null) Console.WriteLine($"  FadeLong:  {btFL,3} coins → {btFLT,4} trades");
         if (dlG != null) Console.WriteLine($"  DipLong:   {btDL,3} coins → {btDLT,4} trades");
+        if (rsG != null) Console.WriteLine($"  RipShort:  {btRS,3} coins → {btRST,4} trades");
 
         // ── OosCoins — full history, no seed screen ───────────────────────────
         const double oosMinVol2 = 0.05;
         var oosFetched2 = fetchedAll.Where(f => Config.OosCoins.Contains(f.sym)).ToArray();
-        int oSwing = 0, oGrid = 0, oFL = 0, oDL = 0;
-        int oSwingT = 0, oGridT = 0, oFLT = 0, oDLT = 0;
+        int oSwing = 0, oGrid = 0, oFL = 0, oDL = 0, oRS = 0;
+        int oSwingT = 0, oGridT = 0, oFLT = 0, oDLT = 0, oRST = 0;
 
         Console.WriteLine($"\n── OosCoins (full history, vol≥${oosMinVol2:F2}M, no screen) ─────────────────────");
         foreach (var (sym, m15, h1) in oosFetched2)
@@ -805,11 +837,26 @@ static class OosBacktest
                     foreach (var t in gated) allTrades.Add((t.Time, t.Return, conf, "diplong"));
                 }
             }
+
+            // RipShort
+            if (rsG != null && m15.Length >= 1200)
+            {
+                var coinRsGOos = SelectVariant(rsVariantsAC, m15) ?? rsG;
+                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGOos, h1, m15);
+                var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList() : raw;
+                if (gated.Count > 0)
+                {
+                    double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
+                    oRS++; oRST += gated.Count;
+                    foreach (var t in gated) allTrades.Add((t.Time, t.Return, conf, "ripshort"));
+                }
+            }
         }
         Console.WriteLine($"  FadeShort: {oSwing,3} coins → {oSwingT,4} trades");
         Console.WriteLine($"  Grid:      {oGrid,3} coins → {oGridT,4} trades");
         if (flG != null) Console.WriteLine($"  FadeLong:  {oFL,3} coins → {oFLT,4} trades");
         if (dlG != null) Console.WriteLine($"  DipLong:   {oDL,3} coins → {oDLT,4} trades");
+        if (rsG != null) Console.WriteLine($"  RipShort:  {oRS,3} coins → {oRST,4} trades");
 
         if (allTrades.Count == 0) { Console.WriteLine("\nNo trades generated."); return; }
         allTrades.Sort((a, b) => a.Time.CompareTo(b.Time));
@@ -825,6 +872,7 @@ static class OosBacktest
                     "swing_long" => TimeSpan.FromHours(48),
                     "diplong"    => TimeSpan.FromHours(48),
                     "fadelong"   => TimeSpan.FromHours(72),
+                    "ripshort"   => TimeSpan.FromHours(72),
                     "grid"       => TimeSpan.FromHours(72),
                     _            => TimeSpan.FromHours(48),
                 },
@@ -840,17 +888,19 @@ static class OosBacktest
         var gridRet  = allTrades.Where(t => t.Strategy == "grid").Select(t => t.Return).ToList();
         var flRet    = allTrades.Where(t => t.Strategy == "fadelong").Select(t => t.Return).ToList();
         var dlRet    = allTrades.Where(t => t.Strategy == "diplong").Select(t => t.Return).ToList();
+        var rsRet    = allTrades.Where(t => t.Strategy == "ripshort").Select(t => t.Return).ToList();
         int totalVCC = fetchedAll.Where(f => Config.BacktestCoins.Contains(f.sym) || Config.OosCoins.Contains(f.sym)).Max(f => f.h1.Length) * 12;
 
         string Pct(List<double> r) => r.Count > 0 ? $"WR={(double)r.Count(x => x > 0)/r.Count:P0}  Avg={r.Average():+0.00}%" : "no trades";
 
         Console.WriteLine($"\n{new string('═', 70)}");
-        Console.WriteLine($"  COMBINED  ({allRet.Count} trades · {btSwing+btGrid+btFL+btDL+oSwing+oGrid+oFL+oDL} coin-strategy pairs)");
+        Console.WriteLine($"  COMBINED  ({allRet.Count} trades · {btSwing+btGrid+btFL+btDL+btRS+oSwing+oGrid+oFL+oDL+oRS} coin-strategy pairs)");
         Console.WriteLine($"{new string('═', 70)}");
         Console.WriteLine($"  FadeShort: {swingRet.Count,4} trades  PF={Simulator.ProfitFactor(swingRet):F2}  {Pct(swingRet)}");
         Console.WriteLine($"  Grid:      {gridRet.Count,4} trades  PF={Simulator.ProfitFactor(gridRet):F2}  {Pct(gridRet)}");
         if (flRet.Count > 0) Console.WriteLine($"  FadeLong:  {flRet.Count,4} trades  PF={Simulator.ProfitFactor(flRet):F2}  {Pct(flRet)}");
         if (dlRet.Count > 0) Console.WriteLine($"  DipLong:   {dlRet.Count,4} trades  PF={Simulator.ProfitFactor(dlRet):F2}  {Pct(dlRet)}");
+        if (rsRet.Count > 0) Console.WriteLine($"  RipShort:  {rsRet.Count,4} trades  PF={Simulator.ProfitFactor(rsRet):F2}  {Pct(rsRet)}");
         Console.WriteLine($"  Total:     {allRet.Count,4} trades  PF={Simulator.ProfitFactor(allRet):F2}  {Pct(allRet)}");
         Console.WriteLine($"  Sharpe: {Simulator.SharpeRatio(allRet, totalVCC):F2}  Sortino: {Simulator.SortinoRatio(allRet, totalVCC):F2}  Calmar: {Simulator.CalmarRatio(allRet):F2}");
 
@@ -858,7 +908,7 @@ static class OosBacktest
         var openEvents = new List<(DateTime Time, int Delta)>();
         foreach (var t in allTrades)
         {
-            var hold = AcHold(t.Strategy, swingG, gridG, flG, dlG);
+            var hold = AcHold(t.Strategy, swingG, gridG, flG, dlG, rsG);
             openEvents.Add((t.Time, +1));
             openEvents.Add((t.Time + hold, -1));
         }
@@ -872,7 +922,7 @@ static class OosBacktest
             prevTime = evtTime; totalConcTicks += (evtTime - openEvents[0].Time).Ticks > 0 ? 0 : 0;
         }
         double totalSpanTicks = allTrades.Count > 1
-            ? (allTrades[^1].Time + AcHold(allTrades[^1].Strategy, swingG, gridG, flG, dlG) - allTrades[0].Time).Ticks
+            ? (allTrades[^1].Time + AcHold(allTrades[^1].Strategy, swingG, gridG, flG, dlG, rsG) - allTrades[0].Time).Ticks
             : 1;
         double avgConc = totalSpanTicks > 0 ? concAcc / totalSpanTicks : 0;
 
@@ -884,7 +934,7 @@ static class OosBacktest
 
         // ── Portfolio simulations ──────────────────────────────────────────────
         var allTradesForExposure = allTrades
-            .Select(t => (t.Time, t.Return, t.Conf, AcHold(t.Strategy, swingG, gridG, flG, dlG)))
+            .Select(t => (t.Time, t.Return, t.Conf, AcHold(t.Strategy, swingG, gridG, flG, dlG, rsG)))
             .ToList();
 
         var port5cap = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);

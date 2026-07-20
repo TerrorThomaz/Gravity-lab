@@ -12,6 +12,7 @@ dotnet build -c Release
 dotnet run -- train              # FadeShort GA: 93 coins, 5-fold WFV, ~10 min
 dotnet run -- gridtrain          # Grid GA: ranging-market long grid
 dotnet run -- fadelongtrain      # FadeLong GA: bear-regime oversold bounce, restricted to BTC bear windows
+dotnet run -- ripshorttrain      # RipShort GA: bear-regime relief-rally continuation short, restricted to BTC bear windows
 dotnet run -- diplongtrain       # DipLong GA: bull-regime RSI dip + bullish BoS, regime-gated
 dotnet run -- swingLongtrain     # SwingLong GA: bull-regime RSI bullish divergence + bullish BoS
 dotnet run -- routertrain        # RegimeRouter GA: train routing thresholds + duration gates
@@ -55,6 +56,7 @@ src/
   strategies/
     fade_short/   FadeShortGA, FadeShortGenotype
     fade_long/    FadeLongGA, FadeLongGenotype, FadeLongSimulator
+    rip_short/    RipShortGA, RipShortGenotype, RipShortSimulator
     dip_long/     DipLongGA, DipLongGenotype, DipLongSimulator
     swing_long/   SwingLongGA, SwingLongGenotype, SwingSimulator
     grid/         GridGA, GridGenotype, GridSimulator
@@ -79,19 +81,22 @@ Gravity-gen2.Tests/
 
 ## Architecture
 
-### Strategy suite (5 strategies)
+### Strategy suite (6 strategies)
 
 All strategies share the same dual-timeframe setup: **1h candles** for regime/setup detection, **15m candles** for precise entry/exit execution.
 
 | Strategy | Regime | Direction | Entry Signal |
 |----------|--------|-----------|--------------|
-| **FadeShort** | Always-on | Short | RSI bearish divergence + min rally + bearish BoS on 15m |
+| **FadeShort** | Always-on (router-gated off in confirmed Bull) | Short | RSI bearish divergence + min rally + bearish BoS on 15m |
 | **Grid** | Ranging | Long | ADX low + BB compression, grid levels |
 | **SwingLong** | Bull (`DipLongActive`) | Long | RSI bullish divergence + min decline + bullish BoS on 15m |
 | **DipLong** | Bull (`DipLongActive`) | Long | RSI dip (40–55) in established uptrend + bullish BoS on 15m |
 | **FadeLong** | Bear (`FadeLongActive`) | Long | RSI bearish divergence at bottom + bullish BoS on 15m |
+| **RipShort** | Bear (`RipShortActive`) | Short | RSI relief rally (≥40–60) in established downtrend + bearish BoS on 15m |
 
-Exit uses three layers: hard ATR stop · fixed ATR profit target · trailing ATR stop (armed after `TrailingActivationAtrMult` × ATR move) · `MaxHoldCandles` forced close.
+Exit uses three layers: hard ATR stop · fixed ATR profit target · trailing ATR stop (armed after `TrailingActivationAtrMult` × ATR move) · `MaxHoldCandles` forced close. RipShort's stop/target are wick-triggered (intrabar high/low, not close) since bear-rally squeezes are its dominant tail risk, and it accounts for perp funding (real rate via `FundingRateSession` when available, else a flat pessimistic −0.01%/8h) since shorts typically pay funding in bear regimes.
+
+FadeLong and RipShort share the router's confirmed-bear gate (`BearMinBars`/`BearMinConf`), but only FadeLong (a bounce/reversal play) carries into the early-bull transition window (`EarlyBullBearCarry`) — RipShort is with-trend and switches off the moment the regime tips toward Bull.
 
 ### RegimeClassifier + RegimeRouter
 
@@ -121,7 +126,7 @@ Two overloads: rule-based fallback and trained-genotype path (`RegimeRouter.Rout
 
 ### Portfolio cap
 
-`src/core/PortfolioReplay.cs` — filters combined trade list by per-strategy concurrent count before EUR exposure simulation. Default caps: FadeShort=10, SwingLong=8, DipLong=8, FadeLong=8, Grid=12.
+`src/core/PortfolioReplay.cs` — filters combined trade list by per-strategy concurrent count before EUR exposure simulation. Default caps: FadeShort=10, SwingLong=8, DipLong=8, FadeLong=8, RipShort=8, Grid=12.
 
 ### Candle fetching
 
@@ -134,6 +139,7 @@ Two overloads: rule-based fallback and trained-genotype path (`RegimeRouter.Rout
 | `genotypes/fade_short_genotype.json` | FadeShort |
 | `genotypes/grid_best_genotype.json` | Grid |
 | `genotypes/fade_long_genotype.json` | FadeLong |
+| `genotypes/rip_short_genotype.json` | RipShort |
 | `genotypes/dip_long_genotype.json` | DipLong |
 | `genotypes/swing_long_genotype.json` | SwingLong |
 | `genotypes/swing_best_genotype.json` | SwingLong (best candidate) |

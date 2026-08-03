@@ -1,0 +1,14 @@
+{
+  "AdxThreshold": 20,
+  "BbPeriod": 10,
+  "BbWidthMaxPct": 2.5,
+  "EmaPeriod": 10,
+  "GridStepAtrMult": 0.626148639576961,
+  "GridLevels": 3,
+  "TakeProfitAtrMult": 2.156657263123659,
+  "HardStopAtrMult": 2.958616507755246,
+  "MaxHoldCandles": 24,
+  "Fitness": 76.60082090293443,
+  "AtrLow": 0,
+  "AtrHigh": 9999
+}

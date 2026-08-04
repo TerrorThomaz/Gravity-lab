@@ -37,9 +37,10 @@ public static class DipLongSimulator
     private const double SlipStopGap = 0.015;
 
     public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive)> GetDipLongReturns(
-        DipLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15)
+        DipLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
+        FundingRateSession? funding = null)
     {
-        var (trades, _) = RunDipLongMultiTF(g, h1, m15);
+        var (trades, _) = RunDipLongMultiTF(g, h1, m15, funding);
         return trades;
     }
 
@@ -58,8 +59,16 @@ public static class DipLongSimulator
         return state;
     }
 
+    public static DipLongTradeState GetDipLongTradeState(DipLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
+        FundingRateSession? funding)
+    {
+        var (_, state) = RunDipLongMultiTF(g, h1, m15, funding);
+        return state;
+    }
+
     private static (List<(DateTime, double, string, int)> Trades, DipLongTradeState FinalState)
-        RunDipLongMultiTF(DipLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15)
+        RunDipLongMultiTF(DipLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
+                          FundingRateSession? funding = null)
     {
         int h1Warmup = Math.Max(
                            Math.Max(g.RegimeLongEmaPeriod, Math.Max(g.EmaPeriod, RsiPeriod + 2)),
@@ -112,6 +121,7 @@ public static class DipLongSimulator
         bool   trailArmed    = false;
         int    entryIH1      = 0;
         int    entryRegimeBars = 0;
+        DateTime entryTime   = default;
 
         int    cachedH1Ref    = -1;
         bool   cachedSetupMet = false;
@@ -185,6 +195,7 @@ public static class DipLongSimulator
                     trailArmed     = false;
                     entryIH1       = nextBar / 4;
                     entryRegimeBars = cachedRegimeBars;
+                    entryTime      = m15[nextBar].Time;
                 }
             }
             else
@@ -215,7 +226,8 @@ public static class DipLongSimulator
                 {
                     double exitPx = hitStop   ? hardStop :
                                     hitTarget ? target   : m15Price;
-                    double ret = (exitPx - entry) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry);
+                    double fundingPnl = FundingPnl(entryTime, m15[im15].Time, funding);
+                    double ret = (exitPx - entry) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl;
                     result.Add((m15[im15].Time, ret, "dip_long", entryRegimeBars));
                     inTrade = false;
                 }
@@ -225,12 +237,29 @@ public static class DipLongSimulator
         if (inTrade)
         {
             double finalPx = m15Closes[^1];
-            double ret = (finalPx - entry) / entry * 100.0 - TradeCost(false, atrEntry, entry);
+            double fundingPnl = FundingPnl(entryTime, m15[^1].Time, funding);
+            double ret = (finalPx - entry) / entry * 100.0 - TradeCost(false, atrEntry, entry) + fundingPnl;
             result.Add((m15[^1].Time, ret, "dip_long", entryRegimeBars));
         }
 
         int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;
         return (result, new DipLongTradeState(inTrade, entry, hardStop, target, trailArmed, trailHigh, finalHold));
+    }
+
+    private static double FundingPnl(DateTime entryTime, DateTime exitTime, FundingRateSession? funding)
+    {
+        if (exitTime <= entryTime) return 0.0;
+        if (funding == null)
+        {
+            double heldHours = (exitTime - entryTime).TotalHours;
+            return -0.01 * (heldHours / 8.0);
+        }
+        double pnl = 0.0;
+        DateTime t = entryTime.Date;
+        while (t <= entryTime) t = t.AddHours(8);
+        for (; t <= exitTime; t = t.AddHours(8))
+            pnl += funding.GetRate(t) * 100.0;
+        return pnl;
     }
 
     private static double TradeCost(bool isStop, double atrEntry, double entryPx)

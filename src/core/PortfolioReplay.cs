@@ -9,7 +9,8 @@ namespace TradingGA;
 // trade list that won't blow up with 93 simultaneously correlated positions.
 public static class PortfolioReplay
 {
-    // Default caps per strategy kind (intentionally generous; reduces only catastrophic clustering)
+    // Default caps per strategy kind. DirectionalCap (passed separately) limits
+    // total same-direction concurrent exposure across all strategies.
     public static readonly Dictionary<string, int> DefaultCaps = new()
     {
         ["fade_short"] = 10,
@@ -19,6 +20,7 @@ public static class PortfolioReplay
         ["fadelong"]   = 8,
         ["ripshort"]   = 8,
         ["grid"]       = 12,
+        ["gridshort"]  = 12,
     };
 
     public record Trade(
@@ -31,13 +33,19 @@ public static class PortfolioReplay
     // Filter trades by concurrent position cap. Returns a new list with capped trades removed.
     public static List<Trade> FilterByConcurrentCap(
         IEnumerable<Trade> trades,
-        Dictionary<string, int>? caps = null)
+        Dictionary<string, int>? caps = null,
+        int directionalCap = int.MaxValue)
     {
         caps ??= DefaultCaps;
         var sorted  = trades.OrderBy(t => t.EntryTime).ToList();
         var result  = new List<Trade>(sorted.Count);
-        // Per-strategy list of close times for currently open positions
         var openClose = new Dictionary<string, List<DateTime>>(StringComparer.OrdinalIgnoreCase);
+        var longStrategies = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "diplong", "fadelong", "swing_long", "grid" };
+        var shortStrategies = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "swing", "fade_short", "ripshort", "gridshort" };
+        var longCloses  = new List<DateTime>();
+        var shortCloses = new List<DateTime>();
 
         foreach (var t in sorted)
         {
@@ -49,15 +57,21 @@ public static class PortfolioReplay
                 openClose[t.Strategy] = closes;
             }
 
-            // Remove positions that have closed by this entry time
             closes.RemoveAll(ct => ct <= t.EntryTime);
+            longCloses.RemoveAll(ct => ct <= t.EntryTime);
+            shortCloses.RemoveAll(ct => ct <= t.EntryTime);
 
-            if (closes.Count < cap)
-            {
-                closes.Add(t.EntryTime + t.HoldDuration);
-                result.Add(t);
-            }
-            // else: trade skipped — cap exceeded
+            if (closes.Count >= cap) continue;
+
+            bool isLong  = longStrategies.Contains(t.Strategy);
+            bool isShort = shortStrategies.Contains(t.Strategy);
+            if (isLong && longCloses.Count >= directionalCap) continue;
+            if (isShort && shortCloses.Count >= directionalCap) continue;
+
+            closes.Add(t.EntryTime + t.HoldDuration);
+            if (isLong)  longCloses.Add(t.EntryTime + t.HoldDuration);
+            if (isShort) shortCloses.Add(t.EntryTime + t.HoldDuration);
+            result.Add(t);
         }
 
         return result;

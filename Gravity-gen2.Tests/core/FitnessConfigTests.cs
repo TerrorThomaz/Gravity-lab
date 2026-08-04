@@ -16,12 +16,16 @@ public class FitnessConfigTests
         Assert.Equal(0.6,   cfg.FreqW);
         Assert.Equal(1.2,   cfg.DdPenalty);
         Assert.Equal(1.0,   cfg.RetentionW);
-        Assert.Equal(0.0,   cfg.SharpeW);
+        Assert.Equal(0.5,   cfg.SharpeW);
         Assert.Equal(0.0,   cfg.CalmarW);
         Assert.Equal(0.0,   cfg.PfW);
-        Assert.Equal(0.0,   cfg.SortinoW);
+        Assert.Equal(0.3,   cfg.SortinoW);
         Assert.Equal(0.0,   cfg.AtrLow);
         Assert.Equal(9999.0,cfg.AtrHigh);
+        Assert.Equal(0.3,   cfg.CVaRW);
+        Assert.Equal(0.2,   cfg.TailRatioW);
+        Assert.Equal(0.2,   cfg.RegimeDiversityW);
+        Assert.Equal(0.05,  cfg.EmbargoPct);
     }
 
     [Fact]

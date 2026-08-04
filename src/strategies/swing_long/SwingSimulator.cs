@@ -228,9 +228,10 @@ public static class FadeShortSimulator
     }
 
     public static List<(DateTime Time, double Return, string Kind)> GetFadeShortReturns(
-        FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15)
+        FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
+        FundingRateSession? funding = null)
     {
-        var (trades, _) = RunSwingMultiTF(g, h1, m15);
+        var (trades, _) = RunSwingMultiTF(g, h1, m15, funding: funding);
         return trades;
     }
 
@@ -249,9 +250,26 @@ public static class FadeShortSimulator
         return scored;
     }
 
+    private static double FundingPnl(DateTime entryTime, DateTime exitTime, FundingRateSession? funding)
+    {
+        if (exitTime <= entryTime) return 0.0;
+        if (funding == null)
+        {
+            double heldHours = (exitTime - entryTime).TotalHours;
+            return -0.01 * (heldHours / 8.0);
+        }
+        double pnl = 0.0;
+        DateTime t = entryTime.Date;
+        while (t <= entryTime) t = t.AddHours(8);
+        for (; t <= exitTime; t = t.AddHours(8))
+            pnl += funding.GetRate(t) * 100.0;
+        return pnl;
+    }
+
     private static (List<(DateTime, double, string)> Trades, FadeShortTradeState FinalState)
         RunSwingMultiTF(FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
-                        string? coin = null, List<ScoredTrade>? scoredOut = null)
+                        string? coin = null, List<ScoredTrade>? scoredOut = null,
+                        FundingRateSession? funding = null)
     {
         int h1Warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
                        + g.LookbackCandles + 2;
@@ -399,7 +417,8 @@ public static class FadeShortSimulator
                     double exitPx = hitHardStop ? hardStop :
                                     hitMae      ? maeStop  :
                                     hitTarget   ? target   : m15Price;
-                    double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry);
+                    double fundingPnl = FundingPnl(entryTime, m15[im15].Time, funding);
+                    double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl;
                     result.Add((m15[im15].Time, ret, "fade_short"));
                     scoredOut?.Add(new ScoredTrade(coin!, "swing", entryTime, m15[im15].Time, ret, entryScore));
                     inTrade = false;
@@ -410,7 +429,8 @@ public static class FadeShortSimulator
         if (inTrade)
         {
             double finalPx = m15Closes[^1];
-            double ret = (entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry);
+            double fundingPnl = FundingPnl(entryTime, m15[^1].Time, funding);
+            double ret = (entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry) + fundingPnl;
             result.Add((m15[^1].Time, ret, "fade_short"));
             scoredOut?.Add(new ScoredTrade(coin!, "swing", entryTime, m15[^1].Time, ret, entryScore));
         }
@@ -457,9 +477,10 @@ public static class SwingLongSimulator
         int    HoldCount);
 
     public static List<(DateTime Time, double Return, string Kind)> GetSwingLongReturns(
-        SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15)
+        SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
+        FundingRateSession? funding = null)
     {
-        var (trades, _) = RunSwingLongMultiTF(g, h1, m15);
+        var (trades, _) = RunSwingLongMultiTF(g, h1, m15, funding);
         return trades;
     }
 
@@ -470,8 +491,17 @@ public static class SwingLongSimulator
         return state;
     }
 
+    public static SwingLongTradeState GetSwingLongTradeState(
+        SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
+        FundingRateSession? funding)
+    {
+        var (_, state) = RunSwingLongMultiTF(g, h1, m15, funding);
+        return state;
+    }
+
     private static (List<(DateTime, double, string)> Trades, SwingLongTradeState FinalState)
-        RunSwingLongMultiTF(SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15)
+        RunSwingLongMultiTF(SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
+                            FundingRateSession? funding = null)
     {
         int h1Warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
                        + g.LookbackCandles + 2;
@@ -507,6 +537,7 @@ public static class SwingLongSimulator
         double atrEntry   = 0;
         bool   trailArmed = false;
         int    entryIH1   = 0;
+        DateTime entryTime = default;
 
         int    cachedH1Ref    = -1;
         bool   cachedSetupMet = false;
@@ -582,6 +613,7 @@ public static class SwingLongSimulator
                     trailHigh  = entry;
                     trailArmed = false;
                     entryIH1   = nextBar / 4;
+                    entryTime  = m15[nextBar].Time;
                 }
             }
             else
@@ -616,7 +648,8 @@ public static class SwingLongSimulator
                     double slip     = SlipK * atrPct;
                     double stopSlip = hitStop ? SlipStopGap * atrPct : 0;
                     double cost     = FeeExchange + slip * 2 + stopSlip;
-                    double ret      = (exitPx - entry) / entry * 100.0 - cost;
+                    double fundingPnl = FundingPnl(entryTime, m15[im15].Time, funding);
+                    double ret      = (exitPx - entry) / entry * 100.0 - cost + fundingPnl;
                     result.Add((m15[im15].Time, ret, "swing_long"));
                     inTrade = false;
                 }
@@ -627,11 +660,28 @@ public static class SwingLongSimulator
         {
             double finalPx = m15Closes[^1];
             double atrPct  = atrEntry / entry * 100.0;
-            double ret     = (finalPx - entry) / entry * 100.0 - (FeeExchange + SlipK * atrPct * 2);
+            double fundingPnl = FundingPnl(entryTime, m15[^1].Time, funding);
+            double ret     = (finalPx - entry) / entry * 100.0 - (FeeExchange + SlipK * atrPct * 2) + fundingPnl;
             result.Add((m15[^1].Time, ret, "swing_long"));
         }
 
         int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;
         return (result, new SwingLongTradeState(inTrade, entry, hardStop, target, trailArmed, trailHigh, finalHold));
+    }
+
+    private static double FundingPnl(DateTime entryTime, DateTime exitTime, FundingRateSession? funding)
+    {
+        if (exitTime <= entryTime) return 0.0;
+        if (funding == null)
+        {
+            double heldHours = (exitTime - entryTime).TotalHours;
+            return -0.01 * (heldHours / 8.0);
+        }
+        double pnl = 0.0;
+        DateTime t = entryTime.Date;
+        while (t <= entryTime) t = t.AddHours(8);
+        for (; t <= exitTime; t = t.AddHours(8))
+            pnl += funding.GetRate(t) * 100.0;
+        return pnl;
     }
 }

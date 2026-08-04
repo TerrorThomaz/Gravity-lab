@@ -160,6 +160,75 @@ public class RipShortGenotype
         {  10,  100 }, // RegimeSustainedBars
     };
 
+    public static readonly double[,] BoundsLowVol =
+    {
+        { 100,  500 }, // RegimeLongEmaPeriod
+        {  10,   60 }, // RegimeSlopeLookback
+        {  20,  100 }, // EmaPeriod
+        {  10,   30 }, // AdxThreshold (lower for low-vol)
+        {  40,   60 }, // RsiRallyThreshold
+        { 0.5,  1.5 }, // StopLossAtrMult (tighter for low-vol)
+        { 2.0,  6.0 }, // TakeProfitAtrMult (smaller for low-vol)
+        { 1.5,  4.0 }, // TrailingActivationAtrMult
+        { 1.0,  3.0 }, // TrailingStopAtrMult (tighter for low-vol)
+        {  72, 200 }, // MaxHoldCandles (longer for low-vol)
+        { 0.01,0.03 }, // PositionSizePct (smaller for low-vol)
+        {  20,  80 }, // TimeStopBars (longer for low-vol)
+        { 0.02,0.20 }, // TimeStopLossPct
+        {  10,  100 }, // RegimeSustainedBars
+    };
+
+    public static readonly double[,] BoundsHighVol =
+    {
+        { 150,  400 }, // RegimeLongEmaPeriod
+        {  12,   40 }, // RegimeSlopeLookback
+        {  30,   80 }, // EmaPeriod
+        {  30,   50 }, // AdxThreshold
+        {  45,   65 }, // RsiRallyThreshold
+        { 1.5,  2.5 }, // StopLossAtrMult
+        { 5.0, 15.0 }, // TakeProfitAtrMult
+        { 2.5,  5.0 }, // TrailingActivationAtrMult
+        { 2.0,  5.0 }, // TrailingStopAtrMult
+        {  24,   72 }, // MaxHoldCandles
+        { 0.03, 0.07 }, // PositionSizePct
+        {  15,   45 }, // TimeStopBars
+        { 0.08, 0.20 }, // TimeStopLossPct
+        {  30,   80 }, // RegimeSustainedBars
+    };
+
+    public static readonly string[] ParameterNames =
+    [
+        "RegimeLongEmaPeriod", "RegimeSlopeLookback", "EmaPeriod",
+        "AdxThreshold", "RsiRallyThreshold",
+        "StopLossAtrMult", "TakeProfitAtrMult",
+        "TrailingActivationAtrMult", "TrailingStopAtrMult",
+        "MaxHoldCandles", "PositionSizePct",
+        "TimeStopBars", "TimeStopLossPct",
+        "RegimeSustainedBars",
+    ];
+
+    public static RipShortGenotype RandomHighVol(System.Random rng, RipShortGenotype? seed = null)
+    {
+        T Seed<T>(T random, T seeded) => seed == null ? random : seeded;
+        return new()
+        {
+            RegimeLongEmaPeriod = Seed(rng.Next(150, 401),                    seed?.RegimeLongEmaPeriod ?? 250),
+            RegimeSlopeLookback = Seed(rng.Next(12, 41),                      seed?.RegimeSlopeLookback ?? 20),
+            EmaPeriod           = Seed(rng.Next(30, 81),                      seed?.EmaPeriod           ?? 50),
+            AdxThreshold        = Seed(30.0 + rng.NextDouble() * 20.0,        seed?.AdxThreshold        ?? 38.0),
+            RsiRallyThreshold   = Seed(45.0 + rng.NextDouble() * 20.0,        seed?.RsiRallyThreshold   ?? 55.0),
+            StopLossAtrMult           = Seed(1.5 + rng.NextDouble() * 1.0,    seed?.StopLossAtrMult           ?? 2.0),
+            TakeProfitAtrMult         = Seed(5.0 + rng.NextDouble() * 10.0,   seed?.TakeProfitAtrMult         ?? 12.0),
+            TrailingActivationAtrMult = Seed(2.5 + rng.NextDouble() * 2.5,    seed?.TrailingActivationAtrMult ?? 3.5),
+            TrailingStopAtrMult       = Seed(2.0 + rng.NextDouble() * 3.0,    seed?.TrailingStopAtrMult       ?? 3.0),
+            MaxHoldCandles            = Seed(rng.Next(24, 73),                 seed?.MaxHoldCandles            ?? 40),
+            PositionSizePct           = Seed(0.03 + rng.NextDouble() * 0.04,  seed?.PositionSizePct           ?? 0.05),
+            TimeStopBars              = Seed(rng.Next(15, 46),                 seed?.TimeStopBars              ?? 30),
+            TimeStopLossPct           = Seed(0.08 + rng.NextDouble() * 0.12,  seed?.TimeStopLossPct           ?? 0.15),
+            RegimeSustainedBars  = Seed(rng.Next(30, 81),                     seed?.RegimeSustainedBars  ?? 50),
+        };
+    }
+
     public double[] ToVector() =>
     [
         RegimeLongEmaPeriod, RegimeSlopeLookback, EmaPeriod,
@@ -188,6 +257,96 @@ public class RipShortGenotype
         TimeStopLossPct           = Math.Clamp(v[12], 0.02, 0.25),
         RegimeSustainedBars       = Math.Clamp((int)Math.Round(v[13]), 10, 100),
     };
+
+    public static RipShortGenotype FromVectorLowVol(double[] v) => new()
+    {
+        RegimeLongEmaPeriod       = Math.Clamp((int)Math.Round(v[0]),  100, 500),
+        RegimeSlopeLookback       = Math.Clamp((int)Math.Round(v[1]),   10,  60),
+        EmaPeriod                 = Math.Clamp((int)Math.Round(v[2]),   20, 100),
+        AdxThreshold              = Math.Clamp(v[3],  10.0, 30.0),
+        RsiRallyThreshold         = Math.Clamp(v[4],  40.0, 60.0),
+        StopLossAtrMult           = Math.Clamp(v[5],   0.5,  1.5),
+        TakeProfitAtrMult         = Math.Clamp(v[6],   2.0,  6.0),
+        TrailingActivationAtrMult = Math.Clamp(v[7],   1.5,  4.0),
+        TrailingStopAtrMult       = Math.Clamp(v[8],   1.0,  3.0),
+        MaxHoldCandles            = Math.Clamp((int)Math.Round(v[9]),   72, 200),
+        PositionSizePct           = Math.Clamp(v[10], 0.01, 0.03),
+        TimeStopBars              = Math.Clamp((int)Math.Round(v[11]),  20,  80),
+        TimeStopLossPct           = Math.Clamp(v[12], 0.02, 0.20),
+        RegimeSustainedBars       = Math.Clamp((int)Math.Round(v[13]), 10, 100),
+    };
+
+    public static RipShortGenotype RandomLowVol(System.Random rng, RipShortGenotype? seed = null)
+    {
+        T Seed<T>(T random, T seeded) => seed == null ? random : seeded;
+        return new()
+        {
+            RegimeLongEmaPeriod = Seed(rng.Next(100, 501),                    seed?.RegimeLongEmaPeriod ?? 200),
+            RegimeSlopeLookback = Seed(rng.Next(10, 61),                      seed?.RegimeSlopeLookback ?? 30),
+            EmaPeriod           = Seed(rng.Next(20, 101),                     seed?.EmaPeriod           ?? 50),
+            AdxThreshold        = Seed(10.0 + rng.NextDouble() * 20.0,        seed?.AdxThreshold        ?? 18.0),
+            RsiRallyThreshold   = Seed(40.0 + rng.NextDouble() * 20.0,        seed?.RsiRallyThreshold   ?? 52.0),
+            StopLossAtrMult           = Seed(0.5 + rng.NextDouble() * 1.0,    seed?.StopLossAtrMult           ?? 1.0),
+            TakeProfitAtrMult         = Seed(2.0 + rng.NextDouble() * 4.0,    seed?.TakeProfitAtrMult         ?? 5.0),
+            TrailingActivationAtrMult = Seed(1.5 + rng.NextDouble() * 2.5,    seed?.TrailingActivationAtrMult ?? 3.0),
+            TrailingStopAtrMult       = Seed(1.0 + rng.NextDouble() * 2.0,    seed?.TrailingStopAtrMult       ?? 1.5),
+            MaxHoldCandles            = Seed(rng.Next(72, 201),                seed?.MaxHoldCandles            ?? 100),
+            PositionSizePct           = Seed(0.01 + rng.NextDouble() * 0.02,  seed?.PositionSizePct           ?? 0.02),
+            TimeStopBars              = Seed(rng.Next(20, 81),                 seed?.TimeStopBars              ?? 30),
+            TimeStopLossPct           = Seed(0.02 + rng.NextDouble() * 0.18,  seed?.TimeStopLossPct           ?? 0.15),
+            RegimeSustainedBars  = Seed(rng.Next(10, 101),                    seed?.RegimeSustainedBars  ?? 30),
+        };
+    }
+
+    public RipShortGenotype ClampToBoundsLowVol() => new()
+    {
+        RegimeLongEmaPeriod = Math.Clamp(RegimeLongEmaPeriod, 100, 500),
+        RegimeSlopeLookback = Math.Clamp(RegimeSlopeLookback,  10,  60),
+        EmaPeriod           = Math.Clamp(EmaPeriod,            20, 100),
+        AdxThreshold        = Math.Clamp(AdxThreshold,        10.0, 30.0),
+        RsiRallyThreshold   = Math.Clamp(RsiRallyThreshold,   40.0, 60.0),
+        StopLossAtrMult           = Math.Clamp(StopLossAtrMult,           0.5,  1.5),
+        TakeProfitAtrMult         = Math.Clamp(TakeProfitAtrMult,         2.0,  6.0),
+        TrailingActivationAtrMult = Math.Clamp(TrailingActivationAtrMult, 1.5,  4.0),
+        TrailingStopAtrMult       = Math.Clamp(TrailingStopAtrMult,       1.0,  3.0),
+        MaxHoldCandles            = Math.Clamp(MaxHoldCandles,            72, 200),
+        PositionSizePct           = Math.Clamp(PositionSizePct,           0.01, 0.03),
+        TimeStopBars              = Math.Clamp(TimeStopBars,               20,  80),
+        TimeStopLossPct           = Math.Clamp(TimeStopLossPct,           0.02, 0.20),
+        RegimeSustainedBars  = Math.Clamp(RegimeSustainedBars,  10,  100),
+        Fitness = Fitness,
+    };
+
+    public RipShortGenotype MutateLowVol(System.Random rng, double rate)
+    {
+        double Nudge(double val, double min, double max, double scale)
+        {
+            if (rng.NextDouble() > rate) return val;
+            return Math.Clamp(val + (rng.NextDouble() - 0.5) * scale, min, max);
+        }
+        int NudgeInt(int val, int min, int max, int step)
+        {
+            if (rng.NextDouble() > rate) return val;
+            return Math.Clamp(val + rng.Next(-step, step + 1), min, max);
+        }
+        return new RipShortGenotype
+        {
+            RegimeLongEmaPeriod = NudgeInt(RegimeLongEmaPeriod, 100, 500, 30),
+            RegimeSlopeLookback = NudgeInt(RegimeSlopeLookback,  10,  60,  5),
+            EmaPeriod           = NudgeInt(EmaPeriod,            20, 100, 10),
+            AdxThreshold        = Nudge(AdxThreshold,           10.0, 30.0, 3.0),
+            RsiRallyThreshold   = Nudge(RsiRallyThreshold,      40.0, 60.0, 3.0),
+            StopLossAtrMult           = Nudge(StopLossAtrMult,           0.5,  1.5, 0.2),
+            TakeProfitAtrMult         = Nudge(TakeProfitAtrMult,         2.0,  6.0, 1.0),
+            TrailingActivationAtrMult = Nudge(TrailingActivationAtrMult, 1.5,  4.0, 0.5),
+            TrailingStopAtrMult       = Nudge(TrailingStopAtrMult,       1.0,  3.0, 0.4),
+            MaxHoldCandles            = NudgeInt(MaxHoldCandles, 72, 200, 10),
+            PositionSizePct           = Nudge(PositionSizePct,   0.01, 0.03, 0.004),
+            TimeStopBars              = NudgeInt(TimeStopBars,    20, 80, 5),
+            TimeStopLossPct           = Nudge(TimeStopLossPct,   0.02, 0.20, 0.03),
+            RegimeSustainedBars  = NudgeInt(RegimeSustainedBars, 10, 100, 10),
+        };
+    }
 
     public override string ToString() =>
         $"BearEMA{RegimeLongEmaPeriod}(slope{RegimeSlopeLookback}) EMA{EmaPeriod} ADX(7,≥{AdxThreshold:F0}) " +

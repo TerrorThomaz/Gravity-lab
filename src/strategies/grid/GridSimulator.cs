@@ -231,8 +231,12 @@ public static class GridSimulator
             }
             else
             {
-                // Not in a grid — check dual regime gate: low ADX AND compressed BB
                 if (adxNow >= g.AdxThreshold || bbWidth[i] >= g.BbWidthMaxPct) continue;
+
+                int slopeLookback = 20;
+                int slopeRef = Math.Max(0, i - slopeLookback);
+                double emaSlope = ema[slopeRef] > 1e-10 ? (ema[i] - ema[slopeRef]) / ema[slopeRef] : 0;
+                if (emaSlope < -0.005) continue;
 
                 double proposedAnchor = ema[i];
                 double proposedAtr    = atrNow;

@@ -31,7 +31,7 @@ public static class TradeEnricher
         double   TotalExposure,
         int      RecentTradeCount);
 
-    private static readonly HashSet<string> ShortStrategies = ["swing"];
+    private static readonly HashSet<string> ShortStrategies = ["swing", "fade_short", "rip_short", "gridshort"];
 
     public static List<EnrichedTrade> Enrich(
         List<(DateTime Time, double Return, double Conf, string Strategy, string Symbol, TimeSpan HoldDuration)> rawTrades,

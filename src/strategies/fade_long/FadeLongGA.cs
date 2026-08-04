@@ -23,6 +23,7 @@ public class FadeLongGA
     private readonly int                   _migrationInterval;
     private readonly bool                  _verbose;
     private readonly Func<DateTime, double>? _tradeGate;  // null = no gating; returns weight 0..1 (set by CoevolveGA)
+    private readonly RegimeBar[]?          _btcSeries;    // optional: for regime diversity bonus
     private readonly Random _rng = new();
     private readonly FitnessConfig _cfg;
 
@@ -36,7 +37,8 @@ public class FadeLongGA
         int  migrationInterval = 10,
         bool verbose           = true,
         Func<DateTime, double>? tradeGate = null,
-        FitnessConfig? cfg = null)
+        FitnessConfig? cfg = null,
+        RegimeBar[]? btcSeries = null)
     {
         _populationSize    = populationSize;
         _generations       = generations;
@@ -45,6 +47,7 @@ public class FadeLongGA
         _verbose           = verbose;
         _tradeGate         = tradeGate;
         _cfg               = cfg ?? new FitnessConfig();
+        _btcSeries         = btcSeries;
     }
 
     private static double FoldScore(
@@ -53,63 +56,15 @@ public class FadeLongGA
         int    sustainedBars,
         FitnessConfig cfg,
         double volWeight = 1.0)
-    {
-        // Only score trades that fired during a confirmed bear regime
-        var valid = returns.Where(r => r.RegimeBars >= sustainedBars).Select(r => r.Return).ToList();
-        if (valid.Count < MinTradesPerFold) return -1.0;
+        => FoldScoreHelper.CanonicalRegime(returns, posFrac, sustainedBars, MinTradesPerFold, cfg, volWeight, statBonusCeiling: 1.5);
 
-        double wr        = (double)valid.Count(r => r > 0) / valid.Count;
-        double grossWins = valid.Where(r => r > 0).DefaultIfEmpty(0).Sum();
-        double grossLoss = Math.Abs(valid.Where(r => r <= 0).DefaultIfEmpty(0).Sum());
-        double pf        = grossLoss > 1e-10 ? grossWins / grossLoss : (grossWins > 0 ? 5.0 : 0.0);
-
-        if (pf < 1.0) return pf - 2.0;
-
-        double balance = 1.0, peak = 1.0, maxDd = 0.0;
-        foreach (var r in valid)
-        {
-            balance += r / 100.0 * posFrac;
-            if (balance > peak) peak = balance;
-            double dd = (peak - balance) / peak;
-            if (dd > maxDd) maxDd = dd;
-        }
-
-        double gain = balance - 1.0;
-        if (gain <= 0) return gain * 100 - 0.5;
-
-        double wrMult = wr < 0.40 ? wr / 0.40 : 1.0 + (wr - 0.40) * 3.0;
-
-        double pfMult = pf < 1.5 ? (pf - 1.0) / 0.5 : 1.0 + (pf - 1.5) * 0.5;
-        var winList   = valid.Where(r => r > 0).ToList();
-        var lossList  = valid.Where(r => r <= 0).ToList();
-        double avgWin  = winList.Count  > 0 ? winList.Average()            : 0;
-        double avgLoss = lossList.Count > 0 ? Math.Abs(lossList.Average()) : avgWin;
-        double rr      = avgLoss > 1e-10 ? avgWin / avgLoss : (avgWin > 0 ? 5.0 : 1.0);
-        double rrMult  = rr < 2.5 ? (rr - 1.0) / 1.5 : 1.0 + (rr - 2.5) * 0.3;
-        double qualityMult = Math.Sqrt(pfMult * rrMult);
-
-        double ddDiv     = 1.0 + maxDd * 10.0;
-        double freqBonus = 1.0 + 0.15 * Math.Log(Math.Max(1.0, valid.Count / (double)MinTradesPerFold));
-
-        // Kept-profits multiplier: penalise giving back peak gains before period end.
-        double peakGain      = peak - 1.0;
-        double retentionMult = peakGain > 0.01
-            ? Math.Max(0.2, (balance - 1.0) / peakGain)
-            : 1.0;
-
-        int    n       = valid.Count;
-        double sharpe  = Simulator.SharpeRatio(valid, n);
-        double calmar  = Simulator.CalmarRatio(valid);
-        double pfStat  = Simulator.ProfitFactor(valid);
-        double sortino = Simulator.SortinoRatio(valid, n);
-        double base_   = gain * 100.0 * wrMult * qualityMult * freqBonus / ddDiv * retentionMult;
-        return base_
-            * (1.0 + cfg.SharpeW  * Math.Max(0, Math.Min(sharpe  / 3.0,  3.0)))
-            * (1.0 + cfg.CalmarW  * Math.Max(0, Math.Min(calmar  / 2.0,  3.0)))
-            * (1.0 + cfg.PfW      * Math.Max(0, Math.Min(pfStat - 1.0,   3.0)))
-            * (1.0 + cfg.SortinoW * Math.Max(0, Math.Min(sortino / 4.0,  3.0)))
-            * volWeight;
-    }
+    private double FoldScoreRegime(
+        List<(double Return, int RegimeBars, MarketRegime Regime)> returns,
+        double posFrac,
+        int    sustainedBars,
+        FitnessConfig cfg,
+        double volWeight = 1.0)
+        => FoldScoreHelper.CanonicalRegimeStratified(returns, posFrac, sustainedBars, MinTradesPerFold, cfg, volWeight, statBonusCeiling: 1.5);
 
     private double Fitness(FadeLongGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
     {
@@ -136,13 +91,27 @@ public class FadeLongGA
 
         if (useValidation || folds <= 1)
         {
-            var all = validCoins
-                .SelectMany(x => FadeLongSimulator.GetFadeLongReturns(ind, x.h1.Span, x.m15.Span)
-                    .Select(t => { double w = _tradeGate?.Invoke(t.Time) ?? 1.0; return (Return: t.Return * w, RegimeBars: t.RegimeBarsActive, w); })
-                    .Where(t => t.w >= 0.05)
-                    .Select(t => (t.Return, t.RegimeBars)))
-                .ToList();
-            return FoldScore(all, posFrac, ind.RegimeSustainedBars, _cfg, volWeight);
+            if (_btcSeries != null && _cfg.RegimeDiversityW > 0)
+            {
+                var allRegime = validCoins
+                    .SelectMany(x => FadeLongSimulator.GetFadeLongReturns(ind, x.h1.Span, x.m15.Span)
+                        .Select(t => { double w = _tradeGate?.Invoke(t.Time) ?? 1.0; return (Return: t.Return * w, RegimeBars: t.RegimeBarsActive, Time: t.Time, w); })
+                        .Where(t => t.w >= 0.05))
+                    .ToList();
+                var tradeTags = RegimeBarLookup.TagRegimes(_btcSeries, allRegime.Select(t => t.Time).ToList());
+                var allTagged = allRegime.Select((t, i) => (t.Return, t.RegimeBars, tradeTags[i])).ToList();
+                return FoldScoreRegime(allTagged, posFrac, ind.RegimeSustainedBars, _cfg, volWeight);
+            }
+            else
+            {
+                var all = validCoins
+                    .SelectMany(x => FadeLongSimulator.GetFadeLongReturns(ind, x.h1.Span, x.m15.Span)
+                        .Select(t => { double w = _tradeGate?.Invoke(t.Time) ?? 1.0; return (Return: t.Return * w, RegimeBars: t.RegimeBarsActive, w); })
+                        .Where(t => t.w >= 0.05)
+                        .Select(t => (t.Return, t.RegimeBars)))
+                    .ToList();
+                return FoldScore(all, posFrac, ind.RegimeSustainedBars, _cfg, volWeight);
+            }
         }
 
         // Per-coin percentage folds: each coin slices its own history into k equal parts.
@@ -153,21 +122,27 @@ public class FadeLongGA
 
         double[] scores = new double[k];
         int      totalFoldTrades = 0;
+        int maxH1Len = validCoins.Max(x => x.h1.Length);
+        var bounds = _btcSeries != null
+            ? FoldScoreHelper.ComputeRegimeAwareFoldBoundaries(_btcSeries, r => r == MarketRegime.Bear, k, _cfg.EmbargoPct)
+            : FoldScoreHelper.ComputeFoldBoundaries(maxH1Len, k, _cfg.EmbargoPct);
+
         for (int f = 0; f < k; f++)
         {
             var foldRet = new List<(double Return, int RegimeBars)>();
             foreach (var (coin, h1, m15) in validCoins)
             {
-                int startH1  = h1.Length  * f     / k;
-                int endH1    = h1.Length  * (f+1) / k;
+                int startH1  = bounds[f].Start;
+                int endH1    = Math.Min(bounds[f].End, h1.Length);
+                if (startH1 >= h1.Length || endH1 - startH1 < 40) continue;
                 int startM15 = startH1 * 4;
                 int endM15   = Math.Min(endH1 * 4, m15.Length);
-                if (endH1 - startH1 < 40) continue;
+                if (startM15 >= m15.Length || endM15 - startM15 < 40) continue;
                 foldRet.AddRange(
                     FadeLongSimulator.GetFadeLongReturns(ind, h1.Slice(startH1, endH1 - startH1).Span, m15.Slice(startM15, endM15 - startM15).Span)
-                                     .Select(t => { double w = _tradeGate?.Invoke(t.Time) ?? 1.0; return (Return: t.Return * w, RegimeBars: t.RegimeBarsActive, w); })
-                                     .Where(t => t.w >= 0.05)
-                                     .Select(t => (t.Return, t.RegimeBars)));
+                                      .Select(t => { double w = _tradeGate?.Invoke(t.Time) ?? 1.0; return (Return: t.Return * w, RegimeBars: t.RegimeBarsActive, w); })
+                                      .Where(t => t.w >= 0.05)
+                                      .Select(t => (t.Return, t.RegimeBars)));
             }
             totalFoldTrades += foldRet.Count;
             scores[f] = FoldScore(foldRet, posFrac, ind.RegimeSustainedBars, _cfg, volWeight);
@@ -273,7 +248,7 @@ public class FadeLongGA
             seedObs:    boSeed,
             bounds:     FadeLongGenotype.Bounds,
             evaluate:   v => { var g = FadeLongGenotype.FromVector(v); g.Fitness = Fitness(g, coins, useValidation: false); return g.Fitness; },
-            iterations: 30,
+            iterations: 60,
             rng:        _rng);
 
         var boChampion = boHistory.OrderByDescending(h => h.Fitness).First();

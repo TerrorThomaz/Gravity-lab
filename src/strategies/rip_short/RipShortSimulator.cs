@@ -46,19 +46,35 @@ public static class RipShortSimulator
     private const double SlipK       = 0.025;
     private const double SlipStopGap = 0.030;
 
+    // Experimental loss-mitigation override, applied post-hoc on top of a frozen
+    // genotype (not GA-evolved — sparse bear-window data already overfits the
+    // existing 14-gene search, adding more dimensions would make that worse).
+    // MaxHoldCandles is a time-based exit, independent of the hard ATR stop —
+    // suppressing it while calm+losing just gives the trade more time; the hard
+    // stop (fixed at entry) remains the tail-risk backstop regardless of mode.
+    public enum ExitOverrideMode { None, WaitForBreakeven, DcaAndWait }
+
+    public record ExitOverrideConfig(
+        ExitOverrideMode Mode,
+        double AtrGateRatio        = 1.4,   // local h4 ATR ratio must be ≤ this to keep waiting ("calm")
+        double DcaAtrMult          = 1.2,   // adverse move (in ATR) that triggers the single DCA add
+        int    MaxExtraHoldCandles = 60);   // absolute safety cap on extra bars beyond MaxHoldCandles
+
     public static List<(DateTime Time, double Return, string Kind)> GetRipShortReturns(
-        RipShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, FundingRateSession? funding = null)
+        RipShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, FundingRateSession? funding = null,
+        ExitOverrideConfig? overrideCfg = null)
     {
-        var (trades, _) = RunRipShortMultiTF(g, h1, m15, funding);
+        var (trades, _) = RunRipShortMultiTF(g, h1, m15, funding, overrideCfg);
         return trades.Select(t => (t.Item1, t.Item2, t.Item3)).ToList();
     }
 
     // 4-tuple variant carrying RegimeBarsActive — consumed by RipShortGA for
     // regime-conditional FoldScore filtering.
     internal static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive)> GetRipShortReturnsWithRegime(
-        RipShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, FundingRateSession? funding = null)
+        RipShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, FundingRateSession? funding = null,
+        ExitOverrideConfig? overrideCfg = null)
     {
-        var (trades, _) = RunRipShortMultiTF(g, h1, m15, funding);
+        var (trades, _) = RunRipShortMultiTF(g, h1, m15, funding, overrideCfg);
         return trades;
     }
 
@@ -79,7 +95,8 @@ public static class RipShortSimulator
     }
 
     private static (List<(DateTime, double, string, int)> Trades, RipShortTradeState FinalState)
-        RunRipShortMultiTF(RipShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, FundingRateSession? funding)
+        RunRipShortMultiTF(RipShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, FundingRateSession? funding,
+        ExitOverrideConfig? overrideCfg = null)
     {
         int h1Warmup = Math.Max(
                            Math.Max(g.RegimeLongEmaPeriod, Math.Max(g.EmaPeriod, RsiPeriod + 2)),
@@ -103,6 +120,24 @@ public static class RipShortSimulator
         var h4Lows  = CandleExt.Lows(h4);
         var h4Cls   = CandleExt.Closes(h4);
         var h4Atr   = Volatility.Atr(h4Highs, h4Lows, h4Cls, AtrPeriod);
+
+        // Local h4 ATR ratio (current vs trailing 20-bar average) — same "is
+        // volatility elevated" signal DynamicGuardSession computes from BTC, but
+        // measured on the traded coin itself since that's what actually matters
+        // for whether it's safe to keep waiting on this position.
+        double[] h4AtrRatio = new double[h4Atr.Length];
+        if (overrideCfg != null)
+        {
+            const int atrRatioLookback = 20;
+            double atrSum = 0;
+            for (int i = 0; i < h4Atr.Length; i++)
+            {
+                atrSum += h4Atr[i];
+                if (i >= atrRatioLookback) atrSum -= h4Atr[i - atrRatioLookback];
+                double avgAtr = atrSum / Math.Min(i + 1, atrRatioLookback);
+                h4AtrRatio[i] = avgAtr > 1e-10 ? h4Atr[i] / avgAtr : 1.0;
+            }
+        }
 
         var m15Closes = CandleExt.Closes(m15);
         var m15Highs  = CandleExt.Highs(m15);
@@ -134,6 +169,9 @@ public static class RipShortSimulator
         int      entryIH1        = 0;
         int      entryRegimeBars = 0;
         DateTime entryTime       = default;
+        bool     dcaDone         = false;
+        double   dcaSizeMult     = 1.0;
+        bool     everWaited      = false;
 
         int    cachedH1Ref     = -1;
         bool   cachedSetupMet  = false;
@@ -208,6 +246,8 @@ public static class RipShortSimulator
                     entryIH1        = nextBar / 4;
                     entryRegimeBars = cachedRegimeBars;
                     entryTime       = m15[nextBar].Time;
+                    dcaDone         = false;
+                    dcaSizeMult     = 1.0;
                 }
             }
             else
@@ -222,12 +262,33 @@ public static class RipShortSimulator
                 bool hitStop   = m15Highs[im15] >= hardStop;
                 bool hitTarget = m15Lows[im15]  <= target;
                 bool hitTrail  = trailArmed && m15Price > trailLow + g.TrailingStopAtrMult * atrEntry;
-                bool timedOut  = holdH1 >= g.MaxHoldCandles;
+                bool pastMaxHold = holdH1 >= g.MaxHoldCandles;
+
+                // Loss-mitigation override: past MaxHoldCandles, still losing, and calm
+                // enough (local ATR ratio ≤ gate) → keep waiting for breakeven instead of
+                // forcing the exit. Hard stop/target/trail above are untouched and remain
+                // the real risk cap; this only suppresses the time-based exit.
+                bool waiting = false;
+                if (pastMaxHold && overrideCfg != null)
+                {
+                    int    h4RefNow    = Math.Min(h4AtrRatio.Length - 1, Math.Max(0, ih1 / 4 - 1));
+                    double atrRatioNow = h4AtrRatio.Length > 0 ? h4AtrRatio[h4RefNow] : 1.0;
+                    waiting = ShouldWaitPastTimeout(m15Price, entry, atrRatioNow, holdH1 - g.MaxHoldCandles, overrideCfg);
+                    if (waiting) everWaited = true;
+
+                    if (ShouldDca(waiting, dcaDone, m15Price, entry, atrEntry, overrideCfg))
+                    {
+                        entry       = (entry + m15Price) / 2.0;   // blended cost basis, equal-size add
+                        dcaDone     = true;
+                        dcaSizeMult = 2.0;                        // total capital deployed doubled
+                    }
+                }
+                bool timedOut = pastMaxHold && !waiting;
 
                 // Time-decay stop: after TimeStopBars bars, tolerated adverse (above-entry) move
                 // narrows linearly from TimeStopLossPct down to 0% at MaxHoldCandles.
                 bool hitTimeStop = false;
-                if (!hitStop && !hitTarget && !hitTrail && !timedOut
+                if (!hitStop && !hitTarget && !hitTrail && !timedOut && !waiting
                     && holdH1 >= g.TimeStopBars && g.MaxHoldCandles > g.TimeStopBars)
                 {
                     double progress       = (double)(holdH1 - g.TimeStopBars) / (g.MaxHoldCandles - g.TimeStopBars);
@@ -241,8 +302,9 @@ public static class RipShortSimulator
                     double exitPx = hitStop   ? hardStop :
                                     hitTarget ? target   : m15Price;
                     double fundingPnl = FundingPnl(entryTime, m15[im15].Time, funding);
-                    double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl;
-                    result.Add((m15[im15].Time, ret, "ripshort", entryRegimeBars));
+                    double ret = ((entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl) * dcaSizeMult;
+                    string kind = dcaDone ? "ripshort_dca" : everWaited ? "ripshort_wait" : "ripshort";
+                    result.Add((m15[im15].Time, ret, kind, entryRegimeBars));
                     inTrade = false;
                 }
             }
@@ -252,13 +314,34 @@ public static class RipShortSimulator
         {
             double finalPx    = m15Closes[^1];
             double fundingPnl = FundingPnl(entryTime, m15[^1].Time, funding);
-            double ret = (entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry) + fundingPnl;
-            result.Add((m15[^1].Time, ret, "ripshort", entryRegimeBars));
+            double ret = ((entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry) + fundingPnl) * dcaSizeMult;
+            string kind = dcaDone ? "ripshort_dca" : everWaited ? "ripshort_wait" : "ripshort";
+            result.Add((m15[^1].Time, ret, kind, entryRegimeBars));
         }
 
         int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;
         return (result, new RipShortTradeState(inTrade, entry, hardStop, target, trailArmed, trailLow, finalHold));
     }
+
+    // Pure decision: keep waiting past MaxHoldCandles instead of forcing the timeout exit?
+    // Short is underwater (price > entry), local volatility is calm, and the safety cap
+    // on extra bars hasn't been reached.
+    internal static bool ShouldWaitPastTimeout(
+        double price, double entry, double atrRatioNow, int extraHoldBars, ExitOverrideConfig cfg)
+    {
+        if (cfg.Mode == ExitOverrideMode.None) return false;
+        bool losing     = price > entry;
+        bool calmEnough = atrRatioNow <= cfg.AtrGateRatio;
+        bool underCap   = extraHoldBars < cfg.MaxExtraHoldCandles;
+        return losing && calmEnough && underCap;
+    }
+
+    // Pure decision: trigger the single DCA add? Only while waiting, only once per
+    // trade, only after price has moved DcaAtrMult×ATR further against the position.
+    internal static bool ShouldDca(
+        bool waiting, bool dcaDone, double price, double entry, double atrEntry, ExitOverrideConfig cfg) =>
+        waiting && cfg.Mode == ExitOverrideMode.DcaAndWait && !dcaDone
+        && price - entry >= cfg.DcaAtrMult * atrEntry;
 
     private static double TradeCost(bool isStop, double atrEntry, double entryPx)
     {

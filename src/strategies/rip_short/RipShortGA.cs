@@ -24,6 +24,7 @@ public class RipShortGA
     private readonly Func<DateTime, double>? _tradeGate;  // null = no gating; returns weight 0..1 (set by CoevolveGA)
     private readonly Random _rng = new();
     private readonly FitnessConfig _cfg;
+    private readonly RegimeBar[]? _btcSeries;
 
     private const int MinTradesPerFold = 25;   // VC theory requires N > d per fold; d=14
     private const int D                = 14;   // genotype parameter count (excl. Fitness)
@@ -35,7 +36,8 @@ public class RipShortGA
         int  migrationInterval = 10,
         bool verbose           = true,
         Func<DateTime, double>? tradeGate = null,
-        FitnessConfig? cfg = null)
+        FitnessConfig? cfg = null,
+        RegimeBar[]? btcSeries = null)
     {
         _populationSize    = populationSize;
         _generations       = generations;
@@ -44,6 +46,7 @@ public class RipShortGA
         _verbose           = verbose;
         _tradeGate         = tradeGate;
         _cfg               = cfg ?? new FitnessConfig();
+        _btcSeries         = btcSeries;
     }
 
     private static double FoldScore(
@@ -85,7 +88,9 @@ public class RipShortGA
         double avgLoss = lossList.Count > 0 ? Math.Abs(lossList.Average()) : avgWin;
         double rr      = avgLoss > 1e-10 ? avgWin / avgLoss : (avgWin > 0 ? 5.0 : 1.0);
         double rrMult  = rr < 2.5 ? (rr - 1.0) / 1.5 : 1.0 + (rr - 2.5) * 0.3;
-        double qualityMult = Math.Sqrt(pfMult * rrMult);
+        // Capped: uncapped pfMult*rrMult let a handful of extreme trades on thin
+        // bear-window data (sparse regime, few coins/bars) dominate the score.
+        double qualityMult = Math.Min(Math.Sqrt(pfMult * rrMult), 2.5);
 
         double ddDiv     = 1.0 + maxDd * 10.0;
         double freqBonus = 1.0 + 0.15 * Math.Log(Math.Max(1.0, valid.Count / (double)MinTradesPerFold));
@@ -102,11 +107,14 @@ public class RipShortGA
         double pfStat  = Simulator.ProfitFactor(valid);
         double sortino = Simulator.SortinoRatio(valid, n);
         double base_   = gain * 100.0 * wrMult * qualityMult * freqBonus / ddDiv * retentionMult;
+        // Bonus ceilings tightened 3.0→1.0 (max combined ~5x not ~40x) — RipShort's
+        // sparse bear-window sample let this stack compound a lucky fold into a
+        // fake edge (train F=15718 vs held-out OOS PF=0.88, see overfit check).
         return base_
-            * (1.0 + cfg.SharpeW  * Math.Max(0, Math.Min(sharpe  / 3.0,  3.0)))
-            * (1.0 + cfg.CalmarW  * Math.Max(0, Math.Min(calmar  / 2.0,  3.0)))
-            * (1.0 + cfg.PfW      * Math.Max(0, Math.Min(pfStat - 1.0,   3.0)))
-            * (1.0 + cfg.SortinoW * Math.Max(0, Math.Min(sortino / 4.0,  3.0)))
+            * (1.0 + cfg.SharpeW  * Math.Max(0, Math.Min(sharpe  / 3.0,  1.0)))
+            * (1.0 + cfg.CalmarW  * Math.Max(0, Math.Min(calmar  / 2.0,  1.0)))
+            * (1.0 + cfg.PfW      * Math.Max(0, Math.Min(pfStat - 1.0,   1.0)))
+            * (1.0 + cfg.SortinoW * Math.Max(0, Math.Min(sortino / 4.0,  1.0)))
             * volWeight;
     }
 
@@ -144,26 +152,31 @@ public class RipShortGA
             return FoldScore(all, posFrac, ind.RegimeSustainedBars, _cfg, volWeight);
         }
 
-        // Per-coin percentage folds: each coin slices its own history into k equal parts.
         int k = folds;
 
         double[] scores = new double[k];
         int      totalFoldTrades = 0;
+        int maxH1Len = validCoins.Max(x => x.h1.Length);
+        var bounds = _btcSeries != null
+            ? FoldScoreHelper.ComputeRegimeAwareFoldBoundaries(_btcSeries, r => r == MarketRegime.Bear, k, _cfg.EmbargoPct)
+            : FoldScoreHelper.ComputeFoldBoundaries(maxH1Len, k, _cfg.EmbargoPct);
+
         for (int f = 0; f < k; f++)
         {
             var foldRet = new List<(double Return, int RegimeBars)>();
             foreach (var (coin, h1, m15) in validCoins)
             {
-                int startH1  = h1.Length  * f     / k;
-                int endH1    = h1.Length  * (f+1) / k;
+                int startH1  = bounds[f].Start;
+                int endH1    = Math.Min(bounds[f].End, h1.Length);
+                if (startH1 >= h1.Length || endH1 - startH1 < 40) continue;
                 int startM15 = startH1 * 4;
                 int endM15   = Math.Min(endH1 * 4, m15.Length);
-                if (endH1 - startH1 < 40) continue;
+                if (startM15 >= m15.Length || endM15 - startM15 < 40) continue;
                 foldRet.AddRange(
                     RipShortSimulator.GetRipShortReturnsWithRegime(ind, h1.Slice(startH1, endH1 - startH1).Span, m15.Slice(startM15, endM15 - startM15).Span, funding: null)
-                                     .Select(t => { double w = _tradeGate?.Invoke(t.Time) ?? 1.0; return (Return: t.Return * w, RegimeBars: t.RegimeBarsActive, w); })
-                                     .Where(t => t.w >= 0.05)
-                                     .Select(t => (t.Return, t.RegimeBars)));
+                                      .Select(t => { double w = _tradeGate?.Invoke(t.Time) ?? 1.0; return (Return: t.Return * w, RegimeBars: t.RegimeBarsActive, w); })
+                                      .Where(t => t.w >= 0.05)
+                                      .Select(t => (t.Return, t.RegimeBars)));
             }
             totalFoldTrades += foldRet.Count;
             scores[f] = FoldScore(foldRet, posFrac, ind.RegimeSustainedBars, _cfg, volWeight);
@@ -269,7 +282,7 @@ public class RipShortGA
             seedObs:    boSeed,
             bounds:     RipShortGenotype.Bounds,
             evaluate:   v => { var g = RipShortGenotype.FromVector(v); g.Fitness = Fitness(g, coins, useValidation: false); return g.Fitness; },
-            iterations: 30,
+            iterations: 60,
             rng:        _rng);
 
         var boChampion = boHistory.OrderByDescending(h => h.Fitness).First();
@@ -289,6 +302,121 @@ public class RipShortGA
         if (_verbose) Console.WriteLine("\n=== RipShort held-out validation (report-only, not used for selection) ===");
 
         var best = eliteIsland.First();   // elite sorted by train fitness
+        double trainFit = best.Fitness;
+        best.Fitness = Fitness(best, coins, useValidation: true);
+
+        if (_verbose) Console.WriteLine($"Best (selected on train): train={trainFit:F3}  val={best.Fitness:F3}");
+        if (_verbose) Console.WriteLine($"  {best}");
+        return best;
+    }
+
+    public RipShortGenotype RunLowVol(IReadOnlyList<CoinData> coins, RipShortGenotype? seed = null)
+    {
+        if (coins.Count == 0) throw new ArgumentException("No training data.");
+
+        if (_verbose)
+        {
+            foreach (var (coin, i) in coins.Select((c, i) => (c, i)))
+                Console.WriteLine($"  Coin {i} (w={coin.Weight:F1})  " +
+                    $"trainH1={coin.TrainH1.Length}  valH1={coin.ValH1.Length}");
+            if (seed != null) Console.WriteLine($"  Seeding from: {seed}");
+        }
+
+        var population = Enumerable
+            .Range(0, _populationSize)
+            .Select(_ => RipShortGenotype.RandomLowVol(_rng, seed))
+            .ToList();
+
+        if (seed != null)
+        {
+            var clamped = seed.ClampToBoundsLowVol();
+            population[0] = clamped;
+            int seedCount = Math.Min(_populationSize / 5, _populationSize - 1);
+            for (int s = 1; s <= seedCount; s++)
+                population[s] = clamped.MutateLowVol(_rng, 0.25);
+        }
+
+        List<RipShortGenotype> eliteIsland     = new();
+        double                 bestFitnessSeen = double.MinValue;
+        int                    stagnantGens    = 0;
+
+        for (int gen = 0; gen < _generations; gen++)
+        {
+            double baseMutRate  = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
+            double mutationRate = stagnantGens >= 15 ? Math.Min(baseMutRate * 2.0, 0.9) : baseMutRate;
+
+            Parallel.ForEach(population, ind =>
+                ind.Fitness = Fitness(ind, coins, useValidation: false));
+
+            population  = population.OrderByDescending(g => g.Fitness).ToList();
+            eliteIsland = population.Take(_eliteCount).ToList();
+
+            double topFitness = eliteIsland.First().Fitness;
+            if (topFitness > bestFitnessSeen + 1e-6) { bestFitnessSeen = topFitness; stagnantGens = 0; }
+            else stagnantGens++;
+
+            if (_verbose && (gen + 1) % _migrationInterval == 0)
+            {
+                string tag = stagnantGens >= 15 ? $" [STAGNANT×{stagnantGens} boost]" : "";
+                Console.WriteLine($"Gen {gen + 1,3} — elite: {eliteIsland.First()}{tag}");
+            }
+
+            if (gen % 10 == 0)
+            {
+                static double safe(double v) => double.IsFinite(v) ? v : 0.0;
+                var progress = new
+                {
+                    strategy    = "RipShortLowVol",
+                    variant     = _cfg.VariantId,
+                    generation  = gen,
+                    bestFitness = safe(eliteIsland.First().Fitness),
+                    meanFitness = safe(Math.Round(population.Average(g => g.Fitness), 4)),
+                    population  = population.Take(20).Select(g => safe(Math.Round(g.Fitness, 3))).ToArray(),
+                };
+                File.WriteAllText("training_progress.json",
+                    System.Text.Json.JsonSerializer.Serialize(progress,
+                        new System.Text.Json.JsonSerializerOptions { WriteIndented = false }));
+            }
+
+            var nextGen = new List<RipShortGenotype>();
+            nextGen.AddRange(eliteIsland.Take(5));
+            while (nextGen.Count < _populationSize)
+            {
+                var child = RipShortGenotype.Crossover(
+                                TournamentSelect(population),
+                                TournamentSelect(population), _rng)
+                            .MutateLowVol(_rng, mutationRate);
+                nextGen.Add(child);
+            }
+            population = nextGen;
+        }
+
+        if (_verbose) Console.WriteLine("\n  BO refinement (30 iterations, TPE)...");
+        var boSeed = eliteIsland
+            .Select(g => (g.ToVector(), g.Fitness))
+            .ToList();
+
+        var boHistory = BayesianOptimizer.Refine(
+            seedObs:    boSeed,
+            bounds:     RipShortGenotype.BoundsLowVol,
+            evaluate:   v => { var g = RipShortGenotype.FromVectorLowVol(v); g.Fitness = Fitness(g, coins, useValidation: false); return g.Fitness; },
+            iterations: 60,
+            rng:        _rng);
+
+        var boChampion = boHistory.OrderByDescending(h => h.Fitness).First();
+        var boGeno     = RipShortGenotype.FromVectorLowVol(boChampion.Params);
+
+        boGeno.Fitness = Fitness(boGeno, coins, useValidation: false);
+        if (boGeno.Fitness > eliteIsland.Last().Fitness)
+        {
+            eliteIsland[eliteIsland.Count - 1] = boGeno;
+            eliteIsland = eliteIsland.OrderByDescending(g => g.Fitness).ToList();
+            if (_verbose) Console.WriteLine($"  BO improved elite: {boGeno}");
+        }
+
+        if (_verbose) Console.WriteLine("\n=== RipShortLowVol held-out validation (report-only, not used for selection) ===");
+
+        var best = eliteIsland.First();
         double trainFit = best.Fitness;
         best.Fitness = Fitness(best, coins, useValidation: true);
 

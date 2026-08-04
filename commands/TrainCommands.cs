@@ -119,6 +119,10 @@ static class TrainCommands
             }
         }
 
+        DateTime globalFitCutoff = namedCoins.Count > 0
+            ? namedCoins.Max(nc => nc.Cd.ValCandles.Span[^1].Time)
+            : DateTime.MinValue;
+
         if (namedCoins.Count == 0) { Console.WriteLine("No data."); return; }
 
         {
@@ -222,6 +226,23 @@ static class TrainCommands
             new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"  Saved → {genoPath}");
 
+        Console.WriteLine("\n─── Validation suite ───");
+        try
+        {
+            var mcResult = MonteCarloTest.Run(
+                coinData.SelectMany(cd => FadeShortSimulator.GetFadeShortReturns(best, cd.TrainCandles.Span).Select(t => t.Return)).ToList(),
+                permutations: 1000);
+            MonteCarloTest.PrintReport(mcResult, "FadeShort");
+        }
+        catch (Exception ex) { Console.WriteLine($"  MonteCarloTest skipped: {ex.Message}"); }
+
+        try
+        {
+            var ewReport = ExpandingWindowValidation.RunFadeShort(coinData, cfg);
+            ExpandingWindowValidation.PrintReport(ewReport);
+        }
+        catch (Exception ex) { Console.WriteLine($"  ExpandingWindowValidation skipped: {ex.Message}"); }
+
         Console.WriteLine("\n─── Per-cluster GA training ───");
         var clusterGroups = namedCoins
             .GroupBy(nc => CoinClusterHelper.Classify(nc.Cd.TrainCandles.ToArray()))
@@ -268,6 +289,21 @@ static class TrainCommands
         CandleFetcher.PrintSplitStats("Train 75%", tRet, tCC);
         CandleFetcher.PrintSplitStats("Val  12.5%", vRet, vCC);
 
+        var btcForRegime = heldOutCoins.FirstOrDefault(c => c.Sym == "BTCUSDT").H1;
+        if (btcForRegime != null && btcForRegime.Length > 220)
+        {
+            int btcTrainEnd = (int)(btcForRegime.Length * 0.75);
+            int btcValStart = btcTrainEnd;
+            int btcValEnd = (int)(btcForRegime.Length * 0.875);
+            if (btcValEnd > btcValStart && btcValEnd <= btcForRegime.Length)
+            {
+                var btcTrain = btcForRegime[..btcTrainEnd];
+                var btcVal = btcForRegime[btcValStart..btcValEnd];
+                PrintRegimeContext(btcTrain, "Train window", "Short");
+                PrintRegimeContext(btcVal, "Val window", "Short");
+            }
+        }
+
         double vExp = vRet.Count > 0 ? vRet.Average() : 0;
         double tExp = tRet.Count > 0 ? tRet.Average() : 0;
         Console.WriteLine(vExp < tExp * 0.4 || vExp <= 0
@@ -310,6 +346,70 @@ static class TrainCommands
             CandleFetcher.PrintSplitStats("Held-out agg", allHeldRet, allHeldCC);
         }
 
+        if (heldOutCoins.Count > 0)
+        {
+            Console.WriteLine($"\n─── Double validation, time-embargoed (held-out coins, dates ≥ {globalFitCutoff:yyyy-MM-dd} only) ───");
+            Console.WriteLine("  Same held-out coins, but restricted to dates after every training coin's fit window ends —");
+            Console.WriteLine("  a genuine forward-time test, not just a different-symbol test on the same historical window.");
+            Console.WriteLine($"  {"Coin",-20}  {"Trades",6}  {"WR",5}  {"AvgRet",8}  {"PF",6}  {"Sortino",8}");
+            Console.WriteLine($"  {"────",-20}  {"──────",6}  {"──",5}  {"──────",8}  {"──",6}  {"───────",8}");
+
+            var allEmbRet = new List<double>();
+            int allEmbCC  = 0;
+
+            foreach (var (sym, h1) in heldOutCoins)
+            {
+                var embargoed = h1.Where(c => c.Time >= globalFitCutoff).ToArray();
+                var r = FadeShortSimulator.GetFadeShortReturns(best, embargoed).Select(t => t.Return).ToList();
+                allEmbRet.AddRange(r);
+                allEmbCC += embargoed.Length * 12;
+
+                double wr   = r.Count > 0 ? (double)r.Count(x => x > 0) / r.Count : 0;
+                double avg  = r.Count > 0 ? r.Average() : 0;
+                double pf   = r.Count > 0 ? Simulator.ProfitFactor(r) : 0;
+                double sort = r.Count > 0 ? Simulator.SortinoRatio(r, embargoed.Length * 12) : 0;
+                Console.WriteLine($"  {sym,-20}  {r.Count,6}  {wr,5:P0}  {avg,+8:F2}%  {pf,6:F2}  {sort,8:F2}");
+            }
+
+            Console.WriteLine();
+            CandleFetcher.PrintSplitStats("Held-out agg (embargoed)", allEmbRet, allEmbCC);
+        }
+
+        var btcHeldOut = heldOutCoins.FirstOrDefault(c => c.Sym == "BTCUSDT").H1;
+        if (heldOutCoins.Count > 0 && btcHeldOut != null && btcHeldOut.Length > 220)
+        {
+            var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcHeldOut);
+            Console.WriteLine("\n─── Double validation, time-embargoed + regime-stratified ───");
+            Console.WriteLine("  Same embargoed window, bucketed by BTC regime at each trade's entry time — a single");
+            Console.WriteLine("  blended window can be net-Bull or net-Bear, which silently favors whichever strategy");
+            Console.WriteLine("  direction matches it rather than proving real generalization.");
+
+            const int minTradesForRegime = 20;
+            foreach (var regime in new[] { MarketRegime.Bear, MarketRegime.Bull, MarketRegime.Ranging, MarketRegime.HighVol })
+            {
+                var bucketRet = new List<double>();
+                int bucketCC  = 0;
+                foreach (var (sym, h1) in heldOutCoins)
+                {
+                    var embargoed = h1.Where(c => c.Time >= globalFitCutoff).ToArray();
+                    if (embargoed.Length == 0) continue;
+
+                    var trades = FadeShortSimulator.GetFadeShortReturns(best, embargoed);
+                    var tradeTags = RegimeBarLookup.TagRegimes(btcSeries, trades.Select(t => t.Time).ToList());
+                    for (int i = 0; i < trades.Count; i++)
+                        if (tradeTags[i] == regime) bucketRet.Add(trades[i].Return);
+
+                    var candleTags = RegimeBarLookup.TagRegimes(btcSeries, embargoed.Select(c => c.Time).ToList());
+                    bucketCC += candleTags.Count(t => t == regime) * 12;
+                }
+
+                if (bucketRet.Count < minTradesForRegime)
+                    Console.WriteLine($"  {regime,-8}  insufficient data ({bucketRet.Count} trades, need ≥{minTradesForRegime}) — not reported");
+                else
+                    CandleFetcher.PrintSplitStats($"  {regime}", bucketRet, bucketCC);
+            }
+        }
+
         Console.WriteLine($"\nNext: dotnet run -- backtest");
     }
 
@@ -325,5 +425,34 @@ static class TrainCommands
 
     internal static string VariantGenoPath(string key, string variant, string defaultPath)
         => variant == "default" ? defaultPath : $"genotypes/{key}_{variant}_genotype.json";
+
+    internal static void PrintRegimeContext(Candle[] btcH1, string windowLabel, string strategyRegime)
+    {
+        if (btcH1.Length < 220)
+        {
+            Console.WriteLine($"  {windowLabel}: insufficient BTC data for regime classification");
+            return;
+        }
+        var series = RegimeClassifier.ClassifySeriesWithDuration(btcH1);
+        var regimeCounts = series.GroupBy(s => s.Regime)
+            .ToDictionary(g => g.Key, g => g.Count());
+        int total = series.Length;
+        
+        Console.WriteLine($"  {windowLabel} regime distribution (BTC H1):");
+        foreach (var regime in new[] { MarketRegime.Bull, MarketRegime.Bear, MarketRegime.Ranging, MarketRegime.HighVol })
+        {
+            int count = regimeCounts.GetValueOrDefault(regime, 0);
+            double pct = 100.0 * count / total;
+            Console.WriteLine($"    {regime,-8}: {count,5} bars ({pct:F1}%)");
+        }
+        
+        bool regimeMismatch = (strategyRegime == "Bear" && regimeCounts.GetValueOrDefault(MarketRegime.Bull, 0) > total * 0.5) ||
+                              (strategyRegime == "Bull" && regimeCounts.GetValueOrDefault(MarketRegime.Bear, 0) > total * 0.5) ||
+                              (strategyRegime == "Short" && regimeCounts.GetValueOrDefault(MarketRegime.Bull, 0) > total * 0.6) ||
+                              (strategyRegime == "Long" && regimeCounts.GetValueOrDefault(MarketRegime.Bear, 0) > total * 0.6);
+        
+        if (regimeMismatch)
+            Console.WriteLine($"  ⚠ {windowLabel} regime mismatches {strategyRegime} strategy — low expectancy may be regime-driven, not overfit");
+    }
 
 }

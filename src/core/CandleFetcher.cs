@@ -145,13 +145,25 @@ static class CandleFetcher
 
         if (dirty)
         {
-            using var fs = new FileStream(cacheFile, FileMode.Create, FileAccess.Write, FileShare.Read);
-            using var sw = new StreamWriter(fs);
-            foreach (var c in cached.Values)
+            var tmpFile = cacheFile + ".tmp";
+            try
             {
-                long ms = new DateTimeOffset(c.Time, TimeSpan.Zero).ToUnixTimeMilliseconds();
-                sw.WriteLine(FormattableString.Invariant(
-                    $"{ms},{c.Open},{c.High},{c.Low},{c.Close},{c.Volume}"));
+                using (var fs = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (var sw = new StreamWriter(fs))
+                {
+                    foreach (var c in cached.Values)
+                    {
+                        long ms = new DateTimeOffset(c.Time, TimeSpan.Zero).ToUnixTimeMilliseconds();
+                        sw.WriteLine(FormattableString.Invariant(
+                            $"{ms},{c.Open},{c.High},{c.Low},{c.Close},{c.Volume}"));
+                    }
+                }
+                File.Move(tmpFile, cacheFile, overwrite: true);
+            }
+            catch
+            {
+                if (File.Exists(tmpFile)) File.Delete(tmpFile);
+                throw;
             }
         }
 
@@ -271,12 +283,24 @@ static class CandleFetcher
 
         if (dirty)
         {
-            using var fs2 = new FileStream(cacheFile, FileMode.Create, FileAccess.Write, FileShare.Read);
-            using var sw = new StreamWriter(fs2);
-            foreach (var (dt, rate) in cached)
+            var tmpFile = cacheFile + ".tmp";
+            try
             {
-                long ms = new DateTimeOffset(dt, TimeSpan.Zero).ToUnixTimeMilliseconds();
-                sw.WriteLine(FormattableString.Invariant($"{ms},{rate:G17}"));
+                using (var fs2 = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (var sw = new StreamWriter(fs2))
+                {
+                    foreach (var (dt, rate) in cached)
+                    {
+                        long ms = new DateTimeOffset(dt, TimeSpan.Zero).ToUnixTimeMilliseconds();
+                        sw.WriteLine(FormattableString.Invariant($"{ms},{rate:G17}"));
+                    }
+                }
+                File.Move(tmpFile, cacheFile, overwrite: true);
+            }
+            catch
+            {
+                if (File.Exists(tmpFile)) File.Delete(tmpFile);
+                throw;
             }
         }
 
@@ -306,6 +330,37 @@ static class CandleFetcher
             return true;
         }
         return false;
+    }
+
+    public record ValidationResult(int BadOhlc, int Gaps, int Spikes, int ZeroPrices, bool IsValid);
+
+    public static ValidationResult ValidateCandles(IReadOnlyList<Candle> candles, TimeSpan expectedInterval)
+    {
+        int badOhlc = 0, gaps = 0, spikes = 0, zeroPrices = 0;
+        double intervalMs = expectedInterval.TotalMilliseconds;
+
+        for (int i = 0; i < candles.Count; i++)
+        {
+            var c = candles[i];
+            if (c.High < Math.Max(c.Open, c.Close) - 1e-10 || c.Low > Math.Min(c.Open, c.Close) + 1e-10)
+                badOhlc++;
+            if (c.Open <= 0 || c.High <= 0 || c.Low <= 0 || c.Close <= 0)
+                zeroPrices++;
+            if (i > 0)
+            {
+                double gap = (c.Time - candles[i - 1].Time).TotalMilliseconds;
+                if (gap > intervalMs * 2.5)
+                    gaps++;
+                double pctChange = Math.Abs(c.Close - candles[i - 1].Close) / candles[i - 1].Close;
+                if (pctChange > 0.50)
+                    spikes++;
+            }
+        }
+
+        if (badOhlc > 0 || zeroPrices > 0)
+            Console.WriteLine($"  [ValidateCandles] badOHLC={badOhlc} zeroPrices={zeroPrices} gaps={gaps} spikes={spikes}");
+
+        return new ValidationResult(badOhlc, gaps, spikes, zeroPrices, badOhlc == 0 && zeroPrices == 0);
     }
 
     public static void PrintSplitStats(string label, List<double> r, int candleCount)

@@ -18,7 +18,7 @@ namespace TradingGA;
 public class RegimeRouterGA
 {
     // RipShort appended at the end so existing serialized StrategyKind values don't shift.
-    public enum StrategyKind { FadeShort, Grid, DipLong, FadeLong, RipShort }
+    public enum StrategyKind { FadeShort, Grid, DipLong, FadeLong, RipShort, GridShort, SwingLong, AccumulationGrid, FadeShortLowVol, DipLongLowVol, SwingLongLowVol, RipShortLowVol, FadeShortHighVol, DipLongHighVol, SwingLongHighVol, RipShortHighVol }
 
     public record TradeRecord(StrategyKind Kind, DateTime Time, double Return, double Frac);
 
@@ -148,7 +148,7 @@ public class RegimeRouterGA
                                     validTrades, useValidation: false, trainCutBar, folds);
                 return g.Fitness;
             },
-            iterations: 30,
+            iterations: 60,
             rng:        _rng);
 
         var boChamp = boHistory.OrderByDescending(h => h.Fitness).First();
@@ -273,29 +273,27 @@ public class RegimeRouterGA
             bool bearCarry        = inBullTransition && prevRegime == MarketRegime.Bear
                                     && router.EarlyBullBearCarry > 0;
 
+            // Delegate to the single source of truth (shared with the live Route path and
+            // RegimeRouterSession.IsActive) instead of a hand-duplicated switch — the
+            // duplicate previously drifted out of sync and silently dropped RipShort trades.
+            var activation = RegimeRouter.ComputeActivation(btc.Regime, blendedConf, btc.Duration, prevRegime, router);
             bool active = t.Kind switch
             {
-                StrategyKind.FadeShort => !(btc.Regime == MarketRegime.Bull
-                                            && btc.Duration >= (int)router.BullMinBars
-                                            && blendedConf >= router.BullMinConf),
-                StrategyKind.Grid      => btc.Regime == MarketRegime.Ranging
-                                          || blendedConf < router.GridMaxConf
-                                          || (inTransition && router.TransitionSizeMult > 0),
-                StrategyKind.DipLong   => (btc.Regime == MarketRegime.Bull
-                                           && btc.Duration >= (int)router.BullMinBars
-                                           && blendedConf >= router.BullMinConf)
-                                          || earlyFromBear || earlyFromRanging,
-                StrategyKind.FadeLong  => (btc.Regime == MarketRegime.Bear
-                                           && btc.Duration >= (int)router.BearMinBars
-                                           && blendedConf >= router.BearMinConf)
-                                          || bearCarry,
-                _                      => false,
+                StrategyKind.FadeShort         => activation.FadeShort,
+                StrategyKind.Grid              => activation.Grid,
+                StrategyKind.GridShort         => activation.GridShort,
+                StrategyKind.DipLong           => activation.DipLong,
+                StrategyKind.FadeLong          => activation.FadeLong,
+                StrategyKind.RipShort          => activation.RipShort,
+                StrategyKind.SwingLong         => activation.SwingLong,
+                StrategyKind.AccumulationGrid  => activation.AccumulationGrid,
+                _                              => false,
             };
 
             if (!active) continue;
 
             double frac = t.Frac;
-            if (t.Kind == StrategyKind.Grid && inTransition && router.TransitionSizeMult > 0)
+            if ((t.Kind == StrategyKind.Grid || t.Kind == StrategyKind.GridShort) && inTransition && router.TransitionSizeMult > 0)
                 frac *= router.TransitionSizeMult;
             else if (t.Kind == StrategyKind.DipLong && earlyFromBear)
                 frac *= router.EarlyBullFromBearMult;

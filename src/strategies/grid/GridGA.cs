@@ -75,10 +75,10 @@ public class GridGeneticAlgorithm
         double pfStat    = Simulator.ProfitFactor(returns);
         double sortino   = Simulator.SortinoRatio(returns, n);
         return baseScore
-            * (1.0 + cfg.SharpeW  * Math.Max(0, Math.Min(sharpe   / 3.0,  3.0)))
-            * (1.0 + cfg.CalmarW  * Math.Max(0, Math.Min(calmar   / 2.0,  3.0)))
-            * (1.0 + cfg.PfW      * Math.Max(0, Math.Min(pfStat - 1.0,    3.0)))
-            * (1.0 + cfg.SortinoW * Math.Max(0, Math.Min(sortino  / 4.0,  3.0)))
+            * (1.0 + cfg.SharpeW  * Math.Max(0, Math.Min(sharpe   / 3.0,  1.0)))
+            * (1.0 + cfg.CalmarW  * Math.Max(0, Math.Min(calmar   / 2.0,  1.0)))
+            * (1.0 + cfg.PfW      * Math.Max(0, Math.Min(pfStat - 1.0,    1.0)))
+            * (1.0 + cfg.SortinoW * Math.Max(0, Math.Min(sortino  / 4.0,  1.0)))
             * volWeight;
     }
 
@@ -109,12 +109,12 @@ public class GridGeneticAlgorithm
             return FoldScore(all, _cfg);
         }
 
-        int      foldSize = minLen / k;
-        double[] scores   = new double[k];
+        var bounds = FoldScoreHelper.ComputeFoldBoundaries(minLen, k, _cfg.EmbargoPct);
+        double[] scores = new double[k];
         for (int f = 0; f < k; f++)
         {
-            int start       = f * foldSize;
-            int end         = f == k - 1 ? minLen : start + foldSize;
+            int start       = bounds[f].Start;
+            int end         = bounds[f].End;
             var foldReturns = new List<double>();
             foreach (var (coin, arr) in validCoins)
             {
@@ -222,7 +222,7 @@ public class GridGeneticAlgorithm
             seedObs:    boSeed,
             bounds:     GridGenotype.Bounds,
             evaluate:   v => { var g = GridGenotype.FromVector(v, adxCeiling); g.Fitness = Fitness(g, coins, useValidation: false); return g.Fitness; },
-            iterations: 30,
+            iterations: 60,
             rng:        _rng);
 
         var boChampion = boHistory.OrderByDescending(h => h.Fitness).First();

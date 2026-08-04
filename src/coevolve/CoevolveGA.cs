@@ -22,16 +22,19 @@ public class CoevolveGA
         IReadOnlyList<FadeLongGA.CoinData>         FlCoins,   // kept for compatibility; not evolved
         IReadOnlyList<DipLongGA.CoinData>          DlCoins,
         IReadOnlyList<SwingLongGA.CoinData>        SlCoins,
+        IReadOnlyList<RipShortGA.CoinData>         RsCoins,   // not evolved — feeds Router training like DipLong/SwingLong
         IReadOnlyList<(Candle[] H1, Candle[] M15)> AllCoins,
         RegimeBar[]                                BtcSeries,
         RegimeBar[]?                               EthSeries,
         Candle[]                                   BtcH1,
-        GridGenotype?                              GridGeno);
+        GridGenotype?                              GridGeno,
+        GridGenotype?                              GridShortGeno);
 
     public record CoevolveResult(
         FadeLongGenotype      FadeLong,       // passed through unchanged
         DipLongGenotype       DipLong,        // passed through unchanged
         SwingLongGenotype     SwingLong,      // passed through unchanged
+        RipShortGenotype      RipShort,       // passed through unchanged
         RegimeRouterGenotype  Router,
         DynamicGuardGenotype  DynamicGuard);
 
@@ -46,6 +49,7 @@ public class CoevolveGA
         FadeLongGenotype?     flSeed,
         DipLongGenotype?      dlSeed,
         SwingLongGenotype?    slSeed,
+        RipShortGenotype?     rsSeed,
         RegimeRouterGenotype? routerSeed,
         DynamicGuardGenotype? dgSeed)
     {
@@ -54,7 +58,7 @@ public class CoevolveGA
 
         // Strategies are frozen — build their trade lists once and reuse every round.
         Console.WriteLine("  Building strategy trade lists (fixed)...");
-        var rawTrades = BuildTradeLists(fsSeed, dlSeed, slSeed, data.GridGeno, data);
+        var rawTrades = BuildTradeLists(fsSeed, dlSeed, slSeed, rsSeed, data.GridGeno, data.GridShortGeno, data);
         Console.WriteLine(
             $"  {rawTrades.Count} total — " +
             string.Join("  ",
@@ -66,7 +70,7 @@ public class CoevolveGA
             val: new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>(),
             oos: new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>());
         var (guardVal, guardOos) = data.BtcH1.Length >= 50
-            ? BuildGuardTrades(fsSeed, dlSeed, slSeed, data.GridGeno, data, routerElite)
+            ? BuildGuardTrades(fsSeed, dlSeed, slSeed, data.GridGeno, data.GridShortGeno, data, routerElite)
             : emptyGuard;
 
         for (int round = 0; round < RedQueenRounds; round++)
@@ -116,12 +120,12 @@ public class CoevolveGA
             if (data.BtcH1.Length >= 50)
             {
                 (guardVal, guardOos) = BuildGuardTrades(
-                    fsSeed, dlSeed, slSeed, data.GridGeno, data, routerElite);
+                    fsSeed, dlSeed, slSeed, data.GridGeno, data.GridShortGeno, data, routerElite);
                 Console.WriteLine($"  Guard trades: val={guardVal.Count}  pseudo-oos={guardOos.Count}");
             }
         }
 
-        return new CoevolveResult(flSeed!, dlSeed!, slSeed!, routerElite, guardBest!);
+        return new CoevolveResult(flSeed!, dlSeed!, slSeed!, rsSeed!, routerElite, guardBest!);
     }
 
     // ── Trade list builders (parallelised over coins) ─────────────────────────
@@ -130,7 +134,9 @@ public class CoevolveGA
         FadeShortGenotype?  fs,
         DipLongGenotype?    dl,
         SwingLongGenotype?  sl,
+        RipShortGenotype?   rs,
         GridGenotype?       grid,
+        GridGenotype?       gridShort,
         AllData             data)
     {
         var bag = new ConcurrentBag<RegimeRouterGA.TradeRecord>();
@@ -147,6 +153,10 @@ public class CoevolveGA
             if (grid != null)
                 foreach (var t in GridSimulator.GetGridReturns(grid, h1))
                     bag.Add(new(RegimeRouterGA.StrategyKind.Grid, t.Time, t.Return, 0.05));
+
+            if (gridShort != null)
+                foreach (var t in GridShortSimulator.GetGridShortReturns(gridShort, h1))
+                    bag.Add(new(RegimeRouterGA.StrategyKind.GridShort, t.Time, t.Return, 0.05));
         });
 
         if (dl is { Fitness: > 0 })
@@ -174,6 +184,19 @@ public class CoevolveGA
             });
         }
 
+        if (rs is { Fitness: > 0 })
+        {
+            Parallel.ForEach(data.RsCoins, (cd) =>
+            {
+                Candle[] h1  = MemConcat(cd.TrainH1, cd.ValH1);
+                Candle[] m15 = MemConcat(cd.TrainM15, cd.ValM15);
+                if (h1.Length == 0) return;
+                foreach (var t in RipShortSimulator.GetRipShortReturnsWithRegime(rs, h1, m15)
+                             .Where(t => t.RegimeBarsActive >= rs.RegimeSustainedBars))
+                    bag.Add(new(RegimeRouterGA.StrategyKind.RipShort, t.Time, t.Return, rs.PositionSizePct));
+            });
+        }
+
         return [.. bag.OrderBy(t => t.Time)];
     }
 
@@ -185,6 +208,7 @@ public class CoevolveGA
         DipLongGenotype?     dl,
         SwingLongGenotype?   sl,
         GridGenotype?        grid,
+        GridGenotype?        gridShort,
         AllData              data,
         RegimeRouterGenotype router)
     {
@@ -206,6 +230,12 @@ public class CoevolveGA
                              .Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)))
                     bag.Add((t.Time, t.Return, 0.05,
                              TimeSpan.FromHours(grid.MaxHoldCandles), "grid"));
+
+            if (gridShort != null)
+                foreach (var t in GridShortSimulator.GetGridShortReturns(gridShort, h1)
+                             .Where(t => session.IsActive(RegimeRouterGA.StrategyKind.GridShort, t.Time)))
+                    bag.Add((t.Time, t.Return, 0.05,
+                             TimeSpan.FromHours(gridShort.MaxHoldCandles), "gridshort"));
         });
 
         if (dl is { Fitness: > 0 })

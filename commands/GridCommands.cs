@@ -75,6 +75,23 @@ static class GridCommands
             new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"  Saved → {genoPath}");
 
+        Console.WriteLine("\n─── Validation suite ───");
+        try
+        {
+            var mcResult = MonteCarloTest.Run(
+                coinData.SelectMany(cd => GridSimulator.GetGridReturns(best, cd.TrainCandles.Span).Select(t => t.Return)).ToList(),
+                permutations: 1000);
+            MonteCarloTest.PrintReport(mcResult, "Grid");
+        }
+        catch (Exception ex) { Console.WriteLine($"  MonteCarloTest skipped: {ex.Message}"); }
+
+        try
+        {
+            var ewReport = ExpandingWindowValidation.RunGrid(coinData, cfg);
+            ExpandingWindowValidation.PrintReport(ewReport);
+        }
+        catch (Exception ex) { Console.WriteLine($"  ExpandingWindowValidation skipped: {ex.Message}"); }
+
         Console.WriteLine("\n─── Overfit check (train 80% vs val 20%, session-level) ───");
         var tRet = coinData.SelectMany(cd => GridSimulator.GetGridSessionReturns(best, cd.TrainCandles.Span).Select(t => t.Return)).ToList();
         var vRet = coinData.SelectMany(cd => GridSimulator.GetGridSessionReturns(best, cd.ValCandles.Span).Select(t => t.Return)).ToList();
@@ -84,6 +101,89 @@ static class GridCommands
         CandleFetcher.PrintSplitStats("Val   20%", vRet, vCC);
 
         Console.WriteLine($"\nNext: dotnet run -- gridbacktest");
+    }
+
+    // Direction-mirror of RunGridTrain — same coin pool, ADX-ceiling coordination, and
+    // reused GridGenotype shape, but trains against GridShortSimulator (sell above EMA).
+    public static async Task RunGridShortTrain(BybitRestClient client, string[]? args = null)
+    {
+        string variant  = TrainCommands.ResolveVariant(args);
+        var    cfg      = FitnessConfig.Load();
+        string genoPath = TrainCommands.VariantGenoPath("grid_short", variant, Config.GridShortGenoFile);
+        Console.WriteLine("=== Gravity-gen2 | GRIDSHORTTRAIN (ranging short grid, 1h candles, 26 coins) ===");
+        Console.WriteLine($"Training GridShort / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
+
+        var trainCoins = new[]
+        {
+            ("SOLUSDT",  1.0), ("ETHUSDT",  1.0), ("BNBUSDT",  1.0), ("XRPUSDT",  1.0),
+            ("DOGEUSDT", 1.0), ("AVAXUSDT", 1.0), ("ADAUSDT",  1.0), ("LINKUSDT", 1.0),
+            ("DOTUSDT",  1.0), ("MATICUSDT",1.0), ("ATOMUSDT", 0.9), ("NEARUSDT", 0.9),
+            ("INJUSDT",  0.9), ("OPUSDT",   0.9), ("ARBUSDT",  0.9), ("UNIUSDT",  0.9),
+            ("AAVEUSDT", 0.9), ("RUNEUSDT", 0.9), ("WIFUSDT",  0.8), ("1000PEPEUSDT", 0.8),
+            ("APTUSDT",  0.8), ("SUIUSDT",  0.8), ("TIAUSDT",  0.8), ("SEIUSDT",  0.8),
+            ("STXUSDT",  0.8), ("JUPUSDT",  0.8),
+        };
+
+        Console.WriteLine($"  Fetching {trainCoins.Length} coins (15m → 1h, ~3yr)...");
+        var sem = new SemaphoreSlim(4);
+        var fetchTasks = trainCoins.Select(async ((string sym, double weight) t) =>
+        {
+            await sem.WaitAsync();
+            try
+            {
+                var m15 = await CandleFetcher.FetchFifteenMinCandlesCached(client, t.sym, batches: 113);
+                var h1  = FadeShortSimulator.AggregateCandles(m15.ToArray(), 4);
+                Console.WriteLine($"  {t.sym}: {h1.Length} h1 candles");
+                return (t.sym, t.weight, h1);
+            }
+            finally { sem.Release(); }
+        });
+        var fetched = await Task.WhenAll(fetchTasks);
+
+        var coinData = new List<GridShortGA.CoinData>();
+        foreach (var (sym, weight, h1) in fetched)
+        {
+            if (h1.Length < 150) { Console.WriteLine($"  {sym}: skip (insufficient data)"); continue; }
+            int split = (int)(h1.Length * 0.8);
+            coinData.Add(new GridShortGA.CoinData(h1[..split], h1[split..], weight));
+        }
+        if (coinData.Count == 0) { Console.WriteLine("No data."); return; }
+
+        double adxCeiling = 20.0;
+        if (File.Exists(Config.FadeShortGenoFile))
+        {
+            var swingGeno = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype();
+            adxCeiling = Math.Min(swingGeno.AdxThreshold - 1.0, 20.0);
+            Console.WriteLine($"  Swing AdxThreshold={swingGeno.AdxThreshold:F0} → grid ceiling={adxCeiling:F0} (clean partition)");
+        }
+
+        GridGenotype? seed = null;
+        if (File.Exists(genoPath))
+        {
+            var candidate = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(genoPath))!.ToGenotype();
+            var clamped = candidate.ClampToBounds(adxCeiling);
+            if (clamped.Fitness > 0) { seed = clamped; Console.WriteLine($"  Seeding from {genoPath}: {seed}"); }
+            else Console.WriteLine("  Skipping seed (fitness ≤ 0)");
+        }
+
+        Console.WriteLine($"\n  Training on {coinData.Count} coins\n");
+        Console.WriteLine("─── GridShort GA training ───");
+        var best = new GridShortGA(60, 100, verbose: true, cfg: cfg).Run(coinData, seed, adxCeiling);
+
+        Console.WriteLine($"\nFrozen genotype:\n  {best}\n");
+        File.WriteAllText(genoPath, JsonSerializer.Serialize(GridGenotypeDto.From(best, cfg),
+            new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"  Saved → {genoPath}");
+
+        Console.WriteLine("\n─── Overfit check (train 80% vs val 20%, session-level) ───");
+        var tRet = coinData.SelectMany(cd => GridShortSimulator.GetGridShortSessionReturns(best, cd.TrainCandles.Span).Select(t => t.Return)).ToList();
+        var vRet = coinData.SelectMany(cd => GridShortSimulator.GetGridShortSessionReturns(best, cd.ValCandles.Span).Select(t => t.Return)).ToList();
+        int tCC  = coinData.Sum(cd => cd.TrainCandles.Length) * 12;
+        int vCC  = coinData.Sum(cd => cd.ValCandles.Length)   * 12;
+        CandleFetcher.PrintSplitStats("Train 80%", tRet, tCC);
+        CandleFetcher.PrintSplitStats("Val   20%", vRet, vCC);
+
+        Console.WriteLine($"\nNext: dotnet run -- fulltest");
     }
 
     public static async Task RunGridBacktest(BybitRestClient client)

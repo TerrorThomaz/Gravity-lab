@@ -89,19 +89,21 @@ All strategies share the same dual-timeframe setup: **1h candles** for regime/se
 |----------|--------|-----------|--------------|
 | **FadeShort** | Always-on (router-gated off in confirmed Bull) | Short | RSI bearish divergence + min rally + bearish BoS on 15m |
 | **Grid** | Ranging | Long | ADX low + BB compression, grid levels |
-| **SwingLong** | Bull (`DipLongActive`) | Long | RSI bullish divergence + min decline + bullish BoS on 15m |
+| **SwingLong** | Bull (`SwingLongActive`) | Long | RSI bullish divergence + min decline + bullish BoS on 15m |
 | **DipLong** | Bull (`DipLongActive`) | Long | RSI dip (40–55) in established uptrend + bullish BoS on 15m |
 | **FadeLong** | Bear (`FadeLongActive`) | Long | RSI bearish divergence at bottom + bullish BoS on 15m |
 | **RipShort** | Bear (`RipShortActive`) | Short | RSI relief rally (≥40–60) in established downtrend + bearish BoS on 15m |
 
-Exit uses three layers: hard ATR stop · fixed ATR profit target · trailing ATR stop (armed after `TrailingActivationAtrMult` × ATR move) · `MaxHoldCandles` forced close. RipShort's stop/target are wick-triggered (intrabar high/low, not close) since bear-rally squeezes are its dominant tail risk, and it accounts for perp funding (real rate via `FundingRateSession` when available, else a flat pessimistic −0.01%/8h) since shorts typically pay funding in bear regimes.
+Exit uses three layers: hard ATR stop · fixed ATR profit target · trailing ATR stop (armed after `TrailingActivationAtrMult` × ATR move) · `MaxHoldCandles` forced close. RipShort's stop/target are wick-triggered (intrabar high/low, not close) since bear-rally squeezes are its dominant tail risk. All strategies account for perp funding (real rate via `FundingRateSession` when available, else a flat pessimistic −0.01%/8h) — shorts pay in bear regimes, longs pay in bull regimes.
 
-FadeLong and RipShort share the router's confirmed-bear gate (`BearMinBars`/`BearMinConf`), but only FadeLong (a bounce/reversal play) carries into the early-bull transition window (`EarlyBullBearCarry`) — RipShort is with-trend and switches off the moment the regime tips toward Bull.
+Grid has an EMA slope gate: skips entries when 20-bar EMA slope < −0.5% (prevents buying dips in confirmed downtrends).
+
+FadeLong and RipShort share the router's confirmed-bear gate (`BearMinBars`/`BearMinConf`, bounds [24, 200] bars), but only FadeLong (a bounce/reversal play) carries into the early-bull transition window (`EarlyBullBearCarry`) — RipShort is with-trend and switches off the moment the regime tips toward Bull. Early-bear ramp (`EarlyBearFromBullMult`/`EarlyBearFromRangingMult`) scales FadeShort/RipShort sizing during the first `BearMinBars` bars of a new bear regime.
 
 ### RegimeClassifier + RegimeRouter
 
 `src/regime/RegimeClassifier.cs` — multi-signal ensemble classifier producing Bull/Bear/Ranging/HighVol + confidence (0–1).
-Signals: EMA stack (weight 3), EMA50 slope (1.5), ADX (1), 20-bar momentum (0.5), ATR vol ratio (0.5).
+Signals: EMA stack (weight 3), EMA50 slope (1.5), ADX (1), 20-bar momentum (0.5), ATR vol ratio (0.5), low-vol+flat-slope ranging confirmation (1.5).
 `ClassifySeriesWithDuration` is O(n) with per-bar duration counter (how many consecutive bars in current regime).
 
 `src/regime/RegimeRouter.cs` — BTC-anchored router (ETH as secondary confirmer, configurable blend weight).
@@ -126,7 +128,7 @@ Two overloads: rule-based fallback and trained-genotype path (`RegimeRouter.Rout
 
 ### Portfolio cap
 
-`src/core/PortfolioReplay.cs` — filters combined trade list by per-strategy concurrent count before EUR exposure simulation. Default caps: FadeShort=10, SwingLong=8, DipLong=8, FadeLong=8, RipShort=8, Grid=12.
+`src/core/PortfolioReplay.cs` — filters combined trade list by per-strategy concurrent count before EUR exposure simulation. Default caps: FadeShort=10, SwingLong=8, DipLong=8, FadeLong=8, RipShort=8, Grid=12. Directional cap (`Config.MaxDirectionalConcurrent = 20`) limits total same-direction concurrent positions across all strategies to prevent correlated exposure clustering.
 
 ### Candle fetching
 
@@ -147,6 +149,16 @@ Two overloads: rule-based fallback and trained-genotype path (`RegimeRouter.Rout
 | `genotypes/swing_best_genotype_mid.json` | SwingLong – mid coins |
 | `genotypes/regime_router_genotype.json` | RegimeRouter |
 | `genotypes/dynamic_guard_genotype.json` | DynamicGuard |
+| `genotypes/grid_short_genotype.json` | GridShort |
+
+**Caution — untracked genotypes have no revert path.** As of 2026-07, `rip_short_genotype.json` and `grid_short_genotype.json` are not yet committed to git. Any GA retrain overwrites the file on disk, and `git checkout` can't recover the previous version since there's no commit to revert to. GA runs are non-deterministic — a rerun can land in a worse basin and silently regress an already-validated genotype (observed: RipShort held-out PF dropped from profitable to 0.95, overfit flag tripped, after a routine retrain). Before rerunning training on an untracked genotype you want to keep, `cp` it aside or commit it first.
+
+### Held-out validation: time-embargo + regime-stratification
+
+Plain "held-out coin" validation (different symbol, same calendar window as training) doesn't test time-generalization — it tests symbol-generalization, and crypto's cross-sectional correlation (BTC/alts co-move) lets a regime-timing overfit "generalize" across correlated coins without being a real edge. Two fixes layered on top of the original held-out check, both report-only (never used for GA selection):
+
+- **Time embargo** (`TrainCommands.cs` FadeShort, `LongTrainCommands.cs` RipShort): restrict held-out coins to dates after every training coin's own fit window ends. FadeShort has embargo headroom (global 87.5% train/val split leaves a trailing slice free). **RipShort does not** — its per-coin val window is carved from that coin's own most-recent bear block (`CandleFetcher.FindLastRegimeBlock`), so at least one coin's training data typically already extends to the present, collapsing the embargo cutoff to "today" with zero trades to report. Fixing this would mean reserving a fixed trailing slice *before* the per-coin bear-block extraction runs.
+- **Regime stratification** (`RegimeBarLookup.TagRegimes` in `RegimeClassifier.cs`): tags each held-out trade with the BTC regime active at its entry time, so results are bucketed per regime instead of blended into one number. A single blended window can be net-Bull or net-Bear, which silently favors whichever strategy direction matches it. Buckets under 20 trades print "insufficient data" instead of a fabricated stat — thin regimes (Ranging's longest contiguous run is ~41 h1 bars) genuinely can't support a held-out claim.
 
 ### Discord bot
 

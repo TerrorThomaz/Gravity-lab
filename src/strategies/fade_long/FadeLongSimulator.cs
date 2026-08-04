@@ -32,9 +32,10 @@ public static class FadeLongSimulator
     private const double SlipStopGap = 0.015;
 
     public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive)> GetFadeLongReturns(
-        FadeLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15)
+        FadeLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
+        FundingRateSession? funding = null)
     {
-        var (trades, _) = RunFadeLongMultiTF(g, h1, m15);
+        var (trades, _) = RunFadeLongMultiTF(g, h1, m15, funding);
         return trades;
     }
 
@@ -54,8 +55,16 @@ public static class FadeLongSimulator
         return state;
     }
 
+    public static FadeLongTradeState GetFadeLongTradeState(FadeLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
+        FundingRateSession? funding)
+    {
+        var (_, state) = RunFadeLongMultiTF(g, h1, m15, funding);
+        return state;
+    }
+
     private static (List<(DateTime, double, string, int)> Trades, FadeLongTradeState FinalState)
-        RunFadeLongMultiTF(FadeLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15)
+        RunFadeLongMultiTF(FadeLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
+                           FundingRateSession? funding = null)
     {
         int h1Warmup = Math.Max(Math.Max(g.RegimePeriod, Math.Max(g.EmaPeriod, RsiPeriod)), AdxPeriod * 2 + 1)
                        + g.LookbackCandles + 2;
@@ -110,6 +119,7 @@ public static class FadeLongSimulator
         bool   trailArmed      = false;
         int    entryIH1        = 0;
         int    entryRegimeBars = 0;
+        DateTime entryTime     = default;
 
         int    cachedH1Ref    = -1;
         bool   cachedSetupMet = false;
@@ -183,15 +193,14 @@ public static class FadeLongSimulator
                     inTrade        = true;
                     entry          = m15[nextBar].Open;
                     atrEntry       = cachedAtrRef;
-                    // Stop below swing low: price breaking below it invalidates the thesis.
                     hardStop       = cachedSwingLow - g.StopLossAtrMult * atrEntry;
-                    // MAE floor: caps slow-grind down that stays above the hard stop.
                     maeStop        = entry - g.MaeAtrMult * atrEntry;
                     target         = entry + g.TakeProfitAtrMult * atrEntry;
                     trailHigh      = entry;
                     trailArmed     = false;
                     entryIH1       = nextBar / 4;
                     entryRegimeBars = cachedRegimeBars;
+                    entryTime      = m15[nextBar].Time;
                 }
             }
             else
@@ -214,7 +223,8 @@ public static class FadeLongSimulator
                     double exitPx = hitHardStop ? hardStop :
                                     hitMae      ? maeStop  :
                                     hitTarget   ? target   : m15Price;
-                    double ret = (exitPx - entry) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry);
+                    double fundingPnl = FundingPnl(entryTime, m15[im15].Time, funding);
+                    double ret = (exitPx - entry) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl;
                     result.Add((m15[im15].Time, ret, "fade_long", entryRegimeBars));
                     inTrade = false;
                 }
@@ -224,12 +234,29 @@ public static class FadeLongSimulator
         if (inTrade)
         {
             double finalPx = m15Closes[^1];
-            double ret = (finalPx - entry) / entry * 100.0 - TradeCost(false, atrEntry, entry);
+            double fundingPnl = FundingPnl(entryTime, m15[^1].Time, funding);
+            double ret = (finalPx - entry) / entry * 100.0 - TradeCost(false, atrEntry, entry) + fundingPnl;
             result.Add((m15[^1].Time, ret, "fade_long", entryRegimeBars));
         }
 
         int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;
         return (result, new FadeLongTradeState(inTrade, entry, hardStop, maeStop, target, trailArmed, trailHigh, finalHold));
+    }
+
+    private static double FundingPnl(DateTime entryTime, DateTime exitTime, FundingRateSession? funding)
+    {
+        if (exitTime <= entryTime) return 0.0;
+        if (funding == null)
+        {
+            double heldHours = (exitTime - entryTime).TotalHours;
+            return -0.01 * (heldHours / 8.0);
+        }
+        double pnl = 0.0;
+        DateTime t = entryTime.Date;
+        while (t <= entryTime) t = t.AddHours(8);
+        for (; t <= exitTime; t = t.AddHours(8))
+            pnl += funding.GetRate(t) * 100.0;
+        return pnl;
     }
 
     private static double TradeCost(bool isStop, double atrEntry, double entryPx)

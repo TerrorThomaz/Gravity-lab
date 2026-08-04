@@ -11,7 +11,7 @@ public record DynamicGuardGenotype(
     double BullMomBypass,  // 8-day 4H momentum > this → no guard for DipLong/SwingLong (0.0–0.30)
     double EntryAtrGate,    // ATR ratio above which DipLong/SwingLong entries are blocked (1.5–5.0)
                             // NOT bypassed by BullMomBypass — high ATR = wide stops regardless of trend
-    double DdEntryGatePct,  // portfolio DD fraction above which DipLong/SwingLong entries are blocked (0.02–0.30)
+    double DdEntryGatePct,  // portfolio DD fraction above which DipLong/SwingLong entries are blocked (2–15)
                             // gate fires inside the simulator where portfolio state is live
     double ConfLossCapMin,  // max loss cap for long trades at conf=0 (0.03–0.15)
     double ConfLossCapMax,  // max loss cap for long trades at conf=1 (0.10–0.40)
@@ -33,7 +33,7 @@ public record DynamicGuardGenotype(
         {  0,    48   },   // RecoveryBars
         {  0.0,   0.30},   // BullMomBypass
         {  1.5,   5.0 },   // EntryAtrGate
-        {  0.02,  0.30},   // DdEntryGatePct
+        {  2,    15   },   // DdEntryGatePct
         {  0.03,  0.15},   // ConfLossCapMin
         {  0.10,  0.40},   // ConfLossCapMax
         {  0.05,  0.50},   // ProfitProtectThreshold
@@ -47,7 +47,7 @@ public record DynamicGuardGenotype(
         new(g[0], g[1], g[2], g[3], g[4], g[5], g[6],
             g.Length > 7  ? g[7]  : 0.0,
             g.Length > 8  ? g[8]  : 999.0,  // default: ATR gate disabled
-            g.Length > 9  ? g[9]  : 1.0,    // default: DD gate disabled
+            g.Length > 9  ? g[9]  : 15.0,   // default: DD gate disabled
             g.Length > 10 ? g[10] : 1.0,    // default: loss cap disabled (100% cap = never fires)
             g.Length > 11 ? g[11] : 1.0,
             g.Length > 12 ? g[12] : 1.0,    // default: profit protect disabled (need 100% gain to arm)
@@ -81,7 +81,7 @@ public record DynamicGuardGenotypeDto(
     double RecoveryBars            = 0.0,
     double BullMomBypass           = 0.0,
     double EntryAtrGate            = 999.0,  // backward-compat default: ATR gate disabled
-    double DdEntryGatePct          = 1.0,    // backward-compat default: DD gate disabled
+    double DdEntryGatePct          = 15.0,   // backward-compat default: DD gate disabled
     double ConfLossCapMin          = 1.0,    // backward-compat default: cap disabled
     double ConfLossCapMax          = 1.0,
     double ProfitProtectThreshold  = 1.0,    // backward-compat default: disabled (need 100% gain)

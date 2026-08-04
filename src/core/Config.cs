@@ -4,6 +4,7 @@ static class Config
 {
     public const string FadeShortGenoFile     = "genotypes/fade_short_genotype.json";
     public const string GridGenoFile          = "genotypes/grid_best_genotype.json";
+    public const string GridShortGenoFile     = "genotypes/grid_short_genotype.json";
     public const string FadeLongGenoFile      = "genotypes/fade_long_genotype.json";
     public const string DipLongGenoFile       = "genotypes/dip_long_genotype.json";
     public const string RipShortGenoFile      = "genotypes/rip_short_genotype.json";
@@ -12,8 +13,10 @@ static class Config
     public const string ExitModifierGenoFile  = "genotypes/exit_modifier_genotype.json";
     public const string DrawdownGuardGenoFile = "genotypes/drawdown_guard_genotype.json";
     public const string DynamicGuardGenoFile  = "genotypes/dynamic_guard_genotype.json";
+    public const string RotatorGenoFile       = "genotypes/vol_rotator_genotype.json";
 
     public const double MaxTotalExposurePct = 0.30;
+    public const int MaxDirectionalConcurrent = 20;
     public const double MinMedianVolUsdM    = 0.5;
 
     public static readonly string[] BacktestCoins =

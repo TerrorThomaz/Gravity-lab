@@ -160,6 +160,16 @@ public class FadeLongGenotype
         {  10, 100 }, // RegimeSustainedBars
     };
 
+    public static readonly string[] ParameterNames =
+    [
+        "RegimePeriod", "EmaPeriod", "AdxThreshold", "LookbackCandles",
+        "RsiOversold", "RsiDivThreshold", "MinDropAtrMult",
+        "StopLossAtrMult", "MaeAtrMult", "TakeProfitAtrMult",
+        "TrailingActivationAtrMult", "TrailingStopAtrMult",
+        "MaxHoldCandles", "PositionSizePct",
+        "RegimeSustainedBars",
+    ];
+
     public double[] ToVector() =>
     [
         RegimePeriod, EmaPeriod, AdxThreshold, LookbackCandles,

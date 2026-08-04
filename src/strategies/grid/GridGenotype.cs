@@ -145,6 +145,13 @@ public class GridGenotype
         {   24,  200 }, // MaxHoldCandles
     };
 
+    public static readonly string[] ParameterNames =
+    [
+        "AdxThreshold", "BbPeriod", "BbWidthMaxPct", "EmaPeriod",
+        "GridStepAtrMult", "GridLevels", "TakeProfitAtrMult",
+        "HardStopAtrMult", "BailOutAtrMult", "MaxHoldCandles",
+    ];
+
     public double[] ToVector() =>
     [
         AdxThreshold, BbPeriod, BbWidthMaxPct, EmaPeriod,

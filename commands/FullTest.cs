@@ -5,6 +5,66 @@ namespace TradingGA;
 
 static class FullTest
 {
+    static VariantSpec<TG>[] LoadVariants<TDto, TG>(
+        string strategyKey,
+        Func<TDto, TG> toGenotype,
+        Func<TDto, (double Low, double High)> getRange)
+        where TG : class
+    {
+        var files = Directory.Exists("genotypes")
+            ? Directory.GetFiles("genotypes", $"{strategyKey}_*_genotype.json")
+            : Array.Empty<string>();
+        string defaultFile = $"genotypes/{strategyKey}_genotype.json";
+        if (File.Exists(defaultFile))
+            files = files.Append(defaultFile).Distinct().ToArray();
+        if (files.Length == 0) return Array.Empty<VariantSpec<TG>>();
+        return files.Select(f =>
+        {
+            var dto = JsonSerializer.Deserialize<TDto>(File.ReadAllText(f))!;
+            var (lo, hi) = getRange(dto);
+            string variantId = Path.GetFileNameWithoutExtension(f)
+                .Replace($"{strategyKey}_", "").Replace("_genotype", "");
+            return new VariantSpec<TG>(variantId, lo, hi, toGenotype(dto));
+        }).ToArray();
+    }
+
+    static (TG? Genotype, string Label) SelectVariantLabeled<TG>(VariantSpec<TG>[] variants, Candle[] m15)
+        where TG : class
+    {
+        if (variants.Length == 0) return (null, "base");
+        double[] highs  = m15.Select(c => c.High).ToArray();
+        double[] lows   = m15.Select(c => c.Low).ToArray();
+        double[] closes = m15.Select(c => c.Close).ToArray();
+        double[] atr    = Volatility.Atr(highs, lows, closes, 14);
+        int      bar    = atr.Length - 1;
+        if (bar < 100 || atr.Length <= bar)
+            return (variants[0].Genotype, LabelForVariant(variants[0]));
+        double baseline = 0;
+        for (int j = bar - 100; j < bar; j++) baseline += atr[j];
+        baseline /= 100;
+        if (baseline < 1e-10)
+            return (variants[0].Genotype, LabelForVariant(variants[0]));
+        double ratio = atr[bar] / baseline;
+        VariantSpec<TG>? best = null;
+        double bestWidth = double.MaxValue;
+        foreach (var v in variants)
+        {
+            if (v.Genotype == null) continue;
+            if (ratio < v.AtrLow || ratio >= v.AtrHigh) continue;
+            double width = v.AtrHigh - v.AtrLow;
+            if (width < bestWidth) { bestWidth = width; best = v; }
+        }
+        var selected = best ?? variants[0];
+        return (selected.Genotype, LabelForVariant(selected));
+    }
+
+    static string LabelForVariant<T>(VariantSpec<T> v) where T : class
+    {
+        if (v.AtrLow >= 1.0) return "highvol";
+        if (v.AtrHigh <= 1.0) return "lowvol";
+        return "base";
+    }
+
     public static async Task RunFullTest(BybitRestClient client)
     {
         Console.WriteLine("=== Gravity-gen2 | FULL TEST (val 20% + 28 OOS · all strategies · condensed) ===\n");
@@ -15,16 +75,42 @@ static class FullTest
         var flG     = (FadeLongGenotype?)null;  // disabled — PF=0.06 OOS, net drag
         var dlG     = File.Exists(Config.DipLongGenoFile)     ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(Config.DipLongGenoFile))!.ToGenotype()       : (DipLongGenotype?)null;
         var slG     = File.Exists(Config.SwingLongGenoFile)   ? JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(Config.SwingLongGenoFile))!.ToGenotype()   : (SwingLongGenotype?)null;
+        var rsG     = File.Exists(Config.RipShortGenoFile)    ? JsonSerializer.Deserialize<RipShortGenotypeDto>(File.ReadAllText(Config.RipShortGenoFile))!.ToGenotype()      : (RipShortGenotype?)null;
+        var gsG     = File.Exists(Config.GridShortGenoFile)   ? JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(Config.GridShortGenoFile))!.ToGenotype()          : (GridGenotype?)null;
         var routerG = File.Exists(Config.RouterGenoFile)      ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype()   : (RegimeRouterGenotype?)null;
+
+        GravityGen2.Strategies.AccumulationGrid.AccumulationGridGenotype? agBullG = null;
+        GravityGen2.Strategies.AccumulationGrid.AccumulationGridGenotype? agBearG = null;
+        if (File.Exists("genotypes/accumulation_grid_genotype.json"))
+        {
+            var agJson = JsonSerializer.Deserialize<JsonElement>(File.ReadAllText("genotypes/accumulation_grid_genotype.json"));
+            agBullG = JsonSerializer.Deserialize<GravityGen2.Strategies.AccumulationGrid.AccumulationGridGenotype>(agJson.GetProperty("Bull").GetRawText());
+            agBearG = JsonSerializer.Deserialize<GravityGen2.Strategies.AccumulationGrid.AccumulationGridGenotype>(agJson.GetProperty("Bear").GetRawText());
+        }
 
         if (swingG == null) { Console.WriteLine("Missing FadeShort genotype — run 'train' first."); return; }
         if (gridG  == null) { Console.WriteLine("Missing grid genotype — run 'gridtrain' first."); return; }
+
+        var fsVariants = LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(
+            "fade_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var gridVariants = LoadVariants<GridGenotypeDto, GridGenotype>(
+            "grid_best", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var dlVariants = LoadVariants<DipLongGenotypeDto, DipLongGenotype>(
+            "dip_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var slVariants = LoadVariants<SwingLongGenotypeDto, SwingLongGenotype>(
+            "swing_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
+        var rsVariants = LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
+            "rip_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
 
         Console.WriteLine($"  FadeShort: {swingG}");
         Console.WriteLine($"  Grid:      {gridG}");
         if (flG     != null) Console.WriteLine($"  FadeLong:  {flG}");
         if (dlG     != null) Console.WriteLine($"  DipLong:   {dlG}");
         if (slG     != null) Console.WriteLine($"  SwingLong: {slG}");
+        if (rsG     != null) Console.WriteLine($"  RipShort:  {rsG}");
+        if (gsG     != null) Console.WriteLine($"  GridShort: {gsG}");
+        if (agBullG != null && agBearG != null)
+            Console.WriteLine($"  AccumGrid: Bull={agBullG}  Bear={agBearG}");
         if (routerG != null) Console.WriteLine($"  Router:    {routerG}");
         Console.WriteLine();
 
@@ -85,12 +171,64 @@ static class FullTest
             dgSession = new DynamicGuardSession(btcDG.h1, dgGeno);
         }
 
+        var valHighVolTrades   = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
+        var valLowVolTrades    = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
+        var valHighVolCoinRets = new Dictionary<string, List<double>>();
+        var valLowVolCoinRets  = new Dictionary<string, List<double>>();
+        int valHighVolVCC = 0;
+        int valLowVolVCC  = 0;
+        var oosHighVolTrades   = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
+        var oosLowVolTrades    = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
+        var oosHighVolCoinRets = new Dictionary<string, List<double>>();
+        var oosLowVolCoinRets  = new Dictionary<string, List<double>>();
+        int oosHighVolVCC = 0;
+        int oosLowVolVCC  = 0;
+
+        void RouteValVol(string label, string sym, DateTime time, double ret, double conf, string strategy, int vcc)
+        {
+            if (label == "highvol")
+            {
+                valHighVolTrades.Add((time, ret, conf, strategy));
+                if (!valHighVolCoinRets.ContainsKey(sym)) valHighVolCoinRets[sym] = new List<double>();
+                valHighVolCoinRets[sym].Add(ret);
+                valHighVolVCC = Math.Max(valHighVolVCC, vcc);
+            }
+            else if (label == "lowvol")
+            {
+                valLowVolTrades.Add((time, ret, conf, strategy));
+                if (!valLowVolCoinRets.ContainsKey(sym)) valLowVolCoinRets[sym] = new List<double>();
+                valLowVolCoinRets[sym].Add(ret);
+                valLowVolVCC = Math.Max(valLowVolVCC, vcc);
+            }
+        }
+
+        void RouteOosVol(string label, string sym, DateTime time, double ret, double conf, string strategy, int vcc)
+        {
+            if (label == "highvol")
+            {
+                oosHighVolTrades.Add((time, ret, conf, strategy));
+                if (!oosHighVolCoinRets.ContainsKey(sym)) oosHighVolCoinRets[sym] = new List<double>();
+                oosHighVolCoinRets[sym].Add(ret);
+                oosHighVolVCC = Math.Max(oosHighVolVCC, vcc);
+            }
+            else if (label == "lowvol")
+            {
+                oosLowVolTrades.Add((time, ret, conf, strategy));
+                if (!oosLowVolCoinRets.ContainsKey(sym)) oosLowVolCoinRets[sym] = new List<double>();
+                oosLowVolCoinRets[sym].Add(ret);
+                oosLowVolVCC = Math.Max(oosLowVolVCC, vcc);
+            }
+        }
+
         // ── Val trade collection (training coins, 80/20 time split) ───────────────
         var valSwingRets = new List<double>();
         var valGridRets  = new List<double>();
+        var valGsRets    = new List<double>();
         var valFlRets    = new List<double>();
         var valDlRets    = new List<double>();
         var valSlRets    = new List<double>();
+        var valRsRets    = new List<double>();
+        var valAgRets    = new List<double>();
         var valAll         = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
         var valNoRouter    = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
         var crashTrades    = new List<(DateTime Open, DateTime Close, double Return, double HalfKelly, string Strategy)>();
@@ -119,7 +257,9 @@ static class FullTest
             {
                 var screenH1  = h1Train.Length >= 4380 ? h1Train : h1;
                 var screenM15 = screenH1.Length == h1.Length ? m15 : m15Train;
-                var fsTr = FadeShortSimulator.GetFadeShortReturns(swingG, screenH1, screenM15).Select(t => t.Return).ToList();
+                var (coinFsG, fsVarLabel) = SelectVariantLabeled(fsVariants, m15);
+                coinFsG ??= swingG;
+                var fsTr = FadeShortSimulator.GetFadeShortReturns(coinFsG, screenH1, screenM15).Select(t => t.Return).ToList();
                 if (fsTr.Count >= 5 && fsTr.Average() > 0
                     && Simulator.ProfitFactor(fsTr) >= 1.3
                     && Simulator.SortinoRatio(fsTr, screenH1.Length * 12) >= 0.5)
@@ -127,14 +267,15 @@ static class FullTest
                     double conf = Simulator.ComputeConfidence(fsTr);
                     var (_, hk) = StrategyStats.KellyFraction(fsTr);
                     double fsHk = Math.Min(hk, 0.05);
-                    foreach (var (t, ret, _) in FadeShortSimulator.GetFadeShortReturns(swingG, h1Val, m15Val))
+                    foreach (var (t, ret, _) in FadeShortSimulator.GetFadeShortReturns(coinFsG, h1Val, m15Val))
                     {
                         if (fundingSession?.IsCrowdedShort(t) == true) continue;
                         valSwingRets.Add(ret);
                         valAll.Add((t, ret, conf, "swing"));
                         valNoRouter.Add((t, ret, conf, "swing"));
-                        valRawForEnrich.Add((t, ret, conf, "swing", sym, TimeSpan.FromHours(swingG.MaxHoldCandles)));
-                        crashTrades.Add((t - TimeSpan.FromHours(swingG.MaxHoldCandles), t, ret, fsHk, "FadeShort"));
+                        valRawForEnrich.Add((t, ret, conf, "swing", sym, TimeSpan.FromHours(coinFsG.MaxHoldCandles)));
+                        crashTrades.Add((t - TimeSpan.FromHours(coinFsG.MaxHoldCandles), t, ret, fsHk, "FadeShort"));
+                        RouteValVol(fsVarLabel, sym, t, ret, conf, "swing", valCandleCount);
                     }
                 }
             }
@@ -142,13 +283,15 @@ static class FullTest
             // Grid
             if (h1Train.Length >= 100)
             {
-                var gTr = GridSimulator.GetGridReturns(gridG, h1Train).Select(t => t.Return).ToList();
+                var (coinGridG, gridVarLabel) = SelectVariantLabeled(gridVariants, m15);
+                coinGridG ??= gridG;
+                var gTr = GridSimulator.GetGridReturns(coinGridG, h1Train).Select(t => t.Return).ToList();
                 if (gTr.Count >= 5 && gTr.Average() > 0
                     && Simulator.ProfitFactor(gTr) >= 1.2
                     && Simulator.SortinoRatio(gTr, h1Train.Length) >= 0.3)
                 {
                     double conf = Simulator.ComputeConfidence(gTr);
-                    var raw = GridSimulator.GetGridReturns(gridG, h1Val);
+                    var raw = GridSimulator.GetGridReturns(coinGridG, h1Val);
                     var gated = session != null
                         ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList()
                         : raw;
@@ -156,7 +299,31 @@ static class FullTest
                     foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "grid"));
                     foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "grid"));
                     foreach (var t in gated)
-                        valRawForEnrich.Add((t.Time, t.Return, conf, "grid", sym, TimeSpan.FromHours(gridG.MaxHoldCandles)));
+                    {
+                        valRawForEnrich.Add((t.Time, t.Return, conf, "grid", sym, TimeSpan.FromHours(coinGridG.MaxHoldCandles)));
+                        RouteValVol(gridVarLabel, sym, t.Time, t.Return, conf, "grid", valCandleCount);
+                    }
+                }
+            }
+
+            // GridShort
+            if (gsG != null && h1Train.Length >= 100)
+            {
+                var gsTr = GridShortSimulator.GetGridShortReturns(gsG, h1Train).Select(t => t.Return).ToList();
+                if (gsTr.Count >= 5 && gsTr.Average() > 0
+                    && Simulator.ProfitFactor(gsTr) >= 1.2
+                    && Simulator.SortinoRatio(gsTr, h1Train.Length) >= 0.3)
+                {
+                    double conf = Simulator.ComputeConfidence(gsTr);
+                    var raw   = GridShortSimulator.GetGridShortReturns(gsG, h1Val);
+                    var gated = session != null
+                        ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.GridShort, t.Time)).ToList()
+                        : raw;
+                    valGsRets.AddRange(gated.Select(t => t.Return));
+                    foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "gridshort"));
+                    foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "gridshort"));
+                    foreach (var t in gated)
+                        valRawForEnrich.Add((t.Time, t.Return, conf, "gridshort", sym, TimeSpan.FromHours(gsG.MaxHoldCandles)));
                 }
             }
 
@@ -179,10 +346,12 @@ static class FullTest
             // DipLong
             if (dlG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
+                var (coinDlG, dlVarLabel) = SelectVariantLabeled(dlVariants, m15);
+                coinDlG ??= dlG;
                 double conf = Simulator.ComputeConfidence(
-                    DipLongSimulator.GetDipLongReturns(dlG, h1Val, m15Val).Select(t => t.Return).ToList());
-                double dlHk = Math.Min(dlG.PositionSizePct, 0.05);
-                var raw   = DipLongSimulator.GetDipLongReturns(dlG, h1Val, m15Val);
+                    DipLongSimulator.GetDipLongReturns(coinDlG, h1Val, m15Val).Select(t => t.Return).ToList());
+                double dlHk = Math.Min(coinDlG.PositionSizePct, 0.05);
+                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1Val, m15Val);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
@@ -192,21 +361,24 @@ static class FullTest
                 foreach (var t in gated)
                 {
                     valAll.Add((t.Time, t.Return, conf, "diplong"));
-                    crashTrades.Add((t.Time - TimeSpan.FromHours(dlG.MaxHoldCandles), t.Time, t.Return, dlHk, "DipLong"));
+                    crashTrades.Add((t.Time - TimeSpan.FromHours(coinDlG.MaxHoldCandles), t.Time, t.Return, dlHk, "DipLong"));
+                    RouteValVol(dlVarLabel, sym, t.Time, t.Return, conf, "diplong", valCandleCount);
                 }
                 foreach (var t in raw) valNoRouter.Add((t.Time, t.Return, conf, "diplong"));
                 foreach (var t in gated)
-                    valRawForEnrich.Add((t.Time, t.Return, conf, "diplong", sym, TimeSpan.FromHours(dlG!.MaxHoldCandles)));
+                    valRawForEnrich.Add((t.Time, t.Return, conf, "diplong", sym, TimeSpan.FromHours(coinDlG.MaxHoldCandles)));
             }
 
             // SwingLong
             if (slG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
+                var (coinSlG, slVarLabel) = SelectVariantLabeled(slVariants, m15);
+                coinSlG ??= slG;
                 double conf = Simulator.ComputeConfidence(
-                    SwingLongSimulator.GetSwingLongReturns(slG, h1Val, m15Val).Select(t => t.Return).ToList());
-                var raw   = SwingLongSimulator.GetSwingLongReturns(slG, h1Val, m15Val);
+                    SwingLongSimulator.GetSwingLongReturns(coinSlG, h1Val, m15Val).Select(t => t.Return).ToList());
+                var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1Val, m15Val);
                 var gated = session != null
-                    ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()  // SwingLong shares bull-regime gate with DipLong
+                    ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
                 if (fundingSession != null)
                     gated = gated.Where(t => !fundingSession.IsCrowdedLong(t.Time)).ToList();
@@ -214,16 +386,60 @@ static class FullTest
                 foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "swing_long"));
                 foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "swing_long"));
                 foreach (var t in gated)
-                    valRawForEnrich.Add((t.Time, t.Return, conf, "swing_long", sym, TimeSpan.FromHours(slG!.MaxHoldCandles)));
+                {
+                    valRawForEnrich.Add((t.Time, t.Return, conf, "swing_long", sym, TimeSpan.FromHours(coinSlG.MaxHoldCandles)));
+                    RouteValVol(slVarLabel, sym, t.Time, t.Return, conf, "swing_long", valCandleCount);
+                }
+            }
+
+            // RipShort
+            if (rsG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
+            {
+                var (coinRsG, rsVarLabel) = SelectVariantLabeled(rsVariants, m15);
+                coinRsG ??= rsG;
+                double conf = Simulator.ComputeConfidence(
+                    RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val, fundingSession).Select(t => t.Return).ToList());
+                var raw   = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val, fundingSession);
+                var gated = session != null
+                    ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList()
+                    : raw;
+                valRsRets.AddRange(gated.Select(t => t.Return));
+                foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "ripshort"));
+                foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "ripshort"));
+                foreach (var t in gated)
+                {
+                    valRawForEnrich.Add((t.Time, t.Return, conf, "ripshort", sym, TimeSpan.FromHours(coinRsG.MaxHoldCandles)));
+                    RouteValVol(rsVarLabel, sym, t.Time, t.Return, conf, "ripshort", valCandleCount);
+                }
+            }
+
+            // AccumulationGrid
+            if (agBullG != null && agBearG != null && h1Val.Length >= 100)
+            {
+                var bullTrades = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator.GetAccumulationReturns(agBullG, h1Val, MarketRegime.Bull);
+                var bearTrades = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator.GetAccumulationReturns(agBearG, h1Val, MarketRegime.Bear);
+                var raw = bullTrades.Concat(bearTrades).OrderBy(t => t.Time).ToList();
+                double conf = Simulator.ComputeConfidence(raw.Select(t => t.Return).ToList());
+                var gated = session != null
+                    ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.AccumulationGrid, t.Time)).ToList()
+                    : raw;
+                valAgRets.AddRange(gated.Select(t => t.Return));
+                foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "accumgrid"));
+                foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "accumgrid"));
+                foreach (var t in gated)
+                    valRawForEnrich.Add((t.Time, t.Return, conf, "accumgrid", sym, TimeSpan.FromHours(agBullG!.MaxHoldBars)));
             }
         }
 
         // ── OOS trade collection (28 OOS coins, full history) ─────────────────────
         var oosSwingRets = new List<double>();
         var oosGridRets  = new List<double>();
+        var oosGsRets    = new List<double>();
         var oosFlRets    = new List<double>();
         var oosDlRets    = new List<double>();
         var oosSlRets    = new List<double>();
+        var oosRsRets    = new List<double>();
+        var oosAgRets    = new List<double>();
         var oosAll       = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
         var oosNoRouter  = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
         int oosCandleCount = 0;
@@ -245,29 +461,36 @@ static class FullTest
                 int oosM15Spl  = oosSplit * 4;
                 var h1Screen   = h1[..oosSplit];
                 var m15Screen  = m15[..Math.Min(oosM15Spl, m15.Length)];
-                var screenRets = FadeShortSimulator.GetFadeShortReturns(swingG, h1Screen, m15Screen)
+                var (coinFsGOos, fsOosLabel) = SelectVariantLabeled(fsVariants, m15);
+                coinFsGOos ??= swingG;
+                var screenRets = FadeShortSimulator.GetFadeShortReturns(coinFsGOos, h1Screen, m15Screen)
                     .Select(t => t.Return).ToList();
                 bool oosScreenPass = screenRets.Count >= 5 && screenRets.Average() > 0
                     && Simulator.ProfitFactor(screenRets) >= 1.1;
                 if (oosScreenPass)
                 {
-                    var trades = FadeShortSimulator.GetFadeShortReturns(swingG, h1, m15)
+                    var trades = FadeShortSimulator.GetFadeShortReturns(coinFsGOos, h1, m15)
                         .Where(t => fundingSession?.IsCrowdedShort(t.Time) != true).ToList();
                     var vRet = trades.Select(t => t.Return).ToList();
                     if (vRet.Count >= 5)
                     {
                         double conf = Simulator.ComputeConfidence(vRet);
                         oosSwingRets.AddRange(vRet);
-                        foreach (var (t, ret, _) in trades) oosAll.Add((t, ret, conf, "swing"));
                         foreach (var (t, ret, _) in trades)
-                            oosRawForEnrich.Add((t, ret, conf, "swing", sym, TimeSpan.FromHours(swingG.MaxHoldCandles)));
+                        {
+                            oosAll.Add((t, ret, conf, "swing"));
+                            oosRawForEnrich.Add((t, ret, conf, "swing", sym, TimeSpan.FromHours(coinFsGOos.MaxHoldCandles)));
+                            RouteOosVol(fsOosLabel, sym, t, ret, conf, "swing", oosCandleCount);
+                        }
                     }
                 }
             }
 
             // Grid
             {
-                var raw   = GridSimulator.GetGridReturns(gridG, h1);
+                var (coinGridGOos, gridOosLabel) = SelectVariantLabeled(gridVariants, m15);
+                coinGridGOos ??= gridG;
+                var raw   = GridSimulator.GetGridReturns(coinGridGOos, h1);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList()
                     : raw;
@@ -279,7 +502,29 @@ static class FullTest
                     foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "grid"));
                     foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "grid"));
                     foreach (var t in gated)
-                        oosRawForEnrich.Add((t.Time, t.Return, conf, "grid", sym, TimeSpan.FromHours(gridG.MaxHoldCandles)));
+                    {
+                        oosRawForEnrich.Add((t.Time, t.Return, conf, "grid", sym, TimeSpan.FromHours(coinGridGOos.MaxHoldCandles)));
+                        RouteOosVol(gridOosLabel, sym, t.Time, t.Return, conf, "grid", oosCandleCount);
+                    }
+                }
+            }
+
+            // GridShort
+            if (gsG != null)
+            {
+                var raw   = GridShortSimulator.GetGridShortReturns(gsG, h1);
+                var gated = session != null
+                    ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.GridShort, t.Time)).ToList()
+                    : raw;
+                var vRet  = gated.Select(t => t.Return).ToList();
+                if (vRet.Count >= 5)
+                {
+                    double conf = Simulator.ComputeConfidence(vRet);
+                    oosGsRets.AddRange(vRet);
+                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "gridshort"));
+                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "gridshort"));
+                    foreach (var t in gated)
+                        oosRawForEnrich.Add((t.Time, t.Return, conf, "gridshort", sym, TimeSpan.FromHours(gsG.MaxHoldCandles)));
                 }
             }
 
@@ -305,7 +550,9 @@ static class FullTest
             // DipLong
             if (dlG != null && m15.Length >= 1200)
             {
-                var raw   = DipLongSimulator.GetDipLongReturns(dlG, h1, m15);
+                var (coinDlGOos, dlOosLabel) = SelectVariantLabeled(dlVariants, m15);
+                coinDlGOos ??= dlG;
+                var raw   = DipLongSimulator.GetDipLongReturns(coinDlGOos, h1, m15);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
@@ -319,16 +566,21 @@ static class FullTest
                     foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "diplong"));
                     foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "diplong"));
                     foreach (var t in gated)
-                        oosRawForEnrich.Add((t.Time, t.Return, conf, "diplong", sym, TimeSpan.FromHours(dlG!.MaxHoldCandles)));
+                    {
+                        oosRawForEnrich.Add((t.Time, t.Return, conf, "diplong", sym, TimeSpan.FromHours(coinDlGOos.MaxHoldCandles)));
+                        RouteOosVol(dlOosLabel, sym, t.Time, t.Return, conf, "diplong", oosCandleCount);
+                    }
                 }
             }
 
             // SwingLong
             if (slG != null && m15.Length >= 1200)
             {
-                var raw   = SwingLongSimulator.GetSwingLongReturns(slG, h1, m15);
+                var (coinSlGOos, slOosLabel) = SelectVariantLabeled(slVariants, m15);
+                coinSlGOos ??= slG;
+                var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlGOos, h1, m15);
                 var gated = session != null
-                    ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()  // SwingLong shares bull-regime gate with DipLong
+                    ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
                 if (fundingSession != null)
                     gated = gated.Where(t => !fundingSession.IsCrowdedLong(t.Time)).ToList();
@@ -340,19 +592,69 @@ static class FullTest
                     foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "swing_long"));
                     foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "swing_long"));
                     foreach (var t in gated)
-                        oosRawForEnrich.Add((t.Time, t.Return, conf, "swing_long", sym, TimeSpan.FromHours(slG!.MaxHoldCandles)));
+                    {
+                        oosRawForEnrich.Add((t.Time, t.Return, conf, "swing_long", sym, TimeSpan.FromHours(coinSlGOos.MaxHoldCandles)));
+                        RouteOosVol(slOosLabel, sym, t.Time, t.Return, conf, "swing_long", oosCandleCount);
+                    }
+                }
+            }
+
+            // RipShort
+            if (rsG != null && m15.Length >= 1200)
+            {
+                var (coinRsGOos, rsOosLabel) = SelectVariantLabeled(rsVariants, m15);
+                coinRsGOos ??= rsG;
+                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGOos, h1, m15, fundingSession);
+                var gated = session != null
+                    ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList()
+                    : raw;
+                var vRet  = gated.Select(t => t.Return).ToList();
+                if (vRet.Count > 0)
+                {
+                    double conf = Simulator.ComputeConfidence(vRet);
+                    oosRsRets.AddRange(vRet);
+                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "ripshort"));
+                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "ripshort"));
+                    foreach (var t in gated)
+                    {
+                        oosRawForEnrich.Add((t.Time, t.Return, conf, "ripshort", sym, TimeSpan.FromHours(coinRsGOos.MaxHoldCandles)));
+                        RouteOosVol(rsOosLabel, sym, t.Time, t.Return, conf, "ripshort", oosCandleCount);
+                    }
+                }
+            }
+
+            // AccumulationGrid
+            if (agBullG != null && agBearG != null && h1.Length >= 100)
+            {
+                var bullTrades = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator.GetAccumulationReturns(agBullG, h1, MarketRegime.Bull);
+                var bearTrades = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator.GetAccumulationReturns(agBearG, h1, MarketRegime.Bear);
+                var raw = bullTrades.Concat(bearTrades).OrderBy(t => t.Time).ToList();
+                var gated = session != null
+                    ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.AccumulationGrid, t.Time)).ToList()
+                    : raw;
+                var vRet = gated.Select(t => t.Return).ToList();
+                if (vRet.Count > 0)
+                {
+                    double conf = Simulator.ComputeConfidence(vRet);
+                    oosAgRets.AddRange(vRet);
+                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "accumgrid"));
+                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "accumgrid"));
+                    foreach (var t in gated)
+                        oosRawForEnrich.Add((t.Time, t.Return, conf, "accumgrid", sym, TimeSpan.FromHours(agBullG!.MaxHoldBars)));
                 }
             }
         }
 
         // ── Apply concurrent cap ───────────────────────────────────────────────────
         static TimeSpan StratHold(string s, FadeShortGenotype sw, GridGenotype gr,
-            FadeLongGenotype? fl, DipLongGenotype? dl, SwingLongGenotype? sl) => s switch
+            FadeLongGenotype? fl, DipLongGenotype? dl, SwingLongGenotype? sl, RipShortGenotype? rs, GridGenotype? gs) => s switch
         {
             "swing"      => TimeSpan.FromHours(sw.MaxHoldCandles),
             "swing_long" => TimeSpan.FromHours(sl?.MaxHoldCandles ?? sw.MaxHoldCandles),
             "fadelong"   => TimeSpan.FromHours(fl?.MaxHoldCandles ?? sw.MaxHoldCandles),
             "diplong"    => TimeSpan.FromHours(dl?.MaxHoldCandles ?? sw.MaxHoldCandles),
+            "ripshort"   => TimeSpan.FromHours(rs?.MaxHoldCandles ?? sw.MaxHoldCandles),
+            "gridshort"  => TimeSpan.FromHours(gs?.MaxHoldCandles ?? gr.MaxHoldCandles),
             _            => TimeSpan.FromHours(gr.MaxHoldCandles),
         };
 
@@ -367,9 +669,11 @@ static class FullTest
                     "swing_long" => TimeSpan.FromHours(48),
                     "diplong"    => TimeSpan.FromHours(48),
                     "fadelong"   => TimeSpan.FromHours(72),
+                    "ripshort"   => TimeSpan.FromHours(72),
+                    "gridshort"  => TimeSpan.FromHours(72),
                     _            => TimeSpan.FromHours(72),
                 }, t.Return, t.Conf)).ToList();
-            return PortfolioReplay.FilterByConcurrentCap(capIn)
+            return PortfolioReplay.FilterByConcurrentCap(capIn, directionalCap: Config.MaxDirectionalConcurrent)
                 .Select(t => (t.EntryTime, t.Return, t.Conf, t.Strategy)).ToList();
         }
 
@@ -379,7 +683,7 @@ static class FullTest
         // Helper: trades → exposure sim input
         List<(DateTime, double, double, TimeSpan)> ToSim(
             List<(DateTime Time, double Return, double Conf, string Strategy)> t) =>
-            t.Select(x => (x.Time, x.Return, x.Conf, StratHold(x.Strategy, swingG, gridG, flG, dlG, slG))).ToList();
+            t.Select(x => (x.Time, x.Return, x.Conf, StratHold(x.Strategy, swingG, gridG, flG, dlG, slG, rsG, gsG))).ToList();
 
         // Guarded variant: ATR entry gate first (blocks high-ATR DipLong/SwingLong),
         // then confidence scaling. Strategy preserved for the portfolio-DD gate inside the simulator.
@@ -389,13 +693,13 @@ static class FullTest
             t.Where(x => !gs.IsEntryBlocked(x.Time, x.Strategy))
              .Select(x => (x.Time, x.Return,
                 DynamicGuardSession.IsGuarded(x.Strategy) ? x.Conf * gs.GetMult(x.Time, x.Strategy) : x.Conf,
-                StratHold(x.Strategy, swingG, gridG, flG, dlG, slG), x.Strategy)).ToList();
+                StratHold(x.Strategy, swingG, gridG, flG, dlG, slG, rsG, gsG), x.Strategy)).ToList();
 
         // 5-tuple version of ToSim (adds Strategy) — used for DD-gate-aware guarded simulation.
         List<(DateTime, double, double, TimeSpan, string)> ToSim5(
             List<(DateTime Time, double Return, double Conf, string Strategy)> t) =>
             t.Select(x => (x.Time, x.Return, x.Conf,
-                StratHold(x.Strategy, swingG, gridG, flG, dlG, slG), x.Strategy)).ToList();
+                StratHold(x.Strategy, swingG, gridG, flG, dlG, slG, rsG, gsG), x.Strategy)).ToList();
 
         // Strip Strategy from 5-tuple for callers that only need 4-tuple (PortMetrics, etc.)
         static List<(DateTime, double, double, TimeSpan)> Drop5(
@@ -414,10 +718,10 @@ static class FullTest
         };
         valNoRouter.Sort((a, b) => a.Time.CompareTo(b.Time));
         oosNoRouter.Sort((a, b) => a.Time.CompareTo(b.Time));
-        var nrFilteredTrades    = PortfolioReplay.FilterByConcurrentCap(valNoRouter.Select(t => new PortfolioReplay.Trade(t.Strategy, t.Time, HoldFor(t.Strategy), t.Return, t.Conf)).ToList()).ToList();
-        var nrFiltered          = nrFilteredTrades.Select(t => (t.EntryTime, t.Return, t.Conf, StratHold(t.Strategy, swingG, gridG, flG, dlG, slG))).ToList();
-        var oosNrFilteredTrades = PortfolioReplay.FilterByConcurrentCap(oosNoRouter.Select(t => new PortfolioReplay.Trade(t.Strategy, t.Time, HoldFor(t.Strategy), t.Return, t.Conf)).ToList()).ToList();
-        var oosNrFiltered       = oosNrFilteredTrades.Select(t => (t.EntryTime, t.Return, t.Conf, StratHold(t.Strategy, swingG, gridG, flG, dlG, slG))).ToList();
+        var nrFilteredTrades    = PortfolioReplay.FilterByConcurrentCap(valNoRouter.Select(t => new PortfolioReplay.Trade(t.Strategy, t.Time, HoldFor(t.Strategy), t.Return, t.Conf)).ToList(), directionalCap: Config.MaxDirectionalConcurrent).ToList();
+        var nrFiltered          = nrFilteredTrades.Select(t => (t.EntryTime, t.Return, t.Conf, StratHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG, gsG))).ToList();
+        var oosNrFilteredTrades = PortfolioReplay.FilterByConcurrentCap(oosNoRouter.Select(t => new PortfolioReplay.Trade(t.Strategy, t.Time, HoldFor(t.Strategy), t.Return, t.Conf)).ToList(), directionalCap: Config.MaxDirectionalConcurrent).ToList();
+        var oosNrFiltered       = oosNrFilteredTrades.Select(t => (t.EntryTime, t.Return, t.Conf, StratHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG, gsG))).ToList();
 
         // ══════════════════════════════════════════════════════════════════════════
         // SECTION 1: STRATEGY PERFORMANCE
@@ -438,6 +742,48 @@ static class FullTest
         Console.WriteLine($"  {"DipLong",-12}  {FmtRow(valDlRets)}  |  {FmtRow(oosDlRets)}");
         Console.WriteLine($"  {"SwingLong",-12}  {FmtRow(valSlRets)}  |  {FmtRow(oosSlRets)}");
         Console.WriteLine($"  {"FadeLong",-12}  {FmtRow(valFlRets)}  |  {FmtRow(oosFlRets)}");
+        Console.WriteLine($"  {"RipShort",-12}  {FmtRow(valRsRets)}  |  {FmtRow(oosRsRets)}");
+        Console.WriteLine($"  {"GridShort",-12}  {FmtRow(valGsRets)}  |  {FmtRow(oosGsRets)}");
+        Console.WriteLine($"  {"AccumGrid",-12}  {FmtRow(valAgRets)}  |  {FmtRow(oosAgRets)}");
+
+        var valHighVolRet  = valHighVolTrades.Select(t => t.Return).ToList();
+        var valLowVolRet   = valLowVolTrades.Select(t => t.Return).ToList();
+        var oosHighVolRet  = oosHighVolTrades.Select(t => t.Return).ToList();
+        var oosLowVolRet   = oosLowVolTrades.Select(t => t.Return).ToList();
+
+        if (valHighVolRet.Count > 0 || oosHighVolRet.Count > 0)
+        {
+            Console.WriteLine($"\n  ── High-Vol Variants (ATR≥1.5×) ──");
+            if (valHighVolRet.Count > 0)
+            {
+                int hvw = valHighVolRet.Count(x => x > 0);
+                Console.WriteLine($"  Val:  {valHighVolRet.Count} trades  WR={hvw}/{valHighVolRet.Count} ({(double)hvw/valHighVolRet.Count:P0})  PF={Simulator.ProfitFactor(valHighVolRet):F2}  Avg={valHighVolRet.Average():+0.00}%");
+                Console.WriteLine($"        Sharpe={Simulator.SharpeRatio(valHighVolRet, valHighVolVCC):F2}  Sortino={Simulator.SortinoRatio(valHighVolRet, valHighVolVCC):F2}  Calmar={Simulator.CalmarRatio(valHighVolRet):F2}");
+            }
+            if (oosHighVolRet.Count > 0)
+            {
+                int ohvw = oosHighVolRet.Count(x => x > 0);
+                Console.WriteLine($"  OOS:  {oosHighVolRet.Count} trades  WR={ohvw}/{oosHighVolRet.Count} ({(double)ohvw/oosHighVolRet.Count:P0})  PF={Simulator.ProfitFactor(oosHighVolRet):F2}  Avg={oosHighVolRet.Average():+0.00}%");
+                Console.WriteLine($"        Sharpe={Simulator.SharpeRatio(oosHighVolRet, oosHighVolVCC):F2}  Sortino={Simulator.SortinoRatio(oosHighVolRet, oosHighVolVCC):F2}  Calmar={Simulator.CalmarRatio(oosHighVolRet):F2}");
+            }
+        }
+
+        if (valLowVolRet.Count > 0 || oosLowVolRet.Count > 0)
+        {
+            Console.WriteLine($"\n  ── Low-Vol Variants (ATR≤0.8×) ──");
+            if (valLowVolRet.Count > 0)
+            {
+                int lvw = valLowVolRet.Count(x => x > 0);
+                Console.WriteLine($"  Val:  {valLowVolRet.Count} trades  WR={lvw}/{valLowVolRet.Count} ({(double)lvw/valLowVolRet.Count:P0})  PF={Simulator.ProfitFactor(valLowVolRet):F2}  Avg={valLowVolRet.Average():+0.00}%");
+                Console.WriteLine($"        Sharpe={Simulator.SharpeRatio(valLowVolRet, valLowVolVCC):F2}  Sortino={Simulator.SortinoRatio(valLowVolRet, valLowVolVCC):F2}  Calmar={Simulator.CalmarRatio(valLowVolRet):F2}");
+            }
+            if (oosLowVolRet.Count > 0)
+            {
+                int olvw = oosLowVolRet.Count(x => x > 0);
+                Console.WriteLine($"  OOS:  {oosLowVolRet.Count} trades  WR={olvw}/{oosLowVolRet.Count} ({(double)olvw/oosLowVolRet.Count:P0})  PF={Simulator.ProfitFactor(oosLowVolRet):F2}  Avg={oosLowVolRet.Average():+0.00}%");
+                Console.WriteLine($"        Sharpe={Simulator.SharpeRatio(oosLowVolRet, oosLowVolVCC):F2}  Sortino={Simulator.SortinoRatio(oosLowVolRet, oosLowVolVCC):F2}  Calmar={Simulator.CalmarRatio(oosLowVolRet):F2}");
+            }
+        }
 
         // ══════════════════════════════════════════════════════════════════════════
         // SECTION 2: PORTFOLIO SIMULATIONS
@@ -557,6 +903,9 @@ static class FullTest
         PrintEdge("DipLong",    valDlRets);
         PrintEdge("SwingLong",  valSlRets);
         PrintEdge("FadeLong",   valFlRets);
+        PrintEdge("RipShort",   valRsRets);
+        PrintEdge("GridShort",  valGsRets);
+        PrintEdge("AccumGrid",  valAgRets);
 
         Console.WriteLine($"\n  ── Strategy comparisons ──");
         if (valDlRets.Count >= 10 && valSwingRets.Count >= 10)
@@ -622,7 +971,7 @@ static class FullTest
         int cntSwing    = valAll.Count(t => t.Strategy == "swing");
         int oosCntSwing = oosAll.Count(t => t.Strategy == "swing");
         Console.WriteLine($"  {"FadeShort",-12}  {cntSwing,9}  {cntSwing,9}  {"—",5}  |  {oosCntSwing,9}  {oosCntSwing,9}  {"—",5}");
-        foreach (var (strat, label) in new[] { ("grid","Grid"), ("diplong","DipLong"), ("fadelong","FadeLong"), ("swing_long","SwingLong") })
+        foreach (var (strat, label) in new[] { ("grid","Grid"), ("diplong","DipLong"), ("fadelong","FadeLong"), ("swing_long","SwingLong"), ("ripshort","RipShort"), ("gridshort","GridShort") })
         {
             int vW = valAll.Count(t => t.Strategy == strat);
             int vN = nrFilteredTrades.Count(t => t.Strategy == strat);
@@ -1229,6 +1578,50 @@ static class FullTest
                 worstCase = worstCaseJson,
             },
             stratDists = stratDistsJson,
+            val_highvol_summary = valHighVolRet.Count == 0 ? null : new
+            {
+                trades = valHighVolRet.Count,
+                winRate = Math.Round((double)valHighVolRet.Count(x => x > 0) / valHighVolRet.Count * 100, 2),
+                sharpe = Math.Round(Simulator.SharpeRatio(valHighVolRet, valHighVolVCC), 4),
+                sortino = Math.Round(Simulator.SortinoRatio(valHighVolRet, valHighVolVCC), 4),
+                pf = Math.Round(Simulator.ProfitFactor(valHighVolRet), 4),
+                calmar = Math.Round(Simulator.CalmarRatio(valHighVolRet), 4),
+                avgRet = Math.Round(valHighVolRet.Average(), 4),
+                coins = valHighVolCoinRets.Count,
+            },
+            val_lowvol_summary = valLowVolRet.Count == 0 ? null : new
+            {
+                trades = valLowVolRet.Count,
+                winRate = Math.Round((double)valLowVolRet.Count(x => x > 0) / valLowVolRet.Count * 100, 2),
+                sharpe = Math.Round(Simulator.SharpeRatio(valLowVolRet, valLowVolVCC), 4),
+                sortino = Math.Round(Simulator.SortinoRatio(valLowVolRet, valLowVolVCC), 4),
+                pf = Math.Round(Simulator.ProfitFactor(valLowVolRet), 4),
+                calmar = Math.Round(Simulator.CalmarRatio(valLowVolRet), 4),
+                avgRet = Math.Round(valLowVolRet.Average(), 4),
+                coins = valLowVolCoinRets.Count,
+            },
+            oos_highvol_summary = oosHighVolRet.Count == 0 ? null : new
+            {
+                trades = oosHighVolRet.Count,
+                winRate = Math.Round((double)oosHighVolRet.Count(x => x > 0) / oosHighVolRet.Count * 100, 2),
+                sharpe = Math.Round(Simulator.SharpeRatio(oosHighVolRet, oosHighVolVCC), 4),
+                sortino = Math.Round(Simulator.SortinoRatio(oosHighVolRet, oosHighVolVCC), 4),
+                pf = Math.Round(Simulator.ProfitFactor(oosHighVolRet), 4),
+                calmar = Math.Round(Simulator.CalmarRatio(oosHighVolRet), 4),
+                avgRet = Math.Round(oosHighVolRet.Average(), 4),
+                coins = oosHighVolCoinRets.Count,
+            },
+            oos_lowvol_summary = oosLowVolRet.Count == 0 ? null : new
+            {
+                trades = oosLowVolRet.Count,
+                winRate = Math.Round((double)oosLowVolRet.Count(x => x > 0) / oosLowVolRet.Count * 100, 2),
+                sharpe = Math.Round(Simulator.SharpeRatio(oosLowVolRet, oosLowVolVCC), 4),
+                sortino = Math.Round(Simulator.SortinoRatio(oosLowVolRet, oosLowVolVCC), 4),
+                pf = Math.Round(Simulator.ProfitFactor(oosLowVolRet), 4),
+                calmar = Math.Round(Simulator.CalmarRatio(oosLowVolRet), 4),
+                avgRet = Math.Round(oosLowVolRet.Average(), 4),
+                coins = oosLowVolCoinRets.Count,
+            },
         };
         File.WriteAllText("fulltest_results.json",
             System.Text.Json.JsonSerializer.Serialize(fulltestOutput,

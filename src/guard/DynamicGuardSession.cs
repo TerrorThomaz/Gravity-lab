@@ -142,7 +142,7 @@ public class DynamicGuardSession
 
     // Strategies that the guard applies to (same set as DrawdownGuard).
     public static bool IsGuarded(string strategy) =>
-        strategy is "grid" or "diplong" or "swing_long";
+        strategy is "grid" or "gridshort" or "diplong" or "swing_long";
 
     // Aggregates 1H candles into 4H candles (groups of 4, aligned by array index).
     private static Candle[] Aggregate4H(Candle[] h1)

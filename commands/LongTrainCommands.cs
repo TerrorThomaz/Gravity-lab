@@ -43,12 +43,14 @@ static class LongTrainCommands
     {
         string variant = TrainCommands.ResolveVariant(args);
         var    cfg     = FitnessConfig.Load();
-        Console.WriteLine("=== Gravity-gen2 | COEVOLVETRAIN (FadeLong + DipLong + SwingLong + Router + DynamicGuard, 4 cycles) ===");
+        Console.WriteLine("=== Gravity-gen2 | COEVOLVETRAIN (FadeLong + DipLong + SwingLong + RipShort + Router + DynamicGuard, 4 cycles) ===");
         Console.WriteLine($"Training Coevolve / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
 
         string flPath = TrainCommands.VariantGenoPath("fade_long",     variant, Config.FadeLongGenoFile);
         string dlPath = TrainCommands.VariantGenoPath("dip_long",      variant, Config.DipLongGenoFile);
         string slPath = TrainCommands.VariantGenoPath("swing_long",    variant, Config.SwingLongGenoFile);
+        string rsPath = TrainCommands.VariantGenoPath("rip_short",     variant, Config.RipShortGenoFile);
+        string gsPath = TrainCommands.VariantGenoPath("grid_short",    variant, Config.GridShortGenoFile);
         string rrPath = TrainCommands.VariantGenoPath("regime_router", variant, Config.RouterGenoFile);
         string dgPath = TrainCommands.VariantGenoPath("dynamic_guard", variant, Config.DynamicGuardGenoFile);
 
@@ -77,6 +79,18 @@ static class LongTrainCommands
             : null;
         if (slSeed is { Fitness: > 0 }) Console.WriteLine($"  SwingLong seed  : {slSeed}");
         else { slSeed = null; Console.WriteLine("  SwingLong seed  : none (training from scratch)"); }
+
+        RipShortGenotype? rsSeed = File.Exists(rsPath)
+            ? JsonSerializer.Deserialize<RipShortGenotypeDto>(File.ReadAllText(rsPath))!.ToGenotype()
+            : null;
+        if (rsSeed is { Fitness: > 0 }) Console.WriteLine($"  RipShort seed   : {rsSeed}");
+        else { rsSeed = null; Console.WriteLine("  RipShort seed   : none (training from scratch)"); }
+
+        GridGenotype? gsSeed = File.Exists(gsPath)
+            ? JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(gsPath))!.ToGenotype()
+            : null;
+        if (gsSeed is { Fitness: > 0 }) Console.WriteLine($"  GridShort seed  : {gsSeed}");
+        else { gsSeed = null; Console.WriteLine("  GridShort seed  : none (training from scratch)"); }
 
         RegimeRouterGenotype? routerSeed = File.Exists(rrPath)
             ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(rrPath))!.ToGenotype()
@@ -161,6 +175,34 @@ static class LongTrainCommands
         Console.WriteLine($"  FadeLong: {flCoins.Count} coins " +
             $"({flCoins.Count(c => c.TrainH1.Length > 0)} training / {flCoins.Count(c => c.TrainH1.Length == 0)} held-out)");
 
+        // RipShort shares FadeLong's bear-block split (same regime, opposite direction).
+        var rsCoins = new List<RipShortGA.CoinData>();
+        for (int ci = 0; ci < coPassed.Count; ci++)
+        {
+            var (sym, h1, m15) = coPassed[ci];
+            if (ci % 5 == 0)
+            {
+                rsCoins.Add(new RipShortGA.CoinData(Array.Empty<Candle>(), h1, Array.Empty<Candle>(), m15));
+            }
+            else
+            {
+                var (valStart, valEnd) = CandleFetcher.FindLastRegimeBlock(h1, wantBull: false);
+                if (valStart >= 0)
+                {
+                    int m15Ve = Math.Min((valEnd + 1) * 4, m15.Length);
+                    rsCoins.Add(new RipShortGA.CoinData(
+                        h1[..valStart],        h1[valStart..(valEnd + 1)],
+                        m15[..(valStart * 4)], m15[(valStart * 4)..m15Ve]));
+                }
+                else
+                {
+                    rsCoins.Add(new RipShortGA.CoinData(Array.Empty<Candle>(), h1, Array.Empty<Candle>(), m15));
+                }
+            }
+        }
+        Console.WriteLine($"  RipShort: {rsCoins.Count} coins " +
+            $"({rsCoins.Count(c => c.TrainH1.Length > 0)} training / {rsCoins.Count(c => c.TrainH1.Length == 0)} held-out)");
+
         var dlCoins = new List<DipLongGA.CoinData>();
         foreach (var (sym, h1, m15) in coPassed)
         {
@@ -181,8 +223,8 @@ static class LongTrainCommands
 
         var allCoins = coPassed.Select(x => (x.H1, x.M15)).ToList<(Candle[] H1, Candle[] M15)>();
 
-        var data   = new CoevolveGA.AllData(flCoins, dlCoins, slCoins, allCoins, btcSeries, ethSeries, btcEntry.H1, gridSeed);
-        var result = new CoevolveGA().Run(data, fsSeed, flSeed, dlSeed, slSeed, routerSeed, dgSeed);
+        var data   = new CoevolveGA.AllData(flCoins, dlCoins, slCoins, rsCoins, allCoins, btcSeries, ethSeries, btcEntry.H1, gridSeed, gsSeed);
+        var result = new CoevolveGA().Run(data, fsSeed, flSeed, dlSeed, slSeed, rsSeed, routerSeed, dgSeed);
 
         File.WriteAllText(flPath,
             JsonSerializer.Serialize(FadeLongGenotypeDto.From(result.FadeLong, cfg),
@@ -198,6 +240,11 @@ static class LongTrainCommands
             JsonSerializer.Serialize(SwingLongGenotypeDto.From(result.SwingLong, cfg),
                 new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"  Saved SwingLong  → {slPath}  {result.SwingLong}");
+
+        File.WriteAllText(rsPath,
+            JsonSerializer.Serialize(RipShortGenotypeDto.From(result.RipShort, cfg),
+                new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"  Saved RipShort   → {rsPath}  {result.RipShort}");
 
         File.WriteAllText(rrPath,
             JsonSerializer.Serialize(RegimeRouterGenotypeDto.From(result.Router),
@@ -252,10 +299,11 @@ static class LongTrainCommands
         // Build BTC bear windows to restrict training data to regime-relevant periods
         var btcFetched = flFetched.FirstOrDefault(f => f.sym == "BTCUSDT");
         var bearWindows = new List<(DateTime Start, DateTime End)>();
+        RegimeBar[]? flBtcSeries = null;
         if (btcFetched.h1 is { Length: > 220 })
         {
-            var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcFetched.h1);
-            bearWindows = GetBearWindows(btcSeries, bearMinBars, bearMinConf);
+            flBtcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcFetched.h1);
+            bearWindows = GetBearWindows(flBtcSeries, bearMinBars, bearMinConf);
             Console.WriteLine($"  BTC bear windows ({bearMinBars}+ bar runs, conf≥{bearMinConf:F2}): {bearWindows.Count}");
             foreach (var (s, e) in bearWindows)
                 Console.WriteLine($"    {s:yyyy-MM-dd} → {e:yyyy-MM-dd}  ({(e - s).TotalDays:F0}d)");
@@ -268,8 +316,8 @@ static class LongTrainCommands
             var btcH1  = FadeShortSimulator.AggregateCandles(btcM15.ToArray(), 4);
             if (btcH1.Length > 220)
             {
-                var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcH1);
-                bearWindows = GetBearWindows(btcSeries, bearMinBars, bearMinConf);
+                flBtcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcH1);
+                bearWindows = GetBearWindows(flBtcSeries, bearMinBars, bearMinConf);
                 Console.WriteLine($"  BTC bear windows ({bearMinBars}+ bar runs, conf≥{bearMinConf:F2}): {bearWindows.Count}");
             }
         }
@@ -338,7 +386,7 @@ static class LongTrainCommands
             else Console.WriteLine("  Skipping seed (fitness ≤ 0 — training from scratch)");
         }
 
-        var flBest = new FadeLongGA(80, 150, verbose: true, cfg: cfg).Run(flCoins, flSeed);
+        var flBest = new FadeLongGA(80, 150, verbose: true, cfg: cfg, btcSeries: flBtcSeries).Run(flCoins, flSeed);
 
         Console.WriteLine("\n─── Bayesian refinement for FadeLong (60 TPE iterations) ───");
         var flRng = new Random(42);
@@ -369,6 +417,24 @@ static class LongTrainCommands
         File.WriteAllText(genoPath, JsonSerializer.Serialize(FadeLongGenotypeDto.From(flBest, cfg),
             new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"  Saved → {genoPath}");
+
+        Console.WriteLine("\n─── Validation suite ───");
+        try
+        {
+            var mcResult = MonteCarloTest.Run(
+                flCoins.Where(cd => cd.TrainH1.Length > 0)
+                    .SelectMany(cd => FadeLongSimulator.GetFadeLongReturns(flBest, cd.TrainH1.Span, cd.TrainM15.Span).Select(t => t.Return)).ToList(),
+                permutations: 1000);
+            MonteCarloTest.PrintReport(mcResult, "FadeLong");
+        }
+        catch (Exception ex) { Console.WriteLine($"  MonteCarloTest skipped: {ex.Message}"); }
+
+        try
+        {
+            var ewReport = ExpandingWindowValidation.RunFadeLong(flCoins, cfg);
+            ExpandingWindowValidation.PrintReport(ewReport);
+        }
+        catch (Exception ex) { Console.WriteLine($"  ExpandingWindowValidation skipped: {ex.Message}"); }
 
         Console.WriteLine("\n─── Overfit check ───");
         var flTRaw = flCoins.Where(cd => cd.TrainH1.Length > 0)
@@ -433,8 +499,8 @@ static class LongTrainCommands
         RegimeRouterGenotype? rsRouterG = File.Exists(Config.RouterGenoFile)
             ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(Config.RouterGenoFile))!.ToGenotype()
             : null;
-        int    bearMinBars = rsRouterG != null ? (int)rsRouterG.BearMinBars : BearWindowMinBars;
-        double bearMinConf = rsRouterG != null ? rsRouterG.BearMinConf      : 0.0;
+        int    bearMinBars = rsRouterG != null ? (int)rsRouterG.RipShortBearMinBars : BearWindowMinBars;
+        double bearMinConf = rsRouterG != null ? rsRouterG.RipShortBearMinConf      : 0.0;
         Console.WriteLine(rsRouterG != null
             ? $"  Router bear thresholds: ≥{bearMinBars} bars / conf≥{bearMinConf:F2}"
             : $"  No router genotype — using default ≥{bearMinBars} bars");
@@ -442,10 +508,11 @@ static class LongTrainCommands
         // Build BTC bear windows to restrict training data to regime-relevant periods
         var btcFetched = rsFetched.FirstOrDefault(f => f.sym == "BTCUSDT");
         var bearWindows = new List<(DateTime Start, DateTime End)>();
+        RegimeBar[]? rsBtcSeries = null;
         if (btcFetched.h1 is { Length: > 220 })
         {
-            var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcFetched.h1);
-            bearWindows = GetBearWindows(btcSeries, bearMinBars, bearMinConf);
+            rsBtcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcFetched.h1);
+            bearWindows = GetBearWindows(rsBtcSeries, bearMinBars, bearMinConf);
             Console.WriteLine($"  BTC bear windows ({bearMinBars}+ bar runs, conf≥{bearMinConf:F2}): {bearWindows.Count}");
             foreach (var (s, e) in bearWindows)
                 Console.WriteLine($"    {s:yyyy-MM-dd} → {e:yyyy-MM-dd}  ({(e - s).TotalDays:F0}d)");
@@ -458,8 +525,8 @@ static class LongTrainCommands
             var btcH1  = FadeShortSimulator.AggregateCandles(btcM15.ToArray(), 4);
             if (btcH1.Length > 220)
             {
-                var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcH1);
-                bearWindows = GetBearWindows(btcSeries, bearMinBars, bearMinConf);
+                rsBtcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcH1);
+                bearWindows = GetBearWindows(rsBtcSeries, bearMinBars, bearMinConf);
                 Console.WriteLine($"  BTC bear windows ({bearMinBars}+ bar runs, conf≥{bearMinConf:F2}): {bearWindows.Count}");
             }
         }
@@ -528,7 +595,7 @@ static class LongTrainCommands
             else Console.WriteLine("  Skipping seed (fitness ≤ 0 — training from scratch)");
         }
 
-        var rsBest = new RipShortGA(80, 150, verbose: true, cfg: cfg).Run(rsCoins, rsSeed);
+        var rsBest = new RipShortGA(80, 150, verbose: true, cfg: cfg, btcSeries: rsBtcSeries).Run(rsCoins, rsSeed);
 
         Console.WriteLine("\n─── Bayesian refinement for RipShort (60 TPE iterations) ───");
         var rsRng = new Random(42);
@@ -560,6 +627,24 @@ static class LongTrainCommands
             new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"  Saved → {genoPath}");
 
+        Console.WriteLine("\n─── Validation suite ───");
+        try
+        {
+            var mcResult = MonteCarloTest.Run(
+                rsCoins.Where(cd => cd.TrainH1.Length > 0)
+                    .SelectMany(cd => RipShortSimulator.GetRipShortReturns(rsBest, cd.TrainH1.Span, cd.TrainM15.Span).Select(t => t.Return)).ToList(),
+                permutations: 1000);
+            MonteCarloTest.PrintReport(mcResult, "RipShort");
+        }
+        catch (Exception ex) { Console.WriteLine($"  MonteCarloTest skipped: {ex.Message}"); }
+
+        try
+        {
+            var ewReport = ExpandingWindowValidation.RunRipShort(rsCoins, cfg);
+            ExpandingWindowValidation.PrintReport(ewReport);
+        }
+        catch (Exception ex) { Console.WriteLine($"  ExpandingWindowValidation skipped: {ex.Message}"); }
+
         Console.WriteLine("\n─── Overfit check ───");
         // NOTE: GetRipShortReturns yields (Time, Return, Kind) — no per-trade RegimeBarsActive,
         // so this check is expectancy-based (unlike FadeLong's regime-valid segment counts).
@@ -587,6 +672,39 @@ static class LongTrainCommands
         Console.WriteLine(rshExp > 0
             ? "  Held-out OOS: positive expectancy ✓"
             : "  Held-out OOS: negative expectancy — strategy not generalising cross-asset");
+
+        if (rsBtcSeries != null && rsCoins.Any(cd => cd.TrainH1.Length > 0))
+        {
+            DateTime rsFitCutoff = rsCoins.Where(cd => cd.TrainH1.Length > 0).Max(cd => cd.ValH1.Span[^1].Time);
+            Console.WriteLine($"\n─── Held-out, time-embargoed + bear-regime-only (dates ≥ {rsFitCutoff:yyyy-MM-dd}) ───");
+            Console.WriteLine("  Restricted to dates after every training coin's fit window ends, AND to BTC bear-regime");
+            Console.WriteLine("  bars only — RipShort only ever fires live during a router-confirmed bear regime, so");
+            Console.WriteLine("  off-regime false positives here would otherwise dilute the number in either direction.");
+
+            var embRet = new List<double>();
+            int embCC  = 0;
+            foreach (var cd in rsCoins.Where(cd => cd.TrainH1.Length == 0))
+            {
+                var h1Emb  = cd.ValH1.ToArray().Where(c => c.Time >= rsFitCutoff).ToArray();
+                var m15Emb = cd.ValM15.ToArray().Where(c => c.Time >= rsFitCutoff).ToArray();
+                if (h1Emb.Length == 0 || m15Emb.Length == 0) continue;
+
+                var trades = RipShortSimulator.GetRipShortReturns(rsBest, h1Emb, m15Emb);
+                var tradeTags = RegimeBarLookup.TagRegimes(rsBtcSeries, trades.Select(t => t.Time).ToList());
+                for (int i = 0; i < trades.Count; i++)
+                    if (tradeTags[i] == MarketRegime.Bear) embRet.Add(trades[i].Return);
+
+                var candleTags = RegimeBarLookup.TagRegimes(rsBtcSeries, h1Emb.Select(c => c.Time).ToList());
+                embCC += candleTags.Count(t => t == MarketRegime.Bear) * 12;
+            }
+
+            const int minTradesForRegime = 20;
+            if (embRet.Count < minTradesForRegime)
+                Console.WriteLine($"  insufficient data ({embRet.Count} trades, need ≥{minTradesForRegime}) — not reported");
+            else
+                CandleFetcher.PrintSplitStats("Held-out (embargoed, bear)", embRet, embCC);
+        }
+
         Console.WriteLine($"\nNext: dotnet run -- backtest");
     }
 
@@ -620,10 +738,18 @@ static class LongTrainCommands
         DipLongGenotype? dlGenoRt = File.Exists(Config.DipLongGenoFile)
             ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(Config.DipLongGenoFile))!.ToGenotype() : null;
 
+        RipShortGenotype? rsGenoRt = File.Exists(Config.RipShortGenoFile)
+            ? JsonSerializer.Deserialize<RipShortGenotypeDto>(File.ReadAllText(Config.RipShortGenoFile))!.ToGenotype() : null;
+
+        GridGenotype? gsGenoRt = File.Exists(Config.GridShortGenoFile)
+            ? JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(Config.GridShortGenoFile))!.ToGenotype() : null;
+
         Console.WriteLine($"  FadeShort : {fsGeno}");
         if (gridGenoRt != null) Console.WriteLine($"  Grid      : {gridGenoRt}");
         if (flGenoRt   != null) Console.WriteLine($"  FadeLong  : {flGenoRt}  {(flGenoRt.Fitness > 0 ? "✓ included" : "✗ excluded (F≤0)")}");
         if (dlGenoRt   != null) Console.WriteLine($"  DipLong   : {dlGenoRt}  {(dlGenoRt.Fitness > 0 ? "✓ included" : "✗ excluded (F≤0)")}");
+        if (rsGenoRt   != null) Console.WriteLine($"  RipShort  : {rsGenoRt}  {(rsGenoRt.Fitness > 0 ? "✓ included" : "✗ excluded (F≤0)")}");
+        if (gsGenoRt   != null) Console.WriteLine($"  GridShort : {gsGenoRt}  {(gsGenoRt.Fitness > 0 ? "✓ included" : "✗ excluded (F≤0)")}");
         Console.WriteLine();
 
         Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins (15m candles, ~3yr)...");
@@ -695,6 +821,17 @@ static class LongTrainCommands
                 catch { }
             }
 
+            if (gsGenoRt?.Fitness > 0)
+            {
+                try
+                {
+                    var gsTrs = GridShortSimulator.GetGridShortReturns(gsGenoRt, h1);
+                    foreach (var t in gsTrs)
+                        allTrades.Add(new(RegimeRouterGA.StrategyKind.GridShort, t.Time, t.Return, 0.05));
+                }
+                catch { }
+            }
+
             if (flGenoRt?.Fitness > 0)
             {
                 try
@@ -715,6 +852,18 @@ static class LongTrainCommands
                         .Where(t => t.RegimeBarsActive >= dlGenoRt.RegimeSustainedBars);
                     foreach (var t in dlTrs)
                         allTrades.Add(new(RegimeRouterGA.StrategyKind.DipLong, t.Time, t.Return, dlGenoRt.PositionSizePct));
+                }
+                catch { }
+            }
+
+            if (rsGenoRt?.Fitness > 0)
+            {
+                try
+                {
+                    var rsTrs = RipShortSimulator.GetRipShortReturnsWithRegime(rsGenoRt, h1, m15)
+                        .Where(t => t.RegimeBarsActive >= rsGenoRt.RegimeSustainedBars);
+                    foreach (var t in rsTrs)
+                        allTrades.Add(new(RegimeRouterGA.StrategyKind.RipShort, t.Time, t.Return, rsGenoRt.PositionSizePct));
                 }
                 catch { }
             }
@@ -864,7 +1013,10 @@ static class LongTrainCommands
         else
             Console.WriteLine("  Training from scratch (18-month window — old 3yr genotype intentionally not seeded)");
 
-        var dlBest = new DipLongGA(80, 150, verbose: true, cfg: cfg).Run(dlCoins, dlSeed);
+        var dlBtcSeries = btcDlEntry.H1Full is { Length: > 220 }
+            ? RegimeClassifier.ClassifySeriesWithDuration(btcDlEntry.H1Full)
+            : null;
+        var dlBest = new DipLongGA(80, 150, verbose: true, cfg: cfg, btcSeries: dlBtcSeries).Run(dlCoins, dlSeed);
 
         Console.WriteLine("\n─── Bayesian refinement for DipLong (60 TPE iterations) ───");
         var dlRng = new Random(42);
@@ -895,6 +1047,24 @@ static class LongTrainCommands
         File.WriteAllText(genoPath, JsonSerializer.Serialize(DipLongGenotypeDto.From(dlBest, cfg),
             new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"  Saved → {genoPath}");
+
+        Console.WriteLine("\n─── Validation suite ───");
+        try
+        {
+            var mcResult = MonteCarloTest.Run(
+                dlCoins.Where(cd => cd.TrainH1.Length > 0)
+                    .SelectMany(cd => DipLongSimulator.GetDipLongReturns(dlBest, cd.TrainH1.Span, cd.TrainM15.Span).Select(t => t.Return)).ToList(),
+                permutations: 1000);
+            MonteCarloTest.PrintReport(mcResult, "DipLong");
+        }
+        catch (Exception ex) { Console.WriteLine($"  MonteCarloTest skipped: {ex.Message}"); }
+
+        try
+        {
+            var ewReport = ExpandingWindowValidation.RunDipLong(dlCoins, cfg);
+            ExpandingWindowValidation.PrintReport(ewReport);
+        }
+        catch (Exception ex) { Console.WriteLine($"  ExpandingWindowValidation skipped: {ex.Message}"); }
 
         Console.WriteLine("\n─── Overfit check ───");
         var dlTRaw = dlCoins.Where(cd => cd.TrainH1.Length > 0)
@@ -979,7 +1149,11 @@ static class LongTrainCommands
             if (candidate.Fitness > 0) { seed = candidate; Console.WriteLine($"  Seeding: {seed}"); }
         }
 
-        var best = new SwingLongGA(80, 150, verbose: true, cfg: cfg).Run(coins, seed);
+        var btcSwingEntry = fetched.FirstOrDefault(f => f.sym == "BTCUSDT");
+        var slBtcSeries = btcSwingEntry.h1 is { Length: > 220 }
+            ? RegimeClassifier.ClassifySeriesWithDuration(btcSwingEntry.h1)
+            : null;
+        var best = new SwingLongGA(80, 150, verbose: true, cfg: cfg, btcSeries: slBtcSeries).Run(coins, seed);
 
         Console.WriteLine("\n─── Bayesian refinement (60 TPE iterations) ───");
         var slRng = new Random(42);
@@ -1012,6 +1186,24 @@ static class LongTrainCommands
                 new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"  Saved → {genoPath}");
 
+        Console.WriteLine("\n─── Validation suite ───");
+        try
+        {
+            var mcResult = MonteCarloTest.Run(
+                coins.Where(cd => cd.TrainH1.Length > 0)
+                    .SelectMany(cd => SwingLongSimulator.GetSwingLongReturns(best, cd.TrainH1.Span, cd.TrainM15.Span).Select(t => t.Return)).ToList(),
+                permutations: 1000);
+            MonteCarloTest.PrintReport(mcResult, "SwingLong");
+        }
+        catch (Exception ex) { Console.WriteLine($"  MonteCarloTest skipped: {ex.Message}"); }
+
+        try
+        {
+            var ewReport = ExpandingWindowValidation.RunSwingLong(coins, cfg);
+            ExpandingWindowValidation.PrintReport(ewReport);
+        }
+        catch (Exception ex) { Console.WriteLine($"  ExpandingWindowValidation skipped: {ex.Message}"); }
+
         // Quick overfit check
         var tRet = coins.Where(cd => cd.TrainH1.Length > 0)
                         .SelectMany(cd => SwingLongSimulator.GetSwingLongReturns(best, cd.TrainH1.Span, cd.TrainM15.Span))
@@ -1021,10 +1213,117 @@ static class LongTrainCommands
                         .Select(t => t.Return).ToList();
         Console.WriteLine($"\n  Train: {tRet.Count} trades  avg={( tRet.Count>0 ? tRet.Average():0 ):+0.000;-0.000}%");
         Console.WriteLine($"  Val:   {vRet.Count} trades  avg={( vRet.Count>0 ? vRet.Average():0 ):+0.000;-0.000}%");
+
+        var btcSwing = fetched.FirstOrDefault(f => f.sym == "BTCUSDT");
+        if (btcSwing.h1 != null && btcSwing.h1.Length > 220)
+        {
+            int btcValStart = (int)(btcSwing.h1.Length * 0.80);
+            var btcTrain = btcSwing.h1[..btcValStart];
+            var btcVal = btcSwing.h1[btcValStart..];
+            PrintRegimeContext(btcTrain, "Train window", "Long");
+            PrintRegimeContext(btcVal, "Val window", "Long");
+        }
+
         double vExp = vRet.Count > 0 ? vRet.Average() : 0;
         double tExp = tRet.Count > 0 ? tRet.Average() : 0;
         Console.WriteLine(vExp < tExp * 0.4 || vExp <= 0
             ? "  !! Possible overfit — val expectancy < 40% of train"
             : "  OK — val expectancy within acceptable range");
+    }
+
+    public static async Task RunAccumulationGridTrain(BybitRestClient client, string[]? args = null)
+    {
+        const int TrainWindowH1 = 12_960;
+        string variant = TrainCommands.ResolveVariant(args);
+        var cfg = FitnessConfig.Load();
+        string genoPath = TrainCommands.VariantGenoPath("accumulation_grid", variant, "genotypes/accumulation_grid_genotype.json");
+        Console.WriteLine($"=== Gravity-gen2 | ACCUMGRIDTRAIN (EMA-based dynamic grid, replaces FadeShort, {Config.BacktestCoins.Length} coins) ===");
+        Console.WriteLine($"Training AccumulationGrid / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW}\n");
+
+        Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins (1h, ~3yr)...");
+        var sem = new SemaphoreSlim(4);
+        var fetchTasks = Config.BacktestCoins.Select(async sym =>
+        {
+            await sem.WaitAsync();
+            try
+            {
+                var m15Full = await CandleFetcher.FetchFifteenMinCandlesCached(client, sym, batches: 113);
+                var h1Full = FadeShortSimulator.AggregateCandles(m15Full.ToArray(), 4);
+                int h1Start = Math.Max(0, h1Full.Length - TrainWindowH1);
+                var h1 = h1Full[h1Start..];
+                Console.WriteLine($"  {sym}: {h1Full.Length} h1 total, {h1.Length} in 18-month window");
+                return (sym, h1Full, h1);
+            }
+            finally { sem.Release(); }
+        });
+        var fetched = await Task.WhenAll(fetchTasks);
+
+        var coins = new List<GravityGen2.Strategies.AccumulationGrid.AccumulationGridGA.CoinData>();
+        foreach (var (sym, h1Full, h1) in fetched)
+        {
+            if (h1.Length < 150) { Console.WriteLine($"  {sym}: skip (insufficient data)"); continue; }
+            var volUsd = h1Full.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
+            double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
+            if (medVol < Config.MinMedianVolUsdM) { Console.WriteLine($"  {sym}: skip (vol=${medVol:F2}M/h)"); continue; }
+
+            int split = (int)(h1Full.Length * 0.80);
+            coins.Add(new GravityGen2.Strategies.AccumulationGrid.AccumulationGridGA.CoinData(
+                h1Full[..split], h1Full[split..]));
+        }
+
+        Console.WriteLine($"\n  Coins passed to GA: {coins.Count} (80/20 split)\n");
+        if (coins.Count == 0) { Console.WriteLine("No data."); return; }
+
+        Console.WriteLine("Training Bull regime AccumulationGrid...");
+        var bullGa = new GravityGen2.Strategies.AccumulationGrid.AccumulationGridGA(
+            MarketRegime.Bull, populationSize: 60, generations: 100, eliteCount: 15, verbose: true, cfg: cfg);
+        var (bullBest, bullFitness) = bullGa.Train(coins);
+        Console.WriteLine($"\nBull best: {bullBest}  fitness={bullFitness:F3}");
+
+        Console.WriteLine("\nTraining Bear regime AccumulationGrid...");
+        var bearGa = new GravityGen2.Strategies.AccumulationGrid.AccumulationGridGA(
+            MarketRegime.Bear, populationSize: 60, generations: 100, eliteCount: 15, verbose: true, cfg: cfg);
+        var (bearBest, bearFitness) = bearGa.Train(coins);
+        Console.WriteLine($"\nBear best: {bearBest}  fitness={bearFitness:F3}");
+
+        var result = new
+        {
+            Bull = bullBest,
+            BullFitness = bullFitness,
+            Bear = bearBest,
+            BearFitness = bearFitness
+        };
+
+        File.WriteAllText(genoPath, JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"\nSaved → {genoPath}");
+    }
+
+    private static void PrintRegimeContext(Candle[] btcH1, string windowLabel, string strategyRegime)
+    {
+        if (btcH1.Length < 220)
+        {
+            Console.WriteLine($"  {windowLabel}: insufficient BTC data for regime classification");
+            return;
+        }
+        var series = RegimeClassifier.ClassifySeriesWithDuration(btcH1);
+        var regimeCounts = series.GroupBy(s => s.Regime)
+            .ToDictionary(g => g.Key, g => g.Count());
+        int total = series.Length;
+        
+        Console.WriteLine($"  {windowLabel} regime distribution (BTC H1):");
+        foreach (var regime in new[] { MarketRegime.Bull, MarketRegime.Bear, MarketRegime.Ranging, MarketRegime.HighVol })
+        {
+            int count = regimeCounts.GetValueOrDefault(regime, 0);
+            double pct = 100.0 * count / total;
+            Console.WriteLine($"    {regime,-8}: {count,5} bars ({pct:F1}%)");
+        }
+        
+        bool regimeMismatch = (strategyRegime == "Bear" && regimeCounts.GetValueOrDefault(MarketRegime.Bull, 0) > total * 0.5) ||
+                              (strategyRegime == "Bull" && regimeCounts.GetValueOrDefault(MarketRegime.Bear, 0) > total * 0.5) ||
+                              (strategyRegime == "Long" && regimeCounts.GetValueOrDefault(MarketRegime.Bear, 0) > total * 0.6) ||
+                              (strategyRegime == "Short" && regimeCounts.GetValueOrDefault(MarketRegime.Bull, 0) > total * 0.6);
+        
+        if (regimeMismatch)
+            Console.WriteLine($"  ⚠ {windowLabel} regime mismatches {strategyRegime} strategy — low expectancy may be regime-driven, not overfit");
     }
 }

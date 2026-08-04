@@ -96,7 +96,8 @@ public static class Simulator
         double startBalance        = 100.0,
         double drawdownBrakeAt     = 0.15,
         double kellyMultiplier     = 1.0,
-        double maxPositionFrac     = 0.15)  // hard cap per position (e.g. 0.05 = 5% max each)
+        double maxPositionFrac     = 0.15,  // hard cap per position (e.g. 0.05 = 5% max each)
+        double slippageBps         = 0.0)   // per-trade slippage in basis points (e.g. 5 = 0.05%)
     {
         if (trades.Count == 0) return new PortfolioResult(startBalance, startBalance, 0, startBalance, 0, 0, 0, 0, -1);
 
@@ -104,6 +105,7 @@ public static class Simulator
 
         double balance      = startBalance, peak = startBalance, maxDd = 0, totalPosSizeEur = 0;
         int tradesToTenPct  = -1;
+        double slipFrac     = slippageBps / 10000.0;
 
         var openPos = new List<(DateTime Close, double EurAllocated)>();
 
@@ -127,7 +129,7 @@ public static class Simulator
             openPos.Add((entryTime + hold, posEur));
 
             totalPosSizeEur += posEur;
-            balance += ret / 100.0 * posEur;
+            balance += ret / 100.0 * posEur - slipFrac * posEur;
 
             if (tradesToTenPct < 0 && balance >= startBalance * 1.10)
                 tradesToTenPct = i + 1;
@@ -262,7 +264,8 @@ public static class Simulator
         double confLossCapMax           = 1.0,
         double profitProtectThreshold   = 1.0,   // portfolio gain fraction that arms protection; 1.0 = disabled
         double profitProtectDrawback    = 0.10,  // drawback from peak that triggers protection
-        double profitProtectFactor      = 1.0)   // size multiplier in protection mode; 1.0 = no reduction
+        double profitProtectFactor      = 1.0,   // size multiplier in protection mode; 1.0 = no reduction
+        double slippageBps              = 0.0)   // per-trade slippage in basis points (e.g. 5 = 0.05%)
     {
         if (trades.Count == 0) return new PortfolioResult(startBalance, startBalance, 0, startBalance, 0, 0, 0, 0, -1);
 
@@ -270,6 +273,7 @@ public static class Simulator
         double balance = startBalance, peak = startBalance, maxDd = 0, totalPosSizeEur = 0;
         int tradesToTenPct = -1;
         var openPos = new List<(DateTime Close, double EurAllocated)>();
+        double slipFrac = slippageBps / 10000.0;
 
         for (int i = 0; i < sorted.Count; i++)
         {
@@ -310,7 +314,7 @@ public static class Simulator
 
             openPos.Add((entryTime + hold, posEur));
             totalPosSizeEur += posEur;
-            balance += effectiveRet / 100.0 * posEur;
+            balance += effectiveRet / 100.0 * posEur - slipFrac * posEur;
 
             if (tradesToTenPct < 0 && balance >= startBalance * 1.10)
                 tradesToTenPct = i + 1;

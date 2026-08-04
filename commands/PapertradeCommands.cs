@@ -126,6 +126,24 @@ static class PapertradeCommands
         }
         else Console.WriteLine("  (no router genotype — using rule-based routing)");
 
+        DynamicGuardGenotype? guardGenoPt = null;
+        if (File.Exists(Config.DynamicGuardGenoFile))
+        {
+            guardGenoPt = JsonSerializer.Deserialize<DynamicGuardGenotypeDto>(
+                File.ReadAllText(Config.DynamicGuardGenoFile))!.ToGenotype();
+            Console.WriteLine($"Guard genotype:    (trained)");
+        }
+        else Console.WriteLine("  (no guard genotype — guard disabled)");
+
+        VolatilityWeightedRotatorGenotype? rotatorGenoPt = null;
+        if (File.Exists(Config.RotatorGenoFile))
+        {
+            rotatorGenoPt = JsonSerializer.Deserialize<VolatilityWeightedRotatorGenotypeDto>(
+                File.ReadAllText(Config.RotatorGenoFile))!.ToGenotype();
+            Console.WriteLine($"Rotator genotype:  (trained)");
+        }
+        else Console.WriteLine("  (no rotator genotype — rotation disabled)");
+
         var slGenoPt = slVariantsPt.Length > 0 ? slVariantsPt[0].Genotype : null;
         if (slGenoPt != null)
             Console.WriteLine($"SwingLong:         {slGenoPt}  [{slVariantsPt.Length} variant(s)]");
@@ -174,14 +192,16 @@ static class PapertradeCommands
             // Fetch all coins in parallel (4 concurrent), then trim to last 2000 m15 bars.
             // Full CSV history (~28 000 h1 bars) is never loaded into simulator arrays —
             // 500 h1 / 2000 m15 gives a 2× margin over the worst-case warmup (FadeLong 212 bars).
+            // 25 batches ≈ 3 months of 15m data (covers all indicator warmups).
             const int PtM15Window = 2000;
+            const int PtBatches   = 25;
             var sem = new SemaphoreSlim(4);
             var fetchTasks = coins.Select(async sym =>
             {
                 await sem.WaitAsync(cts.Token);
                 try
                 {
-                    var m15Raw = await CandleFetcher.FetchFifteenMinCandlesCached(client, sym, batches: 5);
+                    var m15Raw = await CandleFetcher.FetchFifteenMinCandlesCached(client, sym, batches: PtBatches);
                     if (m15Raw.Count < 200) return (sym, (Candle[]?)null, (Candle[]?)null, false, 0.0, 0.0);
                     var trimmed = m15Raw.Count > PtM15Window
                         ? m15Raw.GetRange(m15Raw.Count - PtM15Window, PtM15Window)
@@ -203,6 +223,33 @@ static class PapertradeCommands
                 .Select(r => (Sym: r.sym, H1: r.Item2, M15: r.Item3, Passes: r.Item4, AtrPct: r.Item5, VolM: r.Item6))
                 .ToList();
 
+            // ── Funding rate session (BTC perpetual) ─────────────────────────────
+            FundingRateSession? fundingSession = null;
+            try
+            {
+                var btcFunding = await CandleFetcher.FetchFundingRateCachedAsync(client, "BTCUSDT");
+                if (btcFunding.Length > 0)
+                {
+                    fundingSession = new FundingRateSession(btcFunding);
+                    Console.WriteLine($"  Funding: {fundingSession.CurrentRate:+0.0000%;-0.0000%} (current rate)");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  ⚠ Funding fetch failed: {ex.Message}");
+            }
+
+            // ── Dynamic guard session (BTC H1 → 4H ATR stress detection) ────────
+            DynamicGuardSession? guardSession = null;
+            var btcData = coinData.FirstOrDefault(x => x.Sym == "BTCUSDT");
+            if (guardGenoPt != null && btcData.H1 is { Length: >= 50 })
+            {
+                guardSession = new DynamicGuardSession(btcData.H1, guardGenoPt);
+                double guardMult = guardSession.GetMult(DateTime.UtcNow);
+                string guardTag = guardMult < 1.0 ? $"STRESS ×{guardMult:F2}" : "normal";
+                Console.WriteLine($"  Guard: {guardTag}");
+            }
+
             // ── Regime routing (BTC primary · ETH secondary) ─────────────────────
             StrategyActivation? ptRouting = null;
             {
@@ -216,8 +263,25 @@ static class PapertradeCommands
                         : RegimeRouter.Route(btcPt.H1, ethH1Pt);
                     string routerTag = routerGenoPt != null ? "(trained)" : "(rule-based)";
                     string sizeTag   = ptRouting.SizeMult < 1.0 ? $"  size×{ptRouting.SizeMult:F2}" : "";
-                    Console.WriteLine($"  Regime {routerTag}: {ptRouting.Regime}  conf={ptRouting.Confidence:P0}  →  {RegimeRouter.Describe(ptRouting)}{sizeTag}\n");
+                    var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcPt.H1);
+                    int bearDur = btcSeries[^1].Regime == MarketRegime.Bear ? btcSeries[^1].Duration : 0;
+                    int bullDur = btcSeries[^1].Regime == MarketRegime.Bull ? btcSeries[^1].Duration : 0;
+                    string durTag = bearDur > 0 ? $"  bear={bearDur}h" : bullDur > 0 ? $"  bull={bullDur}h" : "";
+                    Console.WriteLine($"  Regime {routerTag}: {ptRouting.Regime}  conf={ptRouting.Confidence:P0}  →  {RegimeRouter.Describe(ptRouting)}{sizeTag}{durTag}\n");
                 }
+            }
+
+            // ── Volatility-weighted rotator (gradual alt↔BTC/ETH rotation) ──────
+            VolatilityWeightedRotator? rotator = null;
+            double safetyScore = 0.0;
+            if (rotatorGenoPt != null && guardSession != null && ptRouting != null)
+            {
+                rotator = new VolatilityWeightedRotator(rotatorGenoPt);
+                double guardMult = guardSession.GetMult(DateTime.UtcNow);
+                double atrRatio = guardSession.GetAtrRatio(DateTime.UtcNow);
+                safetyScore = rotator.ComputeSafetyScore(guardMult, atrRatio, ptRouting.Regime);
+                var (altShare, btcShare, ethShare) = rotator.ComputeAllocation(safetyScore);
+                Console.WriteLine($"  Rotator: safety={safetyScore:F2} → alts={altShare:P0} BTC={btcShare:P0} ETH={ethShare:P0}");
             }
 
             // ── FadeShort ─────────────────────────────────────────────────────────
@@ -287,7 +351,7 @@ static class PapertradeCommands
             int slOpen = 0, dlOpen = 0, flOpen = 0, rsOpen = 0;
 
             // ── SwingLong ─────────────────────────────────────────────────────────
-            bool slRoutedOn = ptRouting == null || ptRouting.DipLongActive;
+            bool slRoutedOn = ptRouting == null || ptRouting.SwingLongActive;
             if (slGenoPt != null && slRoutedOn && !cts.Token.IsCancellationRequested)
             {
                 Console.WriteLine();
@@ -301,7 +365,7 @@ static class PapertradeCommands
                     if (!passes) { Console.WriteLine($"  {sym,-18}  skip  ATR={atrPct:F1}% vol=${volM:F0}M"); continue; }
                     double px      = h1[^1].Close;
                     var coinSlG    = SelectVariant(slVariantsPt, m15) ?? slGenoPt;
-                    var st = SwingLongSimulator.GetSwingLongTradeState(coinSlG, h1, m15);
+                    var st = SwingLongSimulator.GetSwingLongTradeState(coinSlG, h1, m15, fundingSession);
                     string capTag = (st.InTrade && slOpen >= PortfolioReplay.DefaultCaps["swing_long"]) ? " [CAP]" : "";
                     if (st.InTrade) slOpen++;
                     string stateStr  = st.InTrade ? (st.TrailArmed ? "TRAIL ARMED" : $"LONG b{st.HoldCount}") : "watching";
@@ -328,7 +392,7 @@ static class PapertradeCommands
                     if (!passes) { Console.WriteLine($"  {sym,-18}  skip  ATR={atrPct:F1}% vol=${volM:F0}M"); continue; }
                     double px      = h1[^1].Close;
                     var coinDlG    = SelectVariant(dlVariantsPt, m15) ?? dlGenoPt;
-                    var st = DipLongSimulator.GetDipLongTradeState(coinDlG, h1, m15);
+                    var st = DipLongSimulator.GetDipLongTradeState(coinDlG, h1, m15, fundingSession);
                     string capTag = (st.InTrade && dlOpen >= PortfolioReplay.DefaultCaps["diplong"]) ? " [CAP]" : "";
                     if (st.InTrade) dlOpen++;
                     string stateStr  = st.InTrade ? (st.TrailArmed ? "TRAIL ARMED" : $"LONG b{st.HoldCount}") : "watching";
@@ -355,7 +419,7 @@ static class PapertradeCommands
                     if (!passes) { Console.WriteLine($"  {sym,-18}  skip  ATR={atrPct:F1}% vol=${volM:F0}M"); continue; }
                     double px      = h1[^1].Close;
                     var coinFlG    = SelectVariant(flVariantsPt, m15) ?? flGenoPt;
-                    var st = FadeLongSimulator.GetFadeLongTradeState(coinFlG, h1, m15);
+                    var st = FadeLongSimulator.GetFadeLongTradeState(coinFlG, h1, m15, fundingSession);
                     string capTag = (st.InTrade && flOpen >= PortfolioReplay.DefaultCaps["fadelong"]) ? " [CAP]" : "";
                     if (st.InTrade) flOpen++;
                     string stateStr  = st.InTrade ? (st.TrailArmed ? "TRAIL ARMED" : $"LONG b{st.HoldCount}") : "watching";
@@ -458,7 +522,7 @@ static class PapertradeCommands
                     {
                         if (h1 == null || m15 == null || !passes) continue;
                         var coinSlG = SelectVariant(slVariantsPt, m15) ?? slGenoPt;
-                        var st = SwingLongSimulator.GetSwingLongTradeState(coinSlG, h1, m15);
+                        var st = SwingLongSimulator.GetSwingLongTradeState(coinSlG, h1, m15, fundingSession);
                         if (!st.InTrade) continue;
                         double px = m15[^1].Close;
                         positions.Add(new
@@ -482,7 +546,7 @@ static class PapertradeCommands
                     {
                         if (h1 == null || m15 == null || !passes) continue;
                         var coinDlG = SelectVariant(dlVariantsPt, m15) ?? dlGenoPt;
-                        var st = DipLongSimulator.GetDipLongTradeState(coinDlG, h1, m15);
+                        var st = DipLongSimulator.GetDipLongTradeState(coinDlG, h1, m15, fundingSession);
                         if (!st.InTrade) continue;
                         double px = m15[^1].Close;
                         positions.Add(new
@@ -506,7 +570,7 @@ static class PapertradeCommands
                     {
                         if (h1 == null || m15 == null || !passes) continue;
                         var coinFlG = SelectVariant(flVariantsPt, m15) ?? flGenoPt;
-                        var st = FadeLongSimulator.GetFadeLongTradeState(coinFlG, h1, m15);
+                        var st = FadeLongSimulator.GetFadeLongTradeState(coinFlG, h1, m15, fundingSession);
                         if (!st.InTrade) continue;
                         double px = m15[^1].Close;
                         positions.Add(new
@@ -553,12 +617,31 @@ static class PapertradeCommands
                     confidence = Math.Round(ptRouting.Confidence, 2),
                     FadeShort  = ptRouting.FadeShortActive,
                     Grid       = ptRouting.GridActive,
-                    SwingLong  = ptRouting.DipLongActive,
+                    SwingLong  = ptRouting.SwingLongActive,
                     DipLong    = ptRouting.DipLongActive,
                     FadeLong   = ptRouting.FadeLongActive,
                     RipShort   = ptRouting.RipShortActive,
                     sizeMult   = Math.Round(ptRouting.SizeMult, 2),
                 } : null;
+
+                var guardInfo = guardSession != null ? new
+                {
+                    mult     = Math.Round(guardSession.GetMult(DateTime.UtcNow), 2),
+                    atrRatio = Math.Round(guardSession.GetAtrRatio(DateTime.UtcNow), 2),
+                } : null;
+
+                var rotatorInfo = rotator != null ? new
+                {
+                    safetyScore = Math.Round(safetyScore, 2),
+                    allocation  = rotator.ComputeAllocation(safetyScore) is var (alt, btc, eth) ? new
+                    {
+                        alts = Math.Round(alt, 2),
+                        btc  = Math.Round(btc, 2),
+                        eth  = Math.Round(eth, 2)
+                    } : null
+                } : null;
+
+                double fundingRate = fundingSession?.CurrentRate ?? 0;
 
                 var liveState = new
                 {
@@ -566,6 +649,9 @@ static class PapertradeCommands
                     cycle       = 0,
                     positions,
                     regime      = regimeInfo,
+                    guard       = guardInfo,
+                    rotator     = rotatorInfo,
+                    fundingRate = Math.Round(fundingRate, 6),
                     openCount   = positions.Count,
                     nextRefresh = DateTime.UtcNow.AddSeconds(RefreshSeconds).ToString("HH:mm 'UTC'"),
                 };

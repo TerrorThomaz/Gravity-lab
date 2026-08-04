@@ -41,6 +41,43 @@ static class OosBacktest
         return VariantRouter.Select(atr, bar, variants) ?? variants[0].Genotype;
     }
 
+    static (TG? Genotype, string Label) SelectVariantLabeled<TG>(VariantSpec<TG>[] variants, Candle[] m15)
+        where TG : class
+    {
+        if (variants.Length == 0) return (null, "base");
+        double[] highs  = m15.Select(c => c.High).ToArray();
+        double[] lows   = m15.Select(c => c.Low).ToArray();
+        double[] closes = m15.Select(c => c.Close).ToArray();
+        double[] atr    = Volatility.Atr(highs, lows, closes, 14);
+        int      bar    = atr.Length - 1;
+        if (bar < 100 || atr.Length <= bar)
+            return (variants[0].Genotype, LabelForVariant(variants[0]));
+        double baseline = 0;
+        for (int j = bar - 100; j < bar; j++) baseline += atr[j];
+        baseline /= 100;
+        if (baseline < 1e-10)
+            return (variants[0].Genotype, LabelForVariant(variants[0]));
+        double ratio = atr[bar] / baseline;
+        VariantSpec<TG>? best = null;
+        double bestWidth = double.MaxValue;
+        foreach (var v in variants)
+        {
+            if (v.Genotype == null) continue;
+            if (ratio < v.AtrLow || ratio >= v.AtrHigh) continue;
+            double width = v.AtrHigh - v.AtrLow;
+            if (width < bestWidth) { bestWidth = width; best = v; }
+        }
+        var selected = best ?? variants[0];
+        return (selected.Genotype, LabelForVariant(selected));
+    }
+
+    static string LabelForVariant<T>(VariantSpec<T> v) where T : class
+    {
+        if (v.AtrLow >= 1.0) return "highvol";
+        if (v.AtrHigh <= 1.0) return "lowvol";
+        return "base";
+    }
+
     public static async Task RunOosBacktest(BybitRestClient client)
     {
         Console.WriteLine($"=== Gravity-gen2 | OOS BACKTEST ({Config.OosCoins.Length} never-seen coins · full history · all strategies, router-gated) ===\n");
@@ -133,6 +170,31 @@ static class OosBacktest
         var rsTrades    = new List<(DateTime Time, double Return, double Conf)>();
         var allTrades   = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
 
+        var highVolTrades   = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
+        var lowVolTrades    = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
+        var highVolCoinRets = new Dictionary<string, List<double>>();
+        var lowVolCoinRets  = new Dictionary<string, List<double>>();
+        int highVolTotalVCC = 0;
+        int lowVolTotalVCC  = 0;
+
+        void RouteVolVariant(string label, string sym, DateTime time, double ret, double conf, string strategy, int vcc)
+        {
+            if (label == "highvol")
+            {
+                highVolTrades.Add((time, ret, conf, strategy));
+                if (!highVolCoinRets.ContainsKey(sym)) highVolCoinRets[sym] = new List<double>();
+                highVolCoinRets[sym].Add(ret);
+                highVolTotalVCC = Math.Max(highVolTotalVCC, vcc);
+            }
+            else if (label == "lowvol")
+            {
+                lowVolTrades.Add((time, ret, conf, strategy));
+                if (!lowVolCoinRets.ContainsKey(sym)) lowVolCoinRets[sym] = new List<double>();
+                lowVolCoinRets[sym].Add(ret);
+                lowVolTotalVCC = Math.Max(lowVolTotalVCC, vcc);
+            }
+        }
+
         var swingCoinStats = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
         var gridCoinStats  = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
         var flCoinStats    = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
@@ -154,7 +216,8 @@ static class OosBacktest
             double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
             if (medVol < oosMinVol) { Console.WriteLine($"  {sym,-16}  skip (vol=${medVol:F2}M/h)"); continue; }
 
-            var coinFsG = SelectVariant(fsVariants, m15) ?? swingG;
+            var (coinFsG, fsVarLabel) = SelectVariantLabeled(fsVariants, m15);
+            coinFsG ??= swingG;
             var trades = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1, m15);
             var vRet   = trades.Select(t => t.Return).ToList();
             if (vRet.Count < 5) { Console.WriteLine($"  {sym,-16}  skip ({vRet.Count} trades)"); continue; }
@@ -174,6 +237,7 @@ static class OosBacktest
             {
                 swingTrades.Add((t, ret, conf));
                 allTrades.Add((t, ret, conf, "swing"));
+                RouteVolVariant(fsVarLabel, sym, t, ret, conf, "swing", vCC);
             }
         }
 
@@ -190,7 +254,8 @@ static class OosBacktest
             double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
             if (medVol < oosMinVol) continue;
 
-            var coinGridG = SelectVariant(gridVariants, m15Grid) ?? gridG;
+            var (coinGridG, gridVarLabel) = SelectVariantLabeled(gridVariants, m15Grid);
+            coinGridG ??= gridG;
             var raw   = GridSimulator.GetGridReturns(coinGridG, h1);
             var gated = session != null
                 ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList()
@@ -212,6 +277,7 @@ static class OosBacktest
             {
                 gridTrades.Add((t.Time, t.Return, conf));
                 allTrades.Add((t.Time, t.Return, conf, "grid"));
+                RouteVolVariant(gridVarLabel, sym, t.Time, t.Return, conf, "grid", vCC);
             }
         }
 
@@ -230,7 +296,8 @@ static class OosBacktest
                 double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
                 if (medVol < oosMinVol) continue;
 
-                var coinFlG = SelectVariant(flVariants, m15) ?? flG;
+                var (coinFlG, flVarLabel) = SelectVariantLabeled(flVariants, m15);
+                coinFlG ??= flG;
                 var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1, m15);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList()
@@ -254,6 +321,7 @@ static class OosBacktest
                 {
                     flTrades.Add((t.Time, t.Return, conf));
                     allTrades.Add((t.Time, t.Return, conf, "fadelong"));
+                    RouteVolVariant(flVarLabel, sym, t.Time, t.Return, conf, "fadelong", vCC);
                 }
             }
         }
@@ -273,7 +341,8 @@ static class OosBacktest
                 double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
                 if (medVol < oosMinVol) continue;
 
-                var coinDlG = SelectVariant(dlVariants, m15) ?? dlG;
+                var (coinDlG, dlVarLabel) = SelectVariantLabeled(dlVariants, m15);
+                coinDlG ??= dlG;
                 var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1, m15);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
@@ -297,6 +366,7 @@ static class OosBacktest
                 {
                     dlTrades.Add((t.Time, t.Return, conf));
                     allTrades.Add((t.Time, t.Return, conf, "diplong"));
+                    RouteVolVariant(dlVarLabel, sym, t.Time, t.Return, conf, "diplong", vCC);
                 }
             }
         }
@@ -316,10 +386,11 @@ static class OosBacktest
                 double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
                 if (medVol < oosMinVol) continue;
 
-                var coinSlG = SelectVariant(slVariants, m15) ?? slG;
+                var (coinSlG, slVarLabel) = SelectVariantLabeled(slVariants, m15);
+                coinSlG ??= slG;
                 var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1, m15);
                 var gated = session != null
-                    ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()  // SwingLong shares bull-regime gate with DipLong
+                    ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
                 var vRet  = gated.Select(t => t.Return).ToList();
 
@@ -340,6 +411,7 @@ static class OosBacktest
                 {
                     slTrades.Add((t.Time, t.Return, conf));
                     allTrades.Add((t.Time, t.Return, conf, "swing_long"));
+                    RouteVolVariant(slVarLabel, sym, t.Time, t.Return, conf, "swing_long", vCC);
                 }
             }
         }
@@ -359,7 +431,8 @@ static class OosBacktest
                 double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
                 if (medVol < oosMinVol) continue;
 
-                var coinRsG = SelectVariant(rsVariants, m15) ?? rsG;
+                var (coinRsG, rsVarLabel) = SelectVariantLabeled(rsVariants, m15);
+                coinRsG ??= rsG;
                 var raw   = RipShortSimulator.GetRipShortReturns(coinRsG, h1, m15);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList()
@@ -383,6 +456,7 @@ static class OosBacktest
                 {
                     rsTrades.Add((t.Time, t.Return, conf));
                     allTrades.Add((t.Time, t.Return, conf, "ripshort"));
+                    RouteVolVariant(rsVarLabel, sym, t.Time, t.Return, conf, "ripshort", vCC);
                 }
             }
         }
@@ -414,7 +488,7 @@ static class OosBacktest
                 },
                 t.Return,
                 t.Conf)).ToList();
-            var filtered = PortfolioReplay.FilterByConcurrentCap(capInput);
+            var filtered = PortfolioReplay.FilterByConcurrentCap(capInput, directionalCap: Config.MaxDirectionalConcurrent);
             Console.WriteLine($"  Concurrent cap: {allTrades.Count} → {filtered.Count} trades ({allTrades.Count - filtered.Count} removed)");
             allTrades = filtered.Select(t => (t.EntryTime, t.Return, t.Conf, t.Strategy)).ToList();
         }
@@ -543,6 +617,89 @@ static class OosBacktest
                 Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
         }
 
+        var highVolRet = highVolTrades.Select(t => t.Return).ToList();
+        var lowVolRet  = lowVolTrades.Select(t => t.Return).ToList();
+
+        if (highVolRet.Count > 0)
+        {
+            var hvCoinStats = highVolCoinRets
+                .Where(kv => kv.Value.Count >= 3)
+                .Select(kv =>
+                {
+                    var rets = kv.Value;
+                    int vcc = highVolTotalVCC;
+                    double sh   = Simulator.SharpeRatio(rets, vcc);
+                    double sort = Simulator.SortinoRatio(rets, vcc);
+                    double pf   = Simulator.ProfitFactor(rets);
+                    double wr   = (double)rets.Count(r => r > 0) / rets.Count;
+                    double avg  = rets.Average();
+                    double kelly = Simulator.ComputeConfidence(rets);
+                    return (Coin: kv.Key, Sharpe: sh, Sortino: sort, PF: pf, Trades: rets.Count, WR: wr, AvgRet: avg, Kelly: kelly);
+                })
+                .ToList();
+
+            Console.WriteLine($"\n{new string('═', 70)}");
+            Console.WriteLine($"  OOS HIGH-VOL VARIANTS SUMMARY  ({highVolCoinRets.Count} coins, {highVolRet.Count} trades, ATR≥1.5×)");
+            Console.WriteLine($"{new string('═', 70)}");
+            int hvw = highVolRet.Count(r => r > 0);
+            Console.WriteLine($"  Win rate:     {(double)hvw / highVolRet.Count:P1}  ({hvw}W / {highVolRet.Count - hvw}L)");
+            Console.WriteLine($"  Avg return:   {highVolRet.Average():+0.00}%");
+            Console.WriteLine($"  Sharpe:       {Simulator.SharpeRatio(highVolRet, highVolTotalVCC):F2}");
+            Console.WriteLine($"  Sortino:      {Simulator.SortinoRatio(highVolRet, highVolTotalVCC):F2}");
+            Console.WriteLine($"  Profit factor:{Simulator.ProfitFactor(highVolRet):F2}");
+            Console.WriteLine($"  Calmar:       {Simulator.CalmarRatio(highVolRet):F2}");
+            var hvPort = Simulator.SimulatePortfolioExposureCapped(
+                highVolTrades.Select(t => (t.Time, t.Return, t.Conf, TimeSpan.FromHours(48))).ToList(),
+                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            Console.WriteLine($"  Portfolio:    €{hvPort.EndBalance:F2}  ({(hvPort.EndBalance - 100) / 100 * 100:+0.0;-0.0}%)  DD={hvPort.MaxDrawdownPct:F1}%");
+            Console.WriteLine();
+            Console.WriteLine($"  Per-coin (sorted by Sharpe):");
+            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+            Console.WriteLine($"  {new string('-', 75)}");
+            foreach (var r in hvCoinStats.OrderByDescending(c => c.Sharpe))
+                Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
+        }
+
+        if (lowVolRet.Count > 0)
+        {
+            var lvCoinStats = lowVolCoinRets
+                .Where(kv => kv.Value.Count >= 3)
+                .Select(kv =>
+                {
+                    var rets = kv.Value;
+                    int vcc = lowVolTotalVCC;
+                    double sh   = Simulator.SharpeRatio(rets, vcc);
+                    double sort = Simulator.SortinoRatio(rets, vcc);
+                    double pf   = Simulator.ProfitFactor(rets);
+                    double wr   = (double)rets.Count(r => r > 0) / rets.Count;
+                    double avg  = rets.Average();
+                    double kelly = Simulator.ComputeConfidence(rets);
+                    return (Coin: kv.Key, Sharpe: sh, Sortino: sort, PF: pf, Trades: rets.Count, WR: wr, AvgRet: avg, Kelly: kelly);
+                })
+                .ToList();
+
+            Console.WriteLine($"\n{new string('═', 70)}");
+            Console.WriteLine($"  OOS LOW-VOL VARIANTS SUMMARY  ({lowVolCoinRets.Count} coins, {lowVolRet.Count} trades, ATR≤0.8×)");
+            Console.WriteLine($"{new string('═', 70)}");
+            int lvw = lowVolRet.Count(r => r > 0);
+            Console.WriteLine($"  Win rate:     {(double)lvw / lowVolRet.Count:P1}  ({lvw}W / {lowVolRet.Count - lvw}L)");
+            Console.WriteLine($"  Avg return:   {lowVolRet.Average():+0.00}%");
+            Console.WriteLine($"  Sharpe:       {Simulator.SharpeRatio(lowVolRet, lowVolTotalVCC):F2}");
+            Console.WriteLine($"  Sortino:      {Simulator.SortinoRatio(lowVolRet, lowVolTotalVCC):F2}");
+            Console.WriteLine($"  Profit factor:{Simulator.ProfitFactor(lowVolRet):F2}");
+            Console.WriteLine($"  Calmar:       {Simulator.CalmarRatio(lowVolRet):F2}");
+            var lvPort = Simulator.SimulatePortfolioExposureCapped(
+                lowVolTrades.Select(t => (t.Time, t.Return, t.Conf, TimeSpan.FromHours(48))).ToList(),
+                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            Console.WriteLine($"  Portfolio:    €{lvPort.EndBalance:F2}  ({(lvPort.EndBalance - 100) / 100 * 100:+0.0;-0.0}%)  DD={lvPort.MaxDrawdownPct:F1}%");
+            Console.WriteLine();
+            Console.WriteLine($"  Per-coin (sorted by Sharpe):");
+            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+            Console.WriteLine($"  {new string('-', 75)}");
+            foreach (var r in lvCoinStats.OrderByDescending(c => c.Sharpe))
+                Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
+        }
+
         // Merge OOS section into backtest_results.json
         static double OosComputeMaxDD(List<double> r)
         {
@@ -586,6 +743,30 @@ static class OosBacktest
               ?? new Dictionary<string, object>()
             : new Dictionary<string, object>();
         existing["oos"]       = oosSection;
+        if (highVolRet.Count > 0)
+            existing["oos_highvol_summary"] = new
+            {
+                trades = highVolRet.Count,
+                winRate = Math.Round((double)highVolRet.Count(x => x > 0) / highVolRet.Count * 100, 2),
+                sharpe = Math.Round(Simulator.SharpeRatio(highVolRet, highVolTotalVCC), 4),
+                sortino = Math.Round(Simulator.SortinoRatio(highVolRet, highVolTotalVCC), 4),
+                pf = Math.Round(Simulator.ProfitFactor(highVolRet), 4),
+                calmar = Math.Round(Simulator.CalmarRatio(highVolRet), 4),
+                avgRet = Math.Round(highVolRet.Average(), 4),
+                coins = highVolCoinRets.Count,
+            };
+        if (lowVolRet.Count > 0)
+            existing["oos_lowvol_summary"] = new
+            {
+                trades = lowVolRet.Count,
+                winRate = Math.Round((double)lowVolRet.Count(x => x > 0) / lowVolRet.Count * 100, 2),
+                sharpe = Math.Round(Simulator.SharpeRatio(lowVolRet, lowVolTotalVCC), 4),
+                sortino = Math.Round(Simulator.SortinoRatio(lowVolRet, lowVolTotalVCC), 4),
+                pf = Math.Round(Simulator.ProfitFactor(lowVolRet), 4),
+                calmar = Math.Round(Simulator.CalmarRatio(lowVolRet), 4),
+                avgRet = Math.Round(lowVolRet.Average(), 4),
+                coins = lowVolCoinRets.Count,
+            };
         existing["timestamp"] = DateTime.UtcNow.ToString("O");
         File.WriteAllText(backtestPath, System.Text.Json.JsonSerializer.Serialize(existing,
             new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
@@ -878,7 +1059,7 @@ static class OosBacktest
                 },
                 t.Return,
                 t.Conf)).ToList();
-            var filtered = PortfolioReplay.FilterByConcurrentCap(capInput);
+            var filtered = PortfolioReplay.FilterByConcurrentCap(capInput, directionalCap: Config.MaxDirectionalConcurrent);
             Console.WriteLine($"  Concurrent cap: {allTrades.Count} → {filtered.Count} trades ({allTrades.Count - filtered.Count} removed)");
             allTrades = filtered.Select(t => (t.EntryTime, t.Return, t.Conf, t.Strategy)).ToList();
         }

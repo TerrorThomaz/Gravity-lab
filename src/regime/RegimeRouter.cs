@@ -11,8 +11,10 @@ namespace TradingGA;
 // so shorting does not fight an established uptrend. In Bear/Ranging/HighVol it is always active.
 //
 // RipShort is a bear-regime trend-continuation short (shorts relief rallies in established
-// downtrends). It shares FadeLong's confirmed-bear gate (BearMinBars/BearMinConf) but, being
-// with-trend rather than a bounce play, does NOT carry into the early-bull window.
+// downtrends). It has its own confirmed-bear gate (RipShortBearMinBars/RipShortBearMinConf,
+// separate from FadeLong's BearMinBars/BearMinConf — sharing one gene pair let a disabled,
+// underperforming FadeLong pull the threshold away from RipShort's true optimum). Being
+// with-trend rather than a bounce play, it does NOT carry into the early-bull window.
 //
 // ETH acts as a secondary confirmer:
 //   Agreement  → weighted blend (BTC 70% + ETH 30%), boosting confidence
@@ -20,12 +22,24 @@ namespace TradingGA;
 public record StrategyActivation(
     bool         FadeShortActive,
     bool         GridActive,
+    bool         GridShortActive, // shares Grid's ranging/low-conf gate — same regime signal, opposite direction
     bool         DipLongActive,
     bool         FadeLongActive,
     bool         RipShortActive,
+    bool         SwingLongActive,
+    bool         AccumulationGridActive,
     double       SizeMult,        // 1.0 = normal · 0.5 = HighVol · [0.60–1.00] scales with confidence
     MarketRegime Regime,
-    double       Confidence);
+    double       Confidence,
+    bool         FadeShortLowVolActive = false,
+    bool         DipLongLowVolActive = false,
+    bool         SwingLongLowVolActive = false,
+    bool         RipShortLowVolActive = false,
+    bool         FadeShortHighVolActive = false,
+    bool         DipLongHighVolActive = false,
+    bool         SwingLongHighVolActive = false,
+    bool         RipShortHighVolActive = false,
+    double       AtrRatio = 0.0);
 
 public static class RegimeRouter
 {
@@ -38,7 +52,7 @@ public static class RegimeRouter
     private const double EthWeight          = 0.30;
 
     // Route using a trained RegimeRouterGenotype (preferred — uses learned thresholds + duration gate).
-    public static StrategyActivation Route(Candle[] btcH1, RegimeRouterGenotype geno, Candle[]? ethH1 = null)
+    public static StrategyActivation Route(Candle[] btcH1, RegimeRouterGenotype geno, Candle[]? ethH1 = null, double atrRatio = 1.0)
     {
         var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcH1);
         var btc       = btcSeries[^1];
@@ -57,17 +71,17 @@ public static class RegimeRouter
         int bar        = btcSeries.Length - 1;
         int prevBar    = Math.Max(0, bar - btc.Duration);
         var prevRegime = btcSeries[prevBar].Regime;
-        return ActivateWithGeno(btc.Regime, blendedConf, btc.Duration, geno, prevRegime);
+        return ActivateWithGeno(btc.Regime, blendedConf, btc.Duration, geno, prevRegime, atrRatio);
     }
 
     // Route using BTC as primary anchor (rule-based fallback, no trained genotype).
     // Pass ethH1 to enable the ETH secondary confirmer (needs ≥220 bars; skipped otherwise).
-    public static StrategyActivation Route(Candle[] btcH1, Candle[]? ethH1 = null)
+    public static StrategyActivation Route(Candle[] btcH1, Candle[]? ethH1 = null, double atrRatio = 1.0)
     {
         var (btcRegime, btcConf) = RegimeClassifier.Classify(btcH1);
 
         if (ethH1 == null || ethH1.Length < 220)
-            return Activate(btcRegime, btcConf);
+            return Activate(btcRegime, btcConf, atrRatio);
 
         var (ethRegime, ethConf) = RegimeClassifier.Classify(ethH1);
 
@@ -86,7 +100,7 @@ public static class RegimeRouter
             blendedConf = Math.Max(0.0, BtcWeight * btcConf - EthWeight * ethConf);
         }
 
-        return Activate(finalRegime, Math.Min(1.0, blendedConf));
+        return Activate(finalRegime, Math.Min(1.0, blendedConf), atrRatio);
     }
 
     // Human-readable summary line, e.g. "Grid ✓  FadeShort ✓  size×0.78"
@@ -96,12 +110,16 @@ public static class RegimeRouter
         if (a.FadeShortActive) parts.Add("FadeShort ✓");
         if (a.GridActive)      parts.Add("Grid ✓");
         else                   parts.Add("Grid ○");
+        if (a.GridShortActive) parts.Add("GridShort ✓");
+        else                   parts.Add("GridShort ○");
         if (a.DipLongActive)   parts.Add("DipLong ✓");
         else                   parts.Add("DipLong ✗");
         if (a.FadeLongActive)  parts.Add("FadeLong ✓");
         else                   parts.Add("FadeLong ✗");
         if (a.RipShortActive)  parts.Add("RipShort ✓");
         else                   parts.Add("RipShort ✗");
+        if (a.SwingLongActive) parts.Add("SwingLong ✓");
+        else                   parts.Add("SwingLong ✗");
         if (a.SizeMult < 1.0)  parts.Add($"  size×{a.SizeMult:F2}");
         return string.Join("  ", parts);
     }
@@ -109,22 +127,40 @@ public static class RegimeRouter
     // ── Activation helpers ────────────────────────────────────────────────────
 
     // Rule-based activation (no genotype — uses hard-coded defaults, no duration gate).
-    private static StrategyActivation Activate(MarketRegime regime, double conf)
+    private static StrategyActivation Activate(MarketRegime regime, double conf, double atrRatio = 1.0)
     {
         if (regime == MarketRegime.HighVol)
-            return new(true, false, false, false, false, 0.5, regime, conf);
+            return new(true, false, false, false, false, false, false, false, 0.5, regime, conf, false, false, false, false, true, true, true, true, atrRatio);
 
         bool fadeShort = !(regime == MarketRegime.Bull   && conf >= DirectionalMinConf);
         bool grid      = true;
+        bool gridShort = true;
         bool dipLong   = regime == MarketRegime.Bull    && conf >= DirectionalMinConf;
         bool fadeLong  = regime == MarketRegime.Bear    && conf >= DirectionalMinConf;
         bool ripShort  = regime == MarketRegime.Bear    && conf >= DirectionalMinConf;
+        bool swingLong = dipLong;
+        bool accumulationGrid = (regime == MarketRegime.Bull && conf >= DirectionalMinConf)
+                                || (regime == MarketRegime.Bear && conf >= DirectionalMinConf);
 
         double sizeMult = regime == MarketRegime.Ranging
             ? 1.0
             : 0.60 + 0.40 * Math.Min(1.0, conf / 0.80);
 
-        return new(fadeShort, grid, dipLong, fadeLong, ripShort, sizeMult, regime, conf);
+        // Low-vol variants: active when ATR ratio < 0.8 (low volatility regime)
+        bool isLowVol = atrRatio < 0.8;
+        bool fadeShortLowVol = isLowVol && fadeShort;
+        bool dipLongLowVol   = isLowVol && dipLong;
+        bool swingLongLowVol = isLowVol && swingLong;
+        bool ripShortLowVol  = isLowVol && ripShort;
+
+        // High-vol variants: active when ATR ratio > 1.5 (high volatility regime)
+        bool isHighVol = atrRatio > 1.5;
+        bool fadeShortHighVol = isHighVol && fadeShort;
+        bool dipLongHighVol   = isHighVol && dipLong;
+        bool swingLongHighVol = isHighVol && swingLong;
+        bool ripShortHighVol  = isHighVol && ripShort;
+
+        return new(fadeShort, grid, gridShort, dipLong, fadeLong, ripShort, swingLong, accumulationGrid, sizeMult, regime, conf, fadeShortLowVol, dipLongLowVol, swingLongLowVol, ripShortLowVol, fadeShortHighVol, dipLongHighVol, swingLongHighVol, ripShortHighVol, atrRatio);
     }
 
     // Genotype-aware activation: uses trained thresholds + BTC duration gate + source-regime awareness.
@@ -147,12 +183,12 @@ public static class RegimeRouter
     //               business staying active once the regime tips toward Bull.
     private static StrategyActivation ActivateWithGeno(
         MarketRegime regime, double conf, int duration,
-        RegimeRouterGenotype geno, MarketRegime prevRegime = MarketRegime.Ranging)
+        RegimeRouterGenotype geno, MarketRegime prevRegime = MarketRegime.Ranging, double atrRatio = 1.0)
     {
         if (regime == MarketRegime.HighVol)
-            return new(true, false, false, false, false, 0.5, regime, conf);
+            return new(true, false, false, false, false, false, false, false, 0.5, regime, conf, false, false, false, false, true, true, true, true, atrRatio);
 
-        var (fadeShort, grid, dipLong, fadeLong, ripShort) = ComputeActivation(regime, conf, duration, prevRegime, geno);
+        var (fadeShort, grid, gridShort, dipLong, fadeLong, ripShort, swingLong, accumulationGrid, fadeShortLowVol, dipLongLowVol, swingLongLowVol, ripShortLowVol, fadeShortHighVol, dipLongHighVol, swingLongHighVol, ripShortHighVol) = ComputeActivation(regime, conf, duration, prevRegime, geno, atrRatio);
 
         // Recompute the transition/source-regime flags locally (same formulas as inside
         // ComputeActivation) — needed here only to scale SizeMult, not for gating.
@@ -161,6 +197,12 @@ public static class RegimeRouter
                                 && conf >= geno.BullMinConf && geno.EarlyBullFromBearMult > 0;
         bool earlyFromRanging = inBullTransition && prevRegime == MarketRegime.Ranging
                                 && conf >= geno.BullMinConf && geno.EarlyBullFromRangingMult > 0;
+
+        bool inBearTransition = regime == MarketRegime.Bear && duration < (int)geno.BearMinBars;
+        bool earlyBearFromBull    = inBearTransition && prevRegime == MarketRegime.Bull
+                                    && geno.EarlyBearFromBullMult > 0;
+        bool earlyBearFromRanging = inBearTransition && prevRegime == MarketRegime.Ranging
+                                    && geno.EarlyBearFromRangingMult > 0;
 
         double sizeMult = regime == MarketRegime.Ranging
             ? 1.0
@@ -173,15 +215,20 @@ public static class RegimeRouter
         else if (earlyFromRanging)
             sizeMult *= geno.EarlyBullFromRangingMult;
 
-        return new(fadeShort, grid, dipLong, fadeLong, ripShort, sizeMult, regime, conf);
+        if (earlyBearFromBull)
+            sizeMult *= geno.EarlyBearFromBullMult;
+        else if (earlyBearFromRanging)
+            sizeMult *= geno.EarlyBearFromRangingMult;
+
+        return new(fadeShort, grid, gridShort, dipLong, fadeLong, ripShort, swingLong, accumulationGrid, sizeMult, regime, conf, fadeShortLowVol, dipLongLowVol, swingLongLowVol, ripShortLowVol, fadeShortHighVol, dipLongHighVol, swingLongHighVol, ripShortHighVol, atrRatio);
     }
 
     // Shared gating logic — the single source of truth for genotype-based strategy activation.
     // Used identically by ActivateWithGeno (live Route path) and RegimeRouterSession.IsActive
     // (all backtests). Semantics match what was validated in backtesting; if the two paths ever
     // disagree again, this is the one place to fix it.
-    internal static (bool FadeShort, bool Grid, bool DipLong, bool FadeLong, bool RipShort) ComputeActivation(
-        MarketRegime regime, double conf, int duration, MarketRegime prevRegime, RegimeRouterGenotype geno)
+    internal static (bool FadeShort, bool Grid, bool GridShort, bool DipLong, bool FadeLong, bool RipShort, bool SwingLong, bool AccumulationGrid, bool FadeShortLowVol, bool DipLongLowVol, bool SwingLongLowVol, bool RipShortLowVol, bool FadeShortHighVol, bool DipLongHighVol, bool SwingLongHighVol, bool RipShortHighVol) ComputeActivation(
+        MarketRegime regime, double conf, int duration, MarketRegime prevRegime, RegimeRouterGenotype geno, double atrRatio = 1.0)
     {
         bool inBullTransition = regime == MarketRegime.Bull && duration < (int)geno.BullMinBars;
         bool inTransition      = inBullTransition
@@ -194,27 +241,67 @@ public static class RegimeRouter
         bool bearCarry        = inBullTransition && prevRegime == MarketRegime.Bear
                                 && geno.EarlyBullBearCarry > 0;
 
+        bool inBearTransition = regime == MarketRegime.Bear && duration < (int)geno.BearMinBars;
+        bool earlyBearFromBull    = inBearTransition && prevRegime == MarketRegime.Bull
+                                    && geno.EarlyBearFromBullMult > 0;
+        bool earlyBearFromRanging = inBearTransition && prevRegime == MarketRegime.Ranging
+                                    && geno.EarlyBearFromRangingMult > 0;
+
         bool fadeShort = !(regime == MarketRegime.Bull
                            && duration >= (int)geno.BullMinBars
                            && conf >= geno.BullMinConf);
         bool grid      = regime == MarketRegime.Ranging
                         || conf < geno.GridMaxConf
                         || (inTransition && geno.TransitionSizeMult > 0);
+        // GridShort shares Grid's gate — same "is this genuinely ranging/ambiguous" signal,
+        // just the opposite execution direction. No evidence yet that a split gene is
+        // warranted (unlike RipShort/FadeLong, which had one when a disabled FadeLong was
+        // actively dragging the shared threshold) — don't split preemptively.
+        bool gridShort = grid;
         bool dipLong   = (regime == MarketRegime.Bull
                           && duration >= (int)geno.BullMinBars
                           && conf >= geno.BullMinConf)
                          || earlyFromBear || earlyFromRanging;
+        bool swingLong = dipLong;
         bool fadeLong  = (regime == MarketRegime.Bear
                           && duration >= (int)geno.BearMinBars
                           && conf >= geno.BearMinConf)
                          || bearCarry;
         // RipShort is with-trend (shorts relief rallies in an established downtrend), so — unlike
         // FadeLong — it does NOT get a bearCarry into the early-bull window; confirmed-bear only.
+        // Uses its OWN confirmed-bear gate (not the shared BearMinBars/BearMinConf) — sharing a
+        // single threshold with FadeLong let a since-disabled FadeLong (PF=0.06 OOS) pull the
+        // gate away from RipShort's true optimum.
         bool ripShort  = regime == MarketRegime.Bear
-                         && duration >= (int)geno.BearMinBars
-                         && conf >= geno.BearMinConf;
+                         && duration >= (int)geno.RipShortBearMinBars
+                         && conf >= geno.RipShortBearMinConf;
 
-        return (fadeShort, grid, dipLong, fadeLong, ripShort);
+        // AccumulationGrid works in both bull and bear regimes (separate genotypes for each).
+        // Active when in confirmed bull OR confirmed bear regime.
+        bool accumulationGrid = (regime == MarketRegime.Bull
+                                 && duration >= (int)geno.BullMinBars
+                                 && conf >= geno.BullMinConf)
+                                || (regime == MarketRegime.Bear
+                                    && duration >= (int)geno.BearMinBars
+                                    && conf >= geno.BearMinConf);
+
+        // Low-vol variants: active when ATR ratio < 0.8 (low volatility regime)
+        // They mirror the activation of their base counterparts but only in low-vol conditions
+        bool isLowVol = atrRatio < 0.8;
+        bool fadeShortLowVol = isLowVol && fadeShort;
+        bool dipLongLowVol   = isLowVol && dipLong;
+        bool swingLongLowVol = isLowVol && swingLong;
+        bool ripShortLowVol  = isLowVol && ripShort;
+
+        // High-vol variants: active when ATR ratio > 1.5 (high volatility regime)
+        // They mirror the activation of their base counterparts but only in high-vol conditions
+        bool isHighVol = atrRatio > 1.5;
+        bool fadeShortHighVol = isHighVol && fadeShort;
+        bool dipLongHighVol   = isHighVol && dipLong;
+        bool swingLongHighVol = isHighVol && swingLong;
+        bool ripShortHighVol  = isHighVol && ripShort;
+
+        return (fadeShort, grid, gridShort, dipLong, fadeLong, ripShort, swingLong, accumulationGrid, fadeShortLowVol, dipLongLowVol, swingLongLowVol, ripShortLowVol, fadeShortHighVol, dipLongHighVol, swingLongHighVol, ripShortHighVol);
     }
 
     // ETH blend helper shared by both Route overloads.
@@ -250,7 +337,7 @@ public class RegimeRouterSession
     // Is this strategy active at the given trade timestamp?
     // Delegates to RegimeRouter.ComputeActivation — the same shared gate logic used by the live
     // Route()/ActivateWithGeno path — so live and backtest activation can never drift again.
-    public bool IsActive(RegimeRouterGA.StrategyKind kind, DateTime tradeTime)
+    public bool IsActive(RegimeRouterGA.StrategyKind kind, DateTime tradeTime, double atrRatio = 1.0)
     {
         int bar = Lookup(tradeTime);
         var btc = _btc[bar];
@@ -267,17 +354,28 @@ public class RegimeRouterSession
             prevRegime  = _btc[prevBar].Regime;
         }
 
-        var (fadeShort, grid, dipLong, fadeLong, ripShort) =
-            RegimeRouter.ComputeActivation(btc.Regime, conf, btc.Duration, prevRegime, _geno);
+        var (fadeShort, grid, gridShort, dipLong, fadeLong, ripShort, swingLong, accumulationGrid, fadeShortLowVol, dipLongLowVol, swingLongLowVol, ripShortLowVol, fadeShortHighVol, dipLongHighVol, swingLongHighVol, ripShortHighVol) =
+            RegimeRouter.ComputeActivation(btc.Regime, conf, btc.Duration, prevRegime, _geno, atrRatio);
 
         return kind switch
         {
-            RegimeRouterGA.StrategyKind.FadeShort => fadeShort,
-            RegimeRouterGA.StrategyKind.Grid      => grid,
-            RegimeRouterGA.StrategyKind.DipLong   => dipLong,
-            RegimeRouterGA.StrategyKind.FadeLong  => fadeLong,
-            RegimeRouterGA.StrategyKind.RipShort  => ripShort,
-            _                                     => false,
+            RegimeRouterGA.StrategyKind.FadeShort         => fadeShort,
+            RegimeRouterGA.StrategyKind.Grid              => grid,
+            RegimeRouterGA.StrategyKind.GridShort         => gridShort,
+            RegimeRouterGA.StrategyKind.DipLong           => dipLong,
+            RegimeRouterGA.StrategyKind.FadeLong          => fadeLong,
+            RegimeRouterGA.StrategyKind.RipShort          => ripShort,
+            RegimeRouterGA.StrategyKind.SwingLong         => swingLong,
+            RegimeRouterGA.StrategyKind.AccumulationGrid  => accumulationGrid,
+            RegimeRouterGA.StrategyKind.FadeShortLowVol   => fadeShortLowVol,
+            RegimeRouterGA.StrategyKind.DipLongLowVol     => dipLongLowVol,
+            RegimeRouterGA.StrategyKind.SwingLongLowVol   => swingLongLowVol,
+            RegimeRouterGA.StrategyKind.RipShortLowVol    => ripShortLowVol,
+            RegimeRouterGA.StrategyKind.FadeShortHighVol  => fadeShortHighVol,
+            RegimeRouterGA.StrategyKind.DipLongHighVol    => dipLongHighVol,
+            RegimeRouterGA.StrategyKind.SwingLongHighVol  => swingLongHighVol,
+            RegimeRouterGA.StrategyKind.RipShortHighVol   => ripShortHighVol,
+            _                                             => false,
         };
     }
 
@@ -309,8 +407,15 @@ public class RegimeRouterSession
                 MarketRegime.Bear when conf > StepCutoffConf => 0.0,
                 _                                             => 0.0,
             },
+            RegimeRouterGA.StrategyKind.SwingLong => btc.Regime switch
+            {
+                MarketRegime.Bull                             => conf,
+                MarketRegime.Bear when conf > StepCutoffConf => 0.0,
+                _                                             => 0.0,
+            },
             RegimeRouterGA.StrategyKind.FadeShort => btc.Regime == MarketRegime.Bull && conf > StepCutoffConf ? 0.0 : 1.0,
             RegimeRouterGA.StrategyKind.Grid      => 1.0,
+            RegimeRouterGA.StrategyKind.GridShort => 1.0,
             // RipShort shares FadeLong's bear gradient — it is also gated to Bear regimes only.
             RegimeRouterGA.StrategyKind.RipShort => btc.Regime switch
             {

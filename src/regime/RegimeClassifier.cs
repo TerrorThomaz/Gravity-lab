@@ -19,6 +19,34 @@ public enum MarketRegime { Bull, Bear, Ranging, HighVol }
 // One bar of the pre-computed regime series produced by ClassifySeriesWithDuration.
 public record RegimeBar(DateTime Time, MarketRegime Regime, double Confidence, int Duration);
 
+// Tags arbitrary trade timestamps with the BTC regime active at that moment.
+// Used to bucket held-out validation results by regime instead of blending them into one
+// number — a single time window can be net-Bull or net-Bear, which silently favors whichever
+// strategy direction matches it (e.g. a Bull-heavy embargo window flatters long strategies and
+// understates short strategies purely from regime mix, not real generalization).
+public static class RegimeBarLookup
+{
+    public static MarketRegime[] TagRegimes(RegimeBar[] series, IReadOnlyList<DateTime> times)
+    {
+        var tags = new MarketRegime[times.Count];
+        if (series.Length == 0) return tags;
+        for (int i = 0; i < times.Count; i++)
+        {
+            long t = times[i].Ticks;
+            if (t <= series[0].Time.Ticks) { tags[i] = series[0].Regime; continue; }
+            if (t >= series[^1].Time.Ticks) { tags[i] = series[^1].Regime; continue; }
+            int lo = 0, hi = series.Length - 1;
+            while (lo < hi)
+            {
+                int mid = (lo + hi + 1) / 2;
+                if (series[mid].Time.Ticks <= t) lo = mid; else hi = mid - 1;
+            }
+            tags[i] = series[lo].Regime;
+        }
+        return tags;
+    }
+}
+
 public static class RegimeClassifier
 {
     private const int Warmup = 220; // bars needed before any classification is valid
@@ -69,6 +97,9 @@ public static class RegimeClassifier
 
         // 5. ATR moderate elevation — slightly trending, not crash (weight=0.5).
         if (f.AtrRatio > 1.5) bearScore += 0.5; // elevated vol in non-HighVol usually = sell pressure
+
+        if (f.AtrRatio < 0.8 && Math.Abs(f.Slope50) < 0.001)
+            rangingScore += 1.5;
 
         // ── Determine winner ─────────────────────────────────────────────────
         double total = bullScore + bearScore + rangingScore;
@@ -188,6 +219,9 @@ public static class RegimeClassifier
         else if (mom20 < -0.04) bear += 0.5;
 
         if (atrRatio > 1.5) bear += 0.5;
+
+        if (atrRatio < 0.8 && Math.Abs(slope50) < 0.001)
+            ranging += 1.5;
 
         double total = bull + bear + ranging;
         if (total < 0.5) return (MarketRegime.Ranging, 0.0);

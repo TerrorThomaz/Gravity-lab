@@ -10,6 +10,7 @@ switch (mode)
     case "backtest":         await BacktestCommands.RunBacktest(client);                               break;
     case "papertrade":       await PapertradeCommands.RunPaperTrade(client);                           break;
     case "gridtrain":        await GridCommands.RunGridTrain(client, args);                            break;
+    case "gridshorttrain":   await GridCommands.RunGridShortTrain(client, args);                       break;
     case "gridbacktest":     await GridCommands.RunGridBacktest(client);                               break;
     case "combinedbacktest": await CombinedBacktest.RunCombinedBacktest(client);                       break;
     case "rankedbacktest":   await GridCommands.RunRankedBacktest(client);                             break;
@@ -26,6 +27,11 @@ switch (mode)
     case "allcoinsbacktest": await OosBacktest.RunAllCoinsBacktest(client);                      break;
     case "fulltest":         await FullTest.RunFullTest(client);                                break;
     case "dynamicguardtrain":   await DynamicGuardTrainCommands.RunDynamicGuardTrain(client, args);  break;
+    case "rotatortrain":     VolatilityWeightedRotatorGA.Train();                                 break;
+    case "accumgridtrain":   await LongTrainCommands.RunAccumulationGridTrain(client, args);      break;
+    case "ripconfdiag":      await RipShortConfDiag.Run(client);                                break;
+    case "highvoltrain":     await HighVolTrainCommands.RunHighVolTrain(client, args);           break;
+    case "lowvoltrain":      await LowVolTrainCommands.RunLowVolTrain(client, args);            break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
         Console.WriteLine("  dotnet run -- train              Train FadeShort GA (~10 min)");
@@ -48,5 +54,9 @@ switch (mode)
         Console.WriteLine("  dotnet run -- allcoinsbacktest   Portfolio sim: BacktestCoins (val 20%) + OOS coins (full history), concurrency analysis");
         Console.WriteLine("  dotnet run -- fulltest           Condensed master report: val+OOS, 7 sections, single candle fetch");
         Console.WriteLine("  dotnet run -- dynamicguardtrain  Train BTC 4H ATR/momentum dynamic guard (proactive, corrects router)");
+        Console.WriteLine("  dotnet run -- rotatortrain       Train volatility-weighted rotator (co-evolves with guard)");
+        Console.WriteLine("  dotnet run -- accumgridtrain     Train AccumulationGrid (EMA-based dynamic grid, replaces FadeShort)");
+        Console.WriteLine("  dotnet run -- highvoltrain       Train high-volatility optimized variants (ATR>1.5, 5-fold WFV)");
+        Console.WriteLine("  dotnet run -- lowvoltrain        Train low-volatility optimized variants (ATR<0.8, 5-fold WFV)");
         break;
 }

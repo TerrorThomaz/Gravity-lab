@@ -304,6 +304,54 @@ public static class StatisticalTests
         }
     }
 
+    // ── Holm-Bonferroni step-down correction ──────────────────────────────
+    // Controls family-wise error rate (FWER) across multiple strategy tests.
+    // Given m p-values sorted ascending, the adjusted threshold for the i-th
+    // p-value is α/(m-i+1). Returns which hypotheses are rejected at the given α.
+    public static bool[] HolmBonferroni(double[] pValues, double alpha = 0.05)
+    {
+        int m = pValues.Length;
+        var indexed = pValues.Select((p, i) => (p, i)).OrderBy(x => x.p).ToArray();
+        var rejected = new bool[m];
+
+        for (int step = 0; step < m; step++)
+        {
+            double threshold = alpha / (m - step);
+            if (indexed[step].p <= threshold)
+                rejected[indexed[step].i] = true;
+            else
+                break;
+        }
+        return rejected;
+    }
+
+    public static double[] HolmBonferroniAdjustedPValues(double[] pValues)
+    {
+        int m = pValues.Length;
+        var indexed = pValues.Select((p, i) => (p, i)).OrderBy(x => x.p).ToArray();
+        var adjusted = new double[m];
+        double cumMax = 0;
+
+        for (int step = 0; step < m; step++)
+        {
+            double adj = indexed[step].p * (m - step);
+            cumMax = Math.Max(cumMax, adj);
+            adjusted[indexed[step].i] = Math.Min(cumMax, 1.0);
+        }
+        return adjusted;
+    }
+
+    // ── CVaR (Expected Shortfall) ─────────────────────────────────────────
+    // Average loss in the worst α% of returns. Coherent risk measure (subadditive).
+    // alpha=0.05 → average of worst 5% of returns.
+    public static double CVaR(List<double> returns, double alpha = 0.05)
+    {
+        if (returns.Count == 0) return 0;
+        var sorted = returns.OrderBy(r => r).ToList();
+        int cutoff = Math.Max(1, (int)(sorted.Count * alpha));
+        return sorted.Take(cutoff).Average();
+    }
+
     // ── Combinations helper ───────────────────────────────────────────────
 
     private static IEnumerable<List<int>> Combinations(List<int> items, int k)

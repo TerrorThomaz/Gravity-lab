@@ -78,82 +78,8 @@ public class FadeShortGA
         _cfg               = cfg ?? new FitnessConfig();
     }
 
-    // Portfolio-based fold score: simulate a genotype-evolved position size through the fold,
-    // then weight by win rate and divide by drawdown.
     private static double FoldScore(List<double> returns, double posFrac, FitnessConfig cfg, double volWeight = 1.0)
-    {
-        if (returns.Count < MinTradesPerFold) return -1.0;
-
-        // Single pass for win-rate, gross wins/losses, and avg win/loss
-        int    wins = 0;
-        double grossWins = 0, grossLoss = 0;
-        foreach (var r in returns)
-        {
-            if (r > 0) { wins++; grossWins += r; }
-            else         grossLoss -= r;
-        }
-
-        double wr = (double)wins / returns.Count;
-        double pf = grossLoss > 1e-10 ? grossWins / grossLoss : (grossWins > 0 ? 5.0 : 0.0);
-
-        if (pf < 1.0) return pf - 2.0;  // continuous negative signal for losing folds
-
-        // Simulate portfolio at evolved position size per trade (no fold-Kelly lookahead bias)
-        double balance = 1.0, peak = 1.0, maxDd = 0.0;
-        foreach (var r in returns)
-        {
-            balance += r / 100.0 * posFrac;
-            if (balance > peak) peak = balance;
-            double dd = (peak - balance) / peak;
-            if (dd > maxDd) maxDd = dd;
-        }
-
-        double gain = balance - 1.0;
-        if (gain <= 0) return gain * 100 - 0.5;
-
-        // Win rate: ramps from 0 at WR=0 to 1.0 at WR=40%, bonus above 40%
-        double wrMult = wr < 0.40 ? wr / 0.40 : 1.0 + (wr - 0.40) * 3.0;
-
-        // PF multiplier: gross win/loss ratio — rewards net profitability across the fold.
-        // 0 at PF=1.0, ramps to 1.0 at PF=1.5, bonus above.
-        double pfMult = pf < 1.5 ? (pf - 1.0) / 0.5 : 1.0 + (pf - 1.5) * 0.5;
-
-        // R:R multiplier: avgWin / avgLoss — pure size asymmetry, independent of WR.
-        // 0 at R:R=1.0, ramps to 1.0 at R:R=2.5, bonus above.
-        int    losses  = returns.Count - wins;
-        double avgWin  = wins   > 0 ? grossWins / wins   : 0;
-        double avgLoss = losses > 0 ? grossLoss / losses : avgWin;
-        double rr      = avgLoss > 1e-10 ? avgWin / avgLoss : (avgWin > 0 ? 5.0 : 1.0);
-        double rrMult  = rr < 2.5 ? (rr - 1.0) / 1.5 : 1.0 + (rr - 2.5) * 0.3;
-
-        // Combined: geometric mean keeps scale stable, rewards both dimensions equally.
-        double qualityMult = Math.Sqrt(pfMult * rrMult);
-
-        // Drawdown penalty: 5% max DD halves the score
-        double ddDiv = 1.0 + maxDd * 10.0;
-
-        // Frequency bonus: mild log incentive for more trades
-        double freqBonus = 1.0 + 0.15 * Math.Log(Math.Max(1.0, returns.Count / (double)MinTradesPerFold));
-
-        // Kept-profits: penalise giving back peak gains before period end
-        double peakGain      = peak - 1.0;
-        double retentionMult = peakGain > 0.01
-            ? Math.Max(0.2, (balance - 1.0) / peakGain)
-            : 1.0;
-
-        double baseScore = gain * 100.0 * wrMult * qualityMult * freqBonus / ddDiv * retentionMult;
-        int    n         = returns.Count;
-        double sharpe    = Simulator.SharpeRatio(returns, n);
-        double calmar    = Simulator.CalmarRatio(returns);
-        double pfStat    = Simulator.ProfitFactor(returns);
-        double sortino   = Simulator.SortinoRatio(returns, n);
-        return baseScore
-            * (1.0 + cfg.SharpeW  * Math.Max(0, Math.Min(sharpe   / 3.0,  3.0)))
-            * (1.0 + cfg.CalmarW  * Math.Max(0, Math.Min(calmar   / 2.0,  3.0)))
-            * (1.0 + cfg.PfW      * Math.Max(0, Math.Min(pfStat - 1.0,    3.0)))
-            * (1.0 + cfg.SortinoW * Math.Max(0, Math.Min(sortino  / 4.0,  3.0)))
-            * volWeight;
-    }
+        => FoldScoreHelper.Canonical(returns, posFrac, MinTradesPerFold, cfg, volWeight, statBonusCeiling: 1.0);
 
     // Pool returns across ALL coins within each fold time-slot.
     // Per-coin fitness was flat (-1 everywhere) because each coin individually
@@ -194,7 +120,6 @@ public class FadeShortGA
                 return FoldScore(all, posFrac, cfg, volWeight);
             }
 
-            // Walk-forward fold CV on train caches
             int minLen = caches.Min(c => c.Candles.Length);
             int k      = Math.Min(folds, minLen / 40);
 
@@ -213,12 +138,12 @@ public class FadeShortGA
                 return FoldScore(all, posFrac, cfg, volWeight);
             }
 
-            int      foldSize = minLen / k;
-            double[] scores   = new double[k];
+            var bounds = FoldScoreHelper.ComputeFoldBoundaries(minLen, k, cfg.EmbargoPct);
+            double[] scores = new double[k];
             for (int f = 0; f < k; f++)
             {
-                int fStart      = f * foldSize;
-                int fEnd        = f == k - 1 ? minLen : fStart + foldSize;
+                int fStart      = bounds[f].Start;
+                int fEnd        = bounds[f].End;
                 var foldReturns = new List<double>(512);
                 foreach (var cache in caches)
                 {
@@ -358,6 +283,109 @@ public class FadeShortGA
         double trainFit = best.Fitness;
 
         // Compute validation score for the winner only
+        best.Fitness = FitnessFromCache(best, valCaches, useFolds: false, _cfg);
+
+        if (_verbose) Console.WriteLine($"Best (selected on train): train={trainFit:F3}  val={best.Fitness:F3}");
+        if (_verbose) Console.WriteLine($"  {best}");
+        return best;
+    }
+
+    public FadeShortGenotype RunLowVol(IReadOnlyList<CoinData> coins, FadeShortGenotype? seed = null)
+    {
+        if (coins.Count == 0 || coins.All(c => c.TrainCandles.Length == 0))
+            throw new ArgumentException("No training candles found.");
+
+        if (_verbose)
+        {
+            foreach (var (coin, i) in coins.Select((c, i) => (c, i)))
+                Console.WriteLine($"  Coin {i} (w={coin.Weight:F1})  " +
+                    $"train={coin.TrainCandles.Length} candles  val={coin.ValCandles.Length} candles");
+            if (seed != null) Console.WriteLine($"  Seeding from: {seed}");
+        }
+
+        var trainCaches = coins
+            .Select(c => BuildCache(c.TrainCandles, c.Weight))
+            .Where(c => c.Candles.Length >= 100)
+            .ToList();
+        var valCaches = coins
+            .Select(c => BuildCache(c.ValCandles, c.Weight))
+            .Where(c => c.Candles.Length >= 100)
+            .ToList();
+
+        var population = Enumerable
+            .Range(0, _populationSize)
+            .Select(_ => FadeShortGenotype.RandomLowVol(_rng, seed))
+            .ToList();
+
+        if (seed != null)
+        {
+            var clamped = seed.ClampToBoundsLowVol();
+            population[0] = clamped;
+            int seedCount = Math.Min(_populationSize / 5, _populationSize - 1);
+            for (int s = 1; s <= seedCount; s++)
+                population[s] = clamped.MutateLowVol(_rng, 0.25);
+        }
+
+        List<FadeShortGenotype> eliteIsland = new();
+        double bestFitnessSeen = double.MinValue;
+        int    stagnantGens    = 0;
+
+        for (int gen = 0; gen < _generations; gen++)
+        {
+            double baseMutRate  = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
+            double mutationRate = stagnantGens >= 15 ? Math.Min(baseMutRate * 2.0, 0.9) : baseMutRate;
+
+            Parallel.ForEach(population, ind =>
+                ind.Fitness = FitnessFromCache(ind, trainCaches, useFolds: true, _cfg));
+
+            population  = population.OrderByDescending(g => g.Fitness).ToList();
+            eliteIsland = population.Take(_eliteCount).ToList();
+
+            double topFitness = eliteIsland.First().Fitness;
+            if (topFitness > bestFitnessSeen + 1e-6) { bestFitnessSeen = topFitness; stagnantGens = 0; }
+            else stagnantGens++;
+
+            if (_verbose && (gen + 1) % _migrationInterval == 0)
+            {
+                string tag = stagnantGens >= 15 ? $" [STAGNANT×{stagnantGens} boost]" : "";
+                Console.WriteLine($"Gen {gen + 1,3} — elite: {eliteIsland.First()}{tag}");
+            }
+
+            if (gen % 10 == 0)
+            {
+                static double safe(double v) => double.IsFinite(v) ? v : 0.0;
+                var progress = new
+                {
+                    strategy    = "FadeShortLowVol",
+                    variant     = _cfg.VariantId,
+                    generation  = gen,
+                    bestFitness = safe(eliteIsland.First().Fitness),
+                    meanFitness = safe(Math.Round(population.Average(g => g.Fitness), 4)),
+                    population  = population.Take(20).Select(g => safe(Math.Round(g.Fitness, 3))).ToArray(),
+                };
+                File.WriteAllText("training_progress.json",
+                    System.Text.Json.JsonSerializer.Serialize(progress,
+                        new System.Text.Json.JsonSerializerOptions { WriteIndented = false }));
+            }
+
+            var nextGen = new List<FadeShortGenotype>();
+            nextGen.AddRange(eliteIsland.Take(5));
+            while (nextGen.Count < _populationSize)
+            {
+                var child = FadeShortGenotype.Crossover(
+                                TournamentSelect(population),
+                                TournamentSelect(population), _rng)
+                            .MutateLowVol(_rng, mutationRate);
+                nextGen.Add(child);
+            }
+            population = nextGen;
+        }
+
+        if (_verbose) Console.WriteLine("\n=== Held-out validation (report-only, not used for selection) ===");
+
+        var best = eliteIsland.First();
+        double trainFit = best.Fitness;
+
         best.Fitness = FitnessFromCache(best, valCaches, useFolds: false, _cfg);
 
         if (_verbose) Console.WriteLine($"Best (selected on train): train={trainFit:F3}  val={best.Fitness:F3}");

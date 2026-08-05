@@ -37,7 +37,28 @@ public static class FoldScoreHelper
         double gain = balance - 1.0;
         if (gain <= 0) return gain * 100 - 0.5;
 
-        double wrMult = wr < 0.40 ? wr / 0.40 : 1.0 + (wr - 0.40) * 3.0;
+        // ── Tunable term weights (FitnessConfig) ──────────────────────────────
+        // Each of the six weights below scales exactly ONE term of the canonical score
+        // and is a bit-for-bit no-op at its default of 1.0 — see FitnessConfig for the
+        // per-field contract. Weights are floored at 0 defensively: a hand-edited or
+        // UI-generated fitness_config.json can carry any number, and a NEGATIVE weight
+        // would flip the sign of its term (turning a reward into a punishment and
+        // inverting the GA's gradient). Worse, a negative DdPenalty would drive ddDiv
+        // to exactly 0 or below — dividing by ~0 or flipping the sign of the entire
+        // fold score. None of the six has a meaningful negative interpretation, so 0
+        // ("term switched off") is the floor. NaN, if someone writes one, propagates.
+        double gainW      = Math.Max(0.0, cfg.GainW);
+        double wrW        = Math.Max(0.0, cfg.WrW);
+        double qualityW   = Math.Max(0.0, cfg.QualityW);
+        double freqW      = Math.Max(0.0, cfg.FreqW);
+        double ddW        = Math.Max(0.0, cfg.DdPenalty);
+        double retentionW = Math.Max(0.0, cfg.RetentionW);
+
+        // WrW scales the ABOVE-knee reward slope only. The sub-0.40 branch is a
+        // disqualifying penalty ramp, not a reward, so it stays unweighted — otherwise
+        // WrW = 0 would erase the penalty for a terrible win rate instead of just
+        // switching the bonus off.
+        double wrMult = wr < 0.40 ? wr / 0.40 : 1.0 + (wr - 0.40) * 3.0 * wrW;
 
         double pfMult = pf < 1.5 ? (pf - 1.0) / 0.5 : 1.0 + (pf - 1.5) * 0.5;
         int losses = returns.Count - wins;
@@ -45,22 +66,49 @@ public static class FoldScoreHelper
         double avgLoss = losses > 0 ? grossLoss / losses : avgWin;
         double rr      = avgLoss > 1e-10 ? avgWin / avgLoss : (avgWin > 0 ? 5.0 : 1.0);
         double rrMult  = rr < 2.5 ? (rr - 1.0) / 1.5 : 1.0 + (rr - 2.5) * 0.3;
-        double qualityMult = Math.Min(Math.Sqrt(pfMult * rrMult), 2.5);
+        // QualityW scales the multiplier's DEVIATION FROM 1.0, written in the lerp form
+        // `raw*w + (1-w)` rather than `1 + (raw-1)*w` so that w == 1.0 collapses to
+        // `raw*1.0 + 0.0` — exactly `raw`, with no rounding drift at any magnitude.
+        //
+        // Clamp placement, deliberately:
+        //  · the 2.5 cap is applied AFTER weighting. The cap exists to stop one
+        //    spectacular fold's quality reading from dominating fitness; letting a
+        //    QualityW > 1 punch through it would defeat exactly that purpose.
+        //  · the 0.0 floor stops a large QualityW from turning a sub-1.0 quality
+        //    reading (pf just over 1.0, or rr under 1.0) into a NEGATIVE multiplier,
+        //    which would flip the sign of the whole fold score.
+        // At QualityW = 1.0 neither clamp changes anything: Sqrt is never negative, so
+        // Clamp(raw, 0, 2.5) == Min(raw, 2.5), the original expression.
+        double qualityRaw  = Math.Sqrt(pfMult * rrMult);
+        double qualityMult = Math.Clamp(qualityRaw * qualityW + (1.0 - qualityW), 0.0, 2.5);
 
-        double ddDiv     = 1.0 + maxDd * 10.0;
-        double freqBonus = 1.0 + 0.15 * Math.Log(Math.Max(1.0, returns.Count / (double)minTradesPerFold));
+        // DdPenalty scales drawdown sensitivity. With ddW >= 0, ddDiv >= 1.0 always,
+        // so this division can never blow up or change the score's sign.
+        double ddDiv = 1.0 + maxDd * 10.0 * ddW;
+        // FreqW scales the log trade-count bonus. The Math.Max(1.0, ...) inside the log
+        // keeps it strictly one-sided — a fold that barely clears minTradesPerFold gets
+        // no bonus, never a penalty (thin folds are already handled by the gate above).
+        double freqBonus = 1.0 + 0.15 * freqW * Math.Log(Math.Max(1.0, returns.Count / (double)minTradesPerFold));
 
-        double peakGain      = peak - 1.0;
-        double retentionMult = peakGain > 0.01
+        // RetentionW scales retention's deviation from 1.0, same lerp form as quality.
+        // The 0.2 floor stays on the RAW ratio — it defines how much end-of-fold
+        // give-back the score is willing to look at at all, independent of weighting.
+        // The 0.0 floor afterwards stops a RetentionW > 1 from driving a floored
+        // retention (0.2) negative: 0.2*6 + (1-6) = -3.8 would invert the fold score.
+        double peakGain     = peak - 1.0;
+        double retentionRaw = peakGain > 0.01
             ? Math.Max(0.2, (balance - 1.0) / peakGain)
             : 1.0;
+        double retentionMult = Math.Max(0.0, retentionRaw * retentionW + (1.0 - retentionW));
 
         int    n       = returns.Count;
         double sharpe  = Simulator.SharpeRatio(returns, n);
         double calmar  = Simulator.CalmarRatio(returns);
         double pfStat  = Simulator.ProfitFactor(returns);
         double sortino = Simulator.SortinoRatio(returns, n);
-        double base_   = gain * 100.0 * wrMult * qualityMult * freqBonus / ddDiv * retentionMult;
+        // GainW scales the raw gain term. At 1.0 the `* gainW` factor is exact, so the
+        // product below is bit-identical to the historical `gain * 100.0 * wrMult * ...`.
+        double base_   = gain * 100.0 * gainW * wrMult * qualityMult * freqBonus / ddDiv * retentionMult;
         double score   = base_
             * (1.0 + cfg.SharpeW  * Math.Max(0, Math.Min(sharpe  / 3.0,  statBonusCeiling)))
             * (1.0 + cfg.CalmarW  * Math.Max(0, Math.Min(calmar  / 2.0,  statBonusCeiling)))

@@ -13,7 +13,9 @@ namespace TradingGA;
 //
 // FoldScore = (port_gain × 100) × wr_mult × freq_bonus / dd_div
 //
-// Fitness  = mean(fold_scores) − 0.75 × std(fold_scores)  — penalises time-period fragility
+// Fitness = mean(fold_scores) − stdMult × std(fold_scores) over the SURVIVING walk-forward
+// folds (those that reached MinTradesPerFold trades); stdMult is VC-proportional.
+// Folds are cut PER COIN on that coin's own array — see FitnessFromCache.
 public class FadeShortGA
 {
     public record CoinData(ReadOnlyMemory<Candle> TrainCandles, ReadOnlyMemory<Candle> ValCandles, double Weight = 1.0);
@@ -61,6 +63,7 @@ public class FadeShortGA
     private readonly FitnessConfig _cfg;
 
     private const int MinTradesPerFold = 30;
+    private const int D                = 13;   // genotype parameter count (excl. Fitness) — see FadeShortGenotype.Bounds
 
     public FadeShortGA(
         int           populationSize    = 50,
@@ -81,7 +84,9 @@ public class FadeShortGA
     private static double FoldScore(List<double> returns, double posFrac, FitnessConfig cfg, double volWeight = 1.0)
         => FoldScoreHelper.Canonical(returns, posFrac, MinTradesPerFold, cfg, volWeight, statBonusCeiling: 1.0);
 
-    // Pool returns across ALL coins within each fold time-slot.
+    // Pool returns across ALL coins within each fold slot (fold f = the f-th equal slice of
+    // each coin's OWN history, so the pooled slot is the same relative position for every
+    // symbol even though the absolute dates differ).
     // Per-coin fitness was flat (-1 everywhere) because each coin individually
     // produced too few trades per fold. Pooling 12 coins gives ~12× more trades
     // per fold while fold-to-fold std still guards temporal overfitting.
@@ -116,12 +121,33 @@ public class FadeShortGA
                         cache.Rsi, cache.Adx, cache.Atr, emaBuffer, 0, cache.Candles.Length))
                         all.Add(t.Return);
                 }
-                double volWeight = AverageVolCoverage(caches, 0, caches.Min(c => c.Candles.Length), cfg);
+                double volWeight = AverageVolCoverageFull(caches, cfg);
                 return FoldScore(all, posFrac, cfg, volWeight);
             }
 
-            int minLen = caches.Min(c => c.Candles.Length);
-            int k      = Math.Min(folds, minLen / 40);
+            // Walk-forward folds, k of them, cut PER COIN on that coin's OWN array.
+            //
+            // Index-space fold bounds must never be shared across coins: each coin's
+            // training array is a percentage split of its own (variable-length) history, so
+            // index i is a different calendar date on every symbol. The previous code cut
+            // the folds on minLen — the SHORTEST coin — which both misaligned "fold f"
+            // across symbols and silently discarded every bar past minLen on every longer
+            // coin. FadeShort is single-timeframe here (h1 only; the m15 execution leg lives
+            // in the backtester, not in this GA), so there is no h1→m15 index mapping to
+            // maintain — the fold range indexes cache.Candles/Closes/Rsi/Adx/Atr directly.
+            //
+            // FURTHER IMPROVEMENT: if a BTC RegimeBar series is ever threaded into this GA,
+            // switch to FoldScoreHelper.ComputeRegimeAwareFoldWindows + RangeForWindow so
+            // that fold f covers the same calendar stretch of market history for every
+            // symbol — that is what the regime-gated GAs (DipLong/SwingLong/FadeLong/
+            // RipShort) now do. No BTC series reaches this constructor today, so per-coin
+            // percentage folds are the alignment-safe option available here.
+            //
+            // k is derived from the MEDIAN coin length rather than the shortest, so a single
+            // short symbol can no longer cap the fold count for the whole run. Coins whose
+            // own fold range comes out under 40 bars are skipped for that fold instead.
+            int medianLen = MedianCandleLength(caches);
+            int k         = Math.Min(folds, medianLen / 40);
 
             if (k < 2)
             {
@@ -134,33 +160,39 @@ public class FadeShortGA
                         cache.Rsi, cache.Adx, cache.Atr, emaBuffer, 0, cache.Candles.Length))
                         all.Add(t.Return);
                 }
-                double volWeight = AverageVolCoverage(caches, 0, caches.Min(c => c.Candles.Length), cfg);
+                double volWeight = AverageVolCoverageFull(caches, cfg);
                 return FoldScore(all, posFrac, cfg, volWeight);
             }
 
-            var bounds = FoldScoreHelper.ComputeFoldBoundaries(minLen, k, cfg.EmbargoPct);
-            double[] scores = new double[k];
+            var foldScores = new List<double>(k);
+            var foldCounts = new List<int>(k);
             for (int f = 0; f < k; f++)
             {
-                int fStart      = bounds[f].Start;
-                int fEnd        = bounds[f].End;
                 var foldReturns = new List<double>(512);
                 foreach (var cache in caches)
                 {
-                    if (cache.Candles.Length < fEnd) continue;
+                    var (fStart, fEnd) = FoldScoreHelper.PerCoinFoldRange(
+                        cache.Candles.Length, k, f, cfg.EmbargoPct);
+                    if (fEnd - fStart < 40) continue;
                     Trend.EmaInto(cache.Closes, ind.EmaPeriod, emaBuffer);
                     foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputed(
                         ind, cache.Candles, cache.Closes, cache.Highs, cache.Lows,
                         cache.Rsi, cache.Adx, cache.Atr, emaBuffer, fStart, fEnd))
                         foldReturns.Add(t.Return);
                 }
-                double volWeight = AverageVolCoverage(caches, fStart, fEnd, cfg);
-                scores[f] = FoldScore(foldReturns, posFrac, cfg, volWeight);
+
+                // Only folds that actually reached MinTradesPerFold trades take part in the
+                // aggregation. A thin fold returns the constant -1.0 sentinel from
+                // Canonical(), and mixing constants into mean − stdMult×std inverts the
+                // gradient (see FoldScoreHelper.AggregateFoldScores).
+                if (foldReturns.Count < MinTradesPerFold) continue;
+
+                double volWeight = AverageVolCoverageFold(caches, k, f, cfg);
+                foldScores.Add(FoldScore(foldReturns, posFrac, cfg, volWeight));
+                foldCounts.Add(foldReturns.Count);
             }
 
-            double mean = scores.Average();
-            double std  = Math.Sqrt(scores.Select(s => (s - mean) * (s - mean)).Average());
-            return mean - 0.75 * std;
+            return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D);
         }
         finally
         {
@@ -168,13 +200,42 @@ public class FadeShortGA
         }
     }
 
-    private static double AverageVolCoverage(IReadOnlyList<CoinCache> caches, int start, int end, FitnessConfig cfg)
+    // Median candle count across the coin caches. Used to size the fold count without
+    // letting the single shortest symbol dictate k for everyone (folds are per-coin now,
+    // so k no longer has to fit inside the shortest array).
+    private static int MedianCandleLength(IReadOnlyList<CoinCache> caches)
+    {
+        if (caches.Count == 0) return 0;
+        var lens = caches.Select(c => c.Candles.Length).OrderBy(n => n).ToArray();
+        return lens[lens.Length / 2];
+    }
+
+    // Vol coverage over each coin's FULL array (no minLen truncation — coverage is a
+    // per-coin average, so longer coins contribute their whole history).
+    private static double AverageVolCoverageFull(IReadOnlyList<CoinCache> caches, FitnessConfig cfg)
     {
         if (cfg.AtrLow <= 0.0 && cfg.AtrHigh >= 9999.0) return 1.0;
         double sum = 0; int count = 0;
         foreach (var c in caches)
         {
-            if (c.Atr.Length < end) continue;
+            if (c.Atr.Length == 0) continue;
+            sum += VariantRouter.VolCoverage(c.Atr, 0, c.Atr.Length, cfg.AtrLow, cfg.AtrHigh);
+            count++;
+        }
+        return count == 0 ? 1.0 : sum / count;
+    }
+
+    // Vol coverage for fold f, sliced per coin exactly as the trade loop slices it — the
+    // ATR array is built from the same candle array, so it shares that index space.
+    private static double AverageVolCoverageFold(
+        IReadOnlyList<CoinCache> caches, int folds, int fold, FitnessConfig cfg)
+    {
+        if (cfg.AtrLow <= 0.0 && cfg.AtrHigh >= 9999.0) return 1.0;
+        double sum = 0; int count = 0;
+        foreach (var c in caches)
+        {
+            var (start, end) = FoldScoreHelper.PerCoinFoldRange(c.Atr.Length, folds, fold, cfg.EmbargoPct);
+            if (end - start < 40) continue;
             sum += VariantRouter.VolCoverage(c.Atr, start, end, cfg.AtrLow, cfg.AtrHigh);
             count++;
         }

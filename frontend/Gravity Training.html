@@ -204,9 +204,17 @@ const STRATEGIES = [
 
 // Default GA + fitness params
 const DEFAULT_GA = { popSize:20, crossover:0.72, mutation:0.18, folds:5, valSplit:20, tpeIters:60 };
-const DEFAULT_FW = { gainW:1.0, wrW:0.9, qualityW:0.8, freqW:0.6, ddPenalty:1.2, retentionW:1.0, sharpeW:0.7, calmarW:0.6, pfW:0.5, sortinoW:0.4 };
+// NOTE: gainW / wrW / qualityW / freqW / ddPenalty / retentionW were INERT until 2026-08 —
+// FoldScoreHelper.Canonical hardcoded those coefficients and never read the config. They are
+// now wired, and 1.0 is the neutral (no-op) value for each. DEFAULT_FW and `conservative`
+// therefore pin them at 1.0 so a default run reproduces plain CLI fitness exactly; anything
+// else here silently changes the fitness function for every run started from this UI, and the
+// generated fitness_config.json is gitignored and never deleted, so it leaks into later CLI
+// runs too. The `balanced` / `aggressive` values below predate the wiring and were chosen when
+// they did nothing — they now take real effect and have not been validated. Re-tune before use.
+const DEFAULT_FW = { gainW:1.0, wrW:1.0, qualityW:1.0, freqW:1.0, ddPenalty:1.0, retentionW:1.0, sharpeW:0.7, calmarW:0.6, pfW:0.5, sortinoW:0.4 };
 const FW_PRESETS = {
-  conservative: { gainW:1.0, wrW:0.9, qualityW:0.8, freqW:0.6, ddPenalty:1.2, retentionW:1.0, sharpeW:0.0, calmarW:0.0, pfW:0.0, sortinoW:0.0 },
+  conservative: { gainW:1.0, wrW:1.0, qualityW:1.0, freqW:1.0, ddPenalty:1.0, retentionW:1.0, sharpeW:0.0, calmarW:0.0, pfW:0.0, sortinoW:0.0 },
   balanced:     { gainW:1.0, wrW:0.7, qualityW:0.6, freqW:0.8, ddPenalty:1.0, retentionW:0.7, sharpeW:0.3, calmarW:0.3, pfW:0.2, sortinoW:0.0 },
   aggressive:   { gainW:1.3, wrW:0.4, qualityW:0.3, freqW:1.2, ddPenalty:0.7, retentionW:0.4, sharpeW:0.0, calmarW:0.0, pfW:0.0, sortinoW:0.0 },
 };

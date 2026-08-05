@@ -10,7 +10,9 @@ namespace TradingGA;
 //   portfolio gain (compounded 3% per session) × win-rate multiplier
 //   divided by drawdown penalty (2× stronger than swing to penalise stop-loss tails)
 //   No frequency bonus — trade count is driven by coin volatility, not strategy quality.
-// Fitness = mean(fold_scores) − 0.75 × std(fold_scores)
+// Fitness = mean(fold_scores) − stdMult × std(fold_scores) over the SURVIVING walk-forward
+// folds (those that reached MinTradesPerFold trades); stdMult is VC-proportional.
+// Folds are cut PER COIN on that coin's own array — see Fitness().
 public class GridGeneticAlgorithm
 {
     public record CoinData(ReadOnlyMemory<Candle> TrainCandles, ReadOnlyMemory<Candle> ValCandles, double Weight = 1.0);
@@ -25,6 +27,7 @@ public class GridGeneticAlgorithm
 
     private const int    MinTradesPerFold = 10;
     private const double FitPosFrac       = 0.03;
+    private const int    D                = 10;   // genotype parameter count (excl. Fitness) — see GridGenotype.Bounds
 
     public GridGeneticAlgorithm(
         int            populationSize    = 60,
@@ -98,8 +101,28 @@ public class GridGeneticAlgorithm
             return FoldScore(all, _cfg);
         }
 
-        int minLen  = validCoins.Min(x => x.arr.Length);
-        int k       = Math.Min(folds, minLen / 40);
+        // Walk-forward folds, k of them, cut PER COIN on that coin's OWN array.
+        //
+        // Index-space fold bounds must never be shared across coins: each coin's training
+        // array is a percentage split of its own (variable-length) history, so index i is a
+        // different calendar date on every symbol. The previous code cut the folds on
+        // minLen — the SHORTEST coin — which both misaligned "fold f" across symbols and
+        // silently discarded every bar past minLen on every longer coin. Grid is
+        // single-timeframe (h1 only; CoinData carries one candle array), so there is no
+        // h1→m15 index mapping to maintain here.
+        //
+        // FURTHER IMPROVEMENT: if a BTC RegimeBar series is ever threaded into this GA,
+        // switch to FoldScoreHelper.ComputeRegimeAwareFoldWindows + RangeForWindow so that
+        // fold f covers the same calendar stretch of market history for every symbol — that
+        // is what the regime-gated GAs (DipLong/SwingLong/FadeLong/RipShort) now do. No BTC
+        // series reaches this constructor today, so per-coin percentage folds are the
+        // alignment-safe option available here.
+        //
+        // k is derived from the MEDIAN coin length rather than the shortest, so a single
+        // short symbol can no longer cap the fold count for the whole run. Coins whose own
+        // fold range comes out under 40 bars are skipped for that fold instead.
+        int medianLen = MedianLength(validCoins.Select(x => x.arr.Length));
+        int k         = Math.Min(folds, medianLen / 40);
 
         if (k < 2)
         {
@@ -109,25 +132,39 @@ public class GridGeneticAlgorithm
             return FoldScore(all, _cfg);
         }
 
-        var bounds = FoldScoreHelper.ComputeFoldBoundaries(minLen, k, _cfg.EmbargoPct);
-        double[] scores = new double[k];
+        var foldScores = new List<double>(k);
+        var foldCounts = new List<int>(k);
         for (int f = 0; f < k; f++)
         {
-            int start       = bounds[f].Start;
-            int end         = bounds[f].End;
             var foldReturns = new List<double>();
             foreach (var (coin, arr) in validCoins)
             {
-                if (arr.Length < end) continue;
+                var (start, end) = FoldScoreHelper.PerCoinFoldRange(arr.Length, k, f, _cfg.EmbargoPct);
+                if (end - start < 40) continue;
                 foldReturns.AddRange(
                     GridSimulator.GetGridSessionReturns(ind, arr.Slice(start, end - start).Span).Select(t => t.Return));
             }
-            scores[f] = FoldScore(foldReturns, _cfg);
+
+            // Only folds that actually reached MinTradesPerFold sessions take part in the
+            // aggregation. A thin fold returns the constant -1.0 sentinel from FoldScore,
+            // and mixing constants into mean − stdMult×std inverts the gradient (see
+            // FoldScoreHelper.AggregateFoldScores).
+            if (foldReturns.Count < MinTradesPerFold) continue;
+
+            foldScores.Add(FoldScore(foldReturns, _cfg));
+            foldCounts.Add(foldReturns.Count);
         }
 
-        double mean = scores.Average();
-        double std  = Math.Sqrt(scores.Select(s => (s - mean) * (s - mean)).Average());
-        return mean - 0.75 * std;
+        return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D);
+    }
+
+    // Median of a set of array lengths. Used to size the fold count without letting the
+    // single shortest symbol dictate k for everyone (folds are per-coin now, so k no longer
+    // has to fit inside the shortest array).
+    private static int MedianLength(IEnumerable<int> lengths)
+    {
+        var sorted = lengths.OrderBy(n => n).ToArray();
+        return sorted.Length == 0 ? 0 : sorted[sorted.Length / 2];
     }
 
     public GridGenotype Run(IReadOnlyList<CoinData> coins, GridGenotype? seed = null, double adxCeiling = 20.0)

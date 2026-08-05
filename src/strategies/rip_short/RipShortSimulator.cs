@@ -52,13 +52,65 @@ public static class RipShortSimulator
     // MaxHoldCandles is a time-based exit, independent of the hard ATR stop —
     // suppressing it while calm+losing just gives the trade more time; the hard
     // stop (fixed at entry) remains the tail-risk backstop regardless of mode.
-    public enum ExitOverrideMode { None, WaitForBreakeven, DcaAndWait }
+    //
+    // DORMANT: every production call site passes overrideCfg = null. Only unit
+    // tests construct a non-null config.
+    public enum ExitOverrideMode
+    {
+        /// <summary>No override — production behaviour: forced exit at MaxHoldCandles.</summary>
+        None,
 
+        /// <summary>
+        /// Suppress the MaxHoldCandles time exit while the short is underwater and local
+        /// volatility is calm. Deployed size is unchanged (1x), so the per-trade size
+        /// accounting stays honest; only the holding period is extended (by at most
+        /// MaxExtraHoldCandles bars).
+        /// Caveat: backtest callers derive PortfolioReplay.Trade.HoldDuration from the
+        /// genotype's MaxHoldCandles, so a waiting trade occupies its concurrency slot for
+        /// longer than the replay believes. That understates occupancy but never
+        /// understates size.
+        /// </summary>
+        WaitForBreakeven,
+
+        /// <summary>
+        /// WaitForBreakeven plus a single size-increasing add once price has moved
+        /// DcaAtrMult x ATR further against the position.
+        ///
+        /// !! MUST NOT BE ENABLED IN PRODUCTION — BROKEN EXPOSURE ACCOUNTING !!
+        /// The add multiplies deployed capital by <see cref="ExitOverrideConfig.MaxSizeMult"/>
+        /// (default 2.0) but the position is still reported as ONE trade: the returned
+        /// tuple carries a single percentage return scaled by that multiplier, with no
+        /// per-trade size field. Portfolio-level concurrency caps in
+        /// src/core/PortfolioReplay.cs (RipShort concurrent = 8, Config.MaxDirectionalConcurrent
+        /// = 20) count each trade exactly once, so with this mode active real short
+        /// exposure can reach MaxSizeMult x the modelled cap — both per-strategy and in
+        /// the aggregate same-direction budget. Enabling it is only safe once the trade
+        /// record carries a per-trade size multiplier that PortfolioReplay consumes when
+        /// counting concurrency and sizing EUR exposure.
+        ///
+        /// The "ripshort_dca" trade kind is the audit trail for trades that took the add.
+        /// </summary>
+        DcaAndWait
+    }
+
+    /// <summary>Tuning for the dormant post-hoc exit override. Null at every production call site.</summary>
+    /// <param name="Mode">Which override behaviour to apply (see <see cref="ExitOverrideMode"/>).</param>
+    /// <param name="AtrGateRatio">Local h4 ATR ratio must be ≤ this to keep waiting ("calm").</param>
+    /// <param name="DcaAtrMult">Adverse move (in ATR) that triggers the single DCA add.</param>
+    /// <param name="MaxExtraHoldCandles">Absolute safety cap on extra bars beyond MaxHoldCandles.</param>
+    /// <param name="MaxSizeMult">
+    /// Total deployed size after the single DCA add, as a multiple of the initial leg
+    /// (2.0 = equal-size add / doubled capital). Drives both the size-weighted blended
+    /// cost basis and the return scaling of the reported trade.
+    /// WARNING: this multiplier is invisible to portfolio-level exposure accounting —
+    /// see the <see cref="ExitOverrideMode.DcaAndWait"/> remarks before using it.
+    /// </param>
     public record ExitOverrideConfig(
         ExitOverrideMode Mode,
-        double AtrGateRatio        = 1.4,   // local h4 ATR ratio must be ≤ this to keep waiting ("calm")
-        double DcaAtrMult          = 1.2,   // adverse move (in ATR) that triggers the single DCA add
-        int    MaxExtraHoldCandles = 60);   // absolute safety cap on extra bars beyond MaxHoldCandles
+        double AtrGateRatio        = 1.4,
+        double DcaAtrMult          = 1.2,
+        int    MaxExtraHoldCandles = 60,
+        double MaxSizeMult         = 2.0);
 
     public static List<(DateTime Time, double Return, string Kind)> GetRipShortReturns(
         RipShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, FundingRateSession? funding = null,
@@ -276,11 +328,40 @@ public static class RipShortSimulator
                     waiting = ShouldWaitPastTimeout(m15Price, entry, atrRatioNow, holdH1 - g.MaxHoldCandles, overrideCfg);
                     if (waiting) everWaited = true;
 
-                    if (ShouldDca(waiting, dcaDone, m15Price, entry, atrEntry, overrideCfg))
+                    // Never add on a bar that has already triggered an exit level: the extra
+                    // capital would never actually be deployed, yet the reported return would
+                    // still be scaled by MaxSizeMult. It also keeps exitPx below consistent
+                    // with the target level that triggered the exit.
+                    bool exitingThisBar = hitStop || hitTarget || hitTrail;
+
+                    if (!exitingThisBar && ShouldDca(waiting, dcaDone, m15Price, entry, atrEntry, overrideCfg))
                     {
-                        entry       = (entry + m15Price) / 2.0;   // blended cost basis, equal-size add
+                        // Rebase the position onto the size-weighted blended cost basis and then
+                        // treat it exactly like a fresh entry at that basis:
+                        //  · target   — recomputed from the blended entry. Left anchored to the
+                        //               original (lower) entry it would demand a move the enlarged
+                        //               position never needed to make.
+                        //  · trailing — for a SHORT the favourable direction is DOWN, so trailLow
+                        //               tracks the best (lowest) price seen and the trail arms on
+                        //               `entry - trailLow >= TrailingActivationAtrMult x ATR`.
+                        //               Blending entry UPWARD against a running minimum accumulated
+                        //               before the add would inflate that difference and arm (or
+                        //               even immediately fire) the trail on profit belonging to the
+                        //               old, smaller position. So reset trailLow to the blended
+                        //               entry and clear trailArmed — the same state a fresh entry
+                        //               starts in — which makes arming mean "activation x ATR of
+                        //               profit against the blended cost basis" and guarantees the
+                        //               trail can only fire off a price actually observed after
+                        //               the add.
+                        //  · hardStop — deliberately NOT rebased: it is the tail-risk backstop and
+                        //               stays fixed at the original entry's swing high.
+                        entry       = BlendedEntry(entry, m15Price, overrideCfg.MaxSizeMult);
+                        target      = entry - g.TakeProfitAtrMult * atrEntry;
+                        trailLow    = entry;
+                        trailArmed  = false;
                         dcaDone     = true;
-                        dcaSizeMult = 2.0;                        // total capital deployed doubled
+                        dcaSizeMult = overrideCfg.MaxSizeMult;   // total deployed capital, as a multiple
+                                                                 // of the initial leg (see ExitOverrideMode.DcaAndWait)
                     }
                 }
                 bool timedOut = pastMaxHold && !waiting;
@@ -338,10 +419,24 @@ public static class RipShortSimulator
 
     // Pure decision: trigger the single DCA add? Only while waiting, only once per
     // trade, only after price has moved DcaAtrMult×ATR further against the position.
+    // MaxSizeMult ≤ 1.0 means there is no add to make: taking it would leave the cost
+    // basis untouched (see BlendedEntry) yet still burn dcaDone, relabel the trade
+    // "ripshort_dca", and scale the reported return by a fraction of itself.
     internal static bool ShouldDca(
         bool waiting, bool dcaDone, double price, double entry, double atrEntry, ExitOverrideConfig cfg) =>
         waiting && cfg.Mode == ExitOverrideMode.DcaAndWait && !dcaDone
+        && cfg.MaxSizeMult > 1.0
         && price - entry >= cfg.DcaAtrMult * atrEntry;
+
+    // Pure helper: size-weighted blended cost basis after the single DCA add.
+    // The initial leg carries size 1.0 and the add carries (maxSizeMult - 1.0), so
+    // maxSizeMult = 2.0 reduces to the equal-size midpoint (entry + addPrice) / 2.
+    // maxSizeMult ≤ 1.0 means "no add" and leaves the cost basis untouched.
+    internal static double BlendedEntry(double entry, double addPrice, double maxSizeMult)
+    {
+        double addSize = Math.Max(0.0, maxSizeMult - 1.0);
+        return (entry + addPrice * addSize) / (1.0 + addSize);
+    }
 
     private static double TradeCost(bool isStop, double atrEntry, double entryPx)
     {

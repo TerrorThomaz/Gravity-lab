@@ -56,184 +56,276 @@ public static class ExpandingWindowValidation
         return new(strategyName, windows, meanEff, isOverfit, usable.Count, inconclusive);
     }
 
-    // Embargo gap (in h1 bars) inserted between the training window and the test window,
-    // mirroring FitnessConfig.EmbargoPct used by the GA fold splitter. Without it the test
-    // window starts on the bar immediately after training ends, so a trade opened near the
-    // train boundary and indicators with multi-bar lookback leak straight across the seam.
+    // Embargo gap (in bars of the coin's own h1 array) inserted between that coin's
+    // training window and its test window, mirroring FitnessConfig.EmbargoPct used by the
+    // GA fold splitter. Without it the test window starts on the bar immediately after
+    // training ends, so a trade opened near the train boundary and indicators with
+    // multi-bar lookback leak straight across the seam. `stepSize` is the coin's OWN test
+    // block length, so the gap scales with that coin's history like every other bound here.
     private static int EmbargoBars(int stepSize, FitnessConfig cfg)
         => Math.Max(0, (int)(stepSize * cfg.EmbargoPct));
 
+    // ── Per-coin expanding windows ───────────────────────────────────────────────
+    // Window w (0..3) trains on the first (1/4 + w/8) of a coin's own history and tests on
+    // the following 1/8 of it, with an embargo gap in between. That is the same schedule
+    // the original code described — trainEnd = len/4 + w*len/8, test block len/8 — but the
+    // fractions are now evaluated against EACH COIN'S OWN array length instead of against
+    // `minLen`, the length of the shortest coin in the set.
+    //
+    // Why this had to change: an index is not a date. Deriving stepSize and trainEnd from
+    // the shortest coin and then applying those raw indices to every other coin meant
+    //   (a) "window w" covered a different calendar stretch on every symbol whose history
+    //       starts on a different day, so the windows were not a consistent stretch of
+    //       market history across the set, and
+    //   (b) every bar past minLen on every longer coin was unreachable, because the
+    //       schedule never advanced beyond the shortest array.
+    // The old `Math.Min(trainEnd, arr.Length)` clamps hid that mismatch instead of fixing
+    // it. This mirrors FoldScoreHelper.PerCoinFoldRange, which the per-coin GAs use, and
+    // the "NOTE ON INDEX SPACES" contract at the top of FoldScoreHelper's fold section.
+    //
+    // A coin whose own window would come out under MinWindowBars is skipped for that
+    // window (the < 40 convention used by the GAs) rather than dragging the whole
+    // schedule down for every other coin. Held-out coins carry empty training arrays and
+    // are therefore skipped everywhere, instead of collapsing minLen to 0 and killing the
+    // entire report as they used to.
+    private const int WindowCount   = 4;
+    private const int MinWindowBars = 40;
+
+    // Returns the [0, TrainEnd) / [TestStart, TestEnd) split of a coin's own array for
+    // window `w`, or null when that coin's history is too short to support the window.
+    // Internal so the alignment contract can be unit-tested directly.
+    internal static (int TrainEnd, int TestStart, int TestEnd)? WindowForCoin(
+        int totalBars, int w, FitnessConfig cfg)
+    {
+        if (totalBars <= 0 || w < 0) return null;
+
+        int stepSize = totalBars / 8;                 // test block: 1/8 of THIS coin
+        int trainEnd = totalBars / 4 + w * stepSize;  // 1/4, 3/8, 1/2, 5/8 of THIS coin
+        if (trainEnd < MinWindowBars || trainEnd >= totalBars) return null;
+
+        int testStart = trainEnd + EmbargoBars(stepSize, cfg);
+        if (testStart >= totalBars) return null;
+
+        int testEnd = Math.Min(testStart + stepSize, totalBars);
+        if (testEnd - testStart < MinWindowBars) return null;
+
+        return (trainEnd, testStart, testEnd);
+    }
+
+    // ── h1 → m15 index mapping ───────────────────────────────────────────────────
+    // ×4 arithmetic is only valid when the two arrays are the same slice of history at two
+    // resolutions. That holds for DipLong and SwingLong: their train arrays come from a
+    // plain percentage split of a full h1/m15 pair, and h1 is AggregateCandles(m15, 4), so
+    // h1[i].Time == m15[4i].Time by construction.
+    //
+    // It does NOT hold for FadeLong and RipShort. Their training arrays are bear-window
+    // FILTERED CONCATENATIONS produced independently for the two timeframes
+    // (LongTrainCommands.FilterToWindows, ~line 354): each timeframe drops a different
+    // number of candles at every window edge, so m15.Length != 4 * h1.Length and index
+    // 4*i on m15 is not the same moment as index i on h1. Those two map by TIMESTAMP.
+    private static (int Start, int Len) M15RangeByFactor(int h1Start, int h1End, int m15Len)
+    {
+        int start = Math.Min(h1Start * 4, m15Len);
+        int len   = Math.Max(0, Math.Min((h1End - h1Start) * 4, m15Len - start));
+        return (start, len);
+    }
+
+    // Maps the h1 index range [h1Start, h1End) onto the coin's own m15 array by calendar
+    // time, via the same binary-search helper the regime-gated GAs use for their folds.
+    // The window closes at DateTime.MaxValue when the h1 range runs to the end of the
+    // array, so trailing m15 candles are scored rather than silently dropped.
+    private static (int Start, int Len) M15RangeByTime(
+        ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, int h1Start, int h1End)
+    {
+        if (h1.Length == 0 || h1Start >= h1.Length || h1End <= h1Start) return (0, 0);
+        DateTime start = h1[h1Start].Time;
+        DateTime end   = h1End < h1.Length ? h1[h1End].Time : DateTime.MaxValue;
+        var (s, e) = FoldScoreHelper.RangeForWindow(m15, start, end);
+        return (s, e - s);
+    }
+
+    // Shared driver for all six strategies: one copy of the window schedule, with the
+    // strategy-specific parts (array length, slicing, GA run, Sharpe) passed in.
+    //
+    // TrainBars/TestBars in the result are the MEAN window lengths across the coins that
+    // took part in that window — the windows are per-coin now, so a single number can only
+    // ever be a summary.
+    private static ExpandingWindowReport RunExpanding<TCoin, TGeno>(
+        string strategyName,
+        IReadOnlyList<TCoin> coins,
+        FitnessConfig cfg,
+        Func<TCoin, int> h1Length,
+        Func<TCoin, int, int, TCoin> slice,
+        Func<IReadOnlyList<TCoin>, TGeno> train,
+        Func<TGeno, IReadOnlyList<TCoin>, double> sharpe)
+    {
+        var windows = new List<WindowResult>();
+
+        for (int w = 0; w < WindowCount; w++)
+        {
+            var trainCoins = new List<TCoin>();
+            var testCoins  = new List<TCoin>();
+            var trainBars  = new List<int>();
+            var testBars   = new List<int>();
+
+            foreach (var c in coins)
+            {
+                var win = WindowForCoin(h1Length(c), w, cfg);
+                if (win is null) continue;
+                var (trainEnd, testStart, testEnd) = win.Value;
+
+                trainCoins.Add(slice(c, 0, trainEnd));
+                testCoins.Add(slice(c, testStart, testEnd));
+                trainBars.Add(trainEnd);
+                testBars.Add(testEnd - testStart);
+            }
+
+            // No coin in the set is long enough for this window — record nothing rather
+            // than handing an empty coin list to the GA (which throws).
+            if (trainCoins.Count == 0) continue;
+
+            var geno = train(trainCoins);
+
+            double isSharpe  = sharpe(geno, trainCoins);
+            double oosSharpe = sharpe(geno, testCoins);
+
+            windows.Add(MakeWindow(w, trainBars.Average(), testBars.Average(), isSharpe, oosSharpe));
+        }
+
+        return BuildReport(strategyName, windows);
+    }
+
+    // ── FadeShort ────────────────────────────────────────────────────────────────
+    // Single-timeframe (CoinData carries one h1 array), so there is no h1→m15 mapping.
     public static ExpandingWindowReport RunFadeShort(
         IReadOnlyList<FadeShortGA.CoinData> coins,
         FitnessConfig? cfg = null)
     {
-        cfg ??= new FitnessConfig();
-        var windows = new List<WindowResult>();
-
-        int minLen = coins.Min(c => c.TrainCandles.Length);
-        int stepSize = minLen / 8;
-        if (stepSize < 100) stepSize = 100;
-        int embargo = EmbargoBars(stepSize, cfg);
-
-        for (int w = 0; w < 4; w++)
-        {
-            int trainEnd = minLen / 4 + w * stepSize;
-            if (trainEnd + embargo >= minLen) break;
-
-            var trainCoins = coins.Select(c =>
-            {
-                var arr = c.TrainCandles.ToArray();
-                return new FadeShortGA.CoinData(
-                    new ReadOnlyMemory<Candle>(arr, 0, Math.Min(trainEnd, arr.Length)),
-                    c.ValCandles, c.Weight);
-            }).ToList();
-
-            var ga = new FadeShortGA(populationSize: 30, generations: 40, verbose: false, cfg: cfg);
-            var geno = ga.Run(trainCoins);
-
-            double isSharpe = ComputeSharpeFadeShort(geno, trainCoins);
-
-            var testCoins = coins.Select(c =>
-            {
-                var arr = c.TrainCandles.ToArray();
-                int testStart = Math.Min(trainEnd + embargo, arr.Length);
-                int testLen = Math.Min(stepSize, arr.Length - testStart);
-                if (testLen <= 0) return new FadeShortGA.CoinData(
-                    ReadOnlyMemory<Candle>.Empty, ReadOnlyMemory<Candle>.Empty, 0);
-                return new FadeShortGA.CoinData(
-                    new ReadOnlyMemory<Candle>(arr, testStart, testLen),
-                    c.ValCandles, c.Weight);
-            }).Where(c => c.TrainCandles.Length > 0).ToList();
-
-            double oosSharpe = ComputeSharpeFadeShort(geno, testCoins);
-
-            windows.Add(MakeWindow(w, trainEnd, stepSize, isSharpe, oosSharpe));
-        }
-
-        return BuildReport("FadeShort", windows);
+        var fc = cfg ?? new FitnessConfig();
+        return RunExpanding<FadeShortGA.CoinData, FadeShortGenotype>(
+            "FadeShort", coins, fc,
+            c => c.TrainCandles.Length,
+            SliceFadeShort,
+            tc => new FadeShortGA(populationSize: 30, generations: 40, verbose: false, cfg: fc).Run(tc),
+            ComputeSharpeFadeShort);
     }
 
+    private static FadeShortGA.CoinData SliceFadeShort(FadeShortGA.CoinData c, int start, int end)
+        => new(c.TrainCandles.Slice(start, end - start), c.ValCandles, c.Weight);
+
+    // ── DipLong ──────────────────────────────────────────────────────────────────
+    // Train arrays are a plain percentage split of an aggregated h1/m15 pair, so the
+    // m15 index is exactly 4 x the h1 index (see M15RangeByFactor).
     public static ExpandingWindowReport RunDipLong(
         IReadOnlyList<DipLongGA.CoinData> coins,
         FitnessConfig? cfg = null)
     {
-        cfg ??= new FitnessConfig();
-        var windows = new List<WindowResult>();
-
-        int minLen = coins.Min(c => c.TrainH1.Length);
-        int stepSize = minLen / 8;
-        if (stepSize < 100) stepSize = 100;
-        int embargo = EmbargoBars(stepSize, cfg);
-
-        for (int w = 0; w < 4; w++)
-        {
-            int trainEnd = minLen / 4 + w * stepSize;
-            if (trainEnd + embargo >= minLen) break;
-
-            var trainCoins = coins.Select(c =>
-            {
-                var h1 = c.TrainH1.ToArray();
-                var m15 = c.TrainM15.ToArray();
-                return new DipLongGA.CoinData(
-                    new ReadOnlyMemory<Candle>(h1, 0, Math.Min(trainEnd, h1.Length)),
-                    c.ValH1,
-                    new ReadOnlyMemory<Candle>(m15, 0, Math.Min(trainEnd * 4, m15.Length)),
-                    c.ValM15, c.Weight);
-            }).ToList();
-
-            var ga = new DipLongGA(populationSize: 30, generations: 40, verbose: false, cfg: cfg);
-            var geno = ga.Run(trainCoins);
-
-            double isSharpe = ComputeSharpeDipLong(geno, trainCoins);
-
-            var testCoins = coins.Select(c =>
-            {
-                var h1 = c.TrainH1.ToArray();
-                var m15 = c.TrainM15.ToArray();
-                // testStart already includes the embargo gap; the m15 offset is the usual
-                // h1index*4 so the two timeframes stay aligned across the gap.
-                int testStart = Math.Min(trainEnd + embargo, h1.Length);
-                int testLen = Math.Min(stepSize, h1.Length - testStart);
-                int m15Start = Math.Min(testStart * 4, m15.Length);
-                int m15Len = Math.Max(0, Math.Min(testLen * 4, m15.Length - m15Start));
-                if (testLen <= 0) return new DipLongGA.CoinData(
-                    ReadOnlyMemory<Candle>.Empty, ReadOnlyMemory<Candle>.Empty,
-                    ReadOnlyMemory<Candle>.Empty, ReadOnlyMemory<Candle>.Empty, 0);
-                return new DipLongGA.CoinData(
-                    new ReadOnlyMemory<Candle>(h1, testStart, testLen),
-                    c.ValH1,
-                    new ReadOnlyMemory<Candle>(m15, m15Start, m15Len),
-                    c.ValM15, c.Weight);
-            }).Where(c => c.TrainH1.Length > 0).ToList();
-
-            double oosSharpe = ComputeSharpeDipLong(geno, testCoins);
-
-            windows.Add(MakeWindow(w, trainEnd, stepSize, isSharpe, oosSharpe));
-        }
-
-        return BuildReport("DipLong", windows);
+        var fc = cfg ?? new FitnessConfig();
+        return RunExpanding<DipLongGA.CoinData, DipLongGenotype>(
+            "DipLong", coins, fc,
+            c => c.TrainH1.Length,
+            SliceDipLong,
+            tc => new DipLongGA(populationSize: 30, generations: 40, verbose: false, cfg: fc).Run(tc),
+            ComputeSharpeDipLong);
     }
 
+    private static DipLongGA.CoinData SliceDipLong(DipLongGA.CoinData c, int start, int end)
+    {
+        var (m15Start, m15Len) = M15RangeByFactor(start, end, c.TrainM15.Length);
+        return new(
+            c.TrainH1.Slice(start, end - start), c.ValH1,
+            c.TrainM15.Slice(m15Start, m15Len),  c.ValM15, c.Weight);
+    }
+
+    // ── SwingLong ────────────────────────────────────────────────────────────────
+    // Same plain percentage split as DipLong — the x4 mapping holds.
     public static ExpandingWindowReport RunSwingLong(
         IReadOnlyList<SwingLongGA.CoinData> coins,
         FitnessConfig? cfg = null)
     {
-        cfg ??= new FitnessConfig();
-        var windows = new List<WindowResult>();
-
-        int minLen = coins.Min(c => c.TrainH1.Length);
-        int stepSize = minLen / 8;
-        if (stepSize < 100) stepSize = 100;
-        int embargo = EmbargoBars(stepSize, cfg);
-
-        for (int w = 0; w < 4; w++)
-        {
-            int trainEnd = minLen / 4 + w * stepSize;
-            if (trainEnd + embargo >= minLen) break;
-
-            var trainCoins = coins.Select(c =>
-            {
-                var h1 = c.TrainH1.ToArray();
-                var m15 = c.TrainM15.ToArray();
-                return new SwingLongGA.CoinData(
-                    new ReadOnlyMemory<Candle>(h1, 0, Math.Min(trainEnd, h1.Length)),
-                    c.ValH1,
-                    new ReadOnlyMemory<Candle>(m15, 0, Math.Min(trainEnd * 4, m15.Length)),
-                    c.ValM15, c.Weight);
-            }).ToList();
-
-            var ga = new SwingLongGA(populationSize: 30, generations: 40, verbose: false, cfg: cfg);
-            var geno = ga.Run(trainCoins);
-
-            double isSharpe = ComputeSharpeSwingLong(geno, trainCoins);
-
-            var testCoins = coins.Select(c =>
-            {
-                var h1 = c.TrainH1.ToArray();
-                var m15 = c.TrainM15.ToArray();
-                // testStart already includes the embargo gap; the m15 offset is the usual
-                // h1index*4 so the two timeframes stay aligned across the gap.
-                int testStart = Math.Min(trainEnd + embargo, h1.Length);
-                int testLen = Math.Min(stepSize, h1.Length - testStart);
-                int m15Start = Math.Min(testStart * 4, m15.Length);
-                int m15Len = Math.Max(0, Math.Min(testLen * 4, m15.Length - m15Start));
-                if (testLen <= 0) return new SwingLongGA.CoinData(
-                    ReadOnlyMemory<Candle>.Empty, ReadOnlyMemory<Candle>.Empty,
-                    ReadOnlyMemory<Candle>.Empty, ReadOnlyMemory<Candle>.Empty, 0);
-                return new SwingLongGA.CoinData(
-                    new ReadOnlyMemory<Candle>(h1, testStart, testLen),
-                    c.ValH1,
-                    new ReadOnlyMemory<Candle>(m15, m15Start, m15Len),
-                    c.ValM15, c.Weight);
-            }).Where(c => c.TrainH1.Length > 0).ToList();
-
-            double oosSharpe = ComputeSharpeSwingLong(geno, testCoins);
-
-            windows.Add(MakeWindow(w, trainEnd, stepSize, isSharpe, oosSharpe));
-        }
-
-        return BuildReport("SwingLong", windows);
+        var fc = cfg ?? new FitnessConfig();
+        return RunExpanding<SwingLongGA.CoinData, SwingLongGenotype>(
+            "SwingLong", coins, fc,
+            c => c.TrainH1.Length,
+            SliceSwingLong,
+            tc => new SwingLongGA(populationSize: 30, generations: 40, verbose: false, cfg: fc).Run(tc),
+            ComputeSharpeSwingLong);
     }
+
+    private static SwingLongGA.CoinData SliceSwingLong(SwingLongGA.CoinData c, int start, int end)
+    {
+        var (m15Start, m15Len) = M15RangeByFactor(start, end, c.TrainM15.Length);
+        return new(
+            c.TrainH1.Slice(start, end - start), c.ValH1,
+            c.TrainM15.Slice(m15Start, m15Len),  c.ValM15, c.Weight);
+    }
+
+    // ── RipShort ─────────────────────────────────────────────────────────────────
+    // Bear-window filtered concatenations: h1 and m15 are filtered independently, so the
+    // m15 range is derived from timestamps, not from h1index x 4.
+    public static ExpandingWindowReport RunRipShort(
+        IReadOnlyList<RipShortGA.CoinData> coins,
+        FitnessConfig? cfg = null)
+    {
+        var fc = cfg ?? new FitnessConfig();
+        return RunExpanding<RipShortGA.CoinData, RipShortGenotype>(
+            "RipShort", coins, fc,
+            c => c.TrainH1.Length,
+            SliceRipShort,
+            tc => new RipShortGA(populationSize: 30, generations: 40, verbose: false, cfg: fc).Run(tc),
+            ComputeSharpeRipShort);
+    }
+
+    private static RipShortGA.CoinData SliceRipShort(RipShortGA.CoinData c, int start, int end)
+    {
+        var (m15Start, m15Len) = M15RangeByTime(c.TrainH1.Span, c.TrainM15.Span, start, end);
+        return new(
+            c.TrainH1.Slice(start, end - start), c.ValH1,
+            c.TrainM15.Slice(m15Start, m15Len),  c.ValM15, c.Weight);
+    }
+
+    // ── FadeLong ─────────────────────────────────────────────────────────────────
+    // Bear-window filtered concatenations, same as RipShort — timestamp mapping.
+    public static ExpandingWindowReport RunFadeLong(
+        IReadOnlyList<FadeLongGA.CoinData> coins,
+        FitnessConfig? cfg = null)
+    {
+        var fc = cfg ?? new FitnessConfig();
+        return RunExpanding<FadeLongGA.CoinData, FadeLongGenotype>(
+            "FadeLong", coins, fc,
+            c => c.TrainH1.Length,
+            SliceFadeLong,
+            tc => new FadeLongGA(populationSize: 30, generations: 40, verbose: false, cfg: fc).Run(tc),
+            ComputeSharpeFadeLong);
+    }
+
+    private static FadeLongGA.CoinData SliceFadeLong(FadeLongGA.CoinData c, int start, int end)
+    {
+        var (m15Start, m15Len) = M15RangeByTime(c.TrainH1.Span, c.TrainM15.Span, start, end);
+        return new(
+            c.TrainH1.Slice(start, end - start), c.ValH1,
+            c.TrainM15.Slice(m15Start, m15Len),  c.ValM15, c.Weight);
+    }
+
+    // ── Grid ─────────────────────────────────────────────────────────────────────
+    // Single-timeframe, like FadeShort — no h1→m15 mapping.
+    public static ExpandingWindowReport RunGrid(
+        IReadOnlyList<GridGeneticAlgorithm.CoinData> coins,
+        FitnessConfig? cfg = null)
+    {
+        var fc = cfg ?? new FitnessConfig();
+        return RunExpanding<GridGeneticAlgorithm.CoinData, GridGenotype>(
+            "Grid", coins, fc,
+            c => c.TrainCandles.Length,
+            SliceGrid,
+            tc => new GridGeneticAlgorithm(populationSize: 30, generations: 40, verbose: false, cfg: fc).Run(tc),
+            ComputeSharpeGrid);
+    }
+
+    private static GridGeneticAlgorithm.CoinData SliceGrid(GridGeneticAlgorithm.CoinData c, int start, int end)
+        => new(c.TrainCandles.Slice(start, end - start), c.ValCandles, c.Weight);
+
+    // ── Per-strategy in/out-of-sample Sharpe ─────────────────────────────────────
 
     private static double ComputeSharpeFadeShort(FadeShortGenotype ind, IReadOnlyList<FadeShortGA.CoinData> coins)
     {
@@ -271,67 +363,6 @@ public static class ExpandingWindowValidation
         return all.Count >= 10 ? Simulator.SharpeRatio(all, all.Count) : 0;
     }
 
-    public static ExpandingWindowReport RunRipShort(
-        IReadOnlyList<RipShortGA.CoinData> coins,
-        FitnessConfig? cfg = null)
-    {
-        cfg ??= new FitnessConfig();
-        var windows = new List<WindowResult>();
-
-        int minLen = coins.Min(c => c.TrainH1.Length);
-        int stepSize = minLen / 8;
-        if (stepSize < 100) stepSize = 100;
-        int embargo = EmbargoBars(stepSize, cfg);
-
-        for (int w = 0; w < 4; w++)
-        {
-            int trainEnd = minLen / 4 + w * stepSize;
-            if (trainEnd + embargo >= minLen) break;
-
-            var trainCoins = coins.Select(c =>
-            {
-                var h1 = c.TrainH1.ToArray();
-                var m15 = c.TrainM15.ToArray();
-                return new RipShortGA.CoinData(
-                    new ReadOnlyMemory<Candle>(h1, 0, Math.Min(trainEnd, h1.Length)),
-                    c.ValH1,
-                    new ReadOnlyMemory<Candle>(m15, 0, Math.Min(trainEnd * 4, m15.Length)),
-                    c.ValM15, c.Weight);
-            }).ToList();
-
-            var ga = new RipShortGA(populationSize: 30, generations: 40, verbose: false, cfg: cfg);
-            var geno = ga.Run(trainCoins);
-
-            double isSharpe = ComputeSharpeRipShort(geno, trainCoins);
-
-            var testCoins = coins.Select(c =>
-            {
-                var h1 = c.TrainH1.ToArray();
-                var m15 = c.TrainM15.ToArray();
-                // testStart already includes the embargo gap; the m15 offset is the usual
-                // h1index*4 so the two timeframes stay aligned across the gap.
-                int testStart = Math.Min(trainEnd + embargo, h1.Length);
-                int testLen = Math.Min(stepSize, h1.Length - testStart);
-                int m15Start = Math.Min(testStart * 4, m15.Length);
-                int m15Len = Math.Max(0, Math.Min(testLen * 4, m15.Length - m15Start));
-                if (testLen <= 0) return new RipShortGA.CoinData(
-                    ReadOnlyMemory<Candle>.Empty, ReadOnlyMemory<Candle>.Empty,
-                    ReadOnlyMemory<Candle>.Empty, ReadOnlyMemory<Candle>.Empty, 0);
-                return new RipShortGA.CoinData(
-                    new ReadOnlyMemory<Candle>(h1, testStart, testLen),
-                    c.ValH1,
-                    new ReadOnlyMemory<Candle>(m15, m15Start, m15Len),
-                    c.ValM15, c.Weight);
-            }).Where(c => c.TrainH1.Length > 0).ToList();
-
-            double oosSharpe = ComputeSharpeRipShort(geno, testCoins);
-
-            windows.Add(MakeWindow(w, trainEnd, stepSize, isSharpe, oosSharpe));
-        }
-
-        return BuildReport("RipShort", windows);
-    }
-
     private static double ComputeSharpeRipShort(RipShortGenotype ind, IReadOnlyList<RipShortGA.CoinData> coins)
     {
         var all = new List<double>();
@@ -344,67 +375,6 @@ public static class ExpandingWindowValidation
         return all.Count >= 10 ? Simulator.SharpeRatio(all, all.Count) : 0;
     }
 
-    public static ExpandingWindowReport RunFadeLong(
-        IReadOnlyList<FadeLongGA.CoinData> coins,
-        FitnessConfig? cfg = null)
-    {
-        cfg ??= new FitnessConfig();
-        var windows = new List<WindowResult>();
-
-        int minLen = coins.Min(c => c.TrainH1.Length);
-        int stepSize = minLen / 8;
-        if (stepSize < 100) stepSize = 100;
-        int embargo = EmbargoBars(stepSize, cfg);
-
-        for (int w = 0; w < 4; w++)
-        {
-            int trainEnd = minLen / 4 + w * stepSize;
-            if (trainEnd + embargo >= minLen) break;
-
-            var trainCoins = coins.Select(c =>
-            {
-                var h1 = c.TrainH1.ToArray();
-                var m15 = c.TrainM15.ToArray();
-                return new FadeLongGA.CoinData(
-                    new ReadOnlyMemory<Candle>(h1, 0, Math.Min(trainEnd, h1.Length)),
-                    c.ValH1,
-                    new ReadOnlyMemory<Candle>(m15, 0, Math.Min(trainEnd * 4, m15.Length)),
-                    c.ValM15, c.Weight);
-            }).ToList();
-
-            var ga = new FadeLongGA(populationSize: 30, generations: 40, verbose: false, cfg: cfg);
-            var geno = ga.Run(trainCoins);
-
-            double isSharpe = ComputeSharpeFadeLong(geno, trainCoins);
-
-            var testCoins = coins.Select(c =>
-            {
-                var h1 = c.TrainH1.ToArray();
-                var m15 = c.TrainM15.ToArray();
-                // testStart already includes the embargo gap; the m15 offset is the usual
-                // h1index*4 so the two timeframes stay aligned across the gap.
-                int testStart = Math.Min(trainEnd + embargo, h1.Length);
-                int testLen = Math.Min(stepSize, h1.Length - testStart);
-                int m15Start = Math.Min(testStart * 4, m15.Length);
-                int m15Len = Math.Max(0, Math.Min(testLen * 4, m15.Length - m15Start));
-                if (testLen <= 0) return new FadeLongGA.CoinData(
-                    ReadOnlyMemory<Candle>.Empty, ReadOnlyMemory<Candle>.Empty,
-                    ReadOnlyMemory<Candle>.Empty, ReadOnlyMemory<Candle>.Empty, 0);
-                return new FadeLongGA.CoinData(
-                    new ReadOnlyMemory<Candle>(h1, testStart, testLen),
-                    c.ValH1,
-                    new ReadOnlyMemory<Candle>(m15, m15Start, m15Len),
-                    c.ValM15, c.Weight);
-            }).Where(c => c.TrainH1.Length > 0).ToList();
-
-            double oosSharpe = ComputeSharpeFadeLong(geno, testCoins);
-
-            windows.Add(MakeWindow(w, trainEnd, stepSize, isSharpe, oosSharpe));
-        }
-
-        return BuildReport("FadeLong", windows);
-    }
-
     private static double ComputeSharpeFadeLong(FadeLongGenotype ind, IReadOnlyList<FadeLongGA.CoinData> coins)
     {
         var all = new List<double>();
@@ -415,56 +385,6 @@ public static class ExpandingWindowValidation
                 all.Add(t.Return);
         }
         return all.Count >= 10 ? Simulator.SharpeRatio(all, all.Count) : 0;
-    }
-
-    public static ExpandingWindowReport RunGrid(
-        IReadOnlyList<GridGeneticAlgorithm.CoinData> coins,
-        FitnessConfig? cfg = null)
-    {
-        cfg ??= new FitnessConfig();
-        var windows = new List<WindowResult>();
-
-        int minLen = coins.Min(c => c.TrainCandles.Length);
-        int stepSize = minLen / 8;
-        if (stepSize < 100) stepSize = 100;
-        int embargo = EmbargoBars(stepSize, cfg);
-
-        for (int w = 0; w < 4; w++)
-        {
-            int trainEnd = minLen / 4 + w * stepSize;
-            if (trainEnd + embargo >= minLen) break;
-
-            var trainCoins = coins.Select(c =>
-            {
-                var arr = c.TrainCandles.ToArray();
-                return new GridGeneticAlgorithm.CoinData(
-                    new ReadOnlyMemory<Candle>(arr, 0, Math.Min(trainEnd, arr.Length)),
-                    c.ValCandles, c.Weight);
-            }).ToList();
-
-            var ga = new GridGeneticAlgorithm(populationSize: 30, generations: 40, verbose: false, cfg: cfg);
-            var geno = ga.Run(trainCoins);
-
-            double isSharpe = ComputeSharpeGrid(geno, trainCoins);
-
-            var testCoins = coins.Select(c =>
-            {
-                var arr = c.TrainCandles.ToArray();
-                int testStart = Math.Min(trainEnd + embargo, arr.Length);
-                int testLen = Math.Min(stepSize, arr.Length - testStart);
-                if (testLen <= 0) return new GridGeneticAlgorithm.CoinData(
-                    ReadOnlyMemory<Candle>.Empty, ReadOnlyMemory<Candle>.Empty, 0);
-                return new GridGeneticAlgorithm.CoinData(
-                    new ReadOnlyMemory<Candle>(arr, testStart, testLen),
-                    c.ValCandles, c.Weight);
-            }).Where(c => c.TrainCandles.Length > 0).ToList();
-
-            double oosSharpe = ComputeSharpeGrid(geno, testCoins);
-
-            windows.Add(MakeWindow(w, trainEnd, stepSize, isSharpe, oosSharpe));
-        }
-
-        return BuildReport("Grid", windows);
     }
 
     private static double ComputeSharpeGrid(GridGenotype ind, IReadOnlyList<GridGeneticAlgorithm.CoinData> coins)
@@ -501,5 +421,7 @@ public static class ExpandingWindowValidation
             string eff = w.IsUsable ? w.Efficiency.ToString("F3") : "—";
             Console.WriteLine($"  {w.WindowIndex,8} {w.TrainBars,12:F0} {w.TestBars,10:F0} {w.InSampleSharpe,10:F4} {w.OutOfSampleSharpe,11:F4} {eff,11} {(w.IsUsable ? "yes" : "no"),8}");
         }
+        Console.WriteLine("    (bar counts are per-coin means — each coin expands through its OWN history,");
+        Console.WriteLine("     so window w is 1/4 + w/8 of that coin's array, not a shared bar index)");
     }
 }

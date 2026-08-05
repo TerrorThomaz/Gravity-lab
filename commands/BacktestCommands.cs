@@ -463,7 +463,7 @@ static class BacktestCommands
 
             var seqPort  = Simulator.SimulatePortfolio(yrSeq, startBalance: 100.0, maxPositionPct: 0.05);
             var livePort = Simulator.SimulatePortfolioExposureCapped(yrLive, startBalance: 100.0,
-                maxTotalExposurePct: 0.30, drawdownBrakeAt: 0.15, kellyMultiplier: 1.0);
+                maxTotalExposurePct: 0.30, drawdownBrakeAt: 0.15, kellyMultiplier: 1.0, slippageBps: Config.SlippageBps);
 
             int n = yrSeq.Count;
             Console.WriteLine($"  {yr,-6}  {n,6}  {seqPort.EndBalance-100,+10:F1}%  {seqPort.MaxDrawdownPct,9:F1}%  {livePort.EndBalance-100,+14:F1}%  {livePort.MaxDrawdownPct,13:F1}%");
@@ -511,16 +511,16 @@ static class BacktestCommands
 
         PrintScenario("½-K  concurrent  brake@15%",
             _ => default!, t => Simulator.SimulatePortfolioExposureCapped(t,
-                drawdownBrakeAt: 0.15, kellyMultiplier: 1.0));
+                drawdownBrakeAt: 0.15, kellyMultiplier: 1.0, slippageBps: Config.SlippageBps));
 
         PrintScenario("Full-K  concurrent  brake@15%  no-riskcap",
             _ => default!, t => Simulator.SimulatePortfolioExposureCapped(
                 t.Select(x => (x.Time, x.Return, x.Conf, x.Hold)).ToList(),
-                drawdownBrakeAt: 0.15, kellyMultiplier: 2.0));
+                drawdownBrakeAt: 0.15, kellyMultiplier: 2.0, slippageBps: Config.SlippageBps));
 
         PrintScenario("½-K  concurrent  30%cap  brake@15%  riskcap0.4%  [live]",
             _ => default!, t => Simulator.SimulatePortfolioExposureCapped(t,
-                maxTotalExposurePct: 0.30, drawdownBrakeAt: 0.15, kellyMultiplier: 1.0));
+                maxTotalExposurePct: 0.30, drawdownBrakeAt: 0.15, kellyMultiplier: 1.0, slippageBps: Config.SlippageBps));
 
         Console.WriteLine($"\n  RiskCap per coin: worst 1% of stop-outs limits position so max loss = 0.4% of portfolio.");
         Console.WriteLine($"  Concurrent: positions overlap in time (48h avg FS hold, 36h avg grid hold).");

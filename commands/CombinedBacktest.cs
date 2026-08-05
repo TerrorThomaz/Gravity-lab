@@ -899,7 +899,7 @@ static class CombinedBacktest
             Console.WriteLine($"  Calmar:       {Simulator.CalmarRatio(highVolRet):F2}");
             var hvPort = Simulator.SimulatePortfolioExposureCapped(
                 highVolTrades.Select(t => (t.Time, t.Return, t.Conf, TimeSpan.FromHours(48))).ToList(),
-                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+                Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
             Console.WriteLine();
             Console.WriteLine($"  ── Portfolio sim (€100 start · half-Kelly · 5% max) ──");
             Console.WriteLine($"    End balance:   €{hvPort.EndBalance:F2}");
@@ -944,7 +944,7 @@ static class CombinedBacktest
             Console.WriteLine($"  Calmar:       {Simulator.CalmarRatio(lowVolRet):F2}");
             var lvPort = Simulator.SimulatePortfolioExposureCapped(
                 lowVolTrades.Select(t => (t.Time, t.Return, t.Conf, TimeSpan.FromHours(48))).ToList(),
-                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+                Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
             Console.WriteLine();
             Console.WriteLine($"  ── Portfolio sim (€100 start · half-Kelly · 5% max) ──");
             Console.WriteLine($"    End balance:   €{lvPort.EndBalance:F2}");
@@ -1002,8 +1002,8 @@ static class CombinedBacktest
             .Select(t => (t.Time, t.Return, t.Conf, StrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG, agBullG)))
             .ToList();
 
-        var port5cap   = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-        var portKelly  = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct);
+        var port5cap   = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
+        var portKelly  = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps);
 
         string Pct(List<double> r) => r.Count > 0 ? $"WR={(double)r.Count(x => x > 0)/r.Count:P0}  Avg={r.Average():+0.00}%" : "no trades";
         Console.WriteLine($"\n{new string('═', 70)}");
@@ -1135,8 +1135,8 @@ static class CombinedBacktest
                 .Select(t => (t.Time, t.Return, t.Conf, StrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG, agBullG)))
                 .ToList();
 
-            var nrPort5cap  = Simulator.SimulatePortfolioExposureCapped(nrExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-            var nrPortKelly = Simulator.SimulatePortfolioExposureCapped(nrExposure, Config.MaxTotalExposurePct);
+            var nrPort5cap  = Simulator.SimulatePortfolioExposureCapped(nrExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
+            var nrPortKelly = Simulator.SimulatePortfolioExposureCapped(nrExposure, Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps);
 
             int nrGrid      = allTradesNoRouter.Count(t => t.Strategy == "grid");
             int nrDipLong   = allTradesNoRouter.Count(t => t.Strategy == "diplong");
@@ -1182,8 +1182,8 @@ static class CombinedBacktest
             if (slice90.Count >= 10)
             {
                 double spanDays   = (lastDate - slice90[0].Time).TotalDays;
-                var    p5cap      = Simulator.SimulatePortfolioExposureCapped(slice90, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-                var    pKelly     = Simulator.SimulatePortfolioExposureCapped(slice90, Config.MaxTotalExposurePct);
+                var    p5cap      = Simulator.SimulatePortfolioExposureCapped(slice90, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
+                var    pKelly     = Simulator.SimulatePortfolioExposureCapped(slice90, Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps);
 
                 double r5   = (p5cap.EndBalance  - 100.0) / 100.0;
                 double rK   = (pKelly.EndBalance  - 100.0) / 100.0;
@@ -1295,8 +1295,8 @@ static class CombinedBacktest
 
         if (fullHistTrades.Count >= 10)
         {
-            var fhPort5cap = Simulator.SimulatePortfolioExposureCapped(fullHistTrades, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-            var fhPortKel  = Simulator.SimulatePortfolioExposureCapped(fullHistTrades, Config.MaxTotalExposurePct);
+            var fhPort5cap = Simulator.SimulatePortfolioExposureCapped(fullHistTrades, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
+            var fhPortKel  = Simulator.SimulatePortfolioExposureCapped(fullHistTrades, Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps);
             double fhDays  = (fullHistTrades[^1].Time - fullHistTrades[0].Time).TotalDays;
             double fhAnnF  = fhDays > 0 ? 365.0 / fhDays : 1.0;
             double fhRet5  = (fhPort5cap.EndBalance - 100) / 100 * 100;

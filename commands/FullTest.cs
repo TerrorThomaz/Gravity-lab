@@ -808,14 +808,14 @@ static class FullTest
         double ppDrawback  = dgGeno?.ProfitProtectDrawback   ?? 0.10;
         double ppFactor    = dgGeno?.ProfitProtectFactor     ?? 1.0;
 
-        var val5p   = valSim.Count  > 0 ? Simulator.SimulatePortfolioExposureCapped(valSim,  Config.MaxTotalExposurePct, maxPositionFrac: 0.05) : default!;
-        var valKel  = valSim.Count  > 0 ? Simulator.SimulatePortfolioExposureCapped(valSim,  Config.MaxTotalExposurePct) : default!;
-        var oos5p   = oosSim.Count  > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSim,  Config.MaxTotalExposurePct, maxPositionFrac: 0.05) : default!;
-        var oosKel  = oosSim.Count  > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSim,  Config.MaxTotalExposurePct) : default!;
-        var val5pG  = valSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(valSimG, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: ddGate, confLossCapMin: capMin, confLossCapMax: capMax, profitProtectThreshold: ppThreshold, profitProtectDrawback: ppDrawback, profitProtectFactor: ppFactor) : default!;
-        var valKelG = valSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(valSimG, Config.MaxTotalExposurePct, ddLongEntryGatePct: ddGate, confLossCapMin: capMin, confLossCapMax: capMax, profitProtectThreshold: ppThreshold, profitProtectDrawback: ppDrawback, profitProtectFactor: ppFactor) : default!;
-        var oos5pG  = oosSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSimG, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: ddGate, confLossCapMin: capMin, confLossCapMax: capMax, profitProtectThreshold: ppThreshold, profitProtectDrawback: ppDrawback, profitProtectFactor: ppFactor) : default!;
-        var oosKelG = oosSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSimG, Config.MaxTotalExposurePct, ddLongEntryGatePct: ddGate, confLossCapMin: capMin, confLossCapMax: capMax, profitProtectThreshold: ppThreshold, profitProtectDrawback: ppDrawback, profitProtectFactor: ppFactor) : default!;
+        var val5p   = valSim.Count  > 0 ? Simulator.SimulatePortfolioExposureCapped(valSim,  Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps) : default!;
+        var valKel  = valSim.Count  > 0 ? Simulator.SimulatePortfolioExposureCapped(valSim,  Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps) : default!;
+        var oos5p   = oosSim.Count  > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSim,  Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps) : default!;
+        var oosKel  = oosSim.Count  > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSim,  Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps) : default!;
+        var val5pG  = valSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(valSimG, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: ddGate, confLossCapMin: capMin, confLossCapMax: capMax, profitProtectThreshold: ppThreshold, profitProtectDrawback: ppDrawback, profitProtectFactor: ppFactor, slippageBps: Config.SlippageBps) : default!;
+        var valKelG = valSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(valSimG, Config.MaxTotalExposurePct, ddLongEntryGatePct: ddGate, confLossCapMin: capMin, confLossCapMax: capMax, profitProtectThreshold: ppThreshold, profitProtectDrawback: ppDrawback, profitProtectFactor: ppFactor, slippageBps: Config.SlippageBps) : default!;
+        var oos5pG  = oosSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSimG, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: ddGate, confLossCapMin: capMin, confLossCapMax: capMax, profitProtectThreshold: ppThreshold, profitProtectDrawback: ppDrawback, profitProtectFactor: ppFactor, slippageBps: Config.SlippageBps) : default!;
+        var oosKelG = oosSimG.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(oosSimG, Config.MaxTotalExposurePct, ddLongEntryGatePct: ddGate, confLossCapMin: capMin, confLossCapMax: capMax, profitProtectThreshold: ppThreshold, profitProtectDrawback: ppDrawback, profitProtectFactor: ppFactor, slippageBps: Config.SlippageBps) : default!;
 
         var valSimG4 = Drop5(valSimG);
         var oosSimG4 = Drop5(oosSimG);
@@ -861,10 +861,10 @@ static class FullTest
             var yrSim = valSim.Where(t => t.Item1.Year == yr).ToList();
             if (yrSim.Count == 0) continue;
             var yrNr  = nrFiltered.Where(t => t.Item1.Year == yr).ToList();
-            var p5    = Simulator.SimulatePortfolioExposureCapped(yrSim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-            var pK    = Simulator.SimulatePortfolioExposureCapped(yrSim, Config.MaxTotalExposurePct);
-            var p5nr  = yrNr.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(yrNr, Config.MaxTotalExposurePct, maxPositionFrac: 0.05) : default!;
-            var pKnr  = yrNr.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(yrNr, Config.MaxTotalExposurePct) : default!;
+            var p5    = Simulator.SimulatePortfolioExposureCapped(yrSim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
+            var pK    = Simulator.SimulatePortfolioExposureCapped(yrSim, Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps);
+            var p5nr  = yrNr.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(yrNr, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps) : default!;
+            var pKnr  = yrNr.Count > 0 ? Simulator.SimulatePortfolioExposureCapped(yrNr, Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps) : default!;
             double r5   = p5.EndBalance - 100;
             double r5nr = yrNr.Count > 0 ? p5nr.EndBalance - 100 : double.NaN;
             double rK   = pK.EndBalance - 100;
@@ -940,18 +940,18 @@ static class FullTest
 
         // Val no-router (nrFilteredTrades / nrFiltered already computed above)
         var nrPort5 = nrFiltered.Count > 0
-            ? Simulator.SimulatePortfolioExposureCapped(nrFiltered, Config.MaxTotalExposurePct, maxPositionFrac: 0.05)
+            ? Simulator.SimulatePortfolioExposureCapped(nrFiltered, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps)
             : default!;
         var nrPortK = nrFiltered.Count > 0
-            ? Simulator.SimulatePortfolioExposureCapped(nrFiltered, Config.MaxTotalExposurePct)
+            ? Simulator.SimulatePortfolioExposureCapped(nrFiltered, Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps)
             : default!;
 
         // OOS no-router (oosNrFilteredTrades / oosNrFiltered already computed above)
         var oosNrPort5 = oosNrFiltered.Count > 0
-            ? Simulator.SimulatePortfolioExposureCapped(oosNrFiltered, Config.MaxTotalExposurePct, maxPositionFrac: 0.05)
+            ? Simulator.SimulatePortfolioExposureCapped(oosNrFiltered, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps)
             : default!;
         var oosNrPortK = oosNrFiltered.Count > 0
-            ? Simulator.SimulatePortfolioExposureCapped(oosNrFiltered, Config.MaxTotalExposurePct)
+            ? Simulator.SimulatePortfolioExposureCapped(oosNrFiltered, Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps)
             : default!;
 
         double r5R   = valSim.Count > 0        ? (val5p.EndBalance   - 100) / 100 * 100 : 0;
@@ -1004,8 +1004,8 @@ static class FullTest
             if (slice90.Count >= 10)
             {
                 double span = (lastDate - slice90[0].Item1).TotalDays;
-                var sp5  = Simulator.SimulatePortfolioExposureCapped(slice90, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-                var spK  = Simulator.SimulatePortfolioExposureCapped(slice90, Config.MaxTotalExposurePct);
+                var sp5  = Simulator.SimulatePortfolioExposureCapped(slice90, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
+                var spK  = Simulator.SimulatePortfolioExposureCapped(slice90, Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps);
                 double r5  = (sp5.EndBalance - 100.0) / 100.0;
                 double rK  = (spK.EndBalance - 100.0) / 100.0;
                 double a5  = span > 0 ? (Math.Pow(1 + r5, 365.0 / span) - 1) * 100 : 0;
@@ -1074,7 +1074,7 @@ static class FullTest
             {
                 var yrSim = oosSim.Where(t => t.Item1.Year == yr).ToList();
                 if (yrSim.Count == 0) continue;
-                var pK = Simulator.SimulatePortfolioExposureCapped(yrSim, Config.MaxTotalExposurePct);
+                var pK = Simulator.SimulatePortfolioExposureCapped(yrSim, Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps);
                 double rK = pK.EndBalance - 100;
                 var stratCounts = oosAll
                     .Where(t => t.Time.Year == yr)

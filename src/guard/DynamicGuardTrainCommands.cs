@@ -210,14 +210,14 @@ static class DynamicGuardTrainCommands
 
         var valBase = Simulator.SimulatePortfolioExposureCapped(
             valCapped.Select(t => (t.EntryTime, t.Return, t.Conf, t.HoldDuration)).OrderBy(t => t.Item1).ToList(),
-            Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
         var oosBase = Simulator.SimulatePortfolioExposureCapped(
             oosCapped.Select(t => (t.EntryTime, t.Return, t.Conf, t.HoldDuration)).OrderBy(t => t.Item1).ToList(),
-            Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
         var valGuarded = Simulator.SimulatePortfolioExposureCapped(
-            DynamicGuardGA.ApplyGuard(valCapped, dgSession), Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: best.DdEntryGatePct, confLossCapMin: best.ConfLossCapMin, confLossCapMax: best.ConfLossCapMax, profitProtectThreshold: best.ProfitProtectThreshold, profitProtectDrawback: best.ProfitProtectDrawback, profitProtectFactor: best.ProfitProtectFactor);
+            DynamicGuardGA.ApplyGuard(valCapped, dgSession), Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: best.DdEntryGatePct, confLossCapMin: best.ConfLossCapMin, confLossCapMax: best.ConfLossCapMax, profitProtectThreshold: best.ProfitProtectThreshold, profitProtectDrawback: best.ProfitProtectDrawback, profitProtectFactor: best.ProfitProtectFactor, slippageBps: Config.SlippageBps);
         var oosGuarded = Simulator.SimulatePortfolioExposureCapped(
-            DynamicGuardGA.ApplyGuard(oosCapped, dgSession), Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: best.DdEntryGatePct, confLossCapMin: best.ConfLossCapMin, confLossCapMax: best.ConfLossCapMax, profitProtectThreshold: best.ProfitProtectThreshold, profitProtectDrawback: best.ProfitProtectDrawback, profitProtectFactor: best.ProfitProtectFactor);
+            DynamicGuardGA.ApplyGuard(oosCapped, dgSession), Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: best.DdEntryGatePct, confLossCapMin: best.ConfLossCapMin, confLossCapMax: best.ConfLossCapMax, profitProtectThreshold: best.ProfitProtectThreshold, profitProtectDrawback: best.ProfitProtectDrawback, profitProtectFactor: best.ProfitProtectFactor, slippageBps: Config.SlippageBps);
 
         Console.WriteLine($"\n  Val:  baseline ret={valBase.EndBalance - 100:+0.1;-0.1}% DD={valBase.MaxDrawdownPct:F1}%"
                         + $"  →  guarded ret={valGuarded.EndBalance - 100:+0.1;-0.1}% DD={valGuarded.MaxDrawdownPct:F1}%");

@@ -19,6 +19,11 @@ static class Config
     public const int MaxDirectionalConcurrent = 20;
     public const double MinMedianVolUsdM    = 0.5;
 
+    // Per-trade slippage in basis points applied in all portfolio simulations.
+    // 10 bps = 0.10%, a pessimistic taker-side estimate covering the mid-cap alt
+    // perps in the 93-coin universe. Backtests before 2026-08 assumed 0.0.
+    public const double SlippageBps = 10.0;
+
     public static readonly string[] BacktestCoins =
     [
         // large caps

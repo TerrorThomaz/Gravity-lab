@@ -11,7 +11,8 @@ namespace TradingGA;
 // Training uses flat pessimistic funding (funding: null) so it never requires a
 // funding dataset; live/backtest paths supply a FundingRateSession for real rates.
 //
-// Fitness = mean(fold_scores) − stdMult × std(fold_scores)  (stdMult VC-proportional)
+// Fitness = mean(fold_scores) − stdMult × std(fold_scores) over the SURVIVING walk-forward
+// folds (those that reached MinTradesPerFold trades); stdMult is VC-proportional.
 public class RipShortGA
 {
     public record CoinData(ReadOnlyMemory<Candle> TrainH1, ReadOnlyMemory<Candle> ValH1, ReadOnlyMemory<Candle> TrainM15, ReadOnlyMemory<Candle> ValM15, double Weight = 1.0);
@@ -152,43 +153,66 @@ public class RipShortGA
             return FoldScore(all, posFrac, ind.RegimeSustainedBars, _cfg, volWeight);
         }
 
+        // Walk-forward folds, k of them, cut on CALENDAR TIME rather than array indices.
+        //
+        // With a BTC regime series available, fold boundaries are computed once on BTC
+        // (balanced on the number of active bear bars, with an embargo gap) and handed to
+        // every coin as [Start, End) time windows; each coin then binary-searches that
+        // window into its own h1/m15 arrays. Index-space bounds can NOT be shared across
+        // coins — RipShort's training arrays are bear-window-FILTERED concatenations of a
+        // few thousand bars, so index i is a completely different calendar date on every
+        // symbol, and coins shorter than a fold's start index would drop out of every
+        // later fold and dump their entire history into fold 0.
+        //
+        // Without a BTC series, fall back to per-coin percentage folds: each coin slices
+        // its own history into k equal parts, which is alignment-safe by construction.
         int k = folds;
 
-        double[] scores = new double[k];
-        int      totalFoldTrades = 0;
-        int maxH1Len = validCoins.Max(x => x.h1.Length);
-        var bounds = _btcSeries != null
-            ? FoldScoreHelper.ComputeRegimeAwareFoldBoundaries(_btcSeries, r => r == MarketRegime.Bear, k, _cfg.EmbargoPct)
-            : FoldScoreHelper.ComputeFoldBoundaries(maxH1Len, k, _cfg.EmbargoPct);
+        (DateTime Start, DateTime End)[]? windows = _btcSeries != null
+            ? FoldScoreHelper.ComputeRegimeAwareFoldWindows(_btcSeries, r => r == MarketRegime.Bear, k, _cfg.EmbargoPct)
+            : null;
+
+        var foldScores = new List<double>();
+        var foldCounts = new List<int>();
 
         for (int f = 0; f < k; f++)
         {
             var foldRet = new List<(double Return, int RegimeBars)>();
             foreach (var (coin, h1, m15) in validCoins)
             {
-                int startH1  = bounds[f].Start;
-                int endH1    = Math.Min(bounds[f].End, h1.Length);
-                if (startH1 >= h1.Length || endH1 - startH1 < 40) continue;
-                int startM15 = startH1 * 4;
-                int endM15   = Math.Min(endH1 * 4, m15.Length);
-                if (startM15 >= m15.Length || endM15 - startM15 < 40) continue;
+                int startH1, endH1, startM15, endM15;
+                if (windows != null)
+                {
+                    var (winStart, winEnd) = windows[f];
+                    (startH1,  endH1)  = FoldScoreHelper.RangeForWindow(h1.Span,  winStart, winEnd);
+                    (startM15, endM15) = FoldScoreHelper.RangeForWindow(m15.Span, winStart, winEnd);
+                }
+                else
+                {
+                    (startH1, endH1) = FoldScoreHelper.PerCoinFoldRange(h1.Length, k, f, _cfg.EmbargoPct);
+                    startM15 = Math.Min(startH1 * 4, m15.Length);
+                    endM15   = Math.Min(endH1   * 4, m15.Length);
+                }
+                if (endH1  - startH1  < 40) continue;
+                if (endM15 - startM15 < 40) continue;
                 foldRet.AddRange(
                     RipShortSimulator.GetRipShortReturnsWithRegime(ind, h1.Slice(startH1, endH1 - startH1).Span, m15.Slice(startM15, endM15 - startM15).Span, funding: null)
                                       .Select(t => { double w = _tradeGate?.Invoke(t.Time) ?? 1.0; return (Return: t.Return * w, RegimeBars: t.RegimeBarsActive, w); })
                                       .Where(t => t.w >= 0.05)
                                       .Select(t => (t.Return, t.RegimeBars)));
             }
-            totalFoldTrades += foldRet.Count;
-            scores[f] = FoldScore(foldRet, posFrac, ind.RegimeSustainedBars, _cfg, volWeight);
+
+            // Only folds that actually reached MinTradesPerFold scored trades take part in
+            // the aggregation. A thin fold returns the constant -1.0 sentinel, and mixing
+            // constants into mean − stdMult×std inverts the gradient (see AggregateFoldScores).
+            int scoredTrades = foldRet.Count(t => t.RegimeBars >= ind.RegimeSustainedBars);
+            if (scoredTrades < MinTradesPerFold) continue;
+
+            foldScores.Add(FoldScore(foldRet, posFrac, ind.RegimeSustainedBars, _cfg, volWeight));
+            foldCounts.Add(scoredTrades);
         }
 
-        double mean    = scores.Average();
-        double std     = Math.Sqrt(scores.Select(s => (s - mean) * (s - mean)).Average());
-        // VC-proportional penalty: stdMult = 0.75 when avgN/d ≥ 10, scales up to 2.0 as
-        // N/d falls — prevents the GA from over-trusting fold scores when sample is thin.
-        double avgN    = (double)totalFoldTrades / k;
-        double stdMult = Math.Clamp(7.5 / Math.Max(1.0, avgN / D), 0.75, 2.0);
-        return mean - stdMult * std;
+        return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D);
     }
 
     public RipShortGenotype Run(IReadOnlyList<CoinData> coins, RipShortGenotype? seed = null)

@@ -11,6 +11,8 @@ public static class PortfolioReplay
 {
     // Default caps per strategy kind. DirectionalCap (passed separately) limits
     // total same-direction concurrent exposure across all strategies.
+    // NOTE: Any strategy label absent from these sets will warn once per call and be
+    // counted conservatively against both directional caps.
     public static readonly Dictionary<string, int> DefaultCaps = new()
     {
         ["fade_short"] = 10,
@@ -21,7 +23,14 @@ public static class PortfolioReplay
         ["ripshort"]   = 8,
         ["grid"]       = 12,
         ["gridshort"]  = 12,
+        ["accumgrid"]  = 12,
     };
+
+    private static readonly HashSet<string> LongStrategies = new(StringComparer.OrdinalIgnoreCase)
+        { "diplong", "fadelong", "swing_long", "grid", "accumgrid" };
+
+    private static readonly HashSet<string> ShortStrategies = new(StringComparer.OrdinalIgnoreCase)
+        { "swing", "fade_short", "ripshort", "gridshort" };
 
     public record Trade(
         string   Strategy,
@@ -40,16 +49,22 @@ public static class PortfolioReplay
         var sorted  = trades.OrderBy(t => t.EntryTime).ToList();
         var result  = new List<Trade>(sorted.Count);
         var openClose = new Dictionary<string, List<DateTime>>(StringComparer.OrdinalIgnoreCase);
-        var longStrategies = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { "diplong", "fadelong", "swing_long", "grid" };
-        var shortStrategies = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { "swing", "fade_short", "ripshort", "gridshort" };
         var longCloses  = new List<DateTime>();
         var shortCloses = new List<DateTime>();
+        var warnedLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var warnedNoCap = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var t in sorted)
         {
-            int cap = caps.TryGetValue(t.Strategy, out int c) ? c : int.MaxValue;
+            // Warn once if caps has no entry for this label
+            if (!caps.TryGetValue(t.Strategy, out int cap))
+            {
+                cap = int.MaxValue;
+                if (warnedNoCap.Add(t.Strategy))
+                {
+                    Console.WriteLine($"  !! PortfolioReplay: strategy label '{t.Strategy}' not in caps — falls back to int.MaxValue");
+                }
+            }
 
             if (!openClose.TryGetValue(t.Strategy, out var closes))
             {
@@ -63,14 +78,25 @@ public static class PortfolioReplay
 
             if (closes.Count >= cap) continue;
 
-            bool isLong  = longStrategies.Contains(t.Strategy);
-            bool isShort = shortStrategies.Contains(t.Strategy);
-            if (isLong && longCloses.Count >= directionalCap) continue;
-            if (isShort && shortCloses.Count >= directionalCap) continue;
+            // An unrecognised label has no known direction, so it counts against BOTH
+            // directional caps rather than escaping them — the conservative choice.
+            bool knownLong  = LongStrategies.Contains(t.Strategy);
+            bool knownShort = ShortStrategies.Contains(t.Strategy);
+            bool unknownDir = !knownLong && !knownShort;
 
-            closes.Add(t.EntryTime + t.HoldDuration);
-            if (isLong)  longCloses.Add(t.EntryTime + t.HoldDuration);
-            if (isShort) shortCloses.Add(t.EntryTime + t.HoldDuration);
+            if (unknownDir && warnedLabels.Add(t.Strategy))
+                Console.WriteLine($"  !! PortfolioReplay: strategy label '{t.Strategy}' has no known direction — counted against both directional caps");
+
+            bool countsLong  = knownLong  || unknownDir;
+            bool countsShort = knownShort || unknownDir;
+
+            if (countsLong  && longCloses.Count  >= directionalCap) continue;
+            if (countsShort && shortCloses.Count >= directionalCap) continue;
+
+            var closeTime = t.EntryTime + t.HoldDuration;
+            closes.Add(closeTime);
+            if (countsLong)  longCloses.Add(closeTime);
+            if (countsShort) shortCloses.Add(closeTime);
             result.Add(t);
         }
 

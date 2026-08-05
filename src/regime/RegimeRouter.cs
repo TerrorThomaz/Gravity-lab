@@ -19,6 +19,10 @@ namespace TradingGA;
 // ETH acts as a secondary confirmer:
 //   Agreement  → weighted blend (BTC 70% + ETH 30%), boosting confidence
 //   Disagreement → BTC regime wins but ETH's contrary confidence reduces the blend
+
+// WARNING: This record has a long run of consecutive bool parameters. It MUST be constructed
+// using named arguments to prevent accidental parameter reordering. All construction sites
+// must use explicit parameter names (e.g., FadeShortActive: true, GridActive: false, ...).
 public record StrategyActivation(
     bool         FadeShortActive,
     bool         GridActive,
@@ -130,7 +134,27 @@ public static class RegimeRouter
     private static StrategyActivation Activate(MarketRegime regime, double conf, double atrRatio = 1.0)
     {
         if (regime == MarketRegime.HighVol)
-            return new(true, false, false, false, false, false, false, false, 0.5, regime, conf, false, false, false, false, true, true, true, true, atrRatio);
+            return new StrategyActivation(
+                FadeShortActive: true,
+                GridActive: false,
+                GridShortActive: false,
+                DipLongActive: false,
+                FadeLongActive: false,
+                RipShortActive: false,
+                SwingLongActive: false,
+                AccumulationGridActive: false,
+                SizeMult: 0.5,
+                Regime: regime,
+                Confidence: conf,
+                FadeShortLowVolActive: false,
+                DipLongLowVolActive: false,
+                SwingLongLowVolActive: false,
+                RipShortLowVolActive: false,
+                FadeShortHighVolActive: true,
+                DipLongHighVolActive: true,
+                SwingLongHighVolActive: true,
+                RipShortHighVolActive: true,
+                AtrRatio: atrRatio);
 
         bool fadeShort = !(regime == MarketRegime.Bull   && conf >= DirectionalMinConf);
         bool grid      = true;
@@ -160,7 +184,27 @@ public static class RegimeRouter
         bool swingLongHighVol = isHighVol && swingLong;
         bool ripShortHighVol  = isHighVol && ripShort;
 
-        return new(fadeShort, grid, gridShort, dipLong, fadeLong, ripShort, swingLong, accumulationGrid, sizeMult, regime, conf, fadeShortLowVol, dipLongLowVol, swingLongLowVol, ripShortLowVol, fadeShortHighVol, dipLongHighVol, swingLongHighVol, ripShortHighVol, atrRatio);
+        return new StrategyActivation(
+            FadeShortActive: fadeShort,
+            GridActive: grid,
+            GridShortActive: gridShort,
+            DipLongActive: dipLong,
+            FadeLongActive: fadeLong,
+            RipShortActive: ripShort,
+            SwingLongActive: swingLong,
+            AccumulationGridActive: accumulationGrid,
+            SizeMult: sizeMult,
+            Regime: regime,
+            Confidence: conf,
+            FadeShortLowVolActive: fadeShortLowVol,
+            DipLongLowVolActive: dipLongLowVol,
+            SwingLongLowVolActive: swingLongLowVol,
+            RipShortLowVolActive: ripShortLowVol,
+            FadeShortHighVolActive: fadeShortHighVol,
+            DipLongHighVolActive: dipLongHighVol,
+            SwingLongHighVolActive: swingLongHighVol,
+            RipShortHighVolActive: ripShortHighVol,
+            AtrRatio: atrRatio);
     }
 
     // Genotype-aware activation: uses trained thresholds + BTC duration gate + source-regime awareness.
@@ -186,7 +230,27 @@ public static class RegimeRouter
         RegimeRouterGenotype geno, MarketRegime prevRegime = MarketRegime.Ranging, double atrRatio = 1.0)
     {
         if (regime == MarketRegime.HighVol)
-            return new(true, false, false, false, false, false, false, false, 0.5, regime, conf, false, false, false, false, true, true, true, true, atrRatio);
+            return new StrategyActivation(
+                FadeShortActive: true,
+                GridActive: false,
+                GridShortActive: false,
+                DipLongActive: false,
+                FadeLongActive: false,
+                RipShortActive: false,
+                SwingLongActive: false,
+                AccumulationGridActive: false,
+                SizeMult: 0.5,
+                Regime: regime,
+                Confidence: conf,
+                FadeShortLowVolActive: false,
+                DipLongLowVolActive: false,
+                SwingLongLowVolActive: false,
+                RipShortLowVolActive: false,
+                FadeShortHighVolActive: true,
+                DipLongHighVolActive: true,
+                SwingLongHighVolActive: true,
+                RipShortHighVolActive: true,
+                AtrRatio: atrRatio);
 
         var (fadeShort, grid, gridShort, dipLong, fadeLong, ripShort, swingLong, accumulationGrid, fadeShortLowVol, dipLongLowVol, swingLongLowVol, ripShortLowVol, fadeShortHighVol, dipLongHighVol, swingLongHighVol, ripShortHighVol) = ComputeActivation(regime, conf, duration, prevRegime, geno, atrRatio);
 
@@ -220,7 +284,27 @@ public static class RegimeRouter
         else if (earlyBearFromRanging)
             sizeMult *= geno.EarlyBearFromRangingMult;
 
-        return new(fadeShort, grid, gridShort, dipLong, fadeLong, ripShort, swingLong, accumulationGrid, sizeMult, regime, conf, fadeShortLowVol, dipLongLowVol, swingLongLowVol, ripShortLowVol, fadeShortHighVol, dipLongHighVol, swingLongHighVol, ripShortHighVol, atrRatio);
+        return new StrategyActivation(
+            FadeShortActive: fadeShort,
+            GridActive: grid,
+            GridShortActive: gridShort,
+            DipLongActive: dipLong,
+            FadeLongActive: fadeLong,
+            RipShortActive: ripShort,
+            SwingLongActive: swingLong,
+            AccumulationGridActive: accumulationGrid,
+            SizeMult: sizeMult,
+            Regime: regime,
+            Confidence: conf,
+            FadeShortLowVolActive: fadeShortLowVol,
+            DipLongLowVolActive: dipLongLowVol,
+            SwingLongLowVolActive: swingLongLowVol,
+            RipShortLowVolActive: ripShortLowVol,
+            FadeShortHighVolActive: fadeShortHighVol,
+            DipLongHighVolActive: dipLongHighVol,
+            SwingLongHighVolActive: swingLongHighVol,
+            RipShortHighVolActive: ripShortHighVol,
+            AtrRatio: atrRatio);
     }
 
     // Shared gating logic — the single source of truth for genotype-based strategy activation.

@@ -14,6 +14,7 @@ __pycache__/
 ## Generated / backup files
 best_genotype_original.json
 *.log
+.ctx/
 
 ## Discord bot env + venv
 .env

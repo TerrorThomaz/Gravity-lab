@@ -1,7 +1,14 @@
 namespace TradingGA;
 
 // Central strategy router: classifies BTC regime (primary) + ETH (secondary confirmer),
-// blends the two signals, and returns per-strategy activation flags + a position-size multiplier.
+// blends the two signals, and returns per-strategy activation flags.
+//
+// The router gates strategies ON/OFF only — it does NOT size positions. A confidence-scaled
+// SizeMult used to be computed here and exposed on StrategyActivation, but nothing ever sized
+// on it (every backtest gates via RegimeRouterSession.IsActive; the single live consumer just
+// printed it), and the scaling itself was never validated. It was removed rather than wired in,
+// since wiring an unvalidated multiplier into position sizing would be a behaviour change, not
+// a bugfix. Position sizing lives in DynamicGuard / PortfolioReplay, not here.
 //
 // Two-layer architecture:
 //   Layer 1 — BTC regime → which strategy POOL is active (this class)
@@ -32,7 +39,6 @@ public record StrategyActivation(
     bool         RipShortActive,
     bool         SwingLongActive,
     bool         AccumulationGridActive,
-    double       SizeMult,        // 1.0 = normal · 0.5 = HighVol · [0.60–1.00] scales with confidence
     MarketRegime Regime,
     double       Confidence,
     bool         FadeShortLowVolActive = false,
@@ -107,7 +113,7 @@ public static class RegimeRouter
         return Activate(finalRegime, Math.Min(1.0, blendedConf), atrRatio);
     }
 
-    // Human-readable summary line, e.g. "Grid ✓  FadeShort ✓  size×0.78"
+    // Human-readable summary line, e.g. "FadeShort ✓  Grid ✓  DipLong ✗"
     public static string Describe(StrategyActivation a)
     {
         var parts = new List<string>();
@@ -124,7 +130,6 @@ public static class RegimeRouter
         else                   parts.Add("RipShort ✗");
         if (a.SwingLongActive) parts.Add("SwingLong ✓");
         else                   parts.Add("SwingLong ✗");
-        if (a.SizeMult < 1.0)  parts.Add($"  size×{a.SizeMult:F2}");
         return string.Join("  ", parts);
     }
 
@@ -143,7 +148,6 @@ public static class RegimeRouter
                 RipShortActive: false,
                 SwingLongActive: false,
                 AccumulationGridActive: false,
-                SizeMult: 0.5,
                 Regime: regime,
                 Confidence: conf,
                 FadeShortLowVolActive: false,
@@ -165,10 +169,6 @@ public static class RegimeRouter
         bool swingLong = dipLong;
         bool accumulationGrid = (regime == MarketRegime.Bull && conf >= DirectionalMinConf)
                                 || (regime == MarketRegime.Bear && conf >= DirectionalMinConf);
-
-        double sizeMult = regime == MarketRegime.Ranging
-            ? 1.0
-            : 0.60 + 0.40 * Math.Min(1.0, conf / 0.80);
 
         // Low-vol variants: active when ATR ratio < 0.8 (low volatility regime)
         bool isLowVol = atrRatio < 0.8;
@@ -193,7 +193,6 @@ public static class RegimeRouter
             RipShortActive: ripShort,
             SwingLongActive: swingLong,
             AccumulationGridActive: accumulationGrid,
-            SizeMult: sizeMult,
             Regime: regime,
             Confidence: conf,
             FadeShortLowVolActive: fadeShortLowVol,
@@ -210,7 +209,7 @@ public static class RegimeRouter
     // Genotype-aware activation: uses trained thresholds + BTC duration gate + source-regime awareness.
     // Delegates the five per-strategy gates to ComputeActivation below, the single source of truth
     // shared with RegimeRouterSession.IsActive (the validated/backtested behavior). This function only
-    // adds the HighVol short-circuit and the SizeMult scaling on top.
+    // adds the HighVol short-circuit on top.
     //   FadeShort — suppressed once BTC has confirmed Bull (duration ≥ BullMinBars, conf ≥ BullMinConf);
     //               active in Bear/Ranging/early-Bull and in HighVol.
     //   Grid      — active while Ranging, OR blended confidence < GridMaxConf (ambiguous market),
@@ -239,7 +238,6 @@ public static class RegimeRouter
                 RipShortActive: false,
                 SwingLongActive: false,
                 AccumulationGridActive: false,
-                SizeMult: 0.5,
                 Regime: regime,
                 Confidence: conf,
                 FadeShortLowVolActive: false,
@@ -254,36 +252,6 @@ public static class RegimeRouter
 
         var (fadeShort, grid, gridShort, dipLong, fadeLong, ripShort, swingLong, accumulationGrid, fadeShortLowVol, dipLongLowVol, swingLongLowVol, ripShortLowVol, fadeShortHighVol, dipLongHighVol, swingLongHighVol, ripShortHighVol) = ComputeActivation(regime, conf, duration, prevRegime, geno, atrRatio);
 
-        // Recompute the transition/source-regime flags locally (same formulas as inside
-        // ComputeActivation) — needed here only to scale SizeMult, not for gating.
-        bool inBullTransition = regime == MarketRegime.Bull && duration < (int)geno.BullMinBars;
-        bool earlyFromBear    = inBullTransition && prevRegime == MarketRegime.Bear
-                                && conf >= geno.BullMinConf && geno.EarlyBullFromBearMult > 0;
-        bool earlyFromRanging = inBullTransition && prevRegime == MarketRegime.Ranging
-                                && conf >= geno.BullMinConf && geno.EarlyBullFromRangingMult > 0;
-
-        bool inBearTransition = regime == MarketRegime.Bear && duration < (int)geno.BearMinBars;
-        bool earlyBearFromBull    = inBearTransition && prevRegime == MarketRegime.Bull
-                                    && geno.EarlyBearFromBullMult > 0;
-        bool earlyBearFromRanging = inBearTransition && prevRegime == MarketRegime.Ranging
-                                    && geno.EarlyBearFromRangingMult > 0;
-
-        double sizeMult = regime == MarketRegime.Ranging
-            ? 1.0
-            : 0.60 + 0.40 * Math.Min(1.0, conf / 0.80);
-
-        if (inBullTransition && geno.TransitionSizeMult > 0 && !earlyFromBear && !earlyFromRanging)
-            sizeMult *= geno.TransitionSizeMult;
-        else if (earlyFromBear)
-            sizeMult *= geno.EarlyBullFromBearMult;
-        else if (earlyFromRanging)
-            sizeMult *= geno.EarlyBullFromRangingMult;
-
-        if (earlyBearFromBull)
-            sizeMult *= geno.EarlyBearFromBullMult;
-        else if (earlyBearFromRanging)
-            sizeMult *= geno.EarlyBearFromRangingMult;
-
         return new StrategyActivation(
             FadeShortActive: fadeShort,
             GridActive: grid,
@@ -293,7 +261,6 @@ public static class RegimeRouter
             RipShortActive: ripShort,
             SwingLongActive: swingLong,
             AccumulationGridActive: accumulationGrid,
-            SizeMult: sizeMult,
             Regime: regime,
             Confidence: conf,
             FadeShortLowVolActive: fadeShortLowVol,
@@ -324,12 +291,6 @@ public static class RegimeRouter
                                 && conf >= geno.BullMinConf && geno.EarlyBullFromRangingMult > 0;
         bool bearCarry        = inBullTransition && prevRegime == MarketRegime.Bear
                                 && geno.EarlyBullBearCarry > 0;
-
-        bool inBearTransition = regime == MarketRegime.Bear && duration < (int)geno.BearMinBars;
-        bool earlyBearFromBull    = inBearTransition && prevRegime == MarketRegime.Bull
-                                    && geno.EarlyBearFromBullMult > 0;
-        bool earlyBearFromRanging = inBearTransition && prevRegime == MarketRegime.Ranging
-                                    && geno.EarlyBearFromRangingMult > 0;
 
         bool fadeShort = !(regime == MarketRegime.Bull
                            && duration >= (int)geno.BullMinBars

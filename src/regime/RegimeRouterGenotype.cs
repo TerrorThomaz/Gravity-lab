@@ -12,12 +12,18 @@ namespace TradingGA;
 //   RipShortBearMinConf    since sharing one gene pair let a disabled FadeLong drag the threshold)
 //   GridMaxConf          — Grid fires when blended confidence < GridMaxConf (ambiguous market)
 //   EthBlendWeight       — how much ETH agreement/disagreement adjusts BTC confidence
-//   TransitionSizeMult   — during the early-regime window (duration < MinBars), Grid is forced
-//                          ON at this multiplier; directional longs blocked unless early-bull genes fire
-//   EarlyBullFromBearMult    — in early-bull window, DipLong/SwingLong fire at this fraction
+//
+// The four "Mult"/"Carry" genes below are ON/OFF switches at routing time — the router asks only
+// `gene > 0`, never multiplies by the value. Their magnitude is read in exactly one place:
+// RegimeRouterGA.FilterActive scales the trade's capital fraction by it while scoring candidate
+// routers, so the value still shapes the GA's own fitness landscape. No live or backtest path
+// sizes on it. (StrategyActivation.SizeMult, which did multiply by them, was deleted as unused.)
+//   TransitionSizeMult   — > 0 forces Grid/GridShort ON during the early-regime window
+//                          (duration < MinBars), Bull or Bear
+//   EarlyBullFromBearMult    — > 0 lets DipLong/SwingLong fire in the early-bull window
 //                              ONLY when previous regime was Bear (genuine reversal)
 //   EarlyBullFromRangingMult — same for Ranging→Bull transition (range breakout)
-//   EarlyBullBearCarry       — FadeLong stays at this fraction in early-bull when came from Bear
+//   EarlyBullBearCarry       — > 0 keeps FadeLong on in early-bull when it came from Bear
 //                              (bearish carry-over: dead-cat fades before the bull confirms)
 public class RegimeRouterGenotype
 {
@@ -33,8 +39,6 @@ public class RegimeRouterGenotype
     public double EarlyBullFromBearMult   { get; set; }  // [0.00, 1.00]
     public double EarlyBullFromRangingMult{ get; set; }  // [0.00, 1.00]
     public double EarlyBullBearCarry      { get; set; }  // [0.00, 1.00]
-    public double EarlyBearFromBullMult    { get; set; }  // [0.00, 1.00]
-    public double EarlyBearFromRangingMult { get; set; }  // [0.00, 1.00]
 
     public double Fitness { get; set; }
 
@@ -53,8 +57,6 @@ public class RegimeRouterGenotype
         { 0.00, 1.00 }, // EarlyBullFromBearMult
         { 0.00, 1.00 }, // EarlyBullFromRangingMult
         { 0.00, 1.00 }, // EarlyBullBearCarry
-        { 0.00, 1.00 }, // EarlyBearFromBullMult
-        { 0.00, 1.00 }, // EarlyBearFromRangingMult
     };
 
     // ── BO / vector interface ─────────────────────────────────────────────────
@@ -64,7 +66,6 @@ public class RegimeRouterGenotype
         RipShortBearMinBars, RipShortBearMinConf, GridMaxConf,
         EthBlendWeight, TransitionSizeMult,
         EarlyBullFromBearMult, EarlyBullFromRangingMult, EarlyBullBearCarry,
-        EarlyBearFromBullMult, EarlyBearFromRangingMult,
     ];
 
     public static RegimeRouterGenotype FromVector(double[] v) => new()
@@ -81,8 +82,6 @@ public class RegimeRouterGenotype
         EarlyBullFromBearMult    = Math.Clamp(v[9], 0.00, 1.00),
         EarlyBullFromRangingMult = Math.Clamp(v[10], 0.00, 1.00),
         EarlyBullBearCarry       = Math.Clamp(v[11], 0.00, 1.00),
-        EarlyBearFromBullMult    = Math.Clamp(v[12], 0.00, 1.00),
-        EarlyBearFromRangingMult = Math.Clamp(v[13], 0.00, 1.00),
     };
 
     // ── GA operators ─────────────────────────────────────────────────────────
@@ -105,8 +104,6 @@ public class RegimeRouterGenotype
             EarlyBullFromBearMult    = rng.NextDouble(),
             EarlyBullFromRangingMult = rng.NextDouble(),
             EarlyBullBearCarry       = rng.NextDouble(),
-            EarlyBearFromBullMult    = rng.NextDouble(),
-            EarlyBearFromRangingMult = rng.NextDouble(),
         };
     }
 
@@ -134,8 +131,6 @@ public class RegimeRouterGenotype
             EarlyBullFromBearMult    = G(EarlyBullFromBearMult,   0.00, 1.00),
             EarlyBullFromRangingMult = G(EarlyBullFromRangingMult,0.00, 1.00),
             EarlyBullBearCarry       = G(EarlyBullBearCarry,      0.00, 1.00),
-            EarlyBearFromBullMult    = G(EarlyBearFromBullMult,    0.00, 1.00),
-            EarlyBearFromRangingMult = G(EarlyBearFromRangingMult, 0.00, 1.00),
         };
     }
 
@@ -154,8 +149,6 @@ public class RegimeRouterGenotype
             EarlyBullFromBearMult    = rng.NextDouble() < 0.5 ? a.EarlyBullFromBearMult    : b.EarlyBullFromBearMult,
             EarlyBullFromRangingMult = rng.NextDouble() < 0.5 ? a.EarlyBullFromRangingMult : b.EarlyBullFromRangingMult,
             EarlyBullBearCarry       = rng.NextDouble() < 0.5 ? a.EarlyBullBearCarry       : b.EarlyBullBearCarry,
-            EarlyBearFromBullMult    = rng.NextDouble() < 0.5 ? a.EarlyBearFromBullMult    : b.EarlyBearFromBullMult,
-            EarlyBearFromRangingMult = rng.NextDouble() < 0.5 ? a.EarlyBearFromRangingMult : b.EarlyBearFromRangingMult,
         };
 
     public override string ToString() =>
@@ -163,7 +156,6 @@ public class RegimeRouterGenotype
         $"RipBear≥{RipShortBearMinBars:F0}bars/conf{RipShortBearMinConf:F2}  " +
         $"GridIfConf<{GridMaxConf:F2}  EthW={EthBlendWeight:F2}  TransMult={TransitionSizeMult:F2}  " +
         $"EBear={EarlyBullFromBearMult:F2}  ERng={EarlyBullFromRangingMult:F2}  BCarry={EarlyBullBearCarry:F2}  " +
-        $"EBull={EarlyBearFromBullMult:F2}  ERng={EarlyBearFromRangingMult:F2}  " +
         $"F={Fitness:F4}";
 }
 
@@ -184,10 +176,13 @@ public record RegimeRouterGenotypeDto(
     // Defaults match the old shared BearMinBars/BearMinConf so genotype files saved
     // before RipShort got its own gate keep their exact prior behavior on load.
     double RipShortBearMinBars = 143.0,
-    double RipShortBearMinConf = 0.74,
-    double EarlyBearFromBullMult    = 0.5,
-    double EarlyBearFromRangingMult = 0.5)
+    double RipShortBearMinConf = 0.74)
 {
+    // NOTE: EarlyBearFromBullMult / EarlyBearFromRangingMult were removed along with
+    // StrategyActivation.SizeMult — they only ever scaled that (never-consumed) multiplier
+    // and never gated activation. Genotype JSON written before the removal still carries
+    // those two keys; System.Text.Json ignores unmapped members by default, so such files
+    // continue to deserialize unchanged. Do not re-add them without a consumer.
     public RegimeRouterGenotype ToGenotype() => new()
     {
         BullMinBars              = BullMinBars,
@@ -203,8 +198,6 @@ public record RegimeRouterGenotypeDto(
         EarlyBullFromBearMult    = EarlyBullFromBearMult,
         EarlyBullFromRangingMult = EarlyBullFromRangingMult,
         EarlyBullBearCarry       = EarlyBullBearCarry,
-        EarlyBearFromBullMult    = EarlyBearFromBullMult,
-        EarlyBearFromRangingMult = EarlyBearFromRangingMult,
     };
 
     public static RegimeRouterGenotypeDto From(RegimeRouterGenotype g) =>
@@ -212,6 +205,5 @@ public record RegimeRouterGenotypeDto(
             g.GridMaxConf, g.EthBlendWeight, g.Fitness,
             g.TransitionSizeMult, g.EarlyBullFromBearMult,
             g.EarlyBullFromRangingMult, g.EarlyBullBearCarry,
-            g.RipShortBearMinBars, g.RipShortBearMinConf,
-            g.EarlyBearFromBullMult, g.EarlyBearFromRangingMult);
+            g.RipShortBearMinBars, g.RipShortBearMinConf);
 }

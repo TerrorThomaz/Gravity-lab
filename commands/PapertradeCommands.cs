@@ -262,12 +262,11 @@ static class PapertradeCommands
                         ? RegimeRouter.Route(btcPt.H1, routerGenoPt, ethH1Pt)
                         : RegimeRouter.Route(btcPt.H1, ethH1Pt);
                     string routerTag = routerGenoPt != null ? "(trained)" : "(rule-based)";
-                    string sizeTag   = ptRouting.SizeMult < 1.0 ? $"  size×{ptRouting.SizeMult:F2}" : "";
                     var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcPt.H1);
                     int bearDur = btcSeries[^1].Regime == MarketRegime.Bear ? btcSeries[^1].Duration : 0;
                     int bullDur = btcSeries[^1].Regime == MarketRegime.Bull ? btcSeries[^1].Duration : 0;
                     string durTag = bearDur > 0 ? $"  bear={bearDur}h" : bullDur > 0 ? $"  bull={bullDur}h" : "";
-                    Console.WriteLine($"  Regime {routerTag}: {ptRouting.Regime}  conf={ptRouting.Confidence:P0}  →  {RegimeRouter.Describe(ptRouting)}{sizeTag}{durTag}\n");
+                    Console.WriteLine($"  Regime {routerTag}: {ptRouting.Regime}  conf={ptRouting.Confidence:P0}  →  {RegimeRouter.Describe(ptRouting)}{durTag}\n");
                 }
             }
 
@@ -621,7 +620,6 @@ static class PapertradeCommands
                     DipLong    = ptRouting.DipLongActive,
                     FadeLong   = ptRouting.FadeLongActive,
                     RipShort   = ptRouting.RipShortActive,
-                    sizeMult   = Math.Round(ptRouting.SizeMult, 2),
                 } : null;
 
                 var guardInfo = guardSession != null ? new

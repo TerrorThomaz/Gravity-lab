@@ -216,4 +216,150 @@ public class FundingRateSessionTests
         double pnl = FundingRateSession.PnlPct(Utc(2024, 3, 1, 1), Utc(2024, 3, 1, 17), s, isLong: true);
         Assert.Equal(-(0.02 + 0.04), pnl, 10);
     }
+
+    [Fact]
+    public void RealRateAndFallback_ChargeTheSameNumberOfTicks()
+    {
+        // Both branches must agree on "how many times charged" for every hold length, so the
+        // fallback is a pure rate substitution and never a different accounting rule.
+        var s = FlatSession(0.0001);                       // +0.01% per 8h == FallbackIntervalPct
+        var entry = Utc(2024, 3, 1, 3);
+        for (int hours = 1; hours <= 200; hours++)
+        {
+            var exit = entry.AddHours(hours);
+            int n = FundingRateSession.CountSettlements(entry, exit);
+            Assert.Equal(+n * FundingRateSession.FallbackIntervalPct,
+                         FundingRateSession.PnlPct(entry, exit, s,    isLong: false), 8);
+            Assert.Equal(-n * FundingRateSession.FallbackIntervalPct,
+                         FundingRateSession.PnlPct(entry, exit, null, isLong: false), 8);
+        }
+    }
+
+    // ── Series coverage: the two ends are handled differently on purpose ──────────────────
+    //
+    // GetRate used to flat-extrapolate BOTH ends, so a settlement predating the funding history
+    // was billed the FIRST known print's rate. A trade a year before the series start was
+    // charged that fabricated constant at every tick it crossed (-0.30 for a 24h long against a
+    // +0.10%/8h first print). The session is built from whatever the funding cache holds and all
+    // six strategies price funding through it, so a short cache silently painted a synthetic
+    // rate over the leading window of every backtest.
+    //
+    // CHOSEN BEHAVIOUR before the series start: charge the interest-rate floor, exactly as the
+    // `funding == null` branch does — NOT 0.0. A real position did pay something at that
+    // settlement; we just don't know how much, and booking zero is booking unprovable funding
+    // income relative to the floor. It also makes the cost model coverage-independent: see
+    // PreSeriesWindow_PricesIdenticallyToHavingNoSeriesAtAll below.
+    //
+    // CHOSEN BEHAVIOUR after the series end: keep flat-extrapolating the last known rate.
+    // Funding is strongly autocorrelated at the 8h scale and the trailing gap is structurally
+    // small (the cache ends at the end of the backtest window, or at "now" in papertrade), so an
+    // extrapolated tick sits adjacent to real data rather than an unbounded distance from it.
+
+    [Fact]
+    public void SettlementsBeforeSeriesStart_ChargeTheFloor_NotTheFirstKnownRate()
+    {
+        var s = new FundingRateSession([new FundingBar(Utc(2025, 1, 1), 0.0010)]);   // +0.10%/8h
+        // Trade in 2024 — a year before any known funding print. 24h spans 3 settlements.
+        double lng = FundingRateSession.PnlPct(Utc(2024, 3, 1), Utc(2024, 3, 2), s, isLong: true);
+        double sht = FundingRateSession.PnlPct(Utc(2024, 3, 1), Utc(2024, 3, 2), s, isLong: false);
+
+        Assert.Equal(-FundingRateSession.FallbackIntervalPct * 3, lng, 10);
+        Assert.Equal(-FundingRateSession.FallbackIntervalPct * 3, sht, 10);
+        // The old back-extrapolated figure, pinned so a regression is unambiguous.
+        Assert.NotEqual(-0.30, lng, 10);
+    }
+
+    [Fact]
+    public void PreSeriesWindow_PricesIdenticallyToHavingNoSeriesAtAll()
+    {
+        // Coverage independence: partially populating the funding cache must never make a
+        // strategy look cheaper (or dearer) to hold than leaving the cache empty.
+        var s = new FundingRateSession([new FundingBar(Utc(2025, 1, 1), 0.0010)]);
+        var entry = Utc(2024, 3, 1, 1);
+        foreach (bool isLong in new[] { true, false })
+            for (int hours = 1; hours <= 120; hours++)
+            {
+                var exit = entry.AddHours(hours);
+                Assert.Equal(FundingRateSession.PnlPct(entry, exit, null, isLong),
+                             FundingRateSession.PnlPct(entry, exit, s,    isLong), 10);
+            }
+    }
+
+    [Fact]
+    public void EmptySeries_PricesIdenticallyToHavingNoSeriesAtAll()
+    {
+        var empty = new FundingRateSession(Array.Empty<FundingBar>());
+        var entry = Utc(2024, 3, 1);
+        var exit  = Utc(2024, 3, 2);
+        Assert.Equal(FundingRateSession.PnlPct(entry, exit, null,  isLong: true),
+                     FundingRateSession.PnlPct(entry, exit, empty, isLong: true), 10);
+        Assert.Equal(-FundingRateSession.FallbackIntervalPct * 3,
+                     FundingRateSession.PnlPct(entry, exit, empty, isLong: true), 10);
+    }
+
+    [Fact]
+    public void WindowStraddlingSeriesStart_ChargesFloorBeforeAndRealRatesAfter()
+    {
+        var s = new FundingRateSession(new[]
+        {
+            new FundingBar(Utc(2024, 3, 1,  8), 0.0005),
+            new FundingBar(Utc(2024, 3, 1, 16), 0.0005),
+        });
+        // 2024-02-29 23:00 → 2024-03-01 17:00 crosses 00:00 (pre-series), 08:00 and 16:00.
+        double lng = FundingRateSession.PnlPct(Utc(2024, 2, 29, 23), Utc(2024, 3, 1, 17), s, isLong: true);
+        Assert.Equal(-FundingRateSession.FallbackIntervalPct - 0.05 - 0.05, lng, 10);
+    }
+
+    [Fact]
+    public void SettlementsAfterSeriesEnd_FlatExtrapolateTheLastKnownRate()
+    {
+        var s = new FundingRateSession([new FundingBar(Utc(2024, 3, 1, 0), 0.0005)]);   // +0.05%/8h
+        // Trade months after the last print: still priced at the last known rate, deliberately.
+        double lng = FundingRateSession.PnlPct(Utc(2024, 6, 1), Utc(2024, 6, 2), s, isLong: true);
+        Assert.Equal(-0.05 * 3, lng, 10);
+    }
+
+    [Fact]
+    public void GetRate_IsZeroBeforeTheSeriesAndCrowdingGatesReadNeutral()
+    {
+        // A hard binary entry gate must not fire on an invented rate: "unknown" is "not crowded".
+        var s = new FundingRateSession([new FundingBar(Utc(2025, 1, 1), 0.0010)]);   // crowded long
+        Assert.Equal(0.0, s.GetRate(Utc(2024, 1, 1)), 12);
+        Assert.False(s.TryGetRate(Utc(2024, 1, 1), out _));
+        Assert.False(s.CoversTime(Utc(2024, 1, 1)));
+        Assert.False(s.IsCrowdedLong(Utc(2024, 1, 1)));
+        Assert.False(s.IsCrowdedShort(Utc(2024, 1, 1)));
+
+        // The print instant itself IS covered — the boundary is "strictly before".
+        Assert.True(s.CoversTime(Utc(2025, 1, 1)));
+        Assert.True(s.TryGetRate(Utc(2025, 1, 1), out double r));
+        Assert.Equal(0.0010, r, 12);
+        Assert.True(s.IsCrowdedLong(Utc(2025, 1, 1)));
+    }
+
+    // ── DateTime overflow safety ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public void PnlPct_DoesNotThrowOnExtremeExitTime()
+    {
+        // When exitTime is near DateTime.MaxValue, the settlement loop must guard the increment
+        // before re-testing the bound, otherwise AddHours throws ArgumentOutOfRangeException.
+        var s = new FundingRateSession(new[]
+        {
+            new FundingBar(Utc(2024, 3, 1, 0), 0.0001),
+        });
+        var ex = Record.Exception(() =>
+            FundingRateSession.PnlPct(Utc(2024, 3, 1), DateTime.MaxValue, s, isLong: true));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void CountSettlements_DoesNotThrowOnExtremeExitTime()
+    {
+        // When exitTime is near DateTime.MaxValue, the settlement loop must guard the increment
+        // before re-testing the bound, otherwise AddHours throws ArgumentOutOfRangeException.
+        var ex = Record.Exception(() =>
+            FundingRateSession.CountSettlements(Utc(2024, 3, 1), DateTime.MaxValue));
+        Assert.Null(ex);
+    }
 }

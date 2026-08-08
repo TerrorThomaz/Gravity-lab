@@ -193,7 +193,9 @@ public static class StrategyStats
             ["SwingLong"]    = 14,  // EmaPeriod..TimeStopLossPct
             ["Grid"]         =  9,  // AdxThreshold..MaxHoldCandles
             ["Router"]       = 10,  // BullMinBars..EarlyBullBearCarry
-            ["DynamicGuard"] = 15,  // AtrLookback..ProfitProtectFactor
+            // DynamicGuardGenotype.GeneCount — 14 tuning genes + the DD-gate threshold + the
+            // DD-gate on/off switch. The switch is a real searched dimension, so it counts here.
+            ["DynamicGuard"] = DynamicGuardGenotype.GeneCount,
         };
 
     // N/d ratio — Abu-Mustafa rule of thumb for VC generalization:

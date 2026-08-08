@@ -251,10 +251,18 @@ static class LongTrainCommands
                 new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"  Saved Router     → {rrPath}  {result.Router}");
 
-        var dgDto = new DynamicGuardGenotypeDto(result.DynamicGuard.AtrLookback, result.DynamicGuard.AtrTrigger,
-            result.DynamicGuard.MomLookback, result.DynamicGuard.MomThreshold,
-            result.DynamicGuard.SizeFloor, result.DynamicGuard.Fitness,
-            result.DynamicGuard.PanicTrigger, result.DynamicGuard.RecoveryBars);
+        // Persist ALL 15 genes, not just the first 8. This previously constructed the DTO with
+        // eight arguments and let the rest fall to their defaults, so a guard trained through
+        // coevolvetrain was written back with BullMomBypass, EntryAtrGate, DdEntryGatePct,
+        // ConfLossCapMin/Max and all three ProfitProtect* silently reset — discarding what the
+        // GA had just selected. Keep this in sync with DynamicGuardTrainCommands' save path;
+        // DynamicGuardGenotype.GeneCount is the authority on how many genes exist.
+        var g = result.DynamicGuard;
+        var dgDto = new DynamicGuardGenotypeDto(
+            g.AtrLookback, g.AtrTrigger, g.MomLookback, g.MomThreshold, g.SizeFloor, g.Fitness,
+            g.PanicTrigger, g.RecoveryBars, g.BullMomBypass, g.EntryAtrGate, g.DdEntryGatePct,
+            g.ConfLossCapMin, g.ConfLossCapMax,
+            g.ProfitProtectThreshold, g.ProfitProtectDrawback, g.ProfitProtectFactor);
         File.WriteAllText(dgPath,
             JsonSerializer.Serialize(dgDto, new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"  Saved DynGuard   → {dgPath}  {result.DynamicGuard}");

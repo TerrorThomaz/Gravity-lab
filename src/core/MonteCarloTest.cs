@@ -54,6 +54,72 @@ public static class MonteCarloTest
         int Resamples);
 
     /// <summary>
+    /// Resample count for p-values that feed a FAMILY-WISE correction (the Holm block in
+    /// CombinedBacktest), as opposed to a standalone α=0.05 verdict.
+    ///
+    /// WHY THE DEFAULT 1,000 IS NOT ENOUGH HERE
+    /// ----------------------------------------
+    /// Run returns the Davison-Hinkley estimator (count+1)/(N+1), so the p-value is a lattice
+    /// with step 1/(N+1) and floor 1/(N+1). Holm's strictest step for a 6-strategy family is
+    /// α/m = 0.05/6 = 0.008333. At N=1,000 the smallest attainable p is 0.000999, so only ~8
+    /// lattice points exist below the threshold that decides the most important cell in the
+    /// table — one significant figure of resolution. Worse, the sampling noise of the estimate
+    /// itself is comparable to the threshold: se(p̂) = sqrt(p(1-p)/N) ≈ 0.0029 at p=0.00833,
+    /// i.e. 34% of the threshold. Two runs of the same trade set with different RNG streams
+    /// could land on opposite sides of it.
+    ///
+    /// WHY 20,000 AND NOT THE SUGGESTED 10,000
+    /// ---------------------------------------
+    /// 10,000 gives ~83 lattice points below 0.008333 and se(p̂) ≈ 0.00091 (11% of the
+    /// threshold) — a real improvement, but the noise is still a tenth of the decision
+    /// boundary. 20,000 gives ~167 lattice points and se(p̂) ≈ 0.00064 (7.7%), which keeps the
+    /// resampling error an order of magnitude below the quantity being resolved even at the
+    /// strictest Holm step, and leaves headroom if the family ever grows past six.
+    ///
+    /// RUNTIME
+    /// -------
+    /// Run is O(N × n). Measured on this machine (Release, .NET 10), per call:
+    ///     n =  5,000 trades → 0.67 s      n = 20,000 trades → 2.5 s
+    /// The Holm block makes six such calls on full-history per-strategy trade lists, so the
+    /// worst realistic cost is ~15 s and the typical one ~4 s, against a `combinedbacktest`
+    /// that already spends minutes fetching candles and simulating. The 1,000-resample
+    /// baseline cost ~0.2-0.8 s in total, so this adds seconds, not minutes.
+    ///
+    /// The default parameter stays at 1,000: the per-strategy MonteCarloTest reports printed
+    /// by the training commands are single uncorrected tests against α=0.05, where a 0.001
+    /// lattice is already two orders of magnitude finer than the threshold.
+    /// </summary>
+    public const int FamilyWiseResamples = 20_000;
+
+    /// <summary>
+    /// Deterministic RNG seed derived from a strategy's name.
+    ///
+    /// The Holm block used to thread ONE Random(42) through all six sequential Run calls, which
+    /// makes a strategy's p-value depend on how many resamples the strategies BEFORE it consumed
+    /// from the shared stream. Skip one strategy (too few coins, too few trades, a genotype not
+    /// loaded) and every subsequent p-value changes, even though none of their trade sets moved.
+    /// Seeding each strategy from its own name makes a p-value a pure function of that strategy's
+    /// own returns, so the vector handed to Holm is reproducible for a given trade set regardless
+    /// of family membership.
+    ///
+    /// FNV-1a rather than string.GetHashCode(): .NET Core randomises string hashing per process,
+    /// so GetHashCode would reintroduce run-to-run drift — the exact defect being fixed.
+    /// </summary>
+    public static int SeedForStrategy(string strategyName)
+    {
+        unchecked
+        {
+            uint h = 2166136261u;                       // FNV offset basis
+            foreach (char c in strategyName)
+            {
+                h ^= c;
+                h *= 16777619u;                          // FNV prime
+            }
+            return (int)(h & 0x7FFFFFFF);                // non-negative; Random accepts any int
+        }
+    }
+
+    /// <summary>
     /// Plain per-trade Sharpe: mean / population-stdev.
     ///
     /// Deliberately NOT Simulator.SharpeRatio — that one hard-returns 0 whenever the

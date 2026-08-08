@@ -24,20 +24,51 @@ public class FundingRateSession
         _rates = sorted.Select(f => f.Rate).ToArray();
     }
 
-    public double GetRate(DateTime time)
+    // ┌── COVERAGE RULE — THE TWO ENDS OF THE SERIES ARE NOT SYMMETRIC ──────────────────┐
+    // │ BEFORE the first print → UNKNOWN. TryGetRate reports false; GetRate returns 0.0. │
+    // │ AFTER  the last print  → flat-extrapolated from the last known rate.             │
+    // └──────────────────────────────────────────────────────────────────────────────────┘
+    //
+    // This used to flat-extrapolate BOTH ends (`if (t <= _ticks[0]) return _rates[0]`), so a
+    // trade a year before the earliest funding print was billed that single print's rate at
+    // every settlement it crossed — a fabricated constant whose sign and magnitude are whatever
+    // the first row of the cache happened to be. The session is built from whatever the funding
+    // cache holds, and all six strategies now price funding through this one object, so a cache
+    // that starts later than the candles would silently paint a synthetic rate over the whole
+    // leading window of every backtest.
+    //
+    // The trailing end is deliberately left extrapolating, because it is a different situation:
+    // funding is strongly autocorrelated at the 8h scale, and the gap past the last print is
+    // structurally small — the cache ends at the end of the backtest window, or at "now" in
+    // papertrade — so an extrapolated tick sits adjacent to real data instead of an unbounded
+    // distance from it. (Known limitation: nothing here caps how stale the last print may be.
+    // Adding a staleness horizon would mean inventing a tunable; the leading-edge fix removes
+    // the unbounded case that actually occurs in practice.)
+    //
+    // For the crowding gates, "unknown" reads as NOT crowded: a hard binary entry gate must not
+    // block a trade on an invented rate. For the cost model, "unknown" reads as the interest-rate
+    // floor — see PnlPct.
+    public bool TryGetRate(DateTime time, out double rate)
     {
-        if (_ticks.Length == 0) return 0.0;
+        rate = 0.0;
+        if (_ticks.Length == 0) return false;
         long t = time.Ticks;
-        if (t <= _ticks[0])  return _rates[0];
-        if (t >= _ticks[^1]) return _rates[^1];
+        if (t < _ticks[0]) return false;              // before the series begins → unknown
+        if (t >= _ticks[^1]) { rate = _rates[^1]; return true; }
         int lo = 0, hi = _ticks.Length - 1;
         while (lo < hi)
         {
             int mid = (lo + hi + 1) / 2;
             if (_ticks[mid] <= t) lo = mid; else hi = mid - 1;
         }
-        return _rates[lo];
+        rate = _rates[lo];
+        return true;
     }
+
+    public double GetRate(DateTime time) => TryGetRate(time, out double r) ? r : 0.0;
+
+    // True when `time` is at or after the first known funding print.
+    public bool CoversTime(DateTime time) => _ticks.Length > 0 && time.Ticks >= _ticks[0];
 
     // Returns true when longs are extremely crowded — skip DipLong / SwingLong entries.
     public bool IsCrowdedLong(DateTime time)  => GetRate(time) > CrowdedLongThreshold;
@@ -62,6 +93,13 @@ public class FundingRateSession
     // ~0.01% per 8h. Used only when no real rate series is available.
     public const double FallbackIntervalPct = 0.01;
 
+    // Last settlement instant from which advancing one more interval still fits in a DateTime.
+    // Both settlement loops below test the CURRENT tick against this before incrementing, rather
+    // than incrementing and catching the overflow: the loop body runs per trade inside GA fitness
+    // evaluation, so the guard should be a predictable compare, not exception handling.
+    private static readonly DateTime LastAdvanceableSettlement =
+        DateTime.MaxValue.AddHours(-FundingIntervalHours);
+
     // ┌── SIGN RULE — READ THIS BEFORE TOUCHING ANY FUNDING MATH ────────────────────────┐
     // │ A POSITIVE funding rate means LONGS PAY SHORTS.                                  │
     // │ A NEGATIVE funding rate means SHORTS PAY LONGS.                                  │
@@ -83,8 +121,6 @@ public class FundingRateSession
     public static double PnlPct(DateTime entryTime, DateTime exitTime, FundingRateSession? funding, bool isLong)
     {
         if (exitTime <= entryTime) return 0.0;
-
-        double dirSign = isLong ? -1.0 : +1.0;   // long pays a positive rate, short receives it
 
         if (funding == null)
         {
@@ -122,9 +158,32 @@ public class FundingRateSession
             return -FallbackIntervalPct * intervals;
         }
 
+        // Real rate series: apply sign-correct charges per settlement tick.
+        // A POSITIVE funding rate means LONGS PAY, SHORTS RECEIVE.
+        //
+        // Ticks the series does not cover (i.e. settlements BEFORE the first known print — see
+        // the coverage rule on TryGetRate) fall back to the interest-rate floor, exactly as the
+        // `funding == null` branch above does. Two reasons this beats returning 0.0:
+        //
+        //   1. It obeys the same one-sided principle: a real position DID pay something at that
+        //      settlement, we simply do not know how much. Booking zero is booking unprovable
+        //      funding income relative to the floor, and it is the long strategies — which pay
+        //      in the modal case — that hold through the most ticks.
+        //   2. It makes the cost model COVERAGE-INDEPENDENT. A trade whose window predates the
+        //      cache is now priced identically to one run with no session at all, so partially
+        //      populating the funding cache can never make a strategy look cheaper to hold than
+        //      leaving it empty. Under the old behaviour, and under a 0.0 rule, the reported
+        //      edge moved with an artefact of how much history the cache happened to contain.
+        double dirSign = isLong ? -1.0 : +1.0;   // long pays a positive rate, short receives it
         double pnl = 0.0;
-        for (DateTime t = FirstSettlementAtOrAfter(entryTime); t <= exitTime; t = t.AddHours(FundingIntervalHours))
-            pnl += dirSign * funding.GetRate(t) * 100.0;
+        for (DateTime t = FirstSettlementStrictlyAfter(entryTime); t <= exitTime; )
+        {
+            pnl += funding.TryGetRate(t, out double rate)
+                 ? dirSign * rate * 100.0
+                 : -FallbackIntervalPct;
+            if (t > LastAdvanceableSettlement) break;   // next tick would overflow DateTime
+            t = t.AddHours(FundingIntervalHours);
+        }
         return pnl;
     }
 
@@ -134,13 +193,17 @@ public class FundingRateSession
     {
         if (exitTime <= entryTime) return 0;
         int n = 0;
-        for (DateTime t = FirstSettlementAtOrAfter(entryTime); t <= exitTime; t = t.AddHours(FundingIntervalHours))
+        for (DateTime t = FirstSettlementStrictlyAfter(entryTime); t <= exitTime; )
+        {
             n++;
+            if (t > LastAdvanceableSettlement) break;   // next tick would overflow DateTime
+            t = t.AddHours(FundingIntervalHours);
+        }
         return n;
     }
 
     // First 8h settlement boundary strictly after `time` (grid anchored at 00:00 UTC).
-    private static DateTime FirstSettlementAtOrAfter(DateTime time)
+    private static DateTime FirstSettlementStrictlyAfter(DateTime time)
     {
         DateTime t = time.Date;
         while (t <= time) t = t.AddHours(FundingIntervalHours);

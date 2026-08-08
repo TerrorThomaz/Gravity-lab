@@ -5,6 +5,63 @@ namespace TradingGA;
 
 static class CombinedBacktest
 {
+    // ── Multiple-testing family construction ──────────────────────────────────
+    // A strategy needs trades on at least this many coins before any of the coin-level
+    // statistics (DSR / PBO / WRC) or the Monte Carlo bootstrap mean anything. Shared by
+    // the StatisticalTests.PrintReport calls and the Holm family so the two lists are
+    // built from the same rule rather than two hand-copied literals that drifted apart.
+    internal const int MinFamilyCoins = 2;
+
+    // MonteCarloTest.Run hard-returns p = 1.0 below this many observations — it cannot form
+    // a null distribution. Including such a strategy at p = 1.0 would inflate m (weakening
+    // every other strategy's threshold) while contributing a verdict that is structurally
+    // incapable of being a rejection, so it is excluded and the exclusion is reported.
+    internal const int MinFamilyTrades = 10;
+
+    /// <summary>
+    /// Builds the Monte Carlo p-value vector for the Holm-Bonferroni family, plus the list of
+    /// strategies that could not be tested and why.
+    ///
+    /// Each strategy is seeded from its OWN name (MonteCarloTest.SeedForStrategy). The previous
+    /// version threaded a single Random(42) through the six sequential Run calls, so a strategy's
+    /// p-value depended on how many draws the strategies ahead of it had consumed: skip one
+    /// (fewer than two coins, fewer than ten trades, a genotype that failed to load) and every
+    /// subsequent p-value shifted, even though none of those trade sets had changed. Per-name
+    /// seeding makes each p-value a pure function of that strategy's own returns, which is what
+    /// "reproducible for a given trade set" has to mean when family membership is variable.
+    ///
+    /// Extracted from the reporting flow purely so this property is directly testable.
+    /// </summary>
+    internal static (List<(string Name, double PValue)> Family,
+                     List<(string Name, string Reason)> Excluded)
+        BuildMonteCarloFamily(
+            IReadOnlyList<(string Name, List<(string Label, List<double> Returns)> PerCoin, int GaTrials)> inputs)
+    {
+        var family   = new List<(string Name, double PValue)>();
+        var excluded = new List<(string Name, string Reason)>();
+
+        foreach (var (name, perCoin, _) in inputs)
+        {
+            if (perCoin.Count < MinFamilyCoins)
+            {
+                excluded.Add((name, $"traded on {perCoin.Count} coin(s); needs ≥ {MinFamilyCoins} (not reported above either)"));
+                continue;
+            }
+            var rets = perCoin.SelectMany(c => c.Returns).ToList();
+            if (rets.Count < MinFamilyTrades)
+            {
+                excluded.Add((name, $"{rets.Count} trades; the bootstrap needs ≥ {MinFamilyTrades} to form a null"));
+                continue;
+            }
+            var mc = MonteCarloTest.Run(
+                rets,
+                permutations: MonteCarloTest.FamilyWiseResamples,
+                rng: new Random(MonteCarloTest.SeedForStrategy(name)));
+            family.Add((name, mc.PValue));
+        }
+        return (family, excluded);
+    }
+
     // ── Variant loading helper ────────────────────────────────────────────────
     // Scans genotypes/ for all files matching {strategyKey}_*_genotype.json and the
     // plain {strategyKey}_genotype.json default.  Builds a VariantSpec<TG>[] array
@@ -1326,46 +1383,55 @@ static class CombinedBacktest
 
         // Statistical tests use full 3yr history per coin (IS + val) so regime-conditional
         // strategies (FadeLong, DipLong) have enough trades per coin for PBO to be meaningful.
-        var statRng = new Random(42);
-        if (swingFullCoinRet.Count >= 2) StatisticalTests.PrintReport(swingFullCoinRet, "FadeShort",  gaTrials: 10_000, rng: statRng);
-        if (gridFullCoinRet.Count  >= 2) StatisticalTests.PrintReport(gridFullCoinRet,  "Grid",       gaTrials: 10_000, rng: statRng);
-        if (flFullCoinRet.Count    >= 2) StatisticalTests.PrintReport(flFullCoinRet,    "FadeLong",   gaTrials: 12_000, rng: statRng);
-        if (dlFullCoinRet.Count    >= 2) StatisticalTests.PrintReport(dlFullCoinRet,    "DipLong",    gaTrials: 12_000, rng: statRng);
-        if (slFullCoinRet.Count    >= 2) StatisticalTests.PrintReport(slFullCoinRet,    "SwingLong",  gaTrials: 10_000, rng: statRng);
-        if (rsFullCoinRet.Count    >= 2) StatisticalTests.PrintReport(rsFullCoinRet,    "RipShort",   gaTrials: 12_000, rng: statRng);
-
-        // ── Holm-Bonferroni Family-Wise Error Rate Correction ────────────────────────
-        // Collect per-strategy p-values from Monte Carlo test and apply correction.
-        var strategyPValues = new List<(string Name, double PValue)>();
-        var mcRng = new Random(42);
-
-        // Strategy order is fixed so the printed table is stable across runs, and so the
-        // p-value vector handed to Holm-Bonferroni is reproducible for a given trade set.
-        var mcInputs = new (string Name, List<(string Label, List<double> Returns)> PerCoin)[]
+        // ONE canonical strategy list drives both the per-strategy DSR/PBO/WRC reports below
+        // and the Holm family built after them, so the two can no longer disagree about which
+        // strategies exist. Order is fixed so printed tables are stable across runs.
+        var mcInputs = new (string Name, List<(string Label, List<double> Returns)> PerCoin, int GaTrials)[]
         {
-            ("FadeShort", swingFullCoinRet),
-            ("Grid",      gridFullCoinRet),
-            ("FadeLong",  flFullCoinRet),
-            ("DipLong",   dlFullCoinRet),
-            ("SwingLong", slFullCoinRet),
-            ("RipShort",  rsFullCoinRet),
+            ("FadeShort", swingFullCoinRet, 10_000),
+            ("Grid",      gridFullCoinRet,  10_000),
+            ("FadeLong",  flFullCoinRet,    12_000),
+            ("DipLong",   dlFullCoinRet,    12_000),
+            ("SwingLong", slFullCoinRet,    10_000),
+            ("RipShort",  rsFullCoinRet,    12_000),
         };
 
-        foreach (var (name, perCoin) in mcInputs)
+        var statRng = new Random(42);
+        foreach (var (name, perCoin, gaTrials) in mcInputs)
+            if (perCoin.Count >= MinFamilyCoins)
+                StatisticalTests.PrintReport(perCoin, name, gaTrials: gaTrials, rng: statRng);
+
+        // ── Holm-Bonferroni Family-Wise Error Rate Correction ────────────────────────
+        var (strategyPValues, familyExclusions) = BuildMonteCarloFamily(mcInputs);
+
+        if (strategyPValues.Count > 0 || familyExclusions.Count > 0)
         {
-            if (perCoin.Count < 2) continue;
-            var rets = perCoin.SelectMany(c => c.Returns).ToList();
-            if (rets.Count < 10) continue;
-            strategyPValues.Add((name, MonteCarloTest.Run(rets, permutations: 1000, rng: mcRng).PValue));
+            Console.WriteLine($"\n{new string('═', 70)}");
+            Console.WriteLine("  HOLM-BONFERRONI FAMILY-WISE ERROR RATE CORRECTION");
+            Console.WriteLine($"{new string('═', 70)}");
+            Console.WriteLine($"  Monte Carlo: {MonteCarloTest.FamilyWiseResamples:N0} mean-centred bootstrap resamples per strategy,");
+            Console.WriteLine($"  each seeded from its own name — a strategy's p-value does not depend on which");
+            Console.WriteLine($"  other strategies were included.");
+        }
+
+        // The family criteria are a SUPERSET of the DSR/WRC print criterion above (same coin
+        // minimum, plus a trade minimum the bootstrap cannot work below), so a strategy can be
+        // printed above and still miss the family. That shrinks m and makes the correction
+        // WEAKER for everyone else while the excluded strategy still carries an uncorrected
+        // verdict, so the exclusions are printed rather than dropped silently.
+        if (familyExclusions.Count > 0)
+        {
+            Console.WriteLine($"\n  Excluded from the family (m = {strategyPValues.Count}, not {mcInputs.Length}):");
+            foreach (var (name, reason) in familyExclusions)
+                Console.WriteLine($"    {name,-12} {reason}");
+            Console.WriteLine("    Any DSR / WRC verdict printed above for these is UNCORRECTED for multiplicity.");
         }
 
         // Apply Holm-Bonferroni correction and report
         if (strategyPValues.Count > 0)
         {
-            Console.WriteLine($"\n{new string('═', 70)}");
-            Console.WriteLine("  HOLM-BONFERRONI FAMILY-WISE ERROR RATE CORRECTION");
-            Console.WriteLine($"{new string('═', 70)}");
             double uncorrectedFWER = 1.0 - Math.Pow(0.95, strategyPValues.Count);
+            Console.WriteLine();
             Console.WriteLine($"  Across {strategyPValues.Count} strategies tested at α=0.05:");
             Console.WriteLine($"  Uncorrected FWER ≈ {uncorrectedFWER:P1} (one in {1.0/uncorrectedFWER:F1} chance of false rejection)");
             Console.WriteLine($"  ∴ Read the ADJUSTED p-value column below (step-down Holm threshold)\n");

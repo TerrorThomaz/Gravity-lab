@@ -24,7 +24,7 @@ public class DynamicGuardGA
         var pop = new List<DynamicGuardGenotype>(_populationSize);
         for (int i = 0; i < _populationSize; i++)
         {
-            var g = DynamicGuardGenotype.FromGenes(RandomGenes(nDim));
+            var g = DynamicGuardGenotype.FromGenes(RandomGenes(nDim, _rng));
             pop.Add(g with { Fitness = Evaluate(g, btcH1, valTrades, oosTrades) });
         }
         pop = [.. pop.OrderByDescending(g => g.Fitness)];
@@ -37,15 +37,7 @@ public class DynamicGuardGA
                 var parent = pop[_rng.Next(Math.Min(10, pop.Count))];
                 var genes  = parent.ToGenes();
                 for (int d = 0; d < nDim; d++)
-                {
-                    if (_rng.NextDouble() < 0.7)
-                    {
-                        double range = DynamicGuardGenotype.Bounds[d, 1] - DynamicGuardGenotype.Bounds[d, 0];
-                        genes[d] = Math.Clamp(
-                            genes[d] + _rng.NextGaussian() * range * 0.1,
-                            DynamicGuardGenotype.Bounds[d, 0], DynamicGuardGenotype.Bounds[d, 1]);
-                    }
-                }
+                    genes[d] = MutateGene(d, genes[d], _rng);
                 var child = DynamicGuardGenotype.FromGenes(genes);
                 next.Add(child with { Fitness = Evaluate(child, btcH1, valTrades, oosTrades) });
             }
@@ -76,8 +68,9 @@ public class DynamicGuardGA
         var oosCapped = ApplyCap(oosTrades);
         var valSim    = ApplyGuard(valCapped, session);
         var oosSim    = ApplyGuard(oosCapped, session);
-        // ddLongEntryGatePct takes a DD fraction; DdEntryGatePct is bounded {0.02, 0.15} so it is
-        // already in fraction units — do not rescale here.
+        // ddLongEntryGatePct takes a DD fraction. g.DdEntryGatePct is the EFFECTIVE gate: either a
+        // live threshold in [0.02, 0.15] or DdGateDisabled (1.0) when the search turned the gate
+        // off. Both are already fraction units — do not rescale here.
         var valR      = Simulator.SimulatePortfolioExposureCapped(valSim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: g.DdEntryGatePct, confLossCapMin: g.ConfLossCapMin, confLossCapMax: g.ConfLossCapMax, profitProtectThreshold: g.ProfitProtectThreshold, profitProtectDrawback: g.ProfitProtectDrawback, profitProtectFactor: g.ProfitProtectFactor, slippageBps: Config.SlippageBps);
         var oosR      = Simulator.SimulatePortfolioExposureCapped(oosSim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: g.DdEntryGatePct, confLossCapMin: g.ConfLossCapMin, confLossCapMax: g.ConfLossCapMax, profitProtectThreshold: g.ProfitProtectThreshold, profitProtectDrawback: g.ProfitProtectDrawback, profitProtectFactor: g.ProfitProtectFactor, slippageBps: Config.SlippageBps);
         double valCalmar = (valR.EndBalance - 100.0) / Math.Max(valR.MaxDrawdownPct, 0.5);
@@ -104,12 +97,38 @@ public class DynamicGuardGA
             t.HoldDuration, t.Strategy))
         .OrderBy(t => t.Item1).ToList();
 
-    private double[] RandomGenes(int nDim)
+    // Per-gene mutation. Continuous genes take a Gaussian step scaled to their own bounds;
+    // the DD-gate ON/OFF switch (DdGateEnableGeneIndex) is binary, so a Gaussian step around
+    // its canonical 0.25/0.75 would cross the 0.5 decision boundary far too rarely to let the
+    // population revisit the other state — it gets an explicit Bernoulli toggle instead.
+    // Without this the GA would lock in whichever state the initial population happened to
+    // favour, which is the same failure mode as not being able to express "off" at all.
+    internal const double DdGateFlipRate = 0.15;
+
+    internal static double MutateGene(int d, double value, Random rng)
+    {
+        if (d == DynamicGuardGenotype.DdGateEnableGeneIndex)
+            return rng.NextDouble() < DdGateFlipRate
+                ? (value >= DynamicGuardGenotype.DdGateEnableThreshold
+                    ? DynamicGuardGenotype.DdGateDisabledGene
+                    : DynamicGuardGenotype.DdGateEnabledGene)
+                : value;
+
+        if (rng.NextDouble() >= 0.7) return value;
+        double lo = DynamicGuardGenotype.Bounds[d, 0], hi = DynamicGuardGenotype.Bounds[d, 1];
+        return Math.Clamp(value + rng.NextGaussian() * (hi - lo) * 0.1, lo, hi);
+    }
+
+    // Uniform draw inside Bounds — the entire space initialisation can reach. Internal (not
+    // private) so the tests can assert on the REAL initialiser instead of a copy of it: the
+    // claim under test is that a random population contains both DD-gate states, and a test
+    // that re-implements the draw would keep passing after this method changed.
+    internal static double[] RandomGenes(int nDim, Random rng)
     {
         var g = new double[nDim];
         for (int d = 0; d < nDim; d++)
             g[d] = DynamicGuardGenotype.Bounds[d, 0]
-                 + _rng.NextDouble() * (DynamicGuardGenotype.Bounds[d, 1] - DynamicGuardGenotype.Bounds[d, 0]);
+                 + rng.NextDouble() * (DynamicGuardGenotype.Bounds[d, 1] - DynamicGuardGenotype.Bounds[d, 0]);
         return g;
     }
 }

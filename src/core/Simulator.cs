@@ -247,8 +247,12 @@ public static class Simulator
 
     // Strategy-aware overload: includes per-trade strategy name so the simulator can apply
     // a portfolio-DD-based entry gate for long strategies (DipLong / SwingLong).
-    // ddLongEntryGatePct: skip long entries when portfolio peak-to-trough DD exceeds this fraction.
+    // ddLongEntryGatePct: skip long entries when portfolio peak-to-trough DD exceeds this value.
+    //   UNITS: a FRACTION in [0, 1], matching currentDd = (peak - balance) / peak below.
+    //   NOT a percentage — 8 would mean "800% drawdown" and the gate could never fire.
     //   1.0 = gate disabled (default).  0.08 = block new longs when down 8%+ from peak.
+    //   Fed by DynamicGuardGenotype.DdEntryGatePct, bounded {0.02, 0.15}; see
+    //   DynamicGuardGenotype.ClampDdEntryGate for the legacy percent-scale coercion.
     // confLossCapMin/Max: confidence-scaled P&L cap for long trades.
     //   effectiveCap = min + (max - min) * conf  →  loss floored at -cap.
     //   Low confidence → tight cap; high confidence → wider cap.  1.0 defaults = disabled.

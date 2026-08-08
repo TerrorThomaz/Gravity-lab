@@ -63,22 +63,6 @@ public static class GridShortSimulator
         return state;
     }
 
-    private static double FundingPnl(DateTime entryTime, DateTime exitTime, FundingRateSession? funding)
-    {
-        if (exitTime <= entryTime) return 0.0;
-        if (funding == null)
-        {
-            double heldHours = (exitTime - entryTime).TotalHours;
-            return -0.01 * (heldHours / 8.0);
-        }
-        double pnl = 0.0;
-        DateTime t = entryTime.Date;
-        while (t <= entryTime) t = t.AddHours(8);
-        for (; t <= exitTime; t = t.AddHours(8))
-            pnl += funding.GetRate(t) * 100.0;
-        return pnl;
-    }
-
     private static (List<(DateTime, double, string)> Trades, GridShortTradeState FinalState)
         RunGridShort(GridGenotype g, ReadOnlySpan<Candle> candles, bool sessionLevel,
                      FundingRateSession? funding = null)
@@ -126,7 +110,7 @@ public static class GridShortSimulator
         // Short PnL: (entry - exit) / entry × 100 — profit when price falls.
         void CloseAllFilled(int i, double exitPx, bool isStop = false)
         {
-            double fundingPnl = FundingPnl(gridStartTime, times[i], funding);
+            double fundingPnl = FundingRateSession.PnlPct(gridStartTime, times[i], funding, isLong: false);
             for (int n = 0; n < levels; n++)
             {
                 if (!filled[n]) continue;
@@ -199,7 +183,7 @@ public static class GridShortSimulator
                     double tp = entryPrice[n] - g.TakeProfitAtrMult * atrAtStart;
                     if (lows[i] <= tp)
                     {
-                        double fundingPnl = FundingPnl(gridStartTime, times[i], funding);
+                        double fundingPnl = FundingRateSession.PnlPct(gridStartTime, times[i], funding, isLong: false);
                         double ret = (entryPrice[n] - tp) / entryPrice[n] * 100.0
                                    - TradeCost(atrAtStart, entryPrice[n], isStop: false, isTp: true)
                                    + fundingPnl;
@@ -263,7 +247,7 @@ public static class GridShortSimulator
         if (gridActive)
         {
             double finalPx = closes[^1];
-            double fundingPnl = FundingPnl(gridStartTime, times[^1], funding);
+            double fundingPnl = FundingRateSession.PnlPct(gridStartTime, times[^1], funding, isLong: false);
             for (int n = 0; n < levels; n++)
             {
                 if (!filled[n]) continue;

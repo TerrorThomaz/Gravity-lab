@@ -801,7 +801,8 @@ static class FullTest
             return ($"{r:+0.0;-0.0}%", $"{ann:+0.0;-0.0}%/yr", $"{p.MaxDrawdownPct:F1}%", $"{sh:F2}");
         }
 
-        double ddGate      = dgGeno?.DdEntryGatePct         ?? 1.0;
+        // Fraction in [0,1] — see Simulator.SimulatePortfolioExposureCapped. Fallback = gate off.
+        double ddGate      = dgGeno?.DdEntryGatePct         ?? DynamicGuardGenotype.DdGateDisabled;
         double capMin      = dgGeno?.ConfLossCapMin          ?? 1.0;
         double capMax      = dgGeno?.ConfLossCapMax          ?? 1.0;
         double ppThreshold = dgGeno?.ProfitProtectThreshold  ?? 1.0;

@@ -250,22 +250,6 @@ public static class FadeShortSimulator
         return scored;
     }
 
-    private static double FundingPnl(DateTime entryTime, DateTime exitTime, FundingRateSession? funding)
-    {
-        if (exitTime <= entryTime) return 0.0;
-        if (funding == null)
-        {
-            double heldHours = (exitTime - entryTime).TotalHours;
-            return -0.01 * (heldHours / 8.0);
-        }
-        double pnl = 0.0;
-        DateTime t = entryTime.Date;
-        while (t <= entryTime) t = t.AddHours(8);
-        for (; t <= exitTime; t = t.AddHours(8))
-            pnl += funding.GetRate(t) * 100.0;
-        return pnl;
-    }
-
     private static (List<(DateTime, double, string)> Trades, FadeShortTradeState FinalState)
         RunSwingMultiTF(FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
                         string? coin = null, List<ScoredTrade>? scoredOut = null,
@@ -417,7 +401,7 @@ public static class FadeShortSimulator
                     double exitPx = hitHardStop ? hardStop :
                                     hitMae      ? maeStop  :
                                     hitTarget   ? target   : m15Price;
-                    double fundingPnl = FundingPnl(entryTime, m15[im15].Time, funding);
+                    double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: false);
                     double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl;
                     result.Add((m15[im15].Time, ret, "fade_short"));
                     scoredOut?.Add(new ScoredTrade(coin!, "swing", entryTime, m15[im15].Time, ret, entryScore));
@@ -429,7 +413,7 @@ public static class FadeShortSimulator
         if (inTrade)
         {
             double finalPx = m15Closes[^1];
-            double fundingPnl = FundingPnl(entryTime, m15[^1].Time, funding);
+            double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[^1].Time, funding, isLong: false);
             double ret = (entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry) + fundingPnl;
             result.Add((m15[^1].Time, ret, "fade_short"));
             scoredOut?.Add(new ScoredTrade(coin!, "swing", entryTime, m15[^1].Time, ret, entryScore));
@@ -648,7 +632,7 @@ public static class SwingLongSimulator
                     double slip     = SlipK * atrPct;
                     double stopSlip = hitStop ? SlipStopGap * atrPct : 0;
                     double cost     = FeeExchange + slip * 2 + stopSlip;
-                    double fundingPnl = FundingPnl(entryTime, m15[im15].Time, funding);
+                    double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: true);
                     double ret      = (exitPx - entry) / entry * 100.0 - cost + fundingPnl;
                     result.Add((m15[im15].Time, ret, "swing_long"));
                     inTrade = false;
@@ -660,28 +644,12 @@ public static class SwingLongSimulator
         {
             double finalPx = m15Closes[^1];
             double atrPct  = atrEntry / entry * 100.0;
-            double fundingPnl = FundingPnl(entryTime, m15[^1].Time, funding);
+            double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[^1].Time, funding, isLong: true);
             double ret     = (finalPx - entry) / entry * 100.0 - (FeeExchange + SlipK * atrPct * 2) + fundingPnl;
             result.Add((m15[^1].Time, ret, "swing_long"));
         }
 
         int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;
         return (result, new SwingLongTradeState(inTrade, entry, hardStop, target, trailArmed, trailHigh, finalHold));
-    }
-
-    private static double FundingPnl(DateTime entryTime, DateTime exitTime, FundingRateSession? funding)
-    {
-        if (exitTime <= entryTime) return 0.0;
-        if (funding == null)
-        {
-            double heldHours = (exitTime - entryTime).TotalHours;
-            return -0.01 * (heldHours / 8.0);
-        }
-        double pnl = 0.0;
-        DateTime t = entryTime.Date;
-        while (t <= entryTime) t = t.AddHours(8);
-        for (; t <= exitTime; t = t.AddHours(8))
-            pnl += funding.GetRate(t) * 100.0;
-        return pnl;
     }
 }

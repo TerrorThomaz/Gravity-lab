@@ -223,7 +223,7 @@ public static class FadeLongSimulator
                     double exitPx = hitHardStop ? hardStop :
                                     hitMae      ? maeStop  :
                                     hitTarget   ? target   : m15Price;
-                    double fundingPnl = FundingPnl(entryTime, m15[im15].Time, funding);
+                    double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: true);
                     double ret = (exitPx - entry) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl;
                     result.Add((m15[im15].Time, ret, "fade_long", entryRegimeBars));
                     inTrade = false;
@@ -234,29 +234,13 @@ public static class FadeLongSimulator
         if (inTrade)
         {
             double finalPx = m15Closes[^1];
-            double fundingPnl = FundingPnl(entryTime, m15[^1].Time, funding);
+            double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[^1].Time, funding, isLong: true);
             double ret = (finalPx - entry) / entry * 100.0 - TradeCost(false, atrEntry, entry) + fundingPnl;
             result.Add((m15[^1].Time, ret, "fade_long", entryRegimeBars));
         }
 
         int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;
         return (result, new FadeLongTradeState(inTrade, entry, hardStop, maeStop, target, trailArmed, trailHigh, finalHold));
-    }
-
-    private static double FundingPnl(DateTime entryTime, DateTime exitTime, FundingRateSession? funding)
-    {
-        if (exitTime <= entryTime) return 0.0;
-        if (funding == null)
-        {
-            double heldHours = (exitTime - entryTime).TotalHours;
-            return -0.01 * (heldHours / 8.0);
-        }
-        double pnl = 0.0;
-        DateTime t = entryTime.Date;
-        while (t <= entryTime) t = t.AddHours(8);
-        for (; t <= exitTime; t = t.AddHours(8))
-            pnl += funding.GetRate(t) * 100.0;
-        return pnl;
     }
 
     private static double TradeCost(bool isStop, double atrEntry, double entryPx)

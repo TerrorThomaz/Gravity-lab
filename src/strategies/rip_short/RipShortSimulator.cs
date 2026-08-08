@@ -29,9 +29,10 @@ namespace TradingGA;
 //   · Timeout   : MaxHoldCandles h1 bars
 //
 // Funding: Bybit settles perp funding every 8h (00:00/08:00/16:00 UTC). A short
-//   RECEIVES funding when the rate is positive and PAYS when negative. With a
-//   FundingRateSession we use the actual per-settlement rate; without one we apply
-//   a flat pessimistic −0.01%/8h estimate (shorts pay the baseline).
+//   RECEIVES funding when the rate is positive and PAYS when negative. Computed by
+//   FundingRateSession.PnlPct(..., isLong: false) — the single implementation shared
+//   by every strategy; see the sign-rule block in src/core/FundingRateSession.cs.
+//   Without a rate series the short fallback is 0 (no unprovable income booked).
 //
 // RegimeBarsActive returned per trade: consecutive h1 bars where the bear regime
 // was confirmed at entry (used by RipShortGA for regime-conditional FoldScore).
@@ -382,7 +383,7 @@ public static class RipShortSimulator
                     // Same bar touches both stop and target → STOP wins (pessimistic)
                     double exitPx = hitStop   ? hardStop :
                                     hitTarget ? target   : m15Price;
-                    double fundingPnl = FundingPnl(entryTime, m15[im15].Time, funding);
+                    double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: false);
                     double ret = ((entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl) * dcaSizeMult;
                     string kind = dcaDone ? "ripshort_dca" : everWaited ? "ripshort_wait" : "ripshort";
                     result.Add((m15[im15].Time, ret, kind, entryRegimeBars));
@@ -394,7 +395,7 @@ public static class RipShortSimulator
         if (inTrade)
         {
             double finalPx    = m15Closes[^1];
-            double fundingPnl = FundingPnl(entryTime, m15[^1].Time, funding);
+            double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[^1].Time, funding, isLong: false);
             double ret = ((entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry) + fundingPnl) * dcaSizeMult;
             string kind = dcaDone ? "ripshort_dca" : everWaited ? "ripshort_wait" : "ripshort";
             result.Add((m15[^1].Time, ret, kind, entryRegimeBars));
@@ -445,26 +446,4 @@ public static class RipShortSimulator
         return FeeExchange + slip;
     }
 
-    // Funding PnL over the life of a short position, in percentage points.
-    // Bybit settles every 8h at 00:00/08:00/16:00 UTC. A short receives the rate
-    // when positive and pays when negative: fundingPnl += rate × 100 per boundary.
-    // Without a session, apply a flat pessimistic −0.01%/8h (shorts pay baseline).
-    private static double FundingPnl(DateTime entryTime, DateTime exitTime, FundingRateSession? funding)
-    {
-        if (exitTime <= entryTime) return 0.0;
-
-        if (funding == null)
-        {
-            double heldHours = (exitTime - entryTime).TotalHours;
-            return -0.01 * (heldHours / 8.0);
-        }
-
-        double pnl = 0.0;
-        // First 8h settlement boundary strictly after entryTime (grid anchored at 00:00 UTC).
-        DateTime t = entryTime.Date;
-        while (t <= entryTime) t = t.AddHours(8);
-        for (; t <= exitTime; t = t.AddHours(8))
-            pnl += funding.GetRate(t) * 100.0;
-        return pnl;
-    }
 }

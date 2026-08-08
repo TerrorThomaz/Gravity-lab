@@ -214,6 +214,7 @@ static class DynamicGuardTrainCommands
         var oosBase = Simulator.SimulatePortfolioExposureCapped(
             oosCapped.Select(t => (t.EntryTime, t.Return, t.Conf, t.HoldDuration)).OrderBy(t => t.Item1).ToList(),
             Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
+        // best.DdEntryGatePct is a DD fraction (bounds {0.02, 0.15}) — passed straight through.
         var valGuarded = Simulator.SimulatePortfolioExposureCapped(
             DynamicGuardGA.ApplyGuard(valCapped, dgSession), Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: best.DdEntryGatePct, confLossCapMin: best.ConfLossCapMin, confLossCapMax: best.ConfLossCapMax, profitProtectThreshold: best.ProfitProtectThreshold, profitProtectDrawback: best.ProfitProtectDrawback, profitProtectFactor: best.ProfitProtectFactor, slippageBps: Config.SlippageBps);
         var oosGuarded = Simulator.SimulatePortfolioExposureCapped(

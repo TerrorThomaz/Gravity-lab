@@ -87,14 +87,29 @@ static class OosBacktest
     //
     // This command has no separate train window by design — OOS coins are run over their
     // full history — so the split is made inside each coin's own trade series instead:
-    // the first SizingFraction of that coin's trades (chronologically) are used ONLY to
+    // the first SizingFraction of that coin's trades (in timestamp order) are used ONLY to
     // derive conf and are then DISCARDED. Every number reported and every trade fed into
     // the portfolio simulation comes from the remaining trades, so a position is never
     // sized by the return it is about to book.
     //
-    // The sizing slice is discarded even when the fallback conf is used, so "scored
-    // window" means the same thing (trailing 1 - SizingFraction of the coin's trades) for
-    // every coin regardless of which sizing path it took.
+    // KNOWN LIMITATION — the ordering key is the trade's EXIT bar, not its entry bar.
+    // Every simulator in src/strategies/ records a single DateTime per trade and that
+    // DateTime is the bar the position was closed on (e.g. SwingSimulator.cs:406
+    // `result.Add((m15[im15].Time, ret, "fade_short"))`). Entry time is not carried in the
+    // return tuples, so SizeThenScore sorts and slices on exit time. Consequence: the
+    // first scored trade may have been ENTERED before the last sizing-slice trade closed,
+    // so its size can rest on a return that had not yet been booked at its own entry. The
+    // exposure is bounded by one hold period of overlap at the seam (48-72h depending on
+    // strategy), affecting at most the handful of trades open across that boundary — not
+    // the whole scored window. Plumbing entry time through would mean widening the return
+    // tuple of all six simulators and every consumer of them; until that happens this
+    // comment, not the code, is the accurate statement of what the split guarantees.
+    //
+    // When the leading slice is too thin to inform sizing at all (< MinSizingTrades) the
+    // fixed FallbackConf is used. That constant depends on no trade's outcome, so nothing
+    // needs to be withheld to keep it honest — the whole series is scored in that case and
+    // SizingCount is reported as 0. Discarding trades there would shrink the sample of the
+    // thinnest coins while buying no protection.
     internal const double SizingFraction  = 0.30;
     internal const int    MinSizingTrades = 5;     // ComputeConfidence returns 0 below this
     internal const double FallbackConf    = 0.02;  // 2% of equity — fixed and conservative
@@ -105,20 +120,23 @@ static class OosBacktest
     // Confidence from the leading slice ONLY. Deliberately never reads returns beyond
     // sizingCount — that is the property OosSizingSplitTests pins.
     // A slice too thin for ComputeConfidence falls back to the fixed FallbackConf (never
-    // to the in-sample value); usedFallback is surfaced so callers can flag it in output.
+    // to the in-sample value); usedFallback is surfaced so callers can flag it in output,
+    // and sizingCount is reported as 0 because a data-independent constant needs no
+    // withheld slice to justify it.
     // A slice that is thick enough but shows no edge legitimately yields conf 0 (Kelly:
     // no edge, no bet) — that is a decision made on past trades only, not a leak.
     internal static double LeadingSliceConfidence(List<double> returns, out int sizingCount, out bool usedFallback)
     {
         sizingCount = SizingSliceCount(returns.Count);
-        if (sizingCount < MinSizingTrades) { usedFallback = true; return FallbackConf; }
+        if (sizingCount < MinSizingTrades) { usedFallback = true; sizingCount = 0; return FallbackConf; }
         usedFallback = false;
         return Simulator.ComputeConfidence(returns.GetRange(0, sizingCount));
     }
 
     internal readonly record struct SizedSplit<T>(double Conf, int SizingCount, bool UsedFallback, List<T> Scored);
 
-    // Orders a coin's trades by entry time, derives conf from the leading slice, and hands
+    // Orders a coin's trades by the supplied timestamp (in practice the trade's EXIT bar —
+    // see the KNOWN LIMITATION note above), derives conf from the leading slice, and hands
     // back only the trades that may be scored.
     internal static SizedSplit<T> SizeThenScore<T>(List<T> trades, Func<T, DateTime> timeOf, Func<T, double> returnOf)
     {
@@ -129,9 +147,25 @@ static class OosBacktest
         return new SizedSplit<T>(conf, sizingCount, usedFallback, scored);
     }
 
+    // ── Defect 1 guard: FadeShort's BacktestCoins screen window ────────────────
+    //
+    // In RunAllCoinsBacktest the BacktestCoins cohort is scored on a held-out val window
+    // (trailing 20%), so both the coin-inclusion screen and the Kelly sizing must read the
+    // train window and nothing else. This used to fall back to the FULL series whenever
+    // h1Train was shorter than MinFadeShortTrainH1Bars, which let the val window select
+    // which coins entered the portfolio AND set their position size. A coin that cannot be
+    // screened on train data alone is skipped instead.
+    internal const int MinFadeShortTrainH1Bars = 4380;
+
+    // Returns the (h1, m15) window FadeShort's inclusion screen and Kelly sizing may read,
+    // or null when the coin's train history is too short to screen without touching val.
+    // Never returns a series that extends into the scored window.
+    internal static (Candle[] H1, Candle[] M15)? FadeShortScreenWindow(Candle[] h1Train, Candle[] m15Train) =>
+        h1Train.Length >= MinFadeShortTrainH1Bars ? (h1Train, m15Train) : null;
+
     // Sharpe/Sortino scale with sqrt(candleCount), so the scored window must be measured
     // over its own span — charging it the full history's candle count would inflate both.
-    static int ScoredCandleCount(Candle[] h1, DateTime firstScoredTime)
+    internal static int ScoredCandleCount(Candle[] h1, DateTime firstScoredTime)
     {
         int bars = 0;
         for (int i = 0; i < h1.Length; i++) if (h1[i].Time >= firstScoredTime) bars++;
@@ -1016,6 +1050,14 @@ static class OosBacktest
         int btSwingT = 0, btGridT = 0, btFLT = 0, btDLT = 0, btRST = 0;
         int btFLSize = 0, btDLSize = 0, btRSSize = 0;
         int btFLFb = 0, btDLFb = 0, btRSFb = 0;
+        int btSwingSkippedShortTrain = 0;
+
+        // Sharpe/Sortino are scaled by sqrt(candleCount); allRet below holds ONLY scored
+        // trades, so the count fed to those ratios has to be the widest scored span, not
+        // the widest full history. Tracked per coin-strategy as each block contributes.
+        int acTotalVCC = 0;
+        void NoteScoredSpan(Candle[] h1, DateTime firstScoredTime) =>
+            acTotalVCC = Math.Max(acTotalVCC, ScoredCandleCount(h1, firstScoredTime));
 
         Console.WriteLine("── BacktestCoins (val 20%, seed-screened) ──────────────────────────────────");
         foreach (var (sym, m15, h1) in btFetched)
@@ -1032,30 +1074,43 @@ static class OosBacktest
             var m15Train = m15[..m15Split];
             var m15Val   = m15[m15Split..];
 
-            // FadeShort
+            // FadeShort — screen and sizing read the train window ONLY. A coin whose train
+            // window is too short to screen is skipped: the old fallback to the full series
+            // let the val window pick its own coins and set their position size.
             {
-                var coinFsGAC  = SelectVariant(fsVariantsAC, m15) ?? swingG;
-                var screenH1  = h1Train.Length >= 4380 ? h1Train : h1;
-                var screenM15 = screenH1.Length == h1.Length ? m15 : m15Train;
-                var tRet = FadeShortSimulator.GetFadeShortReturns(coinFsGAC, screenH1, screenM15).Select(t => t.Return).ToList();
-                if (tRet.Count >= 5 && tRet.Average() > 0 && Simulator.ProfitFactor(tRet) >= 1.2 && Simulator.SortinoRatio(tRet, screenH1.Length * 12) >= 0.3)
+                var screenWin = FadeShortScreenWindow(h1Train, m15Train);
+                if (screenWin == null)
                 {
-                    double conf  = Simulator.ComputeConfidence(tRet);
-                    var    vRet  = FadeShortSimulator.GetFadeShortReturns(coinFsGAC, h1Val, m15Val);
-                    btSwing++; btSwingT += vRet.Count;
-                    foreach (var (t, ret, _) in vRet) allTrades.Add((t, ret, conf, "swing"));
+                    Console.WriteLine($"  {sym,-16}  skip FadeShort (train window {h1Train.Length} h1 bars < {MinFadeShortTrainH1Bars} — no leak-free screen)");
+                    btSwingSkippedShortTrain++;
+                }
+                else
+                {
+                    var (screenH1, screenM15) = screenWin.Value;
+                    var coinFsGAC = SelectVariant(fsVariantsAC, screenM15) ?? swingG;
+                    var tRet = FadeShortSimulator.GetFadeShortReturns(coinFsGAC, screenH1, screenM15).Select(t => t.Return).ToList();
+                    if (tRet.Count >= 5 && tRet.Average() > 0 && Simulator.ProfitFactor(tRet) >= 1.2 && Simulator.SortinoRatio(tRet, screenH1.Length * 12) >= 0.3)
+                    {
+                        double conf  = Simulator.ComputeConfidence(tRet);
+                        var    vRet  = FadeShortSimulator.GetFadeShortReturns(coinFsGAC, h1Val, m15Val);
+                        btSwing++; btSwingT += vRet.Count;
+                        if (vRet.Count > 0) NoteScoredSpan(h1, h1Val[0].Time);
+                        foreach (var (t, ret, _) in vRet) allTrades.Add((t, ret, conf, "swing"));
+                    }
                 }
             }
 
-            // Grid
+            // Grid — screen already reads h1Train only; variant selection now does too.
             {
-                var coinGridGAC = SelectVariant(gridVariantsAC, m15) ?? gridG;
+                var coinGridGAC = SelectVariant(gridVariantsAC, m15Train) ?? gridG;
                 var tRet = GridSimulator.GetGridReturns(coinGridGAC, h1Train).Select(t => t.Return).ToList();
                 if (tRet.Count >= 5 && tRet.Average() > 0 && Simulator.ProfitFactor(tRet) >= 1.2 && Simulator.SortinoRatio(tRet, h1Train.Length) >= 0.3)
                 {
                     double conf = Simulator.ComputeConfidence(tRet);
                     var    vRet = GridSimulator.GetGridReturns(coinGridGAC, h1Val);
-                    btGrid++; btGridT += vRet.Count(t => session == null || session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time));
+                    int    kept = vRet.Count(t => session == null || session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time));
+                    btGrid++; btGridT += kept;
+                    if (kept > 0) NoteScoredSpan(h1, h1Val[0].Time);
                     foreach (var (t, ret, _) in vRet)
                     {
                         if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.Grid, t)) continue;
@@ -1068,7 +1123,7 @@ static class OosBacktest
             // so size from the leading slice of the coin's own val trades and score the rest.
             if (flG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
-                var coinFlGAC = SelectVariant(flVariantsAC, m15) ?? flG;
+                var coinFlGAC = SelectVariant(flVariantsAC, m15Train) ?? flG;
                 var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlGAC, h1Val, m15Val);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
@@ -1076,6 +1131,7 @@ static class OosBacktest
                 {
                     btFL++; btFLT += split.Scored.Count; btFLSize += split.SizingCount;
                     if (split.UsedFallback) btFLFb++;
+                    NoteScoredSpan(h1, split.Scored[0].Time);
                     foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "fadelong"));
                 }
             }
@@ -1083,7 +1139,7 @@ static class OosBacktest
             // DipLong
             if (dlG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
-                var coinDlGAC = SelectVariant(dlVariantsAC, m15) ?? dlG;
+                var coinDlGAC = SelectVariant(dlVariantsAC, m15Train) ?? dlG;
                 var raw   = DipLongSimulator.GetDipLongReturns(coinDlGAC, h1Val, m15Val);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
@@ -1091,6 +1147,7 @@ static class OosBacktest
                 {
                     btDL++; btDLT += split.Scored.Count; btDLSize += split.SizingCount;
                     if (split.UsedFallback) btDLFb++;
+                    NoteScoredSpan(h1, split.Scored[0].Time);
                     foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "diplong"));
                 }
             }
@@ -1098,7 +1155,7 @@ static class OosBacktest
             // RipShort
             if (rsG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
-                var coinRsGAC = SelectVariant(rsVariantsAC, m15) ?? rsG;
+                var coinRsGAC = SelectVariant(rsVariantsAC, m15Train) ?? rsG;
                 var raw   = RipShortSimulator.GetRipShortReturns(coinRsGAC, h1Val, m15Val);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
@@ -1106,12 +1163,14 @@ static class OosBacktest
                 {
                     btRS++; btRST += split.Scored.Count; btRSSize += split.SizingCount;
                     if (split.UsedFallback) btRSFb++;
+                    NoteScoredSpan(h1, split.Scored[0].Time);
                     foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "ripshort"));
                 }
             }
         }
-        Console.WriteLine($"  FadeShort: {btSwing,3} coins → {btSwingT,4} trades  (sized from train window)");
-        Console.WriteLine($"  Grid:      {btGrid,3} coins → {btGridT,4} trades  (sized from train window)");
+        Console.WriteLine($"  FadeShort: {btSwing,3} coins → {btSwingT,4} trades  (screened + sized from train window)"
+                        + (btSwingSkippedShortTrain > 0 ? $"  ·  {btSwingSkippedShortTrain} coin(s) skipped: train window < {MinFadeShortTrainH1Bars} h1 bars" : ""));
+        Console.WriteLine($"  Grid:      {btGrid,3} coins → {btGridT,4} trades  (screened + sized from train window)");
         if (flG != null) Console.WriteLine($"  FadeLong:  {btFL,3} coins → {btFLT,4} scored, {btFLSize,4} used for sizing{(btFLFb > 0 ? $"  ({btFLFb} coin(s) on {FallbackConf:P1} fallback)" : "")}");
         if (dlG != null) Console.WriteLine($"  DipLong:   {btDL,3} coins → {btDLT,4} scored, {btDLSize,4} used for sizing{(btDLFb > 0 ? $"  ({btDLFb} coin(s) on {FallbackConf:P1} fallback)" : "")}");
         if (rsG != null) Console.WriteLine($"  RipShort:  {btRS,3} coins → {btRST,4} scored, {btRSSize,4} used for sizing{(btRSFb > 0 ? $"  ({btRSFb} coin(s) on {FallbackConf:P1} fallback)" : "")}");
@@ -1126,6 +1185,12 @@ static class OosBacktest
 
         Console.WriteLine($"\n── OosCoins (full history, vol≥${oosMinVol2:F2}M, no screen) ─────────────────────");
         Console.WriteLine($"   Sizing from each coin's leading {SizingFraction:P0} of trades; remainder scored.");
+        // NOTE (unfixed, documented): SelectVariant below reads the ATR of the LAST bar of
+        // the full series to pick a volatility variant, so the variant choice does see the
+        // scored window. Unlike the BacktestCoins cohort above there is no train window
+        // here to select on, and RunOosBacktest has the same property — changing it would
+        // need a decision on what "as of" bar to use, so it is left consistent and flagged
+        // rather than silently altered.
         foreach (var (sym, m15, h1) in oosFetched2)
         {
             if (h1.Length < 300) continue;
@@ -1142,6 +1207,7 @@ static class OosBacktest
                 {
                     oSwing++; oSwingT += split.Scored.Count; oSwingS += split.SizingCount;
                     if (split.UsedFallback) oSwingFb++;
+                    NoteScoredSpan(h1, split.Scored[0].Time);
                     foreach (var (t, ret, _) in split.Scored) allTrades.Add((t, ret, split.Conf, "swing"));
                 }
             }
@@ -1156,6 +1222,7 @@ static class OosBacktest
                 {
                     oGrid++; oGridT += split.Scored.Count; oGridS += split.SizingCount;
                     if (split.UsedFallback) oGridFb++;
+                    NoteScoredSpan(h1, split.Scored[0].Time);
                     foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "grid"));
                 }
             }
@@ -1171,6 +1238,7 @@ static class OosBacktest
                 {
                     oFL++; oFLT += split.Scored.Count; oFLS += split.SizingCount;
                     if (split.UsedFallback) oFLFb++;
+                    NoteScoredSpan(h1, split.Scored[0].Time);
                     foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "fadelong"));
                 }
             }
@@ -1186,6 +1254,7 @@ static class OosBacktest
                 {
                     oDL++; oDLT += split.Scored.Count; oDLS += split.SizingCount;
                     if (split.UsedFallback) oDLFb++;
+                    NoteScoredSpan(h1, split.Scored[0].Time);
                     foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "diplong"));
                 }
             }
@@ -1201,6 +1270,7 @@ static class OosBacktest
                 {
                     oRS++; oRST += split.Scored.Count; oRSS += split.SizingCount;
                     if (split.UsedFallback) oRSFb++;
+                    NoteScoredSpan(h1, split.Scored[0].Time);
                     foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "ripshort"));
                 }
             }
@@ -1243,7 +1313,11 @@ static class OosBacktest
         var flRet    = allTrades.Where(t => t.Strategy == "fadelong").Select(t => t.Return).ToList();
         var dlRet    = allTrades.Where(t => t.Strategy == "diplong").Select(t => t.Return).ToList();
         var rsRet    = allTrades.Where(t => t.Strategy == "ripshort").Select(t => t.Return).ToList();
-        int totalVCC = fetchedAll.Where(f => Config.BacktestCoins.Contains(f.sym) || Config.OosCoins.Contains(f.sym)).Max(f => f.h1.Length) * 12;
+        // allRet holds SCORED trades only (val window for BacktestCoins, post-sizing-slice
+        // for OosCoins), so the candle count handed to Sharpe/Sortino must be the widest
+        // SCORED span — not the widest full history, which would inflate both by
+        // sqrt(fullBars / scoredBars). Same convention as RunOosBacktest (ScoredCandleCount).
+        int totalVCC = Math.Max(acTotalVCC, 1);
 
         string Pct(List<double> r) => r.Count > 0 ? $"WR={(double)r.Count(x => x > 0)/r.Count:P0}  Avg={r.Average():+0.00}%" : "no trades";
 

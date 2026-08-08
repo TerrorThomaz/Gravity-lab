@@ -32,7 +32,11 @@ namespace TradingGA;
 //   RECEIVES funding when the rate is positive and PAYS when negative. Computed by
 //   FundingRateSession.PnlPct(..., isLong: false) — the single implementation shared
 //   by every strategy; see the sign-rule block in src/core/FundingRateSession.cs.
-//   Without a rate series the short fallback is 0 (no unprovable income booked).
+//   Without a rate series the short fallback charges the interest-rate floor as a cost
+//   (same as longs), not zero. This is deliberate: shorts genuinely pay in crowded-short
+//   bear regimes where RipShort operates, and RipShort trains with funding: null, so
+//   this fallback IS its fitness landscape. Zero would improve selection on an
+//   unsupportable assumption. See the full rationale in FundingRateSession.cs:107-118.
 //
 // RegimeBarsActive returned per trade: consecutive h1 bars where the bear regime
 // was confirmed at entry (used by RipShortGA for regime-conditional FoldScore).

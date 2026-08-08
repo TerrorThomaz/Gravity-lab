@@ -280,15 +280,12 @@ Separately, `AggregateFoldScores` returns a **single surviving fold's score verb
 
 ### Gaps
 
-**G1 (P0) — Funding sign inverted for all three long strategies.**
-Six byte-identical private copies of `FundingPnl` exist. The three long ones (`DipLongSimulator.cs:249`, `FadeLongSimulator.cs:246`, `SwingSimulator.cs:672`) were copy-pasted from the short version without flipping the sign:
+**G1 (P0) — Funding sign inverted for all three long strategies. [FIXED]**
+Six byte-identical private copies of `FundingPnl` previously existed in `DipLongSimulator.cs:249`, `FadeLongSimulator.cs:246`, `SwingSimulator.cs:672`, `RipShortSimulator.cs:452`, `FadeShortSimulator.cs:253`, and `GridShortSimulator.cs:66`. The three long copies were copy-pasted from the short version without flipping the sign, booking funding income for a cost they were actually paying:
 ```csharp
 pnl += funding.GetRate(t) * 100.0;   // correct for a SHORT; a LONG pays
 ```
-Correct only for `RipShortSimulator.cs:452`, `FadeShortSimulator` (`SwingSimulator.cs:253`) and `GridShortSimulator.cs:66`.
-
-**Blast radius:** `fulltest` passes the session only to RipShort (sign correct), so headline backtests are unaffected. But **`papertrade` passes it to all three longs** (`PapertradeCommands.cs:368, 395, 422, 525, 549, 573`) — the live signal path. Since funding prints positive >92% of the time this is the modal case, and the error is *twice* the true amount (a credit where a debit belongs).
-*Fix:* one `FundingPnl(entry, exit, session, bool isLong)` on `FundingRateSession`, deleting all six copies. The duplication is the root cause, not incidental style.
+**Resolution:** All six copies have been deleted and consolidated into a single `FundingRateSession.PnlPct(entry, exit, session, isLong)` method that applies the correct sign rule: a positive rate charges longs and credits shorts. The consolidation has eliminated the duplication that was the root cause of the bug.
 
 **G12 (P1) — Real funding never reaches any backtest or any GA.** `grep -c -i funding` returns **0** on `CombinedBacktest.cs`, `OosBacktest.cs`, `BacktestCommands.cs`, `TrainCommands.cs` and `LongTrainCommands.cs`. Every GA passes `funding: null` explicitly. So every committed genotype was selected under the flat fallback.
 

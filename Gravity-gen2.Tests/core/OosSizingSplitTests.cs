@@ -96,7 +96,9 @@ public class OosSizingSplitTests
         var thin = new List<double> { 5, 5, 5, -1, 4, 6, -2, 5, 5, 5, -1, 7 };
         double conf = OosBacktest.LeadingSliceConfidence(thin, out int sizingCount, out bool usedFallback);
 
-        Assert.Equal(3, sizingCount);
+        // The fixed fallback depends on no trade's outcome, so no slice has to be withheld
+        // to justify it — sizingCount is 0 and nothing is discarded.
+        Assert.Equal(0, sizingCount);
         Assert.True(usedFallback);
         Assert.Equal(OosBacktest.FallbackConf, conf, 12);
 

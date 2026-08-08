@@ -33,3 +33,10 @@ fitness_config.json
 backtest_results.json
 training_progress.json
 fulltest_results.json
+
+## Throwaway diagnostic tests. Convention: a review or debugging pass that writes a
+## test purely to demonstrate a defect names it ZZProbe_*, so it is obviously scratch
+## and trivially removable. These are expected to FAIL while the defect is open, so
+## they must never be committed — a probe that proves its point gets rewritten as a
+## properly-named permanent regression test in the normal suite instead.
+Gravity-gen2.Tests/**/ZZProbe_*.cs

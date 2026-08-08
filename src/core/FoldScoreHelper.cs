@@ -79,7 +79,18 @@ public static class FoldScoreHelper
         //    which would flip the sign of the whole fold score.
         // At QualityW = 1.0 neither clamp changes anything: Sqrt is never negative, so
         // Clamp(raw, 0, 2.5) == Min(raw, 2.5), the original expression.
-        double qualityRaw  = Math.Sqrt(pfMult * rrMult);
+        //
+        // NaN GUARD: rrMult goes NEGATIVE for every fold with rr < 1.0, and pfMult is 0 at
+        // pf == 1.0 exactly. rr < 1.0 is not exotic — pf >= 1.0 (already checked above)
+        // only requires wins/losses > 1/rr, so ANY strategy that wins often and small
+        // lands there, and the grid family lives there structurally. Sqrt of a negative
+        // product is NaN, which then propagates through the entire fitness and makes the
+        // GA's sort order undefined (NaN compares false against everything). Both ramps
+        // are floored at 0 first: "risk/reward at or below 1" means no quality edge, i.e.
+        // quality 0 — not an undefined number. Note the floor is a FLAT region, so a
+        // strategy that operates below rr = 1.0 should switch this term off via QualityW
+        // rather than train against a constant (see FoldScoreHelper.GridShape).
+        double qualityRaw  = Math.Sqrt(Math.Max(0.0, pfMult) * Math.Max(0.0, rrMult));
         double qualityMult = Math.Clamp(qualityRaw * qualityW + (1.0 - qualityW), 0.0, 2.5);
 
         // DdPenalty scales drawdown sensitivity. With ddW >= 0, ddDiv >= 1.0 always,
@@ -101,11 +112,24 @@ public static class FoldScoreHelper
             : 1.0;
         double retentionMult = Math.Max(0.0, retentionRaw * retentionW + (1.0 - retentionW));
 
-        int    n       = returns.Count;
-        double sharpe  = Simulator.SharpeRatio(returns, n);
+        // PER-TRADE Sharpe/Sortino — deliberately NOT Simulator.SharpeRatio.
+        //
+        // Simulator.SharpeRatio(returns, candleCount) multiplies mean/std by
+        // sqrt(candleCount / 288), and its second parameter is documented as a count of
+        // 5-minute-equivalent CANDLES. This call site used to pass returns.Count — the
+        // TRADE count — so the "Sharpe" term silently scaled by sqrt(nTrades):
+        // 0.295x at 25 trades, 0.932x at 250, 1.86x at 1000. That is a second, hidden
+        // frequency bonus stacked on top of the explicit `freqBonus` a few lines above,
+        // and it made two folds with identical return DISTRIBUTIONS score differently
+        // purely because one of them traded more often. The fitness must contain exactly
+        // ONE frequency term, and freqBonus is it.
+        //
+        // Simulator.SharpeRatio itself is correct and unchanged — every other caller
+        // passes a genuine candle count.
+        double sharpe  = PerTradeSharpe(returns);
         double calmar  = Simulator.CalmarRatio(returns);
         double pfStat  = Simulator.ProfitFactor(returns);
-        double sortino = Simulator.SortinoRatio(returns, n);
+        double sortino = PerTradeSortino(returns);
         // GainW scales the raw gain term. At 1.0 the `* gainW` factor is exact, so the
         // product below is bit-identical to the historical `gain * 100.0 * wrMult * ...`.
         double base_   = gain * 100.0 * gainW * wrMult * qualityMult * freqBonus / ddDiv * retentionMult;
@@ -121,6 +145,53 @@ public static class FoldScoreHelper
 
         return score;
     }
+
+    // ── Un-normalised per-trade risk-adjusted return ─────────────────────────────
+    // mean/stdev of the TRADE-RETURN distribution, with no time normalisation at all.
+    // Scale-free in the trade count: two folds with the same return distribution get the
+    // same number whether they contain 25 trades or 2500. That is the whole point — see
+    // the call-site comment in Canonical.
+    //
+    // The two entry guards are carried over verbatim from Simulator.SharpeRatio so that
+    // only the sqrt(candleCount/288) factor differs:
+    //   · fewer than 5 returns -> 0 (nothing to estimate from)
+    //   · profit factor < 1.3  -> 0 (the bonus is for genuinely good folds only)
+    public static double PerTradeSharpe(List<double> returns)
+    {
+        if (returns.Count < 5) return 0;
+        double grossProfit = returns.Where(r => r > 0).Sum();
+        double grossLoss   = Math.Abs(returns.Where(r => r <= 0).Sum());
+        if (grossLoss < 1e-10 || grossProfit / grossLoss < 1.3) return 0;
+        double mean = returns.Average();
+        double std  = Math.Sqrt(returns.Select(r => (r - mean) * (r - mean)).Average());
+        return std < 1e-10 ? 0 : mean / std;
+    }
+
+    // Downside equivalent of PerTradeSharpe: mean / downside-deviation, no time scaling.
+    // Guards and the 999.99 saturation match Simulator.SortinoRatio.
+    public static double PerTradeSortino(List<double> returns)
+    {
+        if (returns.Count < 5) return 0;
+        double mean       = returns.Average();
+        var    negReturns = returns.Where(r => r < 0).ToList();
+        if (negReturns.Count == 0) return mean > 0 ? 99.99 : 0;
+        double downStd = Math.Sqrt(negReturns.Select(r => r * r).Average());
+        return downStd < 1e-10 ? 0 : Math.Min(mean / downStd, 999.99);
+    }
+
+    // ── Tail-estimator sample gate ───────────────────────────────────────────────
+    // Both tail terms below read an ORDER STATISTIC out of the left/right 5% of the
+    // sample. With fewer than 100 returns that bucket holds fewer than 5 observations,
+    // and at MinTradesPerFold (20–25) it holds exactly ONE: "expected shortfall at 5%"
+    // and "5th/95th percentile ratio" then degenerate into "the single worst trade" and
+    // "best single trade / worst single trade". Those are extreme order statistics of a
+    // fat-tailed distribution, not risk measures — they are dominated by whichever lucky
+    // or unlucky fill happened to land in the fold.
+    //
+    // Below this threshold both terms return the NEUTRAL 1.0 rather than a fabricated
+    // number. The gate is stated as "the 5% tail bucket must contain at least 5
+    // observations", i.e. n * 0.05 >= 5  <=>  n >= 100.
+    public const int MinTailSampleSize = 100;
 
     // CVaR (expected shortfall) left-tail penalty.
     //
@@ -138,7 +209,9 @@ public static class FoldScoreHelper
     // would zero out or flip the sign of the whole fitness score.
     public static double CVaRPenalty(List<double> returns, FitnessConfig cfg)
     {
-        if (cfg.CVaRW <= 0 || returns.Count < 20) return 1.0;
+        // Gate raised 20 -> 100: StatisticalTests.CVaR takes the worst max(1, n*0.05)
+        // returns, so at n = 20..25 the "expected shortfall" was a single trade.
+        if (cfg.CVaRW <= 0 || returns.Count < MinTailSampleSize) return 1.0;
         double cvar5 = StatisticalTests.CVaR(returns, 0.05);
 
         const double tolerancePct = -3.0; // no penalty for tails shallower than this
@@ -149,9 +222,28 @@ public static class FoldScoreHelper
         return Math.Clamp(1.0 - excess * cfg.CVaRW, 0.5, 1.0);
     }
 
+    // Right-tail / left-tail asymmetry bonus: |p95| / |p5| over the fold's trade returns.
+    //
+    // TWO changes from the original, both of which were live defects:
+    //  (1) SAMPLE GATE. tailN = max(1, n/20) meant that at the achievable fold sizes
+    //      (MinTradesPerFold is 10–25) tailN was exactly 1, so this "percentile ratio"
+    //      was literally |best single trade| / |worst single trade|. Combined with (2)
+    //      that made the objective PAY for having one outsized winner — the precise
+    //      opposite of what a tail term is for. Now gated at MinTailSampleSize, where the
+    //      tail bucket holds >= 5 observations.
+    //  (2) UNBOUNDED ABOVE. The bonus grew linearly in the ratio with no ceiling, so a
+    //      single 40% winner against a 0.5% worst loss bought an ~80x multiplier at
+    //      TailRatioW = 1. The ratio is now clamped at MaxTailRatio and the resulting
+    //      multiplier at MaxTailRatioBonus, so the term can shade a decision but can
+    //      never dominate the score.
+    // A ratio of 5 already means the good tail is five times the bad one; past that the
+    // reading is telling us about one trade, not about the strategy.
+    public const double MaxTailRatio      = 5.0;
+    public const double MaxTailRatioBonus = 1.5;
+
     public static double TailRatioBonus(List<double> returns, FitnessConfig cfg)
     {
-        if (cfg.TailRatioW <= 0 || returns.Count < 20) return 1.0;
+        if (cfg.TailRatioW <= 0 || returns.Count < MinTailSampleSize) return 1.0;
         var sorted = returns.OrderBy(r => r).ToList();
         int n = sorted.Count;
         int tailN = Math.Max(1, n / 20);
@@ -160,9 +252,10 @@ public static class FoldScoreHelper
         double absP5  = Math.Abs(p5);
         double absP95 = Math.Abs(p95);
         if (absP5 < 1e-10) return 1.0;
-        double ratio = absP95 / absP5;
-        double bonus = ratio > 1.5 ? 1.0 + (ratio - 1.5) * 0.1 * cfg.TailRatioW : 1.0;
-        return bonus;
+        double ratio = Math.Min(absP95 / absP5, MaxTailRatio);
+        if (ratio <= 1.5) return 1.0;
+        double bonus = 1.0 + (ratio - 1.5) * 0.1 * cfg.TailRatioW;
+        return Math.Clamp(bonus, 1.0, MaxTailRatioBonus);
     }
 
     public static double RegimeDiversityBonus(
@@ -332,36 +425,168 @@ public static class FoldScoreHelper
         return (start, end);
     }
 
+    // ── Fold aggregation ─────────────────────────────────────────────────────────
     // Combines the surviving walk-forward fold scores into one fitness value.
     //
-    // Callers MUST pass only folds that actually reached MinTradesPerFold trades. An
-    // under-populated fold returns the CONSTANT -1.0 sentinel from Canonical(), and
-    // feeding constants into mean - stdMult*std inverts the gradient: past two dead
-    // folds, raising a live fold's score LOWERS fitness (it widens the spread), so the
-    // GA starts selecting for genotypes that trade badly or not at all.
+    //     fitness = coverage ⊗ [ λ·CVaR_α({s_f}) + (1 − λ)·mean({s_f}) ]
+    //
+    //     CVaR_α  = mean of the WORST ceil(α·k) fold scores, α = CVaRFoldAlpha (0.4)
+    //     λ       = LambdaThick (0.4) .. LambdaThin (0.8), rising as the sample thins
+    //     coverage= survivingFolds / attemptedFolds, applied sign-safely (see below)
+    //
+    // WHY THIS REPLACED `mean − stdMult·std`:
+    //
+    // (a) THE OLD FORM WAS NON-MONOTONE. For f = mean − c·σ_pop over k folds,
+    //         ∂f/∂s_i = (1/k)·(1 − c·z_i),   z_i = (s_i − mean)/σ_pop
+    //     which is NEGATIVE whenever z_i > 1/c. The maximum attainable z is sqrt(k−1),
+    //     so at k = 3 and the stdMult FLOOR of 0.75 the inversion region (z > 1.33) is
+    //     already inside the reachable range (max 1.41), and at the stdMult CEILING of
+    //     2.0 it starts at z > 0.5 — most ordinary fold configurations. Concretely, at
+    //     c = 0.75, k = 3: (10,10,30) -> 9.596 but (10,10,40) -> 9.393. Improving the
+    //     best fold by a third LOWERED fitness, so the GA was selecting against exactly
+    //     the outcome it was supposed to reward.
+    //
+    //     The replacement is monotone BY CONSTRUCTION, with no clamp condition to get
+    //     right: mean is non-decreasing in every s_f (∂/∂s_f = 1/k), CVaR_α is
+    //     non-decreasing in every s_f (∂/∂s_f ∈ {0, 1/ceil(αk)} — raising a fold either
+    //     leaves the worst-set alone or moves the set's mean up), and λ ∈ [0,1] does not
+    //     depend on the fold SCORES, so any convex combination of the two is
+    //     non-decreasing for any k and any λ. The dispersion penalty survives because
+    //     CVaR overweights the worst folds: at equal mean, a spread-out fold vector has
+    //     a lower worst-40% mean than an even one.
+    //
+    // (b) THE OLD FORM HAD NO COVERAGE PENALTY. A single surviving fold was returned
+    //     verbatim, so a genotype that traded ONLY in the single most favourable market
+    //     window scored 30.0 while one trading consistently at (20,25,30,35,40) scored
+    //     24.70 — concentration was STRICTLY DOMINANT. For the bear-gated strategies,
+    //     whose training arrays are already bear-window concatenations, that is the
+    //     documented failure mode. Scaling by survivingFolds/attemptedFolds removes it:
+    //     the same pair now scores 6.0 vs 27.0.
+    //
+    //     The caller must therefore report how many folds were ATTEMPTED, not just how
+    //     many survived — every fold the walk-forward loop `continue`d past for being
+    //     under MinTradesPerFold still counts as attempted.
+    //
+    //     SIGN-SAFETY: coverage is applied as `x·cov` for x >= 0 and `x/cov` for x < 0.
+    //     A plain multiply would REWARD partial coverage whenever the aggregate is
+    //     negative (fold scores can be as low as pf − 2.0), which is the same
+    //     concentration incentive with the sign flipped. The piecewise map is continuous
+    //     at 0 and strictly increasing on both sides, so monotonicity is preserved.
+    //
+    // (c) stdMult's VC-PROPORTIONAL INTENT IS PRESERVED, expressed as λ instead. The old
+    //     stdMult ran 0.75 (thick sample) to 2.0 (thin), leaning harder on dispersion
+    //     when there was less data to trust. λ now runs 0.4 -> 0.8 over exactly the same
+    //     avgN/d curve, so a thin sample leans harder on the WORST fold. λ is a function
+    //     of the trade COUNTS only, never of the fold scores, so the monotonicity proof
+    //     in (a) is untouched.
     //
     //   0 surviving folds -> DeadFoldFitness (clearly worst, flat, nothing to exploit)
-    //   1 surviving fold  -> that fold's score verbatim (monotone; no variance to penalise)
-    //   2+                -> mean - stdMult * std, stdMult VC-proportional on avg N/d
-    //                        over the SURVIVING folds only.
+    //   1 surviving fold  -> that fold's score, coverage-scaled (CVaR == mean == it)
     public const double DeadFoldFitness = -1000.0;
+
+    // Tail fraction taken over the FOLD SCORES (not over trade returns).
+    public const double CVaRFoldAlpha = 0.4;
+    // λ endpoints: thick sample -> weight the mean more; thin sample -> the worst fold.
+    public const double LambdaThick = 0.4;
+    public const double LambdaThin  = 0.8;
 
     public static double AggregateFoldScores(
         IReadOnlyList<double> foldScores,
         IReadOnlyList<int> foldTradeCounts,
-        int d)
+        int d,
+        int attemptedFolds)
     {
-        if (foldScores.Count == 0) return DeadFoldFitness;
-        if (foldScores.Count == 1) return foldScores[0];
+        int k = foldScores.Count;
+        if (k == 0) return DeadFoldFitness;
+
+        // A caller that under-reports attempts must not be able to manufacture a
+        // coverage bonus, so coverage is capped at 1.0 from this side.
+        int attempted = Math.Max(attemptedFolds, k);
 
         double mean = foldScores.Average();
-        double std  = Math.Sqrt(foldScores.Select(s => (s - mean) * (s - mean)).Average());
-        // VC-proportional penalty: stdMult = 0.75 when avgN/d >= 10, scales up to 2.0 as
-        // N/d falls — prevents the GA from over-trusting fold scores when sample is thin.
-        double avgN    = foldTradeCounts.Count > 0 ? foldTradeCounts.Average() : 0.0;
-        double stdMult = Math.Clamp(7.5 / Math.Max(1.0, avgN / Math.Max(1, d)), 0.75, 2.0);
-        return mean - stdMult * std;
+        double cvar = WorstFoldMean(foldScores, CVaRFoldAlpha);
+        double lambda = FoldLambda(foldTradeCounts, d);
+
+        double combined = lambda * cvar + (1.0 - lambda) * mean;
+
+        double coverage = (double)k / attempted;               // in (0, 1]
+        return combined >= 0 ? combined * coverage : combined / coverage;
     }
+
+    // Mean of the worst ceil(alpha * k) fold scores — CVaR / expected shortfall over the
+    // fold distribution. Non-decreasing in every element by construction.
+    internal static double WorstFoldMean(IReadOnlyList<double> foldScores, double alpha)
+    {
+        int k = foldScores.Count;
+        if (k == 0) return 0.0;
+        int m = Math.Clamp((int)Math.Ceiling(alpha * k), 1, k);
+        var sorted = foldScores.OrderBy(s => s).ToArray();
+        double sum = 0;
+        for (int i = 0; i < m; i++) sum += sorted[i];
+        return sum / m;
+    }
+
+    // VC-proportional blend weight, carried over from the old stdMult curve:
+    //   thinness = clamp(7.5 / max(1, avgN/d), 0.75, 2.0)   (identical to old stdMult)
+    // then linearly remapped [0.75, 2.0] -> [LambdaThick, LambdaThin]. Depends only on
+    // the per-fold TRADE COUNTS, never on the fold scores.
+    internal static double FoldLambda(IReadOnlyList<int> foldTradeCounts, int d)
+    {
+        double avgN     = foldTradeCounts.Count > 0 ? foldTradeCounts.Average() : 0.0;
+        double thinness = Math.Clamp(7.5 / Math.Max(1.0, avgN / Math.Max(1, d)), 0.75, 2.0);
+        return LambdaThick + (thinness - 0.75) / (2.0 - 0.75) * (LambdaThin - LambdaThick);
+    }
+
+    // ── Grid-family fitness shape ────────────────────────────────────────────────
+    // GridGA, GridShortGA and AccumulationGridGA used to inline their own copy of the
+    // fold-score formula, which meant the six FitnessConfig term weights were inert for
+    // them, CVaRPenalty/TailRatioBonus never applied, and the SHAPE itself diverged from
+    // every other strategy (win-rate slope 0.5 vs 3.0, drawdown divisor x20 vs x10, no
+    // quality/retention/frequency terms at all). CoevolveGA and RegimeRouterGA then
+    // combined the outputs of those incomparable scales.
+    //
+    // They now all call FoldScoreHelper.Canonical, and the divergences that are actually
+    // DELIBERATE are expressed here as a config transform instead of a second formula:
+    //
+    //  · WrW / 6      — Grid scores per-SESSION returns, whose win rate is structurally
+    //                   high (a grid session closes green whenever price oscillates), so
+    //                   the canonical 3.0 slope above the 0.40 knee would swamp every
+    //                   other term. 0.5/3.0 = 1/6 reproduces the historical slope.
+    //  · DdPenalty x2 — documented in GridGA's header: drawdown is punished twice as hard
+    //                   as elsewhere because a grid's tail risk is the stop-out on the
+    //                   whole ladder, not a single fill.
+    //  · FreqW = 0    — also documented: grid session count is driven by coin volatility,
+    //                   not by strategy quality, so a frequency bonus would just rank
+    //                   coins. Canonical's freqBonus is exactly 1.0 at FreqW = 0.
+    //  · QualityW = 0 — NOT in the original as a documented choice, but it has to stay off
+    //                   on the merits. Canonical's quality term is sqrt(pfMult * rrMult)
+    //                   with rrMult = (rr - 1)/1.5, i.e. a ramp calibrated for rr in
+    //                   [1.0, 2.5+]. A grid is the opposite shape by construction — many
+    //                   small mean-reversion fills against an occasional whole-ladder
+    //                   stop-out — so it operates at rr < 1.0, where rrMult is negative
+    //                   and the term is pinned at its 0 floor. Enabling it would hand the
+    //                   Grid GA a CONSTANT ZERO multiplier, i.e. a flat fitness landscape,
+    //                   not a quality signal. Canonical's 1.0 = no-op contract cannot be
+    //                   satisfied by a term that is undefined over a strategy's operating
+    //                   range.
+    //
+    // NOT preserved (deliberately re-enabled, because nothing documented them as
+    // intentional and their absence made Grid's scale incomparable): RetentionW and
+    // GainW, which pass through from the caller's config at their neutral 1.0 — both are
+    // well-defined over the grid's operating range. The stat-bonus ceiling stays at 1.0
+    // for the whole Grid family — see GridShortGA's header on sparse-Ranging overfitting.
+    // CVaRPenalty and TailRatioBonus, which the inlined copies skipped entirely, now
+    // apply on any fold that clears MinTailSampleSize.
+    //
+    // Multiplicative rather than absolute so a hand-tuned fitness_config.json still has
+    // an effect: this transform is a SHAPE delta, not an override.
+    public static FitnessConfig GridShape(FitnessConfig cfg) => cfg with
+    {
+        WrW       = cfg.WrW / 6.0,
+        FreqW     = 0.0,
+        QualityW  = 0.0,
+        DdPenalty = cfg.DdPenalty * 2.0,
+    };
 
     public static double CanonicalRegime(
         List<(double Return, int RegimeBars)> returns,

@@ -20,12 +20,34 @@ public static class ExpandingWindowValidation
         bool IsInconclusive);
 
     // ── Efficiency guards ────────────────────────────────────────────────────────
-    // (1) Simulator.SharpeRatio hard-returns 0 whenever the in-sample profit factor is
-    //     under 1.3 (Simulator.cs:369). A window can therefore score isSharpe == 0 for a
-    //     reason that has nothing to do with overfitting, and the old code turned that
-    //     into efficiency = 0, dragging the 4-window mean below the 0.5 threshold and
-    //     flagging OVERFIT spuriously. Such windows are now recorded but excluded from
-    //     the mean, and their count is surfaced via UsableWindows.
+    // (0) THE SHARPE USED HERE IS UN-NORMALISED (FoldScoreHelper.PerTradeSharpe =
+    //     mean/stdev of the trade returns). It used to be Simulator.SharpeRatio(all,
+    //     all.Count) — which multiplies by sqrt(candleCount / 288) and expects a count of
+    //     5-minute-equivalent CANDLES, not the TRADE count that was being passed.
+    //
+    //     That defect biased this report's core verdict, not just its printed numbers.
+    //     Efficiency is oosSharpe/isSharpe, and IS and OOS each carried the factor with
+    //     DIFFERENT n: the expanding schedule trains on 1/4..5/8 of a coin and tests on
+    //     1/8, so n_is / n_oos runs roughly 2x..5x. A strategy that generalises PERFECTLY
+    //     — identical return distribution in and out of sample — therefore measured
+    //         efficiency = sqrt(n_oos / n_is) = sqrt(1/2)..sqrt(1/5) = 0.707..0.447,
+    //     mean 0.558, against an OVERFIT THRESHOLD OF 0.5. The flag was sitting inside
+    //     its own bias band: perfect generalisation was one window-schedule away from
+    //     being reported as overfitting.
+    //
+    //     With the time-scaling removed, both sides are the same scale-free statistic, so
+    //     a perfectly-generalising strategy now has an EXPECTED EFFICIENCY OF 1.0 and the
+    //     0.5 threshold means what it says: "OOS risk-adjusted return is less than half
+    //     of in-sample". Absolute Sharpe values printed by this report are smaller than
+    //     they used to be (no sqrt(n/288) inflation) and are NOT comparable to any
+    //     efficiency figure recorded before this change.
+    //
+    // (1) PerTradeSharpe keeps Simulator.SharpeRatio's guards: it hard-returns 0 whenever
+    //     the in-sample profit factor is under 1.3. A window can therefore score
+    //     isSharpe == 0 for a reason that has nothing to do with overfitting, and the old
+    //     code turned that into efficiency = 0, dragging the 4-window mean below the 0.5
+    //     threshold and flagging OVERFIT spuriously. Such windows are now recorded but
+    //     excluded from the mean, and their count is surfaced via UsableWindows.
     // (2) The ratio used to be unclamped: a small positive isSharpe against a negative
     //     oosSharpe produces an arbitrarily large negative number that single-handedly
     //     dominates a 4-window average. Per-window efficiency is clamped to [-1, 2]
@@ -336,7 +358,7 @@ public static class ExpandingWindowValidation
             foreach (var t in FadeShortSimulator.GetFadeShortReturns(ind, c.TrainCandles.Span))
                 all.Add(t.Return);
         }
-        return all.Count >= 10 ? Simulator.SharpeRatio(all, all.Count) : 0;
+        return all.Count >= 10 ? FoldScoreHelper.PerTradeSharpe(all) : 0;
     }
 
     private static double ComputeSharpeDipLong(DipLongGenotype ind, IReadOnlyList<DipLongGA.CoinData> coins)
@@ -348,7 +370,7 @@ public static class ExpandingWindowValidation
             foreach (var t in DipLongSimulator.GetDipLongReturns(ind, c.TrainH1.Span, c.TrainM15.Span))
                 all.Add(t.Return);
         }
-        return all.Count >= 10 ? Simulator.SharpeRatio(all, all.Count) : 0;
+        return all.Count >= 10 ? FoldScoreHelper.PerTradeSharpe(all) : 0;
     }
 
     private static double ComputeSharpeSwingLong(SwingLongGenotype ind, IReadOnlyList<SwingLongGA.CoinData> coins)
@@ -360,7 +382,7 @@ public static class ExpandingWindowValidation
             foreach (var t in SwingLongSimulator.GetSwingLongReturns(ind, c.TrainH1.Span, c.TrainM15.Span))
                 all.Add(t.Return);
         }
-        return all.Count >= 10 ? Simulator.SharpeRatio(all, all.Count) : 0;
+        return all.Count >= 10 ? FoldScoreHelper.PerTradeSharpe(all) : 0;
     }
 
     private static double ComputeSharpeRipShort(RipShortGenotype ind, IReadOnlyList<RipShortGA.CoinData> coins)
@@ -372,7 +394,7 @@ public static class ExpandingWindowValidation
             foreach (var t in RipShortSimulator.GetRipShortReturns(ind, c.TrainH1.Span, c.TrainM15.Span))
                 all.Add(t.Return);
         }
-        return all.Count >= 10 ? Simulator.SharpeRatio(all, all.Count) : 0;
+        return all.Count >= 10 ? FoldScoreHelper.PerTradeSharpe(all) : 0;
     }
 
     private static double ComputeSharpeFadeLong(FadeLongGenotype ind, IReadOnlyList<FadeLongGA.CoinData> coins)
@@ -384,7 +406,7 @@ public static class ExpandingWindowValidation
             foreach (var t in FadeLongSimulator.GetFadeLongReturns(ind, c.TrainH1.Span, c.TrainM15.Span))
                 all.Add(t.Return);
         }
-        return all.Count >= 10 ? Simulator.SharpeRatio(all, all.Count) : 0;
+        return all.Count >= 10 ? FoldScoreHelper.PerTradeSharpe(all) : 0;
     }
 
     private static double ComputeSharpeGrid(GridGenotype ind, IReadOnlyList<GridGeneticAlgorithm.CoinData> coins)
@@ -396,7 +418,7 @@ public static class ExpandingWindowValidation
             foreach (var t in GridSimulator.GetGridReturns(ind, c.TrainCandles.Span))
                 all.Add(t.Return);
         }
-        return all.Count >= 10 ? Simulator.SharpeRatio(all, all.Count) : 0;
+        return all.Count >= 10 ? FoldScoreHelper.PerTradeSharpe(all) : 0;
     }
 
     public static void PrintReport(ExpandingWindowReport report)
@@ -407,13 +429,15 @@ public static class ExpandingWindowValidation
         {
             Console.WriteLine("  Mean efficiency (OOS Sharpe / IS Sharpe): n/a");
             Console.WriteLine("  Overfit flag: INCONCLUSIVE — no window had a usable in-sample Sharpe");
-            Console.WriteLine("    (Simulator.SharpeRatio returns 0 when profit factor < 1.3, so this says");
+            Console.WriteLine("    (PerTradeSharpe returns 0 when profit factor < 1.3, so this says");
             Console.WriteLine("     nothing about overfitting — the efficiency ratio simply has no denominator)");
         }
         else
         {
             Console.WriteLine($"  Mean efficiency (OOS Sharpe / IS Sharpe): {report.MeanEfficiency:F3}  (usable windows only, clamped to [{EfficiencyFloor:F1}, {EfficiencyCeiling:F1}])");
             Console.WriteLine($"  Overfit flag (efficiency < 0.5): {(report.IsOverfit ? "YES — OVERFIT" : "no")}");
+            Console.WriteLine("    (Sharpe is per-trade mean/stdev, un-normalised, so a strategy that");
+            Console.WriteLine("     generalises perfectly is expected at efficiency 1.0, not 0.45–0.71)");
         }
         Console.WriteLine($"  {"Window",8} {"Train bars",12} {"Test bars",10} {"IS Sharpe",10} {"OOS Sharpe",11} {"Efficiency",11} {"Usable",8}");
         foreach (var w in report.Windows)

@@ -12,8 +12,11 @@ namespace TradingGA;
 // Protection mode (profit protect) is handled by DynamicGuardGenotype — moved there
 // so the guard trains on all strategies combined (better N/d ratio).
 //
-// Fitness = mean(fold_scores) − stdMult × std(fold_scores) over the SURVIVING walk-forward
-// folds (those that reached MinTradesPerFold trades); stdMult is VC-proportional.
+// Fitness = coverage x [lambda x CVaR_0.4(fold_scores) + (1 - lambda) x mean(fold_scores)]
+// over the SURVIVING walk-forward folds (those that reached MinTradesPerFold trades), where
+// coverage = surviving/attempted folds and lambda is VC-proportional on avg N/d. Monotone
+// non-decreasing in every fold score by construction — see FoldScoreHelper.AggregateFoldScores
+// for why `mean - stdMult x std` was not.
 public class FadeLongGA
 {
     public record CoinData(ReadOnlyMemory<Candle> TrainH1, ReadOnlyMemory<Candle> ValH1, ReadOnlyMemory<Candle> TrainM15, ReadOnlyMemory<Candle> ValM15, double Weight = 1.0);
@@ -136,9 +139,14 @@ public class FadeLongGA
 
         var foldScores = new List<double>();
         var foldCounts = new List<int>();
+        // Folds ATTEMPTED, including the thin ones skipped below — the aggregator scales
+        // by surviving/attempted so that concentrating all activity into one favourable
+        // market window can no longer beat trading consistently across all of them.
+        int attemptedFolds = 0;
 
         for (int f = 0; f < k; f++)
         {
+            attemptedFolds++;
             var foldRet = new List<(double Return, int RegimeBars)>();
             foreach (var (coin, h1, m15) in validCoins)
             {
@@ -166,7 +174,8 @@ public class FadeLongGA
 
             // Only folds that actually reached MinTradesPerFold scored trades take part in
             // the aggregation. A thin fold returns the constant -1.0 sentinel, and mixing
-            // constants into mean − stdMult×std inverts the gradient (see AggregateFoldScores).
+            // constants into the aggregate would let a no-trade fold masquerade as a real
+            // (merely bad) one. It still counts toward attemptedFolds, so skipping costs coverage.
             int scoredTrades = foldRet.Count(t => t.RegimeBars >= ind.RegimeSustainedBars);
             if (scoredTrades < MinTradesPerFold) continue;
 
@@ -174,7 +183,7 @@ public class FadeLongGA
             foldCounts.Add(scoredTrades);
         }
 
-        return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D);
+        return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D, attemptedFolds);
     }
 
     public FadeLongGenotype Run(IReadOnlyList<CoinData> coins, FadeLongGenotype? seed = null)

@@ -11,8 +11,11 @@ namespace TradingGA;
 // Training uses flat pessimistic funding (funding: null) so it never requires a
 // funding dataset; live/backtest paths supply a FundingRateSession for real rates.
 //
-// Fitness = mean(fold_scores) − stdMult × std(fold_scores) over the SURVIVING walk-forward
-// folds (those that reached MinTradesPerFold trades); stdMult is VC-proportional.
+// Fitness = coverage x [lambda x CVaR_0.4(fold_scores) + (1 - lambda) x mean(fold_scores)]
+// over the SURVIVING walk-forward folds (those that reached MinTradesPerFold trades), where
+// coverage = surviving/attempted folds and lambda is VC-proportional on avg N/d. Monotone
+// non-decreasing in every fold score by construction — see FoldScoreHelper.AggregateFoldScores
+// for why `mean - stdMult x std` was not.
 public class RipShortGA
 {
     public record CoinData(ReadOnlyMemory<Candle> TrainH1, ReadOnlyMemory<Candle> ValH1, ReadOnlyMemory<Candle> TrainM15, ReadOnlyMemory<Candle> ValM15, double Weight = 1.0);
@@ -50,74 +53,28 @@ public class RipShortGA
         _btcSeries         = btcSeries;
     }
 
+    // Canonical fold score, filtered to trades that fired during a CONFIRMED bear regime
+    // (RegimeBars >= sustainedBars) — CanonicalRegime does that filtering itself.
+    //
+    // This used to be a hand-inlined copy of the canonical formula. The copy had drifted
+    // in three ways that all mattered: the six FitnessConfig term weights
+    // (GainW/WrW/QualityW/FreqW/DdPenalty/RetentionW) were INERT here because the
+    // coefficients were hardcoded, CVaRPenalty and TailRatioBonus were never applied at
+    // all, and the fitness was therefore on a different scale from the other strategies —
+    // which CoevolveGA and RegimeRouterGA then combine.
+    //
+    // The one divergence that was deliberate is PRESERVED: statBonusCeiling stays at 1.0
+    // (max combined stat stack ~5x, not ~40x) because RipShort's sparse bear-window
+    // sample let an uncapped stack compound a lucky fold into a fake edge
+    // (train F=15718 vs held-out OOS PF=0.88, see the overfit check).
     private static double FoldScore(
         List<(double Return, int RegimeBars)> returns,
         double posFrac,
         int    sustainedBars,
         FitnessConfig cfg,
         double volWeight = 1.0)
-    {
-        // Only score trades that fired during a confirmed bear regime
-        var valid = returns.Where(r => r.RegimeBars >= sustainedBars).Select(r => r.Return).ToList();
-        if (valid.Count < MinTradesPerFold) return -1.0;
-
-        double wr        = (double)valid.Count(r => r > 0) / valid.Count;
-        double grossWins = valid.Where(r => r > 0).DefaultIfEmpty(0).Sum();
-        double grossLoss = Math.Abs(valid.Where(r => r <= 0).DefaultIfEmpty(0).Sum());
-        double pf        = grossLoss > 1e-10 ? grossWins / grossLoss : (grossWins > 0 ? 5.0 : 0.0);
-
-        if (pf < 1.0) return pf - 2.0;
-
-        double balance = 1.0, peak = 1.0, maxDd = 0.0;
-        foreach (var r in valid)
-        {
-            balance += r / 100.0 * posFrac;
-            if (balance > peak) peak = balance;
-            double dd = (peak - balance) / peak;
-            if (dd > maxDd) maxDd = dd;
-        }
-
-        double gain = balance - 1.0;
-        if (gain <= 0) return gain * 100 - 0.5;
-
-        double wrMult = wr < 0.40 ? wr / 0.40 : 1.0 + (wr - 0.40) * 3.0;
-
-        double pfMult = pf < 1.5 ? (pf - 1.0) / 0.5 : 1.0 + (pf - 1.5) * 0.5;
-        var winList   = valid.Where(r => r > 0).ToList();
-        var lossList  = valid.Where(r => r <= 0).ToList();
-        double avgWin  = winList.Count  > 0 ? winList.Average()            : 0;
-        double avgLoss = lossList.Count > 0 ? Math.Abs(lossList.Average()) : avgWin;
-        double rr      = avgLoss > 1e-10 ? avgWin / avgLoss : (avgWin > 0 ? 5.0 : 1.0);
-        double rrMult  = rr < 2.5 ? (rr - 1.0) / 1.5 : 1.0 + (rr - 2.5) * 0.3;
-        // Capped: uncapped pfMult*rrMult let a handful of extreme trades on thin
-        // bear-window data (sparse regime, few coins/bars) dominate the score.
-        double qualityMult = Math.Min(Math.Sqrt(pfMult * rrMult), 2.5);
-
-        double ddDiv     = 1.0 + maxDd * 10.0;
-        double freqBonus = 1.0 + 0.15 * Math.Log(Math.Max(1.0, valid.Count / (double)MinTradesPerFold));
-
-        // Kept-profits multiplier: penalise giving back peak gains before period end.
-        double peakGain      = peak - 1.0;
-        double retentionMult = peakGain > 0.01
-            ? Math.Max(0.2, (balance - 1.0) / peakGain)
-            : 1.0;
-
-        int    n       = valid.Count;
-        double sharpe  = Simulator.SharpeRatio(valid, n);
-        double calmar  = Simulator.CalmarRatio(valid);
-        double pfStat  = Simulator.ProfitFactor(valid);
-        double sortino = Simulator.SortinoRatio(valid, n);
-        double base_   = gain * 100.0 * wrMult * qualityMult * freqBonus / ddDiv * retentionMult;
-        // Bonus ceilings tightened 3.0→1.0 (max combined ~5x not ~40x) — RipShort's
-        // sparse bear-window sample let this stack compound a lucky fold into a
-        // fake edge (train F=15718 vs held-out OOS PF=0.88, see overfit check).
-        return base_
-            * (1.0 + cfg.SharpeW  * Math.Max(0, Math.Min(sharpe  / 3.0,  1.0)))
-            * (1.0 + cfg.CalmarW  * Math.Max(0, Math.Min(calmar  / 2.0,  1.0)))
-            * (1.0 + cfg.PfW      * Math.Max(0, Math.Min(pfStat - 1.0,   1.0)))
-            * (1.0 + cfg.SortinoW * Math.Max(0, Math.Min(sortino / 4.0,  1.0)))
-            * volWeight;
-    }
+        => FoldScoreHelper.CanonicalRegime(
+            returns, posFrac, sustainedBars, MinTradesPerFold, cfg, volWeight, statBonusCeiling: 1.0);
 
     private double Fitness(RipShortGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
     {
@@ -174,9 +131,14 @@ public class RipShortGA
 
         var foldScores = new List<double>();
         var foldCounts = new List<int>();
+        // Folds ATTEMPTED, including the thin ones skipped below — the aggregator scales
+        // by surviving/attempted so that concentrating all activity into one favourable
+        // market window can no longer beat trading consistently across all of them.
+        int attemptedFolds = 0;
 
         for (int f = 0; f < k; f++)
         {
+            attemptedFolds++;
             var foldRet = new List<(double Return, int RegimeBars)>();
             foreach (var (coin, h1, m15) in validCoins)
             {
@@ -204,7 +166,8 @@ public class RipShortGA
 
             // Only folds that actually reached MinTradesPerFold scored trades take part in
             // the aggregation. A thin fold returns the constant -1.0 sentinel, and mixing
-            // constants into mean − stdMult×std inverts the gradient (see AggregateFoldScores).
+            // constants into the aggregate would let a no-trade fold masquerade as a real
+            // (merely bad) one. It still counts toward attemptedFolds, so skipping costs coverage.
             int scoredTrades = foldRet.Count(t => t.RegimeBars >= ind.RegimeSustainedBars);
             if (scoredTrades < MinTradesPerFold) continue;
 
@@ -212,7 +175,7 @@ public class RipShortGA
             foldCounts.Add(scoredTrades);
         }
 
-        return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D);
+        return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D, attemptedFolds);
     }
 
     public RipShortGenotype Run(IReadOnlyList<CoinData> coins, RipShortGenotype? seed = null)

@@ -4,8 +4,12 @@ namespace TradingGA;
 // Direction-mirror of GridGeneticAlgorithm — reuses GridGenotype (directionally
 // symmetric gene set) and GridShortSimulator for the flipped price mechanics.
 //
-// Fitness = mean(fold_scores) − stdMult × std(fold_scores) over the SURVIVING walk-forward
-// folds (those that reached MinTradesPerFold trades); stdMult is VC-proportional. Folds are
+// Fitness = coverage x [lambda x CVaR_0.4(fold_scores) + (1 - lambda) x mean(fold_scores)]
+// over the SURVIVING walk-forward folds (those that reached MinTradesPerFold trades), where
+// coverage = surviving/attempted folds and lambda is VC-proportional on avg N/d. Monotone
+// non-decreasing in every fold score by construction — see FoldScoreHelper.AggregateFoldScores
+// for why `mean - stdMult x std` was not.
+// Folds are
 // cut PER COIN on that coin's own array — see Fitness(). Bonus multiplier ceilings
 // (Sharpe/Calmar/PF/Sortino) already capped at 1.0 from the start — see RipShortGA's
 // FoldScore comment for why an uncapped stack overfits sparse-regime data (Ranging is
@@ -42,45 +46,23 @@ public class GridShortGA
         _cfg               = cfg ?? new FitnessConfig();
     }
 
+    // Canonical fold score under the Grid-family shape transform.
+    //
+    // This used to be a hand-inlined copy of the fitness formula, which left the six
+    // FitnessConfig term weights inert, skipped CVaRPenalty/TailRatioBonus entirely, and
+    // put Grid on a different SCALE from every other strategy — a scale CoevolveGA and
+    // RegimeRouterGA then combined with the others as if they were comparable.
+    //
+    // FoldScoreHelper.GridShape carries the justified divergences forward as a config
+    // delta instead: win-rate slope 0.5 not 3.0, drawdown divisor x20 not x10, no
+    // frequency bonus, and no quality term (Canonical's rr ramp is calibrated for
+    // rr >= 1.0, while a grid operates below it — see GridShape). The retention and gain
+    // terms are re-enabled at their neutral 1.0, and the tail terms now apply.
+    // statBonusCeiling stays at 1.0 as before.
     private static double FoldScore(List<double> returns, FitnessConfig cfg, double volWeight = 1.0)
-    {
-        if (returns.Count < MinTradesPerFold) return -1.0;
-
-        double wr       = (double)returns.Count(r => r > 0) / returns.Count;
-        double grossWin = returns.Where(r => r > 0).DefaultIfEmpty(0).Sum();
-        double grossLoss= Math.Abs(returns.Where(r => r <= 0).DefaultIfEmpty(0).Sum());
-        double pf       = grossLoss > 1e-10 ? grossWin / grossLoss : (grossWin > 0 ? 5.0 : 0.0);
-
-        if (pf < 1.0) return pf - 2.0;
-
-        double balance = 1.0, peak = 1.0, maxDd = 0.0;
-        foreach (var r in returns)
-        {
-            balance += r / 100.0 * FitPosFrac;
-            if (balance > peak) peak = balance;
-            double dd = (peak - balance) / peak;
-            if (dd > maxDd) maxDd = dd;
-        }
-
-        double gain = balance - 1.0;
-        if (gain <= 0) return gain * 100 - 0.5;
-
-        double wrMult = wr < 0.40 ? wr / 0.40 : 1.0 + (wr - 0.40) * 0.5;
-        double ddDiv  = 1.0 + maxDd * 20.0;
-
-        double baseScore = gain * 100.0 * wrMult / ddDiv;
-        int    n         = returns.Count;
-        double sharpe    = Simulator.SharpeRatio(returns, n);
-        double calmar    = Simulator.CalmarRatio(returns);
-        double pfStat    = Simulator.ProfitFactor(returns);
-        double sortino   = Simulator.SortinoRatio(returns, n);
-        return baseScore
-            * (1.0 + cfg.SharpeW  * Math.Max(0, Math.Min(sharpe   / 3.0,  1.0)))
-            * (1.0 + cfg.CalmarW  * Math.Max(0, Math.Min(calmar   / 2.0,  1.0)))
-            * (1.0 + cfg.PfW      * Math.Max(0, Math.Min(pfStat - 1.0,    1.0)))
-            * (1.0 + cfg.SortinoW * Math.Max(0, Math.Min(sortino  / 4.0,  1.0)))
-            * volWeight;
-    }
+        => FoldScoreHelper.Canonical(
+            returns, FitPosFrac, MinTradesPerFold,
+            FoldScoreHelper.GridShape(cfg), volWeight, statBonusCeiling: 1.0);
 
     private double Fitness(GridGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
     {
@@ -131,8 +113,13 @@ public class GridShortGA
 
         var foldScores = new List<double>(k);
         var foldCounts = new List<int>(k);
+        // Folds ATTEMPTED, including the thin ones skipped below — the aggregator scales
+        // by surviving/attempted so that concentrating all activity into one favourable
+        // market window can no longer beat trading consistently across all of them.
+        int attemptedFolds = 0;
         for (int f = 0; f < k; f++)
         {
+            attemptedFolds++;
             var foldReturns = new List<double>();
             foreach (var (coin, arr) in validCoins)
             {
@@ -144,15 +131,16 @@ public class GridShortGA
 
             // Only folds that actually reached MinTradesPerFold sessions take part in the
             // aggregation. A thin fold returns the constant -1.0 sentinel from FoldScore,
-            // and mixing constants into mean − stdMult×std inverts the gradient (see
-            // FoldScoreHelper.AggregateFoldScores).
+            // and mixing constants into the aggregate would let a no-trade fold masquerade as
+            // a real (merely bad) one. It still counts toward attemptedFolds, so
+            // skipping a fold costs coverage.
             if (foldReturns.Count < MinTradesPerFold) continue;
 
             foldScores.Add(FoldScore(foldReturns, _cfg));
             foldCounts.Add(foldReturns.Count);
         }
 
-        return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D);
+        return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D, attemptedFolds);
     }
 
     // Median of a set of array lengths. Used to size the fold count without letting the

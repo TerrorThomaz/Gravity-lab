@@ -85,15 +85,22 @@ static class HighVolTrainCommands
         Console.WriteLine("All high-vol variants trained. Next: dotnet run -- combinedbacktest");
     }
 
-    private static double ComputeFitness(double[] foldScores, int totalFoldTrades)
-    {
-        int k = foldScores.Length;
-        double mean = foldScores.Average();
-        double std = Math.Sqrt(foldScores.Select(s => (s - mean) * (s - mean)).Average());
-        double avgN = (double)totalFoldTrades / k;
-        double stdMult = Math.Clamp(7.5 / Math.Max(1.0, avgN / 14.0), 0.75, 2.0);
-        return mean - stdMult * std;
-    }
+    // This was a fourth private copy of the old `mean - stdMult*std` aggregator. It carried both
+    // defects that were fixed in FoldScoreHelper.AggregateFoldScores:
+    //   1. NON-MONOTONE — past a z-score of 1/stdMult, raising a fold's score LOWERED fitness,
+    //      so the GA selected against its own best folds.
+    //   2. SENTINEL PADDING — it read a fixed double[folds], so a fold that never reached
+    //      MinTradesPerFold kept Canonical's constant -1.0 and was averaged in as if it were a
+    //      real score, which is what made the variance term inject a constant.
+    // Both are gone: callers now collect only the folds that produced a score, and pass how many
+    // were ATTEMPTED so partial coverage is penalised instead of rewarded.
+    //
+    // `d` is the genotype's parameter count, read from its own Bounds table rather than the
+    // hardcoded 14 this used to assume — that was wrong for every strategy here except by
+    // coincidence, and it feeds the VC-proportional lambda.
+    private static double ComputeFitness(
+        List<double> foldScores, List<int> foldTradeCounts, int d, int attemptedFolds)
+        => FoldScoreHelper.AggregateFoldScores(foldScores, foldTradeCounts, d, attemptedFolds);
 
     private static FadeShortGenotype? TrainFadeShortHighVol(List<(string Sym, Candle[] H1, Candle[] M15)> coins, FitnessConfig cfg)
     {
@@ -137,8 +144,8 @@ static class HighVolTrainCommands
     private static double EvaluateFadeShortHighVol(FadeShortGenotype g, List<(string Sym, Candle[] H1, Candle[] M15)> coins, FitnessConfig cfg)
     {
         int folds = 5;
-        double[] foldScores = new double[folds];
-        int totalTrades = 0;
+        var foldScores = new List<double>();
+        var foldCounts = new List<int>();
 
         for (int fold = 0; fold < folds; fold++)
         {
@@ -163,11 +170,15 @@ static class HighVolTrainCommands
                 allReturns.AddRange(trades.Select(t => t.Return));
             }
 
-            totalTrades += allReturns.Count;
-            foldScores[fold] = FoldScoreHelper.Canonical(allReturns, PosFrac, MinTradesPerFold, cfg, statBonusCeiling: 1.0);
+            // A fold below MinTradesPerFold gets Canonical's constant -1.0 sentinel. Feeding that
+            // into the aggregate injects a constant into the spread term, so drop it and record
+            // only that it was attempted.
+            if (allReturns.Count < MinTradesPerFold) continue;
+            foldScores.Add(FoldScoreHelper.Canonical(allReturns, PosFrac, MinTradesPerFold, cfg, statBonusCeiling: 1.0));
+            foldCounts.Add(allReturns.Count);
         }
 
-        return ComputeFitness(foldScores, totalTrades);
+        return ComputeFitness(foldScores, foldCounts, FadeShortGenotype.Bounds.GetLength(0), folds);
     }
 
     private static DipLongGenotype? TrainDipLongHighVol(List<(string Sym, Candle[] H1, Candle[] M15)> coins, FitnessConfig cfg)
@@ -212,8 +223,8 @@ static class HighVolTrainCommands
     private static double EvaluateDipLongHighVol(DipLongGenotype g, List<(string Sym, Candle[] H1, Candle[] M15)> coins, FitnessConfig cfg)
     {
         int folds = 5;
-        double[] foldScores = new double[folds];
-        int totalTrades = 0;
+        var foldScores = new List<double>();
+        var foldCounts = new List<int>();
 
         for (int fold = 0; fold < folds; fold++)
         {
@@ -238,11 +249,15 @@ static class HighVolTrainCommands
                 allReturns.AddRange(trades.Select(t => t.Return));
             }
 
-            totalTrades += allReturns.Count;
-            foldScores[fold] = FoldScoreHelper.Canonical(allReturns, PosFrac, MinTradesPerFold, cfg, statBonusCeiling: 1.5);
+            // A fold below MinTradesPerFold gets Canonical's constant -1.0 sentinel. Feeding that
+            // into the aggregate injects a constant into the spread term, so drop it and record
+            // only that it was attempted.
+            if (allReturns.Count < MinTradesPerFold) continue;
+            foldScores.Add(FoldScoreHelper.Canonical(allReturns, PosFrac, MinTradesPerFold, cfg, statBonusCeiling: 1.5));
+            foldCounts.Add(allReturns.Count);
         }
 
-        return ComputeFitness(foldScores, totalTrades);
+        return ComputeFitness(foldScores, foldCounts, DipLongGenotype.Bounds.GetLength(0), folds);
     }
 
     private static SwingLongGenotype? TrainSwingLongHighVol(List<(string Sym, Candle[] H1, Candle[] M15)> coins, FitnessConfig cfg)
@@ -287,8 +302,8 @@ static class HighVolTrainCommands
     private static double EvaluateSwingLongHighVol(SwingLongGenotype g, List<(string Sym, Candle[] H1, Candle[] M15)> coins, FitnessConfig cfg)
     {
         int folds = 5;
-        double[] foldScores = new double[folds];
-        int totalTrades = 0;
+        var foldScores = new List<double>();
+        var foldCounts = new List<int>();
 
         for (int fold = 0; fold < folds; fold++)
         {
@@ -313,11 +328,15 @@ static class HighVolTrainCommands
                 allReturns.AddRange(trades.Select(t => t.Return));
             }
 
-            totalTrades += allReturns.Count;
-            foldScores[fold] = FoldScoreHelper.Canonical(allReturns, PosFrac, MinTradesPerFold, cfg, statBonusCeiling: 1.5);
+            // A fold below MinTradesPerFold gets Canonical's constant -1.0 sentinel. Feeding that
+            // into the aggregate injects a constant into the spread term, so drop it and record
+            // only that it was attempted.
+            if (allReturns.Count < MinTradesPerFold) continue;
+            foldScores.Add(FoldScoreHelper.Canonical(allReturns, PosFrac, MinTradesPerFold, cfg, statBonusCeiling: 1.5));
+            foldCounts.Add(allReturns.Count);
         }
 
-        return ComputeFitness(foldScores, totalTrades);
+        return ComputeFitness(foldScores, foldCounts, SwingLongGenotype.Bounds.GetLength(0), folds);
     }
 
     private static RipShortGenotype? TrainRipShortHighVol(List<(string Sym, Candle[] H1, Candle[] M15)> coins, FitnessConfig cfg)
@@ -362,8 +381,8 @@ static class HighVolTrainCommands
     private static double EvaluateRipShortHighVol(RipShortGenotype g, List<(string Sym, Candle[] H1, Candle[] M15)> coins, FitnessConfig cfg)
     {
         int folds = 5;
-        double[] foldScores = new double[folds];
-        int totalTrades = 0;
+        var foldScores = new List<double>();
+        var foldCounts = new List<int>();
 
         for (int fold = 0; fold < folds; fold++)
         {
@@ -388,10 +407,20 @@ static class HighVolTrainCommands
                 allReturns.AddRange(trades.Select(t => t.Return));
             }
 
-            totalTrades += allReturns.Count;
-            foldScores[fold] = FoldScoreHelper.Canonical(allReturns, PosFrac, MinTradesPerFold, cfg, statBonusCeiling: 1.5);
+            // A fold below MinTradesPerFold gets Canonical's constant -1.0 sentinel. Feeding that
+            // into the aggregate injects a constant into the spread term, so drop it and record
+            // only that it was attempted.
+            if (allReturns.Count < MinTradesPerFold) continue;
+            // Ceiling 1.0, matching RipShortGA rather than the 1.5 this used to pass. RipShort's
+            // ceiling is deliberately tighter: its bear-window sample is sparse enough that an
+            // uncapped stat-bonus stack compounds a single lucky fold (train F=15718 against an
+            // OOS PF of 0.88). That argument is at least as strong in high-volatility windows,
+            // and running one strategy under two different objectives is the divergence this
+            // whole pass exists to remove.
+            foldScores.Add(FoldScoreHelper.Canonical(allReturns, PosFrac, MinTradesPerFold, cfg, statBonusCeiling: 1.0));
+            foldCounts.Add(allReturns.Count);
         }
 
-        return ComputeFitness(foldScores, totalTrades);
+        return ComputeFitness(foldScores, foldCounts, RipShortGenotype.Bounds.GetLength(0), folds);
     }
 }

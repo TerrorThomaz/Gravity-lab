@@ -6,8 +6,11 @@ namespace TradingGA;
 // 5-fold walk-forward CV on TIME-based fold windows shared across coins, falling back to
 // per-coin percentage folds when no BTC regime series is supplied (same pattern as DipLongGA).
 // Uses canonical FoldScore via FoldScoreHelper.
-// Fitness = mean(fold_scores) − stdMult × std(fold_scores) over the SURVIVING folds
-// (those that reached MinTradesPerFold trades); stdMult is VC-proportional.
+// Fitness = coverage x [lambda x CVaR_0.4(fold_scores) + (1 - lambda) x mean(fold_scores)]
+// over the SURVIVING walk-forward folds (those that reached MinTradesPerFold trades), where
+// coverage = surviving/attempted folds and lambda is VC-proportional on avg N/d. Monotone
+// non-decreasing in every fold score by construction — see FoldScoreHelper.AggregateFoldScores
+// for why `mean - stdMult x std` was not.
 public class SwingLongGA
 {
     public record CoinData(
@@ -91,9 +94,14 @@ public class SwingLongGA
 
         var foldScores = new List<double>();
         var foldCounts = new List<int>();
+        // Folds ATTEMPTED, including the thin ones skipped below — the aggregator scales
+        // by surviving/attempted so that concentrating all activity into one favourable
+        // market window can no longer beat trading consistently across all of them.
+        int attemptedFolds = 0;
 
         for (int f = 0; f < k; f++)
         {
+            attemptedFolds++;
             var foldReturns = new List<double>();
             foreach (var (coin, h1, m15) in validCoins)
             {
@@ -121,14 +129,15 @@ public class SwingLongGA
 
             // Only folds that actually reached MinTradesPerFold trades take part in the
             // aggregation. A thin fold returns the constant -1.0 sentinel, and mixing
-            // constants into mean − stdMult×std inverts the gradient (see AggregateFoldScores).
+            // constants into the aggregate would let a no-trade fold masquerade as a real
+            // (merely bad) one. It still counts toward attemptedFolds, so skipping costs coverage.
             if (foldReturns.Count < MinTradesPerFold) continue;
 
             foldScores.Add(FoldScoreHelper.Canonical(foldReturns, posFrac, MinTradesPerFold, _cfg, statBonusCeiling: 1.5));
             foldCounts.Add(foldReturns.Count);
         }
 
-        return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D);
+        return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D, attemptedFolds);
     }
 
     public SwingLongGenotype Run(IReadOnlyList<CoinData> coins, SwingLongGenotype? seed = null)

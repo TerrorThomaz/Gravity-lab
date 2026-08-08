@@ -295,13 +295,19 @@ public class TimeBasedFoldWindowTests
 // rewarded fat tails and punished safe strategies).
 public class CVaRPenaltyTests
 {
-    // count-2 flat +1% trades plus two trades at `worst`. With alpha = 0.05 and count = 40
-    // the CVaR cutoff is exactly 2 trades, so cvar5 == worst.
-    private static List<double> WithTailTrades(double worst, int count = 40)
+    // Flat +1% trades plus a left tail entirely at `worst`, sized so that the tail is
+    // EXACTLY the alpha = 0.05 bucket (max(1, count*0.05) trades) and cvar5 == worst.
+    //
+    // The default count was 40, but CVaRPenalty is now gated at
+    // FoldScoreHelper.MinTailSampleSize: below 100 returns, the 5% bucket holds fewer than
+    // 5 observations and "expected shortfall" is an extreme order statistic rather than a
+    // risk measure, so the term returns the neutral 1.0. The fixture is sized past the
+    // gate so these tests exercise the penalty instead of the gate.
+    private static List<double> WithTailTrades(double worst, int count = 120)
     {
-        var list = Enumerable.Repeat(1.0, count - 2).ToList();
-        list.Add(worst);
-        list.Add(worst);
+        int tail = Math.Max(1, (int)(count * 0.05));
+        var list = Enumerable.Repeat(1.0, count - tail).ToList();
+        for (int i = 0; i < tail; i++) list.Add(worst);
         return list;
     }
 
@@ -353,5 +359,10 @@ public class CVaRPenaltyTests
     {
         Assert.Equal(1.0, FoldScoreHelper.CVaRPenalty(WithTailTrades(-50.0), new FitnessConfig(CVaRW: 0.0)), 6);
         Assert.Equal(1.0, FoldScoreHelper.CVaRPenalty(WithTailTrades(-50.0, count: 10), new FitnessConfig()), 6);
+        // Just under the tail-sample gate the term is neutral; at the gate it bites.
+        Assert.Equal(1.0, FoldScoreHelper.CVaRPenalty(
+            WithTailTrades(-50.0, count: FoldScoreHelper.MinTailSampleSize - 1), new FitnessConfig()), 6);
+        Assert.True(FoldScoreHelper.CVaRPenalty(
+            WithTailTrades(-50.0, count: FoldScoreHelper.MinTailSampleSize), new FitnessConfig()) < 1.0);
     }
 }

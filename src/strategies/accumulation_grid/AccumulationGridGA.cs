@@ -16,6 +16,7 @@ public class AccumulationGridGA
 
     private const int MinTradesPerFold = 10;
     private const double FitPosFrac = 0.03;
+    private const int D = 8;   // genotype parameter count — see RandomGenotype()
 
     public AccumulationGridGA(
         MarketRegime targetRegime,
@@ -33,44 +34,15 @@ public class AccumulationGridGA
         _cfg = cfg ?? new FitnessConfig();
     }
 
+    // Canonical fold score under the Grid-family shape transform — see
+    // FoldScoreHelper.GridShape for which divergences from the canonical formula are
+    // preserved (win-rate slope, drawdown divisor, no frequency bonus) and which are not.
+    // Previously a hand-inlined third copy of the same drifted formula, which left the six
+    // FitnessConfig term weights inert and skipped CVaRPenalty/TailRatioBonus entirely.
     private static double FoldScore(List<double> returns, FitnessConfig cfg)
-    {
-        if (returns.Count < MinTradesPerFold) return -1.0;
-
-        double wr = (double)returns.Count(r => r > 0) / returns.Count;
-        double grossWin = returns.Where(r => r > 0).DefaultIfEmpty(0).Sum();
-        double grossLoss = Math.Abs(returns.Where(r => r <= 0).DefaultIfEmpty(0).Sum());
-        double pf = grossLoss > 1e-10 ? grossWin / grossLoss : (grossWin > 0 ? 5.0 : 0.0);
-
-        if (pf < 1.0) return pf - 2.0;
-
-        double balance = 1.0, peak = 1.0, maxDd = 0.0;
-        foreach (var r in returns)
-        {
-            balance += r / 100.0 * FitPosFrac;
-            if (balance > peak) peak = balance;
-            double dd = (peak - balance) / peak;
-            if (dd > maxDd) maxDd = dd;
-        }
-
-        double gain = balance - 1.0;
-        if (gain <= 0) return gain * 100 - 0.5;
-
-        double wrMult = wr < 0.40 ? wr / 0.40 : 1.0 + (wr - 0.40) * 0.5;
-        double ddDiv = 1.0 + maxDd * 20.0;
-
-        double baseScore = gain * 100.0 * wrMult / ddDiv;
-        int n = returns.Count;
-        double sharpe = Simulator.SharpeRatio(returns, n);
-        double calmar = Simulator.CalmarRatio(returns);
-        double pfStat = Simulator.ProfitFactor(returns);
-        double sortino = Simulator.SortinoRatio(returns, n);
-        return baseScore
-            * (1.0 + cfg.SharpeW * Math.Max(0, Math.Min(sharpe / 3.0, 1.0)))
-            * (1.0 + cfg.CalmarW * Math.Max(0, Math.Min(calmar / 2.0, 1.0)))
-            * (1.0 + cfg.PfW * Math.Max(0, Math.Min(pfStat - 1.0, 1.0)))
-            * (1.0 + cfg.SortinoW * Math.Max(0, Math.Min(sortino / 4.0, 1.0)));
-    }
+        => FoldScoreHelper.Canonical(
+            returns, FitPosFrac, MinTradesPerFold,
+            FoldScoreHelper.GridShape(cfg), volWeight: 1.0, statBonusCeiling: 1.0);
 
     private double Fitness(AccumulationGridGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
     {
@@ -88,25 +60,45 @@ public class AccumulationGridGA
             return FoldScore(all, _cfg);
         }
 
+        // Walk-forward folds, cut PER COIN on that coin's OWN array via
+        // FoldScoreHelper.PerCoinFoldRange (which also applies the embargo gap the
+        // hand-rolled splitter here skipped entirely).
+        //
+        // Two further bugs fixed while routing this through the shared helpers:
+        //  · the loop sliced coin.TrainCandles regardless of `useValidation`, so the
+        //    validation path silently re-scored the TRAINING array;
+        //  · every fold — including ones that produced no trades at all — was pushed into
+        //    a raw `mean - 0.75*std`, so the constant -1.0 sentinel returned by a dead
+        //    fold was averaged in as if it were a real score.
         var foldScores = new List<double>();
+        var foldCounts = new List<int>();
+        // Folds ATTEMPTED, including the thin ones skipped below — the aggregator scales
+        // by surviving/attempted so that concentrating all activity into one favourable
+        // market window can no longer beat trading consistently across all of them.
+        int attemptedFolds = 0;
         for (int f = 0; f < folds; f++)
         {
+            attemptedFolds++;
             var foldReturns = new List<double>();
-            foreach (var (coin, _) in validCoins)
+            foreach (var (_, arr) in validCoins)
             {
-                int len = coin.TrainCandles.Length;
-                int foldSize = len / folds;
-                int start = f * foldSize;
-                int end = (f == folds - 1) ? len : start + foldSize;
-                var slice = coin.TrainCandles.Slice(start, end - start);
-                foldReturns.AddRange(AccumulationGridSimulator.GetAccumulationReturns(ind, slice.Span, _targetRegime).Select(t => t.Return));
+                var (start, end) = FoldScoreHelper.PerCoinFoldRange(arr.Length, folds, f, _cfg.EmbargoPct);
+                if (end - start < 40) continue;
+                foldReturns.AddRange(AccumulationGridSimulator
+                    .GetAccumulationReturns(ind, arr.Slice(start, end - start).Span, _targetRegime)
+                    .Select(t => t.Return));
             }
+
+            // Only folds that actually reached MinTradesPerFold trades take part in the
+            // aggregation; the rest still count toward attemptedFolds, so skipping a fold
+            // costs coverage rather than being free.
+            if (foldReturns.Count < MinTradesPerFold) continue;
+
             foldScores.Add(FoldScore(foldReturns, _cfg));
+            foldCounts.Add(foldReturns.Count);
         }
 
-        double mean = foldScores.Average();
-        double std = Math.Sqrt(foldScores.Average(s => (s - mean) * (s - mean)));
-        return mean - 0.75 * std;
+        return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D, attemptedFolds);
     }
 
     private AccumulationGridGenotype RandomGenotype()

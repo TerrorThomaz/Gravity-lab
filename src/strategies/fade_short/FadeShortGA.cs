@@ -13,8 +13,11 @@ namespace TradingGA;
 //
 // FoldScore = (port_gain × 100) × wr_mult × freq_bonus / dd_div
 //
-// Fitness = mean(fold_scores) − stdMult × std(fold_scores) over the SURVIVING walk-forward
-// folds (those that reached MinTradesPerFold trades); stdMult is VC-proportional.
+// Fitness = coverage x [lambda x CVaR_0.4(fold_scores) + (1 - lambda) x mean(fold_scores)]
+// over the SURVIVING walk-forward folds (those that reached MinTradesPerFold trades), where
+// coverage = surviving/attempted folds and lambda is VC-proportional on avg N/d. Monotone
+// non-decreasing in every fold score by construction — see FoldScoreHelper.AggregateFoldScores
+// for why `mean - stdMult x std` was not.
 // Folds are cut PER COIN on that coin's own array — see FitnessFromCache.
 public class FadeShortGA
 {
@@ -166,8 +169,13 @@ public class FadeShortGA
 
             var foldScores = new List<double>(k);
             var foldCounts = new List<int>(k);
+            // Folds ATTEMPTED, including the thin ones skipped below — the aggregator
+            // scales by surviving/attempted so that concentrating all activity into one
+            // favourable window can no longer beat trading consistently across all of them.
+            int attemptedFolds = 0;
             for (int f = 0; f < k; f++)
             {
+                attemptedFolds++;
                 var foldReturns = new List<double>(512);
                 foreach (var cache in caches)
                 {
@@ -183,8 +191,9 @@ public class FadeShortGA
 
                 // Only folds that actually reached MinTradesPerFold trades take part in the
                 // aggregation. A thin fold returns the constant -1.0 sentinel from
-                // Canonical(), and mixing constants into mean − stdMult×std inverts the
-                // gradient (see FoldScoreHelper.AggregateFoldScores).
+                // Canonical(), and mixing constants into the aggregate would let a
+                // no-trade fold masquerade as a real (merely bad) one. It still counts
+                // toward attemptedFolds, so skipping folds costs coverage.
                 if (foldReturns.Count < MinTradesPerFold) continue;
 
                 double volWeight = AverageVolCoverageFold(caches, k, f, cfg);
@@ -192,7 +201,7 @@ public class FadeShortGA
                 foldCounts.Add(foldReturns.Count);
             }
 
-            return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D);
+            return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D, attemptedFolds);
         }
         finally
         {
@@ -335,6 +344,39 @@ public class FadeShortGA
             }
             population = nextGen;
         }
+
+        // ── Bayesian refinement: TPE polishes the GA's elite region ─────────────
+        // Mirrors DipLongGA. FadeShort was the only GA without this stage, so when the broken
+        // post-GA BO pass in TrainCommands was deleted it was left with no refinement at all.
+        // Critically, this evaluates the SAME function the GA selects on (FitnessFromCache over
+        // trainCaches with folds) and accepts against a value from that same function — which is
+        // exactly what the deleted outer pass failed to do: it optimised mean per-trade return
+        // and compared it against a held-out fold-aggregated score.
+        if (_verbose) Console.WriteLine("\n  BO refinement (60 iterations, TPE)...");
+        var boSeed = eliteIsland
+            .Select(g => (g.ToVector(), g.Fitness))
+            .ToList();
+
+        var boHistory = BayesianOptimizer.Refine(
+            seedObs:    boSeed,
+            bounds:     FadeShortGenotype.Bounds,
+            evaluate:   v => { var g = FadeShortGenotype.FromVector(v);
+                               g.Fitness = FitnessFromCache(g, trainCaches, useFolds: true, _cfg);
+                               return g.Fitness; },
+            iterations: 60,
+            rng:        _rng);
+
+        var boChampion = boHistory.OrderByDescending(h => h.Fitness).First();
+        var boGeno     = FadeShortGenotype.FromVector(boChampion.Params);
+        boGeno.Fitness = FitnessFromCache(boGeno, trainCaches, useFolds: true, _cfg);
+
+        if (boGeno.Fitness > eliteIsland.Last().Fitness)
+        {
+            eliteIsland[eliteIsland.Count - 1] = boGeno;
+            eliteIsland = eliteIsland.OrderByDescending(g => g.Fitness).ToList();
+            if (_verbose) Console.WriteLine($"  BO champion accepted: F={boGeno.Fitness:F3}");
+        }
+        else if (_verbose) Console.WriteLine($"  BO champion rejected (F={boGeno.Fitness:F3} <= elite floor {eliteIsland.Last().Fitness:F3})");
 
         // Report-only validation (not used for selection)
         if (_verbose) Console.WriteLine("\n=== Held-out validation (report-only, not used for selection) ===");

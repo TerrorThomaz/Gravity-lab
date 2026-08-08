@@ -78,6 +78,77 @@ static class OosBacktest
         return "base";
     }
 
+    // ── OOS position sizing: leading-slice Kelly (look-ahead guard) ────────────
+    //
+    // Simulator.ComputeConfidence returns a half-Kelly fraction that is used DIRECTLY as
+    // the fraction of equity per position — "derived from training statistics, applied to
+    // val trades" (Simulator.cs:19). CombinedBacktest.cs:290-303 honours that: conf comes
+    // from the screen/train window, and rides into a DISJOINT set of val trades.
+    //
+    // This command has no separate train window by design — OOS coins are run over their
+    // full history — so the split is made inside each coin's own trade series instead:
+    // the first SizingFraction of that coin's trades (chronologically) are used ONLY to
+    // derive conf and are then DISCARDED. Every number reported and every trade fed into
+    // the portfolio simulation comes from the remaining trades, so a position is never
+    // sized by the return it is about to book.
+    //
+    // The sizing slice is discarded even when the fallback conf is used, so "scored
+    // window" means the same thing (trailing 1 - SizingFraction of the coin's trades) for
+    // every coin regardless of which sizing path it took.
+    internal const double SizingFraction  = 0.30;
+    internal const int    MinSizingTrades = 5;     // ComputeConfidence returns 0 below this
+    internal const double FallbackConf    = 0.02;  // 2% of equity — fixed and conservative
+
+    internal static int SizingSliceCount(int totalTrades) =>
+        totalTrades <= 0 ? 0 : (int)Math.Floor(totalTrades * SizingFraction);
+
+    // Confidence from the leading slice ONLY. Deliberately never reads returns beyond
+    // sizingCount — that is the property OosSizingSplitTests pins.
+    // A slice too thin for ComputeConfidence falls back to the fixed FallbackConf (never
+    // to the in-sample value); usedFallback is surfaced so callers can flag it in output.
+    // A slice that is thick enough but shows no edge legitimately yields conf 0 (Kelly:
+    // no edge, no bet) — that is a decision made on past trades only, not a leak.
+    internal static double LeadingSliceConfidence(List<double> returns, out int sizingCount, out bool usedFallback)
+    {
+        sizingCount = SizingSliceCount(returns.Count);
+        if (sizingCount < MinSizingTrades) { usedFallback = true; return FallbackConf; }
+        usedFallback = false;
+        return Simulator.ComputeConfidence(returns.GetRange(0, sizingCount));
+    }
+
+    internal readonly record struct SizedSplit<T>(double Conf, int SizingCount, bool UsedFallback, List<T> Scored);
+
+    // Orders a coin's trades by entry time, derives conf from the leading slice, and hands
+    // back only the trades that may be scored.
+    internal static SizedSplit<T> SizeThenScore<T>(List<T> trades, Func<T, DateTime> timeOf, Func<T, double> returnOf)
+    {
+        var ordered = trades.OrderBy(timeOf).ToList();
+        var rets    = ordered.Select(returnOf).ToList();
+        double conf = LeadingSliceConfidence(rets, out int sizingCount, out bool usedFallback);
+        var scored  = ordered.GetRange(sizingCount, ordered.Count - sizingCount);
+        return new SizedSplit<T>(conf, sizingCount, usedFallback, scored);
+    }
+
+    // Sharpe/Sortino scale with sqrt(candleCount), so the scored window must be measured
+    // over its own span — charging it the full history's candle count would inflate both.
+    static int ScoredCandleCount(Candle[] h1, DateTime firstScoredTime)
+    {
+        int bars = 0;
+        for (int i = 0; i < h1.Length; i++) if (h1[i].Time >= firstScoredTime) bars++;
+        return Math.Max(bars, 1) * 12;
+    }
+
+    static void PrintCoinHeader(bool withGate) =>
+        Console.WriteLine($"{"Coin",-18} {"Kelly%",6}   {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Sizing",6}  {"Scored",6}  {"WR",5}  {"AvgRet%",7}{(withGate ? $"  {"Gated",6}" : "")}");
+
+    static void PrintCoinLine(string sym, double conf, bool usedFallback, double sh, double sort,
+                              double pf, int sizingN, int scoredN, double wr, double avg, int? gatedOut = null) =>
+        Console.WriteLine($"  {sym,-16} {conf,6:P1}{(usedFallback ? "*" : " ")}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {sizingN,6}  {scoredN,6}  {wr,5:P0}  {avg,+7:F2}%{(gatedOut.HasValue ? $"  -{gatedOut.Value,4}" : "")}");
+
+    static void PrintSizingFooter(int coins, int fallbacks, int sizingTrades, int scoredTrades) =>
+        Console.WriteLine($"  → {coins} coin(s): {sizingTrades} trades consumed for sizing, {scoredTrades} scored"
+                        + $"{(fallbacks > 0 ? $"  ·  {fallbacks} coin(s) marked * used the {FallbackConf:P1} fallback (sizing slice < {MinSizingTrades} trades)" : "")}");
+
     public static async Task RunOosBacktest(BybitRestClient client)
     {
         Console.WriteLine($"=== Gravity-gen2 | OOS BACKTEST ({Config.OosCoins.Length} never-seen coins · full history · all strategies, router-gated) ===\n");
@@ -174,6 +245,11 @@ static class OosBacktest
         var lowVolTrades    = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
         var highVolCoinRets = new Dictionary<string, List<double>>();
         var lowVolCoinRets  = new Dictionary<string, List<double>>();
+        // Sizing actually applied per coin (leading-slice Kelly). Reported instead of a
+        // Kelly recomputed on the scored returns, which would be the same in-sample stat
+        // this command is fixing.
+        var highVolCoinConf = new Dictionary<string, List<double>>();
+        var lowVolCoinConf  = new Dictionary<string, List<double>>();
         int highVolTotalVCC = 0;
         int lowVolTotalVCC  = 0;
 
@@ -195,6 +271,14 @@ static class OosBacktest
             }
         }
 
+        void RecordAppliedConf(string label, string sym, double conf)
+        {
+            var target = label == "highvol" ? highVolCoinConf : label == "lowvol" ? lowVolCoinConf : null;
+            if (target == null) return;
+            if (!target.ContainsKey(sym)) target[sym] = new List<double>();
+            target[sym].Add(conf);
+        }
+
         var swingCoinStats = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
         var gridCoinStats  = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
         var flCoinStats    = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
@@ -205,9 +289,12 @@ static class OosBacktest
 
         // ── SWING ─────────────────────────────────────────────────────────────────
         Console.WriteLine($"══ SWING (full OOS history, no seed screen) ═════════════════════════════════");
-        Console.WriteLine($"{"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
-        Console.WriteLine(new string('-', 82));
+        Console.WriteLine($"  Sizing: half-Kelly from each coin's leading {SizingFraction:P0} of trades; only the remaining");
+        Console.WriteLine($"  {1 - SizingFraction:P0} is scored. * = sizing slice < {MinSizingTrades} trades → fixed {FallbackConf:P1} fallback conf.");
+        PrintCoinHeader(withGate: false);
+        Console.WriteLine(new string('-', 96));
 
+        int fsCoins = 0, fsFallbacks = 0, fsSizingTrades = 0, fsScoredTrades = 0;
         foreach (var (sym, m15, h1) in oosFetched)
         {
             if (h1.Length < 300) { Console.WriteLine($"  {sym,-16}  skip (only {h1.Length} h1 bars)"); continue; }
@@ -219,33 +306,44 @@ static class OosBacktest
             var (coinFsG, fsVarLabel) = SelectVariantLabeled(fsVariants, m15);
             coinFsG ??= swingG;
             var trades = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1, m15);
-            var vRet   = trades.Select(t => t.Return).ToList();
-            if (vRet.Count < 5) { Console.WriteLine($"  {sym,-16}  skip ({vRet.Count} trades)"); continue; }
+            var split  = SizeThenScore(trades, t => t.Time, t => t.Return);
+            var scored = split.Scored;
+            var vRet   = scored.Select(t => t.Return).ToList();
+            if (vRet.Count < 5)
+            {
+                Console.WriteLine($"  {sym,-16}  skip ({trades.Count} trades → {split.SizingCount} sizing / {vRet.Count} scored)");
+                continue;
+            }
 
-            int    vCC  = h1.Length * 12;
+            int    vCC  = ScoredCandleCount(h1, scored[0].Time);
             totalVCC    = Math.Max(totalVCC, vCC);
-            double conf = Simulator.ComputeConfidence(vRet);
+            double conf = split.Conf;
             double sh   = Simulator.SharpeRatio(vRet, vCC);
             double sort = Simulator.SortinoRatio(vRet, vCC);
             double pf   = Simulator.ProfitFactor(vRet);
             double wr   = (double)vRet.Count(r => r > 0) / vRet.Count;
             double avg  = vRet.Average();
 
-            Console.WriteLine($"  {sym,-16} {conf,6:P1}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%");
+            PrintCoinLine(sym, conf, split.UsedFallback, sh, sort, pf, split.SizingCount, vRet.Count, wr, avg);
+            fsCoins++; fsSizingTrades += split.SizingCount; fsScoredTrades += vRet.Count;
+            if (split.UsedFallback) fsFallbacks++;
             swingCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
-            foreach (var (t, ret, _) in trades)
+            foreach (var (t, ret, _) in scored)
             {
                 swingTrades.Add((t, ret, conf));
                 allTrades.Add((t, ret, conf, "swing"));
                 RouteVolVariant(fsVarLabel, sym, t, ret, conf, "swing", vCC);
             }
+            RecordAppliedConf(fsVarLabel, sym, conf);
         }
+        PrintSizingFooter(fsCoins, fsFallbacks, fsSizingTrades, fsScoredTrades);
 
         // ── GRID ──────────────────────────────────────────────────────────────────
         Console.WriteLine($"\n══ GRID (full OOS history, router-gated) ════════════════════════════════════");
-        Console.WriteLine($"{"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
-        Console.WriteLine(new string('-', 82));
+        PrintCoinHeader(withGate: false);
+        Console.WriteLine(new string('-', 96));
 
+        int gdCoins = 0, gdFallbacks = 0, gdSizingTrades = 0, gdScoredTrades = 0;
         foreach (var (sym, m15Grid, h1) in oosFetched)
         {
             if (h1.Length < 300) continue;
@@ -260,34 +358,45 @@ static class OosBacktest
             var gated = session != null
                 ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList()
                 : raw;
-            var vRet  = gated.Select(t => t.Return).ToList();
-            if (vRet.Count < 5) { Console.WriteLine($"  {sym,-16}  skip ({vRet.Count} trades after gate)"); continue; }
+            var split  = SizeThenScore(gated, t => t.Time, t => t.Return);
+            var scored = split.Scored;
+            var vRet   = scored.Select(t => t.Return).ToList();
+            if (vRet.Count < 5)
+            {
+                Console.WriteLine($"  {sym,-16}  skip ({gated.Count} trades after gate → {split.SizingCount} sizing / {vRet.Count} scored)");
+                continue;
+            }
 
-            int    vCC  = h1.Length * 12;
-            double conf = Simulator.ComputeConfidence(vRet);
+            int    vCC  = ScoredCandleCount(h1, scored[0].Time);
+            double conf = split.Conf;
             double sh   = Simulator.SharpeRatio(vRet, vCC);
             double sort = Simulator.SortinoRatio(vRet, vCC);
             double pf   = Simulator.ProfitFactor(vRet);
             double wr   = (double)vRet.Count(r => r > 0) / vRet.Count;
             double avg  = vRet.Average();
 
-            Console.WriteLine($"  {sym,-16} {conf,6:P1}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%");
+            PrintCoinLine(sym, conf, split.UsedFallback, sh, sort, pf, split.SizingCount, vRet.Count, wr, avg);
+            gdCoins++; gdSizingTrades += split.SizingCount; gdScoredTrades += vRet.Count;
+            if (split.UsedFallback) gdFallbacks++;
             gridCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
-            foreach (var t in gated)
+            foreach (var t in scored)
             {
                 gridTrades.Add((t.Time, t.Return, conf));
                 allTrades.Add((t.Time, t.Return, conf, "grid"));
                 RouteVolVariant(gridVarLabel, sym, t.Time, t.Return, conf, "grid", vCC);
             }
+            RecordAppliedConf(gridVarLabel, sym, conf);
         }
+        PrintSizingFooter(gdCoins, gdFallbacks, gdSizingTrades, gdScoredTrades);
 
         // ── FADELONG ──────────────────────────────────────────────────────────────
         if (flG != null)
         {
             Console.WriteLine($"\n══ FADELONG (full OOS history, router-gated) ════════════════════════════════");
-            Console.WriteLine($"{"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}  {"Gated",6}");
-            Console.WriteLine(new string('-', 90));
+            PrintCoinHeader(withGate: true);
+            Console.WriteLine(new string('-', 104));
 
+            int flCoins = 0, flFallbacks = 0, flSizingTrades = 0, flScoredTrades = 0;
             foreach (var (sym, m15, h1) in oosFetched)
             {
                 if (h1.Length < 300 || m15.Length < 1200) continue;
@@ -302,37 +411,48 @@ static class OosBacktest
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList()
                     : raw;
-                var vRet  = gated.Select(t => t.Return).ToList();
+                var split  = SizeThenScore(gated, t => t.Time, t => t.Return);
+                var scored = split.Scored;
+                var vRet   = scored.Select(t => t.Return).ToList();
 
                 int gatedOut = raw.Count - gated.Count;
-                if (vRet.Count == 0) { Console.WriteLine($"  {sym,-16}  skip (0 trades after gate, {raw.Count} raw)"); continue; }
+                if (vRet.Count == 0)
+                {
+                    Console.WriteLine($"  {sym,-16}  skip ({gated.Count} trades after gate, {raw.Count} raw → {split.SizingCount} sizing / 0 scored)");
+                    continue;
+                }
 
-                int    vCC  = h1.Length * 12;
-                double conf = Simulator.ComputeConfidence(vRet);
+                int    vCC  = ScoredCandleCount(h1, scored[0].Time);
+                double conf = split.Conf;
                 double sh   = Simulator.SharpeRatio(vRet, vCC);
                 double sort = Simulator.SortinoRatio(vRet, vCC);
                 double pf   = Simulator.ProfitFactor(vRet);
                 double wr   = (double)vRet.Count(r => r > 0) / vRet.Count;
                 double avg  = vRet.Average();
 
-                Console.WriteLine($"  {sym,-16} {conf,6:P1}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%  -{gatedOut,4}");
+                PrintCoinLine(sym, conf, split.UsedFallback, sh, sort, pf, split.SizingCount, vRet.Count, wr, avg, gatedOut);
+                flCoins++; flSizingTrades += split.SizingCount; flScoredTrades += vRet.Count;
+                if (split.UsedFallback) flFallbacks++;
                 flCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
-                foreach (var t in gated)
+                foreach (var t in scored)
                 {
                     flTrades.Add((t.Time, t.Return, conf));
                     allTrades.Add((t.Time, t.Return, conf, "fadelong"));
                     RouteVolVariant(flVarLabel, sym, t.Time, t.Return, conf, "fadelong", vCC);
                 }
+                RecordAppliedConf(flVarLabel, sym, conf);
             }
+            PrintSizingFooter(flCoins, flFallbacks, flSizingTrades, flScoredTrades);
         }
 
         // ── DIPLONG ───────────────────────────────────────────────────────────────
         if (dlG != null)
         {
             Console.WriteLine($"\n══ DIPLONG (full OOS history, router-gated) ═════════════════════════════════");
-            Console.WriteLine($"{"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}  {"Gated",6}");
-            Console.WriteLine(new string('-', 90));
+            PrintCoinHeader(withGate: true);
+            Console.WriteLine(new string('-', 104));
 
+            int dlCoins = 0, dlFallbacks = 0, dlSizingTrades = 0, dlScoredTrades = 0;
             foreach (var (sym, m15, h1) in oosFetched)
             {
                 if (h1.Length < 300 || m15.Length < 1200) continue;
@@ -347,37 +467,48 @@ static class OosBacktest
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
-                var vRet  = gated.Select(t => t.Return).ToList();
+                var split  = SizeThenScore(gated, t => t.Time, t => t.Return);
+                var scored = split.Scored;
+                var vRet   = scored.Select(t => t.Return).ToList();
 
                 int gatedOut = raw.Count - gated.Count;
-                if (vRet.Count == 0) { Console.WriteLine($"  {sym,-16}  skip (0 trades after gate, {raw.Count} raw)"); continue; }
+                if (vRet.Count == 0)
+                {
+                    Console.WriteLine($"  {sym,-16}  skip ({gated.Count} trades after gate, {raw.Count} raw → {split.SizingCount} sizing / 0 scored)");
+                    continue;
+                }
 
-                int    vCC  = h1.Length * 12;
-                double conf = Simulator.ComputeConfidence(vRet);
+                int    vCC  = ScoredCandleCount(h1, scored[0].Time);
+                double conf = split.Conf;
                 double sh   = Simulator.SharpeRatio(vRet, vCC);
                 double sort = Simulator.SortinoRatio(vRet, vCC);
                 double pf   = Simulator.ProfitFactor(vRet);
                 double wr   = (double)vRet.Count(r => r > 0) / vRet.Count;
                 double avg  = vRet.Average();
 
-                Console.WriteLine($"  {sym,-16} {conf,6:P1}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%  -{gatedOut,4}");
+                PrintCoinLine(sym, conf, split.UsedFallback, sh, sort, pf, split.SizingCount, vRet.Count, wr, avg, gatedOut);
+                dlCoins++; dlSizingTrades += split.SizingCount; dlScoredTrades += vRet.Count;
+                if (split.UsedFallback) dlFallbacks++;
                 dlCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
-                foreach (var t in gated)
+                foreach (var t in scored)
                 {
                     dlTrades.Add((t.Time, t.Return, conf));
                     allTrades.Add((t.Time, t.Return, conf, "diplong"));
                     RouteVolVariant(dlVarLabel, sym, t.Time, t.Return, conf, "diplong", vCC);
                 }
+                RecordAppliedConf(dlVarLabel, sym, conf);
             }
+            PrintSizingFooter(dlCoins, dlFallbacks, dlSizingTrades, dlScoredTrades);
         }
 
         // ── SWINGLONG ─────────────────────────────────────────────────────────────────
         if (slG != null)
         {
             Console.WriteLine($"\n══ SWINGLONG (full OOS history, router-gated) ═══════════════════════════════");
-            Console.WriteLine($"{"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}  {"Gated",6}");
-            Console.WriteLine(new string('-', 90));
+            PrintCoinHeader(withGate: true);
+            Console.WriteLine(new string('-', 104));
 
+            int slCoins = 0, slFallbacks = 0, slSizingTrades = 0, slScoredTrades = 0;
             foreach (var (sym, m15, h1) in oosFetched)
             {
                 if (h1.Length < 300 || m15.Length < 1200) continue;
@@ -392,37 +523,48 @@ static class OosBacktest
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
-                var vRet  = gated.Select(t => t.Return).ToList();
+                var split  = SizeThenScore(gated, t => t.Time, t => t.Return);
+                var scored = split.Scored;
+                var vRet   = scored.Select(t => t.Return).ToList();
 
                 int gatedOut = raw.Count - gated.Count;
-                if (vRet.Count == 0) { Console.WriteLine($"  {sym,-16}  skip (0 trades after gate, {raw.Count} raw)"); continue; }
+                if (vRet.Count == 0)
+                {
+                    Console.WriteLine($"  {sym,-16}  skip ({gated.Count} trades after gate, {raw.Count} raw → {split.SizingCount} sizing / 0 scored)");
+                    continue;
+                }
 
-                int    vCC  = h1.Length * 12;
-                double conf = Simulator.ComputeConfidence(vRet);
+                int    vCC  = ScoredCandleCount(h1, scored[0].Time);
+                double conf = split.Conf;
                 double sh   = Simulator.SharpeRatio(vRet, vCC);
                 double sort = Simulator.SortinoRatio(vRet, vCC);
                 double pf   = Simulator.ProfitFactor(vRet);
                 double wr   = (double)vRet.Count(r => r > 0) / vRet.Count;
                 double avg  = vRet.Average();
 
-                Console.WriteLine($"  {sym,-16} {conf,6:P1}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%  -{gatedOut,4}");
+                PrintCoinLine(sym, conf, split.UsedFallback, sh, sort, pf, split.SizingCount, vRet.Count, wr, avg, gatedOut);
+                slCoins++; slSizingTrades += split.SizingCount; slScoredTrades += vRet.Count;
+                if (split.UsedFallback) slFallbacks++;
                 slCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
-                foreach (var t in gated)
+                foreach (var t in scored)
                 {
                     slTrades.Add((t.Time, t.Return, conf));
                     allTrades.Add((t.Time, t.Return, conf, "swing_long"));
                     RouteVolVariant(slVarLabel, sym, t.Time, t.Return, conf, "swing_long", vCC);
                 }
+                RecordAppliedConf(slVarLabel, sym, conf);
             }
+            PrintSizingFooter(slCoins, slFallbacks, slSizingTrades, slScoredTrades);
         }
 
         // ── RIPSHORT ──────────────────────────────────────────────────────────────
         if (rsG != null)
         {
             Console.WriteLine($"\n══ RIPSHORT (full OOS history, router-gated) ════════════════════════════════");
-            Console.WriteLine($"{"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}  {"Gated",6}");
-            Console.WriteLine(new string('-', 90));
+            PrintCoinHeader(withGate: true);
+            Console.WriteLine(new string('-', 104));
 
+            int rsCoins = 0, rsFallbacks = 0, rsSizingTrades = 0, rsScoredTrades = 0;
             foreach (var (sym, m15, h1) in oosFetched)
             {
                 if (h1.Length < 300 || m15.Length < 1200) continue;
@@ -437,28 +579,38 @@ static class OosBacktest
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList()
                     : raw;
-                var vRet  = gated.Select(t => t.Return).ToList();
+                var split  = SizeThenScore(gated, t => t.Time, t => t.Return);
+                var scored = split.Scored;
+                var vRet   = scored.Select(t => t.Return).ToList();
 
                 int gatedOut = raw.Count - gated.Count;
-                if (vRet.Count == 0) { Console.WriteLine($"  {sym,-16}  skip (0 trades after gate, {raw.Count} raw)"); continue; }
+                if (vRet.Count == 0)
+                {
+                    Console.WriteLine($"  {sym,-16}  skip ({gated.Count} trades after gate, {raw.Count} raw → {split.SizingCount} sizing / 0 scored)");
+                    continue;
+                }
 
-                int    vCC  = h1.Length * 12;
-                double conf = Simulator.ComputeConfidence(vRet);
+                int    vCC  = ScoredCandleCount(h1, scored[0].Time);
+                double conf = split.Conf;
                 double sh   = Simulator.SharpeRatio(vRet, vCC);
                 double sort = Simulator.SortinoRatio(vRet, vCC);
                 double pf   = Simulator.ProfitFactor(vRet);
                 double wr   = (double)vRet.Count(r => r > 0) / vRet.Count;
                 double avg  = vRet.Average();
 
-                Console.WriteLine($"  {sym,-16} {conf,6:P1}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%  -{gatedOut,4}");
+                PrintCoinLine(sym, conf, split.UsedFallback, sh, sort, pf, split.SizingCount, vRet.Count, wr, avg, gatedOut);
+                rsCoins++; rsSizingTrades += split.SizingCount; rsScoredTrades += vRet.Count;
+                if (split.UsedFallback) rsFallbacks++;
                 rsCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
-                foreach (var t in gated)
+                foreach (var t in scored)
                 {
                     rsTrades.Add((t.Time, t.Return, conf));
                     allTrades.Add((t.Time, t.Return, conf, "ripshort"));
                     RouteVolVariant(rsVarLabel, sym, t.Time, t.Return, conf, "ripshort", vCC);
                 }
+                RecordAppliedConf(rsVarLabel, sym, conf);
             }
+            PrintSizingFooter(rsCoins, rsFallbacks, rsSizingTrades, rsScoredTrades);
         }
 
         if (allTrades.Count == 0) { Console.WriteLine("\nNo OOS trades generated."); return; }
@@ -506,6 +658,8 @@ static class OosBacktest
         Console.WriteLine($"\n{new string('═', 70)}");
         Console.WriteLine($"  OOS COMBINED SUMMARY  (full history · {allRet.Count} trades · {Config.OosCoins.Length} coins)");
         Console.WriteLine($"{new string('═', 70)}");
+        Console.WriteLine($"  Scored window only — each coin's leading {SizingFraction:P0} of trades was consumed to");
+        Console.WriteLine($"  derive its position size and is excluded from every figure below.");
         Console.WriteLine($"  FadeShort: {swingRet.Count,4} trades  PF={Simulator.ProfitFactor(swingRet):F2}  {Pct(swingRet)}");
         Console.WriteLine($"  Grid:      {gridRet.Count,4} trades  PF={Simulator.ProfitFactor(gridRet):F2}  {Pct(gridRet)}");
         if (flRet.Count > 0)
@@ -567,7 +721,7 @@ static class OosBacktest
         }
 
         Console.WriteLine($"\n  Per-coin breakdown (FadeShort · sorted by Sharpe):");
-        Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+        Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Scored",6}  {"WR",5}  {"AvgRet%",7}");
         Console.WriteLine($"  {new string('-', 75)}");
         foreach (var r in swingCoinStats.OrderByDescending(c => c.Sharpe))
             Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
@@ -575,7 +729,7 @@ static class OosBacktest
         if (gridCoinStats.Count > 0)
         {
             Console.WriteLine($"\n  Per-coin breakdown (Grid · sorted by Sharpe):");
-            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Scored",6}  {"WR",5}  {"AvgRet%",7}");
             Console.WriteLine($"  {new string('-', 75)}");
             foreach (var r in gridCoinStats.OrderByDescending(c => c.Sharpe))
                 Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
@@ -584,7 +738,7 @@ static class OosBacktest
         if (flCoinStats.Count > 0)
         {
             Console.WriteLine($"\n  Per-coin breakdown (FadeLong · sorted by Sharpe):");
-            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Scored",6}  {"WR",5}  {"AvgRet%",7}");
             Console.WriteLine($"  {new string('-', 75)}");
             foreach (var r in flCoinStats.OrderByDescending(c => c.Sharpe))
                 Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
@@ -593,7 +747,7 @@ static class OosBacktest
         if (dlCoinStats.Count > 0)
         {
             Console.WriteLine($"\n  Per-coin breakdown (DipLong · sorted by Sharpe):");
-            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Scored",6}  {"WR",5}  {"AvgRet%",7}");
             Console.WriteLine($"  {new string('-', 75)}");
             foreach (var r in dlCoinStats.OrderByDescending(c => c.Sharpe))
                 Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
@@ -602,7 +756,7 @@ static class OosBacktest
         if (slCoinStats.Count > 0)
         {
             Console.WriteLine($"\n  Per-coin breakdown (SwingLong · sorted by Sharpe):");
-            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Scored",6}  {"WR",5}  {"AvgRet%",7}");
             Console.WriteLine($"  {new string('-', 75)}");
             foreach (var r in slCoinStats.OrderByDescending(c => c.Sharpe))
                 Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
@@ -611,7 +765,7 @@ static class OosBacktest
         if (rsCoinStats.Count > 0)
         {
             Console.WriteLine($"\n  Per-coin breakdown (RipShort · sorted by Sharpe):");
-            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Scored",6}  {"WR",5}  {"AvgRet%",7}");
             Console.WriteLine($"  {new string('-', 75)}");
             foreach (var r in rsCoinStats.OrderByDescending(c => c.Sharpe))
                 Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
@@ -633,7 +787,10 @@ static class OosBacktest
                     double pf   = Simulator.ProfitFactor(rets);
                     double wr   = (double)rets.Count(r => r > 0) / rets.Count;
                     double avg  = rets.Average();
-                    double kelly = Simulator.ComputeConfidence(rets);
+                    // The sizing that was actually applied (leading-slice Kelly), NOT a Kelly
+                    // recomputed on these same scored returns — that would be the in-sample
+                    // figure this command exists to avoid.
+                    double kelly = highVolCoinConf.TryGetValue(kv.Key, out var cs) && cs.Count > 0 ? cs.Average() : 0;
                     return (Coin: kv.Key, Sharpe: sh, Sortino: sort, PF: pf, Trades: rets.Count, WR: wr, AvgRet: avg, Kelly: kelly);
                 })
                 .ToList();
@@ -654,7 +811,7 @@ static class OosBacktest
             Console.WriteLine($"  Portfolio:    €{hvPort.EndBalance:F2}  ({(hvPort.EndBalance - 100) / 100 * 100:+0.0;-0.0}%)  DD={hvPort.MaxDrawdownPct:F1}%");
             Console.WriteLine();
             Console.WriteLine($"  Per-coin (sorted by Sharpe):");
-            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Scored",6}  {"WR",5}  {"AvgRet%",7}");
             Console.WriteLine($"  {new string('-', 75)}");
             foreach (var r in hvCoinStats.OrderByDescending(c => c.Sharpe))
                 Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
@@ -673,7 +830,8 @@ static class OosBacktest
                     double pf   = Simulator.ProfitFactor(rets);
                     double wr   = (double)rets.Count(r => r > 0) / rets.Count;
                     double avg  = rets.Average();
-                    double kelly = Simulator.ComputeConfidence(rets);
+                    // Applied sizing, not an in-sample Kelly — see the high-vol block above.
+                    double kelly = lowVolCoinConf.TryGetValue(kv.Key, out var cs) && cs.Count > 0 ? cs.Average() : 0;
                     return (Coin: kv.Key, Sharpe: sh, Sortino: sort, PF: pf, Trades: rets.Count, WR: wr, AvgRet: avg, Kelly: kelly);
                 })
                 .ToList();
@@ -694,7 +852,7 @@ static class OosBacktest
             Console.WriteLine($"  Portfolio:    €{lvPort.EndBalance:F2}  ({(lvPort.EndBalance - 100) / 100 * 100:+0.0;-0.0}%)  DD={lvPort.MaxDrawdownPct:F1}%");
             Console.WriteLine();
             Console.WriteLine($"  Per-coin (sorted by Sharpe):");
-            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Trades",6}  {"WR",5}  {"AvgRet%",7}");
+            Console.WriteLine($"  {"Coin",-18} {"Kelly%",6}  {"Sharpe",7}  {"Sortino",7}  {"PF",5}  {"Scored",6}  {"WR",5}  {"AvgRet%",7}");
             Console.WriteLine($"  {new string('-', 75)}");
             foreach (var r in lvCoinStats.OrderByDescending(c => c.Sharpe))
                 Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
@@ -856,6 +1014,8 @@ static class OosBacktest
         var btFetched = fetchedAll.Where(f => Config.BacktestCoins.Contains(f.sym)).ToArray();
         int btSwing = 0, btGrid = 0, btFL = 0, btDL = 0, btRS = 0;
         int btSwingT = 0, btGridT = 0, btFLT = 0, btDLT = 0, btRST = 0;
+        int btFLSize = 0, btDLSize = 0, btRSSize = 0;
+        int btFLFb = 0, btDLFb = 0, btRSFb = 0;
 
         Console.WriteLine("── BacktestCoins (val 20%, seed-screened) ──────────────────────────────────");
         foreach (var (sym, m15, h1) in btFetched)
@@ -904,17 +1064,19 @@ static class OosBacktest
                 }
             }
 
-            // FadeLong
+            // FadeLong — no train-window screen exists for the regime-gated strategies here,
+            // so size from the leading slice of the coin's own val trades and score the rest.
             if (flG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
                 var coinFlGAC = SelectVariant(flVariantsAC, m15) ?? flG;
                 var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlGAC, h1Val, m15Val);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList() : raw;
-                if (gated.Count > 0)
+                var split = SizeThenScore(gated, t => t.Time, t => t.Return);
+                if (split.Scored.Count > 0)
                 {
-                    double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
-                    btFL++; btFLT += gated.Count;
-                    foreach (var t in gated) allTrades.Add((t.Time, t.Return, conf, "fadelong"));
+                    btFL++; btFLT += split.Scored.Count; btFLSize += split.SizingCount;
+                    if (split.UsedFallback) btFLFb++;
+                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "fadelong"));
                 }
             }
 
@@ -924,11 +1086,12 @@ static class OosBacktest
                 var coinDlGAC = SelectVariant(dlVariantsAC, m15) ?? dlG;
                 var raw   = DipLongSimulator.GetDipLongReturns(coinDlGAC, h1Val, m15Val);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
-                if (gated.Count > 0)
+                var split = SizeThenScore(gated, t => t.Time, t => t.Return);
+                if (split.Scored.Count > 0)
                 {
-                    double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
-                    btDL++; btDLT += gated.Count;
-                    foreach (var t in gated) allTrades.Add((t.Time, t.Return, conf, "diplong"));
+                    btDL++; btDLT += split.Scored.Count; btDLSize += split.SizingCount;
+                    if (split.UsedFallback) btDLFb++;
+                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "diplong"));
                 }
             }
 
@@ -938,27 +1101,31 @@ static class OosBacktest
                 var coinRsGAC = SelectVariant(rsVariantsAC, m15) ?? rsG;
                 var raw   = RipShortSimulator.GetRipShortReturns(coinRsGAC, h1Val, m15Val);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList() : raw;
-                if (gated.Count > 0)
+                var split = SizeThenScore(gated, t => t.Time, t => t.Return);
+                if (split.Scored.Count > 0)
                 {
-                    double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
-                    btRS++; btRST += gated.Count;
-                    foreach (var t in gated) allTrades.Add((t.Time, t.Return, conf, "ripshort"));
+                    btRS++; btRST += split.Scored.Count; btRSSize += split.SizingCount;
+                    if (split.UsedFallback) btRSFb++;
+                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "ripshort"));
                 }
             }
         }
-        Console.WriteLine($"  FadeShort: {btSwing,3} coins → {btSwingT,4} trades");
-        Console.WriteLine($"  Grid:      {btGrid,3} coins → {btGridT,4} trades");
-        if (flG != null) Console.WriteLine($"  FadeLong:  {btFL,3} coins → {btFLT,4} trades");
-        if (dlG != null) Console.WriteLine($"  DipLong:   {btDL,3} coins → {btDLT,4} trades");
-        if (rsG != null) Console.WriteLine($"  RipShort:  {btRS,3} coins → {btRST,4} trades");
+        Console.WriteLine($"  FadeShort: {btSwing,3} coins → {btSwingT,4} trades  (sized from train window)");
+        Console.WriteLine($"  Grid:      {btGrid,3} coins → {btGridT,4} trades  (sized from train window)");
+        if (flG != null) Console.WriteLine($"  FadeLong:  {btFL,3} coins → {btFLT,4} scored, {btFLSize,4} used for sizing{(btFLFb > 0 ? $"  ({btFLFb} coin(s) on {FallbackConf:P1} fallback)" : "")}");
+        if (dlG != null) Console.WriteLine($"  DipLong:   {btDL,3} coins → {btDLT,4} scored, {btDLSize,4} used for sizing{(btDLFb > 0 ? $"  ({btDLFb} coin(s) on {FallbackConf:P1} fallback)" : "")}");
+        if (rsG != null) Console.WriteLine($"  RipShort:  {btRS,3} coins → {btRST,4} scored, {btRSSize,4} used for sizing{(btRSFb > 0 ? $"  ({btRSFb} coin(s) on {FallbackConf:P1} fallback)" : "")}");
 
         // ── OosCoins — full history, no seed screen ───────────────────────────
         const double oosMinVol2 = 0.05;
         var oosFetched2 = fetchedAll.Where(f => Config.OosCoins.Contains(f.sym)).ToArray();
         int oSwing = 0, oGrid = 0, oFL = 0, oDL = 0, oRS = 0;
         int oSwingT = 0, oGridT = 0, oFLT = 0, oDLT = 0, oRST = 0;
+        int oSwingS = 0, oGridS = 0, oFLS = 0, oDLS = 0, oRSS = 0;   // trades consumed for sizing
+        int oSwingFb = 0, oGridFb = 0, oFLFb = 0, oDLFb = 0, oRSFb = 0;
 
         Console.WriteLine($"\n── OosCoins (full history, vol≥${oosMinVol2:F2}M, no screen) ─────────────────────");
+        Console.WriteLine($"   Sizing from each coin's leading {SizingFraction:P0} of trades; remainder scored.");
         foreach (var (sym, m15, h1) in oosFetched2)
         {
             if (h1.Length < 300) continue;
@@ -970,11 +1137,12 @@ static class OosBacktest
             {
                 var coinFsGOos = SelectVariant(fsVariantsAC, m15) ?? swingG;
                 var trades = FadeShortSimulator.GetFadeShortReturns(coinFsGOos, h1, m15);
-                if (trades.Count >= 5)
+                var split  = SizeThenScore(trades, t => t.Time, t => t.Return);
+                if (split.Scored.Count >= 5)
                 {
-                    double conf = Simulator.ComputeConfidence(trades.Select(t => t.Return).ToList());
-                    oSwing++; oSwingT += trades.Count;
-                    foreach (var (t, ret, _) in trades) allTrades.Add((t, ret, conf, "swing"));
+                    oSwing++; oSwingT += split.Scored.Count; oSwingS += split.SizingCount;
+                    if (split.UsedFallback) oSwingFb++;
+                    foreach (var (t, ret, _) in split.Scored) allTrades.Add((t, ret, split.Conf, "swing"));
                 }
             }
 
@@ -983,11 +1151,12 @@ static class OosBacktest
                 var coinGridGOos = SelectVariant(gridVariantsAC, m15) ?? gridG;
                 var raw   = GridSimulator.GetGridReturns(coinGridGOos, h1);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList() : raw;
-                if (gated.Count >= 5)
+                var split = SizeThenScore(gated, t => t.Time, t => t.Return);
+                if (split.Scored.Count >= 5)
                 {
-                    double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
-                    oGrid++; oGridT += gated.Count;
-                    foreach (var t in gated) allTrades.Add((t.Time, t.Return, conf, "grid"));
+                    oGrid++; oGridT += split.Scored.Count; oGridS += split.SizingCount;
+                    if (split.UsedFallback) oGridFb++;
+                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "grid"));
                 }
             }
 
@@ -997,11 +1166,12 @@ static class OosBacktest
                 var coinFlGOos = SelectVariant(flVariantsAC, m15) ?? flG;
                 var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlGOos, h1, m15);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList() : raw;
-                if (gated.Count > 0)
+                var split = SizeThenScore(gated, t => t.Time, t => t.Return);
+                if (split.Scored.Count > 0)
                 {
-                    double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
-                    oFL++; oFLT += gated.Count;
-                    foreach (var t in gated) allTrades.Add((t.Time, t.Return, conf, "fadelong"));
+                    oFL++; oFLT += split.Scored.Count; oFLS += split.SizingCount;
+                    if (split.UsedFallback) oFLFb++;
+                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "fadelong"));
                 }
             }
 
@@ -1011,11 +1181,12 @@ static class OosBacktest
                 var coinDlGOos = SelectVariant(dlVariantsAC, m15) ?? dlG;
                 var raw   = DipLongSimulator.GetDipLongReturns(coinDlGOos, h1, m15);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
-                if (gated.Count > 0)
+                var split = SizeThenScore(gated, t => t.Time, t => t.Return);
+                if (split.Scored.Count > 0)
                 {
-                    double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
-                    oDL++; oDLT += gated.Count;
-                    foreach (var t in gated) allTrades.Add((t.Time, t.Return, conf, "diplong"));
+                    oDL++; oDLT += split.Scored.Count; oDLS += split.SizingCount;
+                    if (split.UsedFallback) oDLFb++;
+                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "diplong"));
                 }
             }
 
@@ -1025,19 +1196,21 @@ static class OosBacktest
                 var coinRsGOos = SelectVariant(rsVariantsAC, m15) ?? rsG;
                 var raw   = RipShortSimulator.GetRipShortReturns(coinRsGOos, h1, m15);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList() : raw;
-                if (gated.Count > 0)
+                var split = SizeThenScore(gated, t => t.Time, t => t.Return);
+                if (split.Scored.Count > 0)
                 {
-                    double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
-                    oRS++; oRST += gated.Count;
-                    foreach (var t in gated) allTrades.Add((t.Time, t.Return, conf, "ripshort"));
+                    oRS++; oRST += split.Scored.Count; oRSS += split.SizingCount;
+                    if (split.UsedFallback) oRSFb++;
+                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "ripshort"));
                 }
             }
         }
-        Console.WriteLine($"  FadeShort: {oSwing,3} coins → {oSwingT,4} trades");
-        Console.WriteLine($"  Grid:      {oGrid,3} coins → {oGridT,4} trades");
-        if (flG != null) Console.WriteLine($"  FadeLong:  {oFL,3} coins → {oFLT,4} trades");
-        if (dlG != null) Console.WriteLine($"  DipLong:   {oDL,3} coins → {oDLT,4} trades");
-        if (rsG != null) Console.WriteLine($"  RipShort:  {oRS,3} coins → {oRST,4} trades");
+        string Fb(int n) => n > 0 ? $"  ({n} coin(s) on {FallbackConf:P1} fallback)" : "";
+        Console.WriteLine($"  FadeShort: {oSwing,3} coins → {oSwingT,4} scored, {oSwingS,4} used for sizing{Fb(oSwingFb)}");
+        Console.WriteLine($"  Grid:      {oGrid,3} coins → {oGridT,4} scored, {oGridS,4} used for sizing{Fb(oGridFb)}");
+        if (flG != null) Console.WriteLine($"  FadeLong:  {oFL,3} coins → {oFLT,4} scored, {oFLS,4} used for sizing{Fb(oFLFb)}");
+        if (dlG != null) Console.WriteLine($"  DipLong:   {oDL,3} coins → {oDLT,4} scored, {oDLS,4} used for sizing{Fb(oDLFb)}");
+        if (rsG != null) Console.WriteLine($"  RipShort:  {oRS,3} coins → {oRST,4} scored, {oRSS,4} used for sizing{Fb(oRSFb)}");
 
         if (allTrades.Count == 0) { Console.WriteLine("\nNo trades generated."); return; }
         allTrades.Sort((a, b) => a.Time.CompareTo(b.Time));

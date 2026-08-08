@@ -345,7 +345,9 @@ public static class Simulator
         double maxTotalExposurePct = 0.30,
         double startBalance        = 100.0,
         double drawdownBrakeAt     = 0.15,
-        double kellyMultiplier     = 1.0)
+        double kellyMultiplier     = 1.0,
+        double maxPositionFrac     = 0.15,  // forwarded, not defaulted away — see below
+        double slippageBps         = 0.0)   // per-trade slippage in basis points (e.g. 5 = 0.05%)
     {
         // Fold riskCap into conf upfront: effectiveFrac = min(conf × km, riskCap)
         var adapted = trades
@@ -356,7 +358,13 @@ public static class Simulator
                 return (t.EntryTime, t.Return, eff, t.HoldDuration);
             })
             .ToList();
-        return SimulatePortfolioExposureCapped(adapted, maxTotalExposurePct, startBalance, drawdownBrakeAt, kellyMultiplier: 1.0);
+        // kellyMultiplier is already folded into `eff` above, so it must be 1.0 here or it
+        // would be applied twice. maxPositionFrac and slippageBps are forwarded explicitly:
+        // omitting them silently substituted this overload's callers with the inner
+        // overload's defaults, dropping slippage entirely.
+        return SimulatePortfolioExposureCapped(
+            adapted, maxTotalExposurePct, startBalance, drawdownBrakeAt,
+            kellyMultiplier: 1.0, maxPositionFrac: maxPositionFrac, slippageBps: slippageBps);
     }
 
     // Time-normalised Sharpe. candleCount = number of 5m-equivalent candles in the window;

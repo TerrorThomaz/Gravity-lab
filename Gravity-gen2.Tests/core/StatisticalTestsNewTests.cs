@@ -359,8 +359,14 @@ public class CVaRPenaltyTests
     {
         Assert.Equal(1.0, FoldScoreHelper.CVaRPenalty(WithTailTrades(-50.0), new FitnessConfig(CVaRW: 0.0)), 6);
         Assert.Equal(1.0, FoldScoreHelper.CVaRPenalty(WithTailTrades(-50.0, count: 10), new FitnessConfig()), 6);
-        // Just under the tail-sample gate the term is neutral; at the gate it bites.
+        // The gate is a RAMP, not a step. It used to switch at MinTailSampleSize, which paid the
+        // GA to sit one trade under it: deleting a winning trade at n=100 raised the fold score
+        // by 35.8%. Below TailRampLo the 1-in-20 tail bucket holds a single observation and the
+        // term is fully neutral; at TailRampHi the bucket holds 5 and the term is fully on.
         Assert.Equal(1.0, FoldScoreHelper.CVaRPenalty(
+            WithTailTrades(-50.0, count: FoldScoreHelper.TailRampLo), new FitnessConfig()), 6);
+        // One trade under the old cliff: now almost fully on, not neutral.
+        Assert.Equal(0.705, FoldScoreHelper.CVaRPenalty(
             WithTailTrades(-50.0, count: FoldScoreHelper.MinTailSampleSize - 1), new FitnessConfig()), 6);
         Assert.True(FoldScoreHelper.CVaRPenalty(
             WithTailTrades(-50.0, count: FoldScoreHelper.MinTailSampleSize), new FitnessConfig()) < 1.0);

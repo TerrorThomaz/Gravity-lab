@@ -73,7 +73,8 @@ public class AccumulationGridGA
         var foldScores = new List<double>();
         var foldCounts = new List<int>();
         // Folds ATTEMPTED, including the thin ones skipped below — the aggregator scales
-        // by surviving/attempted so that concentrating all activity into one favourable
+        // Every attempted fold is scored -- a thin one enters at ThinFoldScore -- so that
+        // concentrating all activity into one favourable
         // market window can no longer beat trading consistently across all of them.
         int attemptedFolds = 0;
         for (int f = 0; f < folds; f++)

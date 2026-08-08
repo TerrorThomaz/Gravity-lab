@@ -65,7 +65,7 @@ public static class FoldScoreHelper
         double avgWin  = wins   > 0 ? grossWins / wins   : 0;
         double avgLoss = losses > 0 ? grossLoss / losses : avgWin;
         double rr      = avgLoss > 1e-10 ? avgWin / avgLoss : (avgWin > 0 ? 5.0 : 1.0);
-        double rrMult  = rr < 2.5 ? (rr - 1.0) / 1.5 : 1.0 + (rr - 2.5) * 0.3;
+        double rrMult  = RrMultiplier(rr);
         // QualityW scales the multiplier's DEVIATION FROM 1.0, written in the lerp form
         // `raw*w + (1-w)` rather than `1 + (raw-1)*w` so that w == 1.0 collapses to
         // `raw*1.0 + 0.0` — exactly `raw`, with no rounding drift at any magnitude.
@@ -80,17 +80,18 @@ public static class FoldScoreHelper
         // At QualityW = 1.0 neither clamp changes anything: Sqrt is never negative, so
         // Clamp(raw, 0, 2.5) == Min(raw, 2.5), the original expression.
         //
-        // NaN GUARD: rrMult goes NEGATIVE for every fold with rr < 1.0, and pfMult is 0 at
-        // pf == 1.0 exactly. rr < 1.0 is not exotic — pf >= 1.0 (already checked above)
-        // only requires wins/losses > 1/rr, so ANY strategy that wins often and small
-        // lands there, and the grid family lives there structurally. Sqrt of a negative
-        // product is NaN, which then propagates through the entire fitness and makes the
-        // GA's sort order undefined (NaN compares false against everything). Both ramps
-        // are floored at 0 first: "risk/reward at or below 1" means no quality edge, i.e.
-        // quality 0 — not an undefined number. Note the floor is a FLAT region, so a
-        // strategy that operates below rr = 1.0 should switch this term off via QualityW
-        // rather than train against a constant (see FoldScoreHelper.GridShape).
-        double qualityRaw  = Math.Sqrt(Math.Max(0.0, pfMult) * Math.Max(0.0, rrMult));
+        // The rr term is RrMultiplier — strictly positive and strictly increasing on
+        // (0, inf) — precisely so the sqrt below can never see a negative argument and can
+        // never be pinned at zero. See RrMultiplier's header for why the old linear ramp
+        // `(rr - 1)/1.5` floored at 0 was a defect rather than a guard.
+        //
+        // pfMult is >= 0 over the whole reachable domain (pf >= 1.0 is checked above), so
+        // the Math.Max is defensive only. The IsNaN screen keeps the "NaN is impossible"
+        // contract total: a NaN return value in the input distribution would otherwise
+        // survive Math.Max (Math.Max(0, NaN) == NaN) and make the GA's sort order
+        // undefined, since NaN compares false against everything.
+        double pfTerm      = double.IsNaN(pfMult) ? 0.0 : Math.Max(0.0, pfMult);
+        double qualityRaw  = Math.Sqrt(pfTerm * rrMult);
         double qualityMult = Math.Clamp(qualityRaw * qualityW + (1.0 - qualityW), 0.0, 2.5);
 
         // DdPenalty scales drawdown sensitivity. With ddW >= 0, ddDiv >= 1.0 always,
@@ -146,6 +147,67 @@ public static class FoldScoreHelper
         return score;
     }
 
+    // ── Risk/reward leg of the quality term ──────────────────────────────────────
+    //
+    // WHAT THIS REPLACED, AND WHY IT WAS NOT A CORNER CASE.
+    //
+    // The rr leg used to be the linear ramp
+    //     rrMult = rr < 2.5 ? (rr - 1.0) / 1.5 : 1.0 + (rr - 2.5) * 0.3
+    // fed into `Sqrt(Max(0, pfMult) * Max(0, rrMult))`. That ramp is NEGATIVE for every
+    // fold with rr < 1.0, so the Max floored it to 0, qualityRaw to 0, qualityMult to 0 at
+    // the default QualityW = 1.0 — and `base_` is a pure PRODUCT, so the whole fold score
+    // collapsed to exactly 0.0. The stat bonuses and both tail terms are multiplicative and
+    // cannot rescue a zero.
+    //
+    // Measured on 100-trade folds under the default FitnessConfig:
+    //     80 wins @ +1.0 / 20 losses @ -2.0  ->  pf 2.00, wr 80%, rr 0.50  ->  score 0.000
+    //     40 wins @ +3.0 / 60 losses @ -1.5  ->  pf 1.33, wr 40%, rr 2.00  ->  score 0.147
+    // i.e. a pf = 2.00 / wr = 80% fold ranked BELOW a pf = 1.33 / wr = 40% one, and every
+    // rr < 1 fold tied at exactly 0 — a flat plateau with no gradient pointing back toward
+    // rr = 1, so selection inside the entire rr < 1 half-space was a coin flip and mutation
+    // had to jump the boundary blind.
+    //
+    // rr < 1.0 is structurally reachable, not exotic: Canonical has already established
+    // pf >= 1.0 by this point, and pf >= 1 only needs wins/losses > 1/rr. TakeProfitAtrMult
+    // and StopLossAtrMult are GENES, so the GA searches straight into TP < SL. Only the Grid
+    // family escaped, via GridShape's QualityW = 0; FadeShort, DipLong, SwingLong, FadeLong
+    // and RipShort all run the default 1.0.
+    //
+    // THE REPLACEMENT is a saturating hyperbola, chosen over "fall back to the no-op 1.0
+    // below rr = 1" because that fallback would trade the plateau for a CLIFF: the old ramp
+    // passes through 0 at rr = 1, so a fold at rr = 0.999 would score its full value and one
+    // at rr = 1.001 would still score ~0. Defect (3) in this same file is exactly that
+    // pathology, and re-introducing it one axis over is not a fix.
+    //
+    //     RrMultiplier(rr) = MaxRrMult * rr / (rr + RrSaturation),
+    //     MaxRrMult        = 1 + RrSaturation / RrNeutral
+    //
+    // Properties, all of which the old ramp lacked:
+    //  · STRICTLY POSITIVE on (0, inf) — the sqrt argument is never negative, the product
+    //    is never zeroed, so NaN and the collapse-to-0.0 are both structurally impossible.
+    //  · STRICTLY INCREASING on (0, inf) — d/d(rr) = MaxRrMult*RrSaturation/(rr+S)^2 > 0.
+    //    There is a real gradient at every rr, including the whole rr < 1 region.
+    //  · BOUNDED above by MaxRrMult (1.6), so a freak payoff ratio cannot dominate the
+    //    score. The old ramp grew without limit above rr = 2.5 and leaned entirely on the
+    //    downstream Clamp(..., 0, 2.5) to contain it.
+    //  · CALIBRATION PRESERVED: RrNeutral = 2.5 is the old ramp's own no-op point, so
+    //    RrMultiplier(2.5) == 1.0 exactly and the term is still "neutral at rr = 2.5".
+    //
+    // Reference values: rr 0.35 -> 0.303, 0.50 -> 0.400, 1.00 -> 0.640, 2.00 -> 0.914,
+    // 2.50 -> 1.000, 5.00 -> 1.231, ->inf -> 1.600.
+    public const double RrNeutral    = 2.5;   // rr at which the term is exactly 1.0 (no-op)
+    public const double RrSaturation = 1.5;   // half-saturation constant of the hyperbola
+    public const double MaxRrMult    = 1.0 + RrSaturation / RrNeutral;   // 1.6, the supremum
+
+    public static double RrMultiplier(double rr)
+    {
+        // `!(rr > 0)` rather than `rr <= 0` so NaN takes this branch too: a NaN payoff ratio
+        // yields quality 0, never a NaN that would poison the GA's sort order.
+        if (!(rr > 0.0)) return 0.0;
+        if (double.IsPositiveInfinity(rr)) return MaxRrMult;
+        return MaxRrMult * rr / (rr + RrSaturation);
+    }
+
     // ── Un-normalised per-trade risk-adjusted return ─────────────────────────────
     // mean/stdev of the TRADE-RETURN distribution, with no time normalisation at all.
     // Scale-free in the trade count: two folds with the same return distribution get the
@@ -188,10 +250,56 @@ public static class FoldScoreHelper
     // fat-tailed distribution, not risk measures — they are dominated by whichever lucky
     // or unlucky fill happened to land in the fold.
     //
-    // Below this threshold both terms return the NEUTRAL 1.0 rather than a fabricated
-    // number. The gate is stated as "the 5% tail bucket must contain at least 5
-    // observations", i.e. n * 0.05 >= 5  <=>  n >= 100.
+    // Rather than fabricate a number from that, both terms are damped toward the NEUTRAL
+    // 1.0 as the sample thins — fully live at "the 5% tail bucket holds at least 5
+    // observations", i.e. n * 0.05 >= 5  <=>  n >= 100, and fully off once the bucket is a
+    // single trade. See TailRampLo / TailRampHi immediately below for the ramp itself.
     public const int MinTailSampleSize = 100;
+
+    // ── …applied as a RAMP, not as a step ────────────────────────────────────────
+    //
+    // MinTailSampleSize used to be a HARD gate inside two MULTIPLICATIVE terms whose
+    // ranges are [0.5, 1.0] (CVaRPenalty) and [1.0, 1.5] (TailRatioBonus). Nothing smoothed
+    // it, so the objective had a cliff at exactly 100 trades. Measured on a 60/35/5 fold
+    // (60 wins @ +4.0, 35 losses @ -1.0, 5 losses @ -8.0):
+    //     n = 100  ->  fold score 4.970   (CVaRPenalty 0.70, the fat tail is charged for)
+    //     n =  99  ->  fold score 6.750   (CVaRPenalty 1.00, the tail is free)
+    // Deleting one WINNING trade — strictly less profit — raised the score by 35.8%. Every
+    // MinTradesPerFold in the repo is 10-30, so the 10..99 band is inside the normal
+    // operating range of every strategy, and the bear-window-filtered strategies live there
+    // by construction. That is a live, reachable incentive to trade LESS.
+    //
+    // Both terms now blend toward their neutral 1.0 with
+    //     w(n) = clamp((n - TailRampLo) / (TailRampHi - TailRampLo), 0, 1)
+    //     term = 1 + w(n) * (raw - 1)
+    //
+    // The two ramp bounds are the two points where the estimator's own sample changes
+    // character, and BOTH tail statistics cross them at the same n because both read a
+    // 1-in-20 bucket — StatisticalTests.CVaR takes max(1, (int)(n*0.05)) returns and
+    // TailRatioBonus takes max(1, n/20):
+    //
+    //   TailRampLo = 40  — the bucket holds 2 observations here (n*0.05 >= 2 <=> n >= 40).
+    //                      BELOW it the bucket holds exactly ONE trade, so "expected
+    //                      shortfall at 5%" and "p95/p5" degenerate into "the single worst
+    //                      trade" and "best single trade / worst single trade". Those are
+    //                      extreme order statistics of a fat-tailed distribution and carry
+    //                      no information about the strategy, so the terms are switched
+    //                      fully OFF (w = 0) — exactly the historical behaviour there.
+    //   TailRampHi = 100 — MinTailSampleSize, the bucket holds 5 observations. This is the
+    //                      point the gate was already calibrated at, so at and above 100
+    //                      trades both terms are bit-for-bit what they were (w = 1).
+    //
+    // Continuity: w is 0 at and below TailRampLo and 1 at and above TailRampHi, so it meets
+    // the flat regions on both sides with no step. n is an integer, so the finest possible
+    // move is one trade; that now shifts a term by at most (raw - 1)/60 instead of by the
+    // full deviation — the 100-vs-99 swing above drops from ~30% of the fold score to ~0.5%.
+    public const int TailRampLo = 40;
+    public const int TailRampHi = MinTailSampleSize;
+
+    // Blend weight for the two tail terms at a sample of n returns. 0 = term fully neutral,
+    // 1 = term fully live. Monotone non-decreasing in n, continuous at both bounds.
+    public static double TailTermWeight(int n)
+        => Math.Clamp((n - (double)TailRampLo) / (TailRampHi - TailRampLo), 0.0, 1.0);
 
     // CVaR (expected shortfall) left-tail penalty.
     //
@@ -209,9 +317,12 @@ public static class FoldScoreHelper
     // would zero out or flip the sign of the whole fitness score.
     public static double CVaRPenalty(List<double> returns, FitnessConfig cfg)
     {
-        // Gate raised 20 -> 100: StatisticalTests.CVaR takes the worst max(1, n*0.05)
-        // returns, so at n = 20..25 the "expected shortfall" was a single trade.
-        if (cfg.CVaRW <= 0 || returns.Count < MinTailSampleSize) return 1.0;
+        // Gate raised 20 -> 100 and then RAMPED (see TailRampLo/TailRampHi):
+        // StatisticalTests.CVaR takes the worst max(1, n*0.05) returns, so at n = 20..25 the
+        // "expected shortfall" was a single trade. The weight is 0 at and below 40 trades,
+        // so the estimator is never read while its bucket holds a single observation.
+        double w = TailTermWeight(returns.Count);
+        if (cfg.CVaRW <= 0 || w <= 0.0) return 1.0;
         double cvar5 = StatisticalTests.CVaR(returns, 0.05);
 
         const double tolerancePct = -3.0; // no penalty for tails shallower than this
@@ -219,7 +330,11 @@ public static class FoldScoreHelper
 
         if (cvar5 >= tolerancePct) return 1.0;
         double excess = Math.Min((tolerancePct - cvar5) / scalePct, 1.0); // 0..1
-        return Math.Clamp(1.0 - excess * cfg.CVaRW, 0.5, 1.0);
+        double raw    = Math.Clamp(1.0 - excess * cfg.CVaRW, 0.5, 1.0);
+        // Blend toward the neutral 1.0. raw is already inside [0.5, 1.0] and w inside
+        // [0, 1], so the blend cannot leave that range: the multiplier still can never
+        // reach 0 or flip the sign of the fold score.
+        return 1.0 + w * (raw - 1.0);
     }
 
     // Right-tail / left-tail asymmetry bonus: |p95| / |p5| over the fold's trade returns.
@@ -243,7 +358,8 @@ public static class FoldScoreHelper
 
     public static double TailRatioBonus(List<double> returns, FitnessConfig cfg)
     {
-        if (cfg.TailRatioW <= 0 || returns.Count < MinTailSampleSize) return 1.0;
+        double w = TailTermWeight(returns.Count);
+        if (cfg.TailRatioW <= 0 || w <= 0.0) return 1.0;
         var sorted = returns.OrderBy(r => r).ToList();
         int n = sorted.Count;
         int tailN = Math.Max(1, n / 20);
@@ -255,7 +371,10 @@ public static class FoldScoreHelper
         double ratio = Math.Min(absP95 / absP5, MaxTailRatio);
         if (ratio <= 1.5) return 1.0;
         double bonus = 1.0 + (ratio - 1.5) * 0.1 * cfg.TailRatioW;
-        return Math.Clamp(bonus, 1.0, MaxTailRatioBonus);
+        double raw   = Math.Clamp(bonus, 1.0, MaxTailRatioBonus);
+        // Same ramp as CVaRPenalty, and the same containment argument: raw is inside
+        // [1.0, MaxTailRatioBonus] and w inside [0, 1], so the blend stays inside it too.
+        return 1.0 + w * (raw - 1.0);
     }
 
     public static double RegimeDiversityBonus(
@@ -426,13 +545,14 @@ public static class FoldScoreHelper
     }
 
     // ── Fold aggregation ─────────────────────────────────────────────────────────
-    // Combines the surviving walk-forward fold scores into one fitness value.
+    // Combines the walk-forward fold scores into one fitness value.
     //
-    //     fitness = coverage ⊗ [ λ·CVaR_α({s_f}) + (1 − λ)·mean({s_f}) ]
+    //     fitness = λ·CVaR_α({s_f}) + (1 − λ)·mean({s_f})     over ALL attempted folds
     //
-    //     CVaR_α  = mean of the WORST ceil(α·k) fold scores, α = CVaRFoldAlpha (0.4)
+    //     CVaR_α  = mean of the WORST ceil(α·K) fold scores, α = CVaRFoldAlpha (0.4)
     //     λ       = LambdaThick (0.4) .. LambdaThin (0.8), rising as the sample thins
-    //     coverage= survivingFolds / attemptedFolds, applied sign-safely (see below)
+    //     K       = attemptedFolds — the vector is CONSTANT LENGTH; an attempted fold that
+    //               did not reach MinTradesPerFold enters it at the ThinFoldScore floor
     //
     // WHY THIS REPLACED `mean − stdMult·std`:
     //
@@ -455,23 +575,45 @@ public static class FoldScoreHelper
     //     CVaR overweights the worst folds: at equal mean, a spread-out fold vector has
     //     a lower worst-40% mean than an even one.
     //
-    // (b) THE OLD FORM HAD NO COVERAGE PENALTY. A single surviving fold was returned
-    //     verbatim, so a genotype that traded ONLY in the single most favourable market
-    //     window scored 30.0 while one trading consistently at (20,25,30,35,40) scored
-    //     24.70 — concentration was STRICTLY DOMINANT. For the bear-gated strategies,
-    //     whose training arrays are already bear-window concatenations, that is the
-    //     documented failure mode. Scaling by survivingFolds/attemptedFolds removes it:
-    //     the same pair now scores 6.0 vs 27.0.
+    // (b) NEITHER THE OLD FORM NOR THE `coverage = k/attempted` FACTOR THAT REPLACED IT
+    //     REMOVED THE CONCENTRATION INCENTIVE. The old form returned a single surviving
+    //     fold verbatim, so a genotype trading ONLY in its most favourable market window
+    //     scored 30.0 against 24.70 for one trading consistently at (20,25,30,35,40) —
+    //     concentration was strictly dominant. Multiplying by survivingFolds/attemptedFolds
+    //     did NOT fix that, because coverage is a BOUNDED LINEAR haircut (it can cost at
+    //     most a factor k/K) while the gain from deleting a bad fold is UNBOUNDED (it
+    //     raises both mean and CVaR without limit). At K = 5, four folds at g and one at b,
+    //     λ = 0.4:
+    //         keep = 0.32·b + 0.68·g        drop = 0.8·g        ⇒ dropping wins iff b < 0.375·g
+    //     At g = 30 a genotype was better off DROPPING any fold scoring +11.25 or less —
+    //     including clearly PROFITABLE folds. Worse, at λ = 0.8 (thin samples, i.e. exactly
+    //     where more conservatism is wanted) the threshold widened to b < 0.545·g. The move
+    //     was reachable: every call site `continue`s past a fold under MinTradesPerFold, so
+    //     "stop trading in your worst window" was one threshold-gene tightening away.
     //
-    //     The caller must therefore report how many folds were ATTEMPTED, not just how
-    //     many survived — every fold the walk-forward loop `continue`d past for being
-    //     under MinTradesPerFold still counts as attempted.
+    //     THE FIX IS TO DELETE THE MOVE, NOT TO PRICE IT. The fold vector is now CONSTANT
+    //     LENGTH: it always has attemptedFolds entries, and an attempted fold that came
+    //     back under MinTradesPerFold enters the mean and the CVaR at the explicit
+    //     ThinFoldScore floor instead of vanishing. Withdrawing from a fold therefore does
+    //     not shorten the vector, it replaces that fold's score with a WORSE one — and the
+    //     aggregate is monotone, so it strictly falls. There is no "drop a fold" move left
+    //     in the search space, and with the move gone the coverage multiplier has nothing
+    //     to price: it was removed rather than left in as a redundant knob.
     //
-    //     SIGN-SAFETY: coverage is applied as `x·cov` for x >= 0 and `x/cov` for x < 0.
-    //     A plain multiply would REWARD partial coverage whenever the aggregate is
-    //     negative (fold scores can be as low as pf − 2.0), which is the same
-    //     concentration incentive with the sign flipped. The piecewise map is continuous
-    //     at 0 and strictly increasing on both sides, so monotonicity is preserved.
+    //     The caller must still report how many folds were ATTEMPTED, not just how many
+    //     survived — every fold the walk-forward loop `continue`d past for being under
+    //     MinTradesPerFold is what the floor is substituted for. Callers are unchanged;
+    //     the substitution happens here, from `attemptedFolds - foldScores.Count`.
+    //
+    //     THIS IS NOT THE ORIGINAL SENTINEL BUG. The pre-8e54c1f code ALSO fed a constant
+    //     (Canonical's -1.0) for thin folds, and that is what made fitness non-monotone.
+    //     The difference is entirely in the AGGREGATOR, not in the use of a constant:
+    //     under `mean − c·std` a constant inflates std and therefore SUBTRACTS, inverting
+    //     d(fitness)/d(fold score) — measured at −0.38 with 2 dead folds and −0.60 with 4.
+    //     Under `λ·CVaR + (1−λ)·mean` both terms are non-decreasing in every entry and the
+    //     constant is simply a low entry, i.e. a penalty; the gradient with respect to
+    //     every real fold stays >= 0 no matter how many floors sit beside it. That is
+    //     pinned by FoldAggregationTests.
     //
     // (c) stdMult's VC-PROPORTIONAL INTENT IS PRESERVED, expressed as λ instead. The old
     //     stdMult ran 0.75 (thick sample) to 2.0 (thin), leaning harder on dispersion
@@ -480,9 +622,50 @@ public static class FoldScoreHelper
     //     of the trade COUNTS only, never of the fold scores, so the monotonicity proof
     //     in (a) is untouched.
     //
-    //   0 surviving folds -> DeadFoldFitness (clearly worst, flat, nothing to exploit)
-    //   1 surviving fold  -> that fold's score, coverage-scaled (CVaR == mean == it)
+    //   1 surviving fold at full coverage -> that fold's score verbatim (CVaR == mean == it)
+    //   every attempted fold thin          -> ThinFoldScore (the all-floor vector)
+    //   nothing attempted at all           -> DeadFoldFitness
+    //
+    // DeadFoldFitness now covers only the degenerate `attemptedFolds == 0 && k == 0` case —
+    // a caller that ran no walk-forward loop at all, which carries no information about the
+    // genotype. Every GA call site passes its own fold count, so this is unreachable from
+    // training; it exists so the function is total.
     public const double DeadFoldFitness = -1000.0;
+
+    // ── The thin-fold floor ──────────────────────────────────────────────────────
+    //
+    // Substituted for every ATTEMPTED fold that did not reach MinTradesPerFold, so the fold
+    // vector is constant length and "withdraw from a fold" is not a move (see (b) above).
+    //
+    // WHY -5.0, i.e. why this is not the old -1.0 sentinel with a new name. Canonical's
+    // output range over its whole reachable domain is [-2.0, +inf):
+    //   · pf < 1.0                  -> `pf - 2.0`, and pf >= 0, so this lies in [-2.0, -1.0)
+    //     — this branch, at pf = 0, is the WORST score Canonical can produce;
+    //   · pf >= 1.0 and gain <= 0   -> `gain*100 - 0.5`. pf >= 1 means grossWins >= grossLoss,
+    //     so sum(returns) >= 0 and gain >= 0; the branch is therefore only reachable at
+    //     gain == 0 exactly, where it returns -0.5;
+    //   · otherwise the score is a product of non-negative factors, hence >= 0.
+    // (CanonicalRegimeStratified only multiplies scores ABOVE -1.0 by RegimeDiversityBonus,
+    // which is >= 1.0, so -0.5 x (1 + RegimeDiversityW) is the deepest that path reaches.)
+    //
+    // The floor must therefore sit BELOW -2.0, or a thin fold would score better than a
+    // genuinely losing one and withdrawing from a loser would pay — which is exactly what
+    // the -1.0 sentinel did: it sat ABOVE the [-2.0, -1.0) losing band, making "produce no
+    // trades here" strictly better than "trade and lose here". -5.0 clears the worst real
+    // score by 3.0 points (2.5x), so the drop move is strictly loss-making for every fold
+    // Canonical can emit, with margin.
+    //
+    // And it must not be so low that it DOMINATES. At K = 5 one floored fold costs
+    //   λ·(floor/m) + (1−λ)·(floor/K) = 0.4·(−2.5) + 0.6·(−1.0) = −1.6
+    // against a fitness scale where a good fold contributes ~+18, so coverage shades the
+    // ranking without erasing the gradient on the surviving folds' quality. DeadFoldFitness
+    // (-1000) in that slot would swamp every other term and flatten the landscape to "how
+    // many folds are non-thin" — which is the failure mode the -1.0 sentinel's replacement
+    // was reaching for and overshot in the other direction.
+    //
+    // Canonical's -2.0 lower bound is load-bearing for this choice, so it is pinned by a
+    // property test (FoldAggregationTests) rather than left as a comment.
+    public const double ThinFoldScore = -5.0;
 
     // Tail fraction taken over the FOLD SCORES (not over trade returns).
     public const double CVaRFoldAlpha = 0.4;
@@ -497,20 +680,40 @@ public static class FoldScoreHelper
         int attemptedFolds)
     {
         int k = foldScores.Count;
-        if (k == 0) return DeadFoldFitness;
 
-        // A caller that under-reports attempts must not be able to manufacture a
-        // coverage bonus, so coverage is capped at 1.0 from this side.
+        // A caller that under-reports attempts must not be able to shrink the vector below
+        // the folds it actually scored.
         int attempted = Math.Max(attemptedFolds, k);
+        if (attempted == 0) return DeadFoldFitness;
 
-        double mean = foldScores.Average();
-        double cvar = WorstFoldMean(foldScores, CVaRFoldAlpha);
-        double lambda = FoldLambda(foldTradeCounts, d);
+        // CONSTANT-LENGTH FOLD VECTOR: the scored folds, then one ThinFoldScore entry for
+        // every attempted fold the caller skipped for being under MinTradesPerFold.
+        var scores = new double[attempted];
+        var counts = new int[attempted];
+        for (int i = 0; i < k; i++)
+        {
+            scores[i] = foldScores[i];
+            counts[i] = i < foldTradeCounts.Count ? foldTradeCounts[i] : 0;
+        }
+        for (int i = k; i < attempted; i++)
+        {
+            scores[i] = ThinFoldScore;
+            counts[i] = 0;   // a fold with no trades genuinely thins the sample — see below
+        }
 
-        double combined = lambda * cvar + (1.0 - lambda) * mean;
+        double sum = 0.0;
+        for (int i = 0; i < attempted; i++) sum += scores[i];
+        double mean = sum / attempted;
+        double cvar = WorstFoldMean(scores, CVaRFoldAlpha);
 
-        double coverage = (double)k / attempted;               // in (0, 1]
-        return combined >= 0 ? combined * coverage : combined / coverage;
+        // λ reads the padded counts, so withdrawing from a fold also thins avgN and pushes λ
+        // up. That only ever LOWERS fitness (CVaR <= mean always, so a larger λ moves the
+        // blend toward the smaller number), which reinforces (b) on a second channel — and
+        // it cannot disturb monotonicity, because λ still depends on trade COUNTS only,
+        // never on the fold SCORES.
+        double lambda = FoldLambda(counts, d);
+
+        return lambda * cvar + (1.0 - lambda) * mean;
     }
 
     // Mean of the worst ceil(alpha * k) fold scores — CVaR / expected shortfall over the
@@ -520,7 +723,11 @@ public static class FoldScoreHelper
         int k = foldScores.Count;
         if (k == 0) return 0.0;
         int m = Math.Clamp((int)Math.Ceiling(alpha * k), 1, k);
-        var sorted = foldScores.OrderBy(s => s).ToArray();
+        // Array.Sort on a plain copy rather than OrderBy: this runs once per genotype per
+        // generation across ten GAs, and the monotonicity sweeps call it millions of times.
+        var sorted = new double[k];
+        for (int i = 0; i < k; i++) sorted[i] = foldScores[i];
+        Array.Sort(sorted);
         double sum = 0;
         for (int i = 0; i < m; i++) sum += sorted[i];
         return sum / m;
@@ -558,17 +765,22 @@ public static class FoldScoreHelper
     //  · FreqW = 0    — also documented: grid session count is driven by coin volatility,
     //                   not by strategy quality, so a frequency bonus would just rank
     //                   coins. Canonical's freqBonus is exactly 1.0 at FreqW = 0.
-    //  · QualityW = 0 — NOT in the original as a documented choice, but it has to stay off
-    //                   on the merits. Canonical's quality term is sqrt(pfMult * rrMult)
-    //                   with rrMult = (rr - 1)/1.5, i.e. a ramp calibrated for rr in
-    //                   [1.0, 2.5+]. A grid is the opposite shape by construction — many
-    //                   small mean-reversion fills against an occasional whole-ladder
-    //                   stop-out — so it operates at rr < 1.0, where rrMult is negative
-    //                   and the term is pinned at its 0 floor. Enabling it would hand the
-    //                   Grid GA a CONSTANT ZERO multiplier, i.e. a flat fitness landscape,
-    //                   not a quality signal. Canonical's 1.0 = no-op contract cannot be
-    //                   satisfied by a term that is undefined over a strategy's operating
-    //                   range.
+    //  · QualityW = 0 — NOT in the original as a documented choice. It was ORIGINALLY kept
+    //                   off because Canonical's quality term used the linear ramp
+    //                   rrMult = (rr - 1)/1.5, which is negative — and therefore floored to
+    //                   a CONSTANT ZERO — over a grid's whole operating range: a grid is
+    //                   many small mean-reversion fills against an occasional whole-ladder
+    //                   stop-out, i.e. rr < 1.0 by construction. That reason is gone;
+    //                   RrMultiplier is strictly positive and strictly increasing on
+    //                   (0, inf), so the term now carries a real gradient below rr = 1 and
+    //                   is no longer undefined over the grid's range.
+    //                   It stays at 0 anyway, as a CALIBRATION choice rather than a
+    //                   soundness one: RrNeutral = 2.5 makes the term a no-op at a payoff
+    //                   ratio a grid never reaches, so switching it on would multiply every
+    //                   grid genotype by roughly the same sub-1 factor — a scale shift, not
+    //                   a signal — while making Grid fitness incomparable with the genotypes
+    //                   trained before it. Turning it on is a deliberate retrain, not a
+    //                   free improvement.
     //
     // NOT preserved (deliberately re-enabled, because nothing documented them as
     // intentional and their absence made Grid's scale incomparable): RetentionW and

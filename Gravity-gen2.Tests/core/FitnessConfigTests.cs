@@ -121,7 +121,7 @@ public class FitnessConfigTests
         //   base        = gain*100 * wrMult * quality * freqBonus / ddDiv * retention
         //   score       = base * (1 + 0.5*sharpe/3) * (1 + 0.3*sortino/4)
         //                 (CalmarW and PfW default to 0 -> those factors are exactly 1)
-        Assert.Equal(10.677164433608581, Score(Baseline()), precision: 9);
+        Assert.Equal(12.50381465957052, Score(Baseline()), precision: 9);
     }
 
     [Fact]
@@ -129,13 +129,13 @@ public class FitnessConfigTests
     {
         // Second fixture, this one with raw quality ABOVE 1.0, so it also pins the
         // quality lerp on the other side of the neutral point.
-        Assert.Equal(86.63303568181058, Score(HighQuality()), precision: 9);
+        Assert.Equal(77.60830060738729, Score(HighQuality()), precision: 9);
     }
 
     [Fact]
     public void NeutralDefaults_ReproduceHistoricalHardcodedScore_BelowWinRateKnee()
     {
-        Assert.Equal(12.877833076703523, Score(LowWinRate()), precision: 9);
+        Assert.Equal(10.799709715315416, Score(LowWinRate()), precision: 9);
     }
 
     [Fact]
@@ -162,8 +162,8 @@ public class FitnessConfigTests
 
         Assert.True(harsh < neutral, $"DdPenalty 2.5 ({harsh}) should score below 1.0 ({neutral})");
         Assert.True(lenient > neutral, $"DdPenalty 0.0 ({lenient}) should score above 1.0 ({neutral})");
-        Assert.Equal(8.080016328136221,  harsh,   precision: 9);
-        Assert.Equal(13.589118370047286, lenient, precision: 9);
+        Assert.Equal(9.462346228864174,  harsh,   precision: 9);
+        Assert.Equal(15.913945930362482, lenient, precision: 9);
     }
 
     [Fact]
@@ -176,8 +176,8 @@ public class FitnessConfigTests
 
         Assert.True(eager > neutral, $"FreqW 2.0 ({eager}) should score above 1.0 ({neutral})");
         Assert.True(off < neutral,   $"FreqW 0.0 ({off}) should score below 1.0 ({neutral})");
-        Assert.Equal(11.916538054536717, eager, precision: 9);
-        Assert.Equal(9.437790812680445,  off,   precision: 9);
+        Assert.Equal(13.955220428059627, eager, precision: 9);
+        Assert.Equal(11.05240889108141,  off,   precision: 9);
     }
 
     [Fact]
@@ -190,8 +190,8 @@ public class FitnessConfigTests
 
         Assert.True(eager > neutral, $"WrW 2.0 ({eager}) should score above 1.0 ({neutral})");
         Assert.True(off < neutral,   $"WrW 0.0 ({off}) should score below 1.0 ({neutral})");
-        Assert.Equal(13.141125456749025, eager, precision: 9);
-        Assert.Equal(8.21320341046814,  off,   precision: 9);
+        Assert.Equal(15.389310350240638, eager, precision: 9);
+        Assert.Equal(9.6183189689004,  off,   precision: 9);
     }
 
     [Fact]
@@ -213,24 +213,30 @@ public class FitnessConfigTests
         double eager   = Score(r, new FitnessConfig() with { QualityW = 1.3 });
 
         Assert.True(eager > neutral, $"QualityW 1.3 ({eager}) should score above 1.0 ({neutral})");
-        Assert.Equal(98.23398234758949, eager, precision: 9);
+        Assert.Equal(86.50182675083921, eager, precision: 9);
     }
 
     [Fact]
     public void QualityW_Higher_LowersScoreWhenRawQualityIsBelowOne()
     {
-        // Baseline's raw quality is 0.913 — below the neutral point, so amplifying the
-        // deviation must push the score DOWN, not up. This is what proves QualityW
-        // scales the deviation from 1.0 rather than the multiplier itself.
-        var r = Baseline();
+        // NOTE ON THE FIXTURE: this used to use Baseline(), whose raw quality was 0.913 under
+        // the old linear rrMult = (rr-1)/1.5. That ramp was replaced by a bounded hyperbola
+        // anchored so rrMult(2.5) == 1.0, under which Baseline's raw quality is 1.069 — ABOVE
+        // the neutral point, so the direction this test asserts legitimately flips. A fixture
+        // whose raw quality is genuinely sub-1 is needed instead, or the test would silently
+        // stop testing what its name says.
+        //
+        // 12 trades alternating +2.4 / -2.0: pf 1.20, rr 1.20, raw quality 0.533.
+        var r = Enumerable.Range(0, 12).Select(i => i % 2 == 0 ? 2.4 : -2.0).ToList();
         double neutral = Score(r);
         double eager   = Score(r, new FitnessConfig() with { QualityW = 2.0 });
         double off     = Score(r, new FitnessConfig() with { QualityW = 0.0 });
 
         Assert.True(eager < neutral, $"QualityW 2.0 ({eager}) should score below 1.0 ({neutral})");
         Assert.True(off > neutral,   $"QualityW 0.0 ({off}) should score above 1.0 ({neutral})");
-        Assert.Equal(9.65808124625858,  eager, precision: 9);
-        Assert.Equal(11.696247620958582, off,   precision: 9);
+        Assert.Equal(0.8654880282101324, neutral, precision: 9);
+        Assert.Equal(0.1081860035262662, eager,   precision: 9);
+        Assert.Equal(1.6227900528939987, off,     precision: 9);
     }
 
     [Fact]
@@ -255,7 +261,7 @@ public class FitnessConfigTests
         double harsh   = Score(r, new FitnessConfig() with { RetentionW = 2.0 });
 
         Assert.True(harsh < neutral, $"RetentionW 2.0 ({harsh}) should score below 1.0 ({neutral})");
-        Assert.Equal(8.735861809316111, harsh, precision: 9);
+        Assert.Equal(10.23039381237588, harsh, precision: 9);
     }
 
     [Fact]
@@ -264,7 +270,7 @@ public class FitnessConfigTests
         var r = EndsAtPeak();   // retentionRaw == 1.0 -> nothing for the weight to scale
         double neutral = Score(r);
         Assert.Equal(neutral, Score(r, new FitnessConfig() with { RetentionW = 3.0 }), precision: 12);
-        Assert.Equal(53.052330614454505, neutral, precision: 9);
+        Assert.Equal(50.46283209729822, neutral, precision: 9);
     }
 
     [Fact]
@@ -276,7 +282,7 @@ public class FitnessConfigTests
 
         Assert.True(eager > neutral, $"GainW 1.5 ({eager}) should score above 1.0 ({neutral})");
         Assert.Equal(neutral * 1.5, eager, precision: 9);
-        Assert.Equal(16.01574665041287, eager, precision: 9);
+        Assert.Equal(18.755721989355777, eager, precision: 9);
     }
 
     // ── Defensive clamping of pathological configured values ─────────────────

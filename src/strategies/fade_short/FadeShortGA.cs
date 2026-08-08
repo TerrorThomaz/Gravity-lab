@@ -13,9 +13,10 @@ namespace TradingGA;
 //
 // FoldScore = (port_gain × 100) × wr_mult × freq_bonus / dd_div
 //
-// Fitness = coverage x [lambda x CVaR_0.4(fold_scores) + (1 - lambda) x mean(fold_scores)]
+// Fitness = lambda x CVaR_0.4(fold_scores) + (1 - lambda) x mean(fold_scores)
 // over the SURVIVING walk-forward folds (those that reached MinTradesPerFold trades), where
-// coverage = surviving/attempted folds and lambda is VC-proportional on avg N/d. Monotone
+// lambda is VC-proportional on avg N/d. The fold vector is CONSTANT LENGTH: a fold that
+// never reached MinTradesPerFold enters as ThinFoldScore rather than vanishing. Monotone
 // non-decreasing in every fold score by construction — see FoldScoreHelper.AggregateFoldScores
 // for why `mean - stdMult x std` was not.
 // Folds are cut PER COIN on that coin's own array — see FitnessFromCache.

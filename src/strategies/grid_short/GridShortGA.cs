@@ -4,9 +4,10 @@ namespace TradingGA;
 // Direction-mirror of GridGeneticAlgorithm — reuses GridGenotype (directionally
 // symmetric gene set) and GridShortSimulator for the flipped price mechanics.
 //
-// Fitness = coverage x [lambda x CVaR_0.4(fold_scores) + (1 - lambda) x mean(fold_scores)]
+// Fitness = lambda x CVaR_0.4(fold_scores) + (1 - lambda) x mean(fold_scores)
 // over the SURVIVING walk-forward folds (those that reached MinTradesPerFold trades), where
-// coverage = surviving/attempted folds and lambda is VC-proportional on avg N/d. Monotone
+// lambda is VC-proportional on avg N/d. The fold vector is CONSTANT LENGTH: a fold that
+// never reached MinTradesPerFold enters as ThinFoldScore rather than vanishing. Monotone
 // non-decreasing in every fold score by construction — see FoldScoreHelper.AggregateFoldScores
 // for why `mean - stdMult x std` was not.
 // Folds are
@@ -114,7 +115,8 @@ public class GridShortGA
         var foldScores = new List<double>(k);
         var foldCounts = new List<int>(k);
         // Folds ATTEMPTED, including the thin ones skipped below — the aggregator scales
-        // by surviving/attempted so that concentrating all activity into one favourable
+        // Every attempted fold is scored -- a thin one enters at ThinFoldScore -- so that
+        // concentrating all activity into one favourable
         // market window can no longer beat trading consistently across all of them.
         int attemptedFolds = 0;
         for (int f = 0; f < k; f++)

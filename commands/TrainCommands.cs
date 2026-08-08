@@ -3,6 +3,46 @@ using System.Text.Json;
 
 namespace TradingGA;
 
+// ── Post-GA refinement: why there isn't any ───────────────────────────────────
+// Every train command in commands/ used to run a 60-iteration TPE pass AFTER its GA:
+//
+//     var boHistory = new List<...> { (best.ToVector(), best.Fitness) };
+//     var boResult  = BayesianOptimizer.Refine(boHistory, X.Bounds,
+//         v => <mean per-trade return of X over the whole unfolded train span>, 60, rng);
+//     if (boGeno.Fitness > best.Fitness) best = boGeno;   // decides what is written to disk
+//
+// That pass was removed from all six sites (FadeShort, FadeShortLowVol, FadeLong,
+// RipShort, DipLong, SwingLong) because it was unsound in three independent ways:
+//
+//   1. WRONG OBJECTIVE. The lambda scored a genotype by the raw arithmetic mean of its
+//      per-trade returns over the entire training span: no walk-forward folds, no
+//      MinTradesPerFold floor, no drawdown / quality / retention multipliers, no regime
+//      gate. `count > 0` was the only guard, so three lucky trades scored arbitrarily high.
+//   2. INCOMMENSURABLE ACCEPTANCE TEST. `best.Fitness` coming out of a GA is that GA's
+//      canonical fold-aggregated score (and, in every GA here, the HELD-OUT one — see e.g.
+//      FadeShortGA.Run, which overwrites best.Fitness with the validation score before
+//      returning). Comparing a mean per-trade return (~0.3–1.0) against that score
+//      (order 10–10,000, negative for weak genotypes) is a category error: whether TPE
+//      overwrote the GA winner was decided by the accidental relative magnitude of two
+//      unrelated numbers, not by which genotype was better.
+//   3. COLD START. The history was seeded with ONE observation, and
+//      BayesianOptimizer.Suggest returns a uniform RandomPoint while history.Count < 12,
+//      so 11 of the 60 iterations were uniform random over the whole bounds box and the
+//      KDE was fitted on a handful of points for a while after that.
+//
+// The fix could not be "make the outer pass optimise the GA's objective": every GA keeps
+// its Fitness(...) private (FadeShortGA's is `private static FitnessFromCache` over a
+// private CoinCache record), and reconstructing it in the command would mean
+// reimplementing fold windows, vol coverage, MinTradesPerFold and the FoldScoreHelper
+// aggregation — i.e. re-creating the same class of bug the moment either copy drifts.
+//
+// Refinement therefore lives INSIDE the GA, where the canonical Fitness is reachable.
+// FadeLong / RipShort / DipLong / SwingLong / Grid / GridShort / RegimeRouter already run
+// a 60-iteration TPE pass there, seeded from the whole elite island and evaluated with
+// `Fitness(g, coins, useValidation: false)` — same function, same data, same scale as the
+// GA's own selection. FadeShortGA has no such inner pass; adding one belongs in
+// src/strategies/fade_short/FadeShortGA.cs (see the handoff note in the review).
+// ─────────────────────────────────────────────────────────────────────────────
 static class TrainCommands
 {
     public static async Task RunFadeShortTrain(BybitRestClient client, string[]? args = null, bool invertScreen = false)
@@ -195,31 +235,11 @@ static class TrainCommands
         Console.WriteLine("─── Swing GA training (universal — all coins) ───");
         var best = new FadeShortGA(80, 150, verbose: true, cfg: cfg).Run(coinData, seed);
 
-        Console.WriteLine("\n─── Bayesian refinement (60 TPE iterations) ───");
-        var rngBo  = new Random(42);
-        var boHistory = new List<(double[] Params, double Fitness)>
-        {
-            (best.ToVector(), best.Fitness)
-        };
-        var boResult = BayesianOptimizer.Refine(
-            boHistory,
-            FadeShortGenotype.Bounds,
-            v =>
-            {
-                var g = FadeShortGenotype.FromVector(v);
-                return coinData.SelectMany(cd =>
-                    FadeShortSimulator.GetFadeShortReturns(g, cd.TrainCandles.Span))
-                    .Select(t => t.Return)
-                    .DefaultIfEmpty(-1.0)
-                    .Average();
-            },
-            iterations: 60,
-            rng: rngBo);
-        var boParams = boResult.OrderByDescending(h => h.Fitness).First().Params;
-        var boGeno   = FadeShortGenotype.FromVector(boParams);
-        boGeno.Fitness = boResult.OrderByDescending(h => h.Fitness).First().Fitness;
-        if (boGeno.Fitness > best.Fitness) { best = boGeno; Console.WriteLine($"  TPE improved: {best}"); }
-        else Console.WriteLine($"  GA elite kept (TPE did not improve)");
+        // Post-GA TPE pass removed — see the "Post-GA refinement" note at the top of this
+        // file. FadeShortGA has no inner BO pass yet, so FadeShort is GA-only for now.
+        Console.WriteLine($"\n─── Refinement ───");
+        Console.WriteLine("  No post-GA pass (FadeShortGA selects and freezes its own elite).");
+        Console.WriteLine($"  Selected genotype fitness (GA scale, held-out): {best.Fitness:F4}");
 
         Console.WriteLine($"\nFrozen genotype:\n  {best}\n");
         File.WriteAllText(genoPath, JsonSerializer.Serialize(FadeShortGenotypeDto.From(best, cfg),

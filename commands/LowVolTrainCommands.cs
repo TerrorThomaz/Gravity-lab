@@ -87,31 +87,20 @@ static class LowVolTrainCommands
 
         var best = new FadeShortGA(80, 150, verbose: true, cfg: cfg).RunLowVol(gaCoins, seed);
 
-        Console.WriteLine("\n─── Bayesian refinement for FadeShortLowVol (60 TPE iterations) ───");
-        var rng = new Random(42);
-        var boHistory = new List<(double[] Params, double Fitness)> { (best.ToVector(), best.Fitness) };
-        var boResult = BayesianOptimizer.Refine(
-            boHistory,
-            FadeShortGenotype.BoundsLowVol,
-            v =>
-            {
-                var g = FadeShortGenotype.FromVectorLowVol(v);
-                var ts = gaCoins.Where(cd => cd.TrainCandles.Length > 0)
-                                .SelectMany(cd => FadeShortSimulator.GetFadeShortReturns(g, cd.TrainCandles.Span, cd.ValCandles.Span))
-                                .Select(t => t.Return).ToList();
-                return ts.Count > 0 ? ts.Average() : -1.0;
-            },
-            iterations: 60,
-            rng: rng);
-        var boParams = boResult.OrderByDescending(h => h.Fitness).First().Params;
-        var refined = FadeShortGenotype.FromVectorLowVol(boParams);
-        refined.Fitness = best.Fitness;
+        // Post-GA TPE pass removed — see the "Post-GA refinement" note at the top of
+        // commands/TrainCommands.cs. This site was the worst of the six: it did not even
+        // guard the swap behind a comparison. It ALWAYS replaced the GA winner with the TPE
+        // champion (selected on mean per-trade return, and on TRAIN+VAL candles at that),
+        // then stamped the GA's own fitness onto that different genotype before saving — so
+        // the fitness recorded in the JSON described a genotype that was never scored.
+        Console.WriteLine("\n─── Refinement ───");
+        Console.WriteLine("  No post-GA pass (FadeShortGA selects and freezes its own elite).");
 
-        Console.WriteLine($"\n  Best: {refined}");
-        Console.WriteLine($"  Fitness: {refined.Fitness:F4}");
+        Console.WriteLine($"\n  Best: {best}");
+        Console.WriteLine($"  Fitness (GA scale, held-out): {best.Fitness:F4}");
 
         Directory.CreateDirectory(Path.GetDirectoryName(genoPath)!);
-        File.WriteAllText(genoPath, JsonSerializer.Serialize(refined, new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(genoPath, JsonSerializer.Serialize(best, new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"  Saved to {genoPath}");
     }
 

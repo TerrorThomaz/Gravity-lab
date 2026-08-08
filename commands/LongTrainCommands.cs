@@ -396,30 +396,14 @@ static class LongTrainCommands
 
         var flBest = new FadeLongGA(80, 150, verbose: true, cfg: cfg, btcSeries: flBtcSeries).Run(flCoins, flSeed);
 
-        Console.WriteLine("\n─── Bayesian refinement for FadeLong (60 TPE iterations) ───");
-        var flRng = new Random(42);
-        var flBoHistory = new List<(double[] Params, double Fitness)>
-        {
-            (flBest.ToVector(), flBest.Fitness)
-        };
-        var flBoResult = BayesianOptimizer.Refine(
-            flBoHistory,
-            FadeLongGenotype.Bounds,
-            v =>
-            {
-                var g  = FadeLongGenotype.FromVector(v);
-                var ts = flCoins.Where(cd => cd.TrainH1.Length > 0)
-                                .SelectMany(cd => FadeLongSimulator.GetFadeLongReturns(g, cd.TrainH1.Span, cd.TrainM15.Span))
-                                .Select(t => t.Return).ToList();
-                return ts.Count > 0 ? ts.Average() : -1.0;
-            },
-            iterations: 60,
-            rng: flRng);
-        var flBoParams = flBoResult.OrderByDescending(h => h.Fitness).First().Params;
-        var flBoGeno   = FadeLongGenotype.FromVector(flBoParams);
-        flBoGeno.Fitness = flBoResult.OrderByDescending(h => h.Fitness).First().Fitness;
-        if (flBoGeno.Fitness > flBest.Fitness) { flBest = flBoGeno; Console.WriteLine($"  TPE improved: {flBest}"); }
-        else Console.WriteLine($"  GA elite kept");
+        // Post-GA TPE pass removed — see the "Post-GA refinement" note at the top of
+        // commands/TrainCommands.cs. FadeLongGA already runs 60 TPE iterations internally
+        // (FadeLongGA.cs ~:267), seeded from its full elite island and evaluated with its
+        // own Fitness(g, coins, useValidation: false) — the same function, data and scale
+        // the GA selects on. That is the refinement; this outer one only added noise.
+        Console.WriteLine("\n─── Refinement ───");
+        Console.WriteLine("  Handled inside FadeLongGA (60 TPE iterations on the GA's own fitness).");
+        Console.WriteLine($"  Selected genotype fitness (GA scale, held-out): {flBest.Fitness:F4}");
 
         Console.WriteLine($"\nFrozen genotype:\n  {flBest}\n");
         File.WriteAllText(genoPath, JsonSerializer.Serialize(FadeLongGenotypeDto.From(flBest, cfg),
@@ -605,30 +589,12 @@ static class LongTrainCommands
 
         var rsBest = new RipShortGA(80, 150, verbose: true, cfg: cfg, btcSeries: rsBtcSeries).Run(rsCoins, rsSeed);
 
-        Console.WriteLine("\n─── Bayesian refinement for RipShort (60 TPE iterations) ───");
-        var rsRng = new Random(42);
-        var rsBoHistory = new List<(double[] Params, double Fitness)>
-        {
-            (rsBest.ToVector(), rsBest.Fitness)
-        };
-        var rsBoResult = BayesianOptimizer.Refine(
-            rsBoHistory,
-            RipShortGenotype.Bounds,
-            v =>
-            {
-                var g  = RipShortGenotype.FromVector(v);
-                var ts = rsCoins.Where(cd => cd.TrainH1.Length > 0)
-                                .SelectMany(cd => RipShortSimulator.GetRipShortReturns(g, cd.TrainH1.Span, cd.TrainM15.Span))
-                                .Select(t => t.Return).ToList();
-                return ts.Count > 0 ? ts.Average() : -1.0;
-            },
-            iterations: 60,
-            rng: rsRng);
-        var rsBoParams = rsBoResult.OrderByDescending(h => h.Fitness).First().Params;
-        var rsBoGeno   = RipShortGenotype.FromVector(rsBoParams);
-        rsBoGeno.Fitness = rsBoResult.OrderByDescending(h => h.Fitness).First().Fitness;
-        if (rsBoGeno.Fitness > rsBest.Fitness) { rsBest = rsBoGeno; Console.WriteLine($"  TPE improved: {rsBest}"); }
-        else Console.WriteLine($"  GA elite kept");
+        // Post-GA TPE pass removed — see the "Post-GA refinement" note at the top of
+        // commands/TrainCommands.cs. RipShortGA already runs 60 TPE iterations internally
+        // (RipShortGA.cs ~:305) against its own Fitness(..., useValidation: false).
+        Console.WriteLine("\n─── Refinement ───");
+        Console.WriteLine("  Handled inside RipShortGA (60 TPE iterations on the GA's own fitness).");
+        Console.WriteLine($"  Selected genotype fitness (GA scale, held-out): {rsBest.Fitness:F4}");
 
         Console.WriteLine($"\nFrozen genotype:\n  {rsBest}\n");
         File.WriteAllText(genoPath, JsonSerializer.Serialize(RipShortGenotypeDto.From(rsBest, cfg),
@@ -1026,30 +992,12 @@ static class LongTrainCommands
             : null;
         var dlBest = new DipLongGA(80, 150, verbose: true, cfg: cfg, btcSeries: dlBtcSeries).Run(dlCoins, dlSeed);
 
-        Console.WriteLine("\n─── Bayesian refinement for DipLong (60 TPE iterations) ───");
-        var dlRng = new Random(42);
-        var dlBoHistory = new List<(double[] Params, double Fitness)>
-        {
-            (dlBest.ToVector(), dlBest.Fitness)
-        };
-        var dlBoResult = BayesianOptimizer.Refine(
-            dlBoHistory,
-            DipLongGenotype.Bounds,
-            v =>
-            {
-                var g  = DipLongGenotype.FromVector(v);
-                var ts = dlCoins.Where(cd => cd.TrainH1.Length > 0)
-                                .SelectMany(cd => DipLongSimulator.GetDipLongReturns(g, cd.TrainH1.Span, cd.TrainM15.Span))
-                                .Select(t => t.Return).ToList();
-                return ts.Count > 0 ? ts.Average() : -1.0;
-            },
-            iterations: 60,
-            rng: dlRng);
-        var dlBoParams = dlBoResult.OrderByDescending(h => h.Fitness).First().Params;
-        var dlBoGeno   = DipLongGenotype.FromVector(dlBoParams);
-        dlBoGeno.Fitness = dlBoResult.OrderByDescending(h => h.Fitness).First().Fitness;
-        if (dlBoGeno.Fitness > dlBest.Fitness) { dlBest = dlBoGeno; Console.WriteLine($"  TPE improved: {dlBest}"); }
-        else Console.WriteLine($"  GA elite kept");
+        // Post-GA TPE pass removed — see the "Post-GA refinement" note at the top of
+        // commands/TrainCommands.cs. DipLongGA already runs 60 TPE iterations internally
+        // (DipLongGA.cs ~:268) against its own Fitness(..., useValidation: false).
+        Console.WriteLine("\n─── Refinement ───");
+        Console.WriteLine("  Handled inside DipLongGA (60 TPE iterations on the GA's own fitness).");
+        Console.WriteLine($"  Selected genotype fitness (GA scale, held-out): {dlBest.Fitness:F4}");
 
         Console.WriteLine($"\nFrozen genotype:\n  {dlBest}\n");
         File.WriteAllText(genoPath, JsonSerializer.Serialize(DipLongGenotypeDto.From(dlBest, cfg),
@@ -1163,30 +1111,12 @@ static class LongTrainCommands
             : null;
         var best = new SwingLongGA(80, 150, verbose: true, cfg: cfg, btcSeries: slBtcSeries).Run(coins, seed);
 
-        Console.WriteLine("\n─── Bayesian refinement (60 TPE iterations) ───");
-        var slRng = new Random(42);
-        var slBoHistory = new List<(double[] Params, double Fitness)>
-        {
-            (best.ToVector(), best.Fitness)
-        };
-        var slBoResult = BayesianOptimizer.Refine(
-            slBoHistory,
-            SwingLongGenotype.Bounds,
-            v =>
-            {
-                var g  = SwingLongGenotype.FromVector(v);
-                var ts = coins.Where(cd => cd.TrainH1.Length > 0)
-                              .SelectMany(cd => SwingLongSimulator.GetSwingLongReturns(g, cd.TrainH1.Span, cd.TrainM15.Span))
-                              .Select(t => t.Return).ToList();
-                return ts.Count > 0 ? ts.Average() : -1.0;
-            },
-            iterations: 60,
-            rng: slRng);
-        var slBoParams = slBoResult.OrderByDescending(h => h.Fitness).First().Params;
-        var slBoGeno   = SwingLongGenotype.FromVector(slBoParams);
-        slBoGeno.Fitness = slBoResult.OrderByDescending(h => h.Fitness).First().Fitness;
-        if (slBoGeno.Fitness > best.Fitness) { best = slBoGeno; Console.WriteLine($"  TPE improved: {best}"); }
-        else Console.WriteLine($"  GA elite kept");
+        // Post-GA TPE pass removed — see the "Post-GA refinement" note at the top of
+        // commands/TrainCommands.cs. SwingLongGA already runs 60 TPE iterations internally
+        // (SwingLongGA.cs ~:213) against its own Fitness(..., useValidation: false).
+        Console.WriteLine("\n─── Refinement ───");
+        Console.WriteLine("  Handled inside SwingLongGA (60 TPE iterations on the GA's own fitness).");
+        Console.WriteLine($"  Selected genotype fitness (GA scale, held-out): {best.Fitness:F4}");
 
         Console.WriteLine($"\nFrozen genotype:\n  {best}\n");
         File.WriteAllText(genoPath,

@@ -1334,6 +1334,55 @@ static class CombinedBacktest
         if (slFullCoinRet.Count    >= 2) StatisticalTests.PrintReport(slFullCoinRet,    "SwingLong",  gaTrials: 10_000, rng: statRng);
         if (rsFullCoinRet.Count    >= 2) StatisticalTests.PrintReport(rsFullCoinRet,    "RipShort",   gaTrials: 12_000, rng: statRng);
 
+        // ── Holm-Bonferroni Family-Wise Error Rate Correction ────────────────────────
+        // Collect per-strategy p-values from Monte Carlo test and apply correction.
+        var strategyPValues = new List<(string Name, double PValue)>();
+        var mcRng = new Random(42);
+
+        // Strategy order is fixed so the printed table is stable across runs, and so the
+        // p-value vector handed to Holm-Bonferroni is reproducible for a given trade set.
+        var mcInputs = new (string Name, List<(string Label, List<double> Returns)> PerCoin)[]
+        {
+            ("FadeShort", swingFullCoinRet),
+            ("Grid",      gridFullCoinRet),
+            ("FadeLong",  flFullCoinRet),
+            ("DipLong",   dlFullCoinRet),
+            ("SwingLong", slFullCoinRet),
+            ("RipShort",  rsFullCoinRet),
+        };
+
+        foreach (var (name, perCoin) in mcInputs)
+        {
+            if (perCoin.Count < 2) continue;
+            var rets = perCoin.SelectMany(c => c.Returns).ToList();
+            if (rets.Count < 10) continue;
+            strategyPValues.Add((name, MonteCarloTest.Run(rets, permutations: 1000, rng: mcRng).PValue));
+        }
+
+        // Apply Holm-Bonferroni correction and report
+        if (strategyPValues.Count > 0)
+        {
+            Console.WriteLine($"\n{new string('═', 70)}");
+            Console.WriteLine("  HOLM-BONFERRONI FAMILY-WISE ERROR RATE CORRECTION");
+            Console.WriteLine($"{new string('═', 70)}");
+            double uncorrectedFWER = 1.0 - Math.Pow(0.95, strategyPValues.Count);
+            Console.WriteLine($"  Across {strategyPValues.Count} strategies tested at α=0.05:");
+            Console.WriteLine($"  Uncorrected FWER ≈ {uncorrectedFWER:P1} (one in {1.0/uncorrectedFWER:F1} chance of false rejection)");
+            Console.WriteLine($"  ∴ Read the ADJUSTED p-value column below (step-down Holm threshold)\n");
+
+            double[] pVals = strategyPValues.Select(sp => sp.PValue).ToArray();
+            double[] adjPVals = StatisticalTests.HolmBonferroniAdjustedPValues(pVals);
+            bool[] rejected = StatisticalTests.HolmBonferroni(pVals);
+
+            Console.WriteLine($"  {"Strategy",-15} {"Raw p-value",12} {"Adjusted p-val",14} {"Significant",12}");
+            Console.WriteLine($"  {new string('-', 66)}");
+            for (int i = 0; i < strategyPValues.Count; i++)
+            {
+                string sig = rejected[i] ? "✓ YES" : "✗ NO";
+                Console.WriteLine($"  {strategyPValues[i].Name,-15} {pVals[i],12:F4} {adjPVals[i],14:F4} {sig,12}");
+            }
+        }
+
         // Combined portfolio: DSR on full-history returns + WRC across all coin×strategy configs.
         var allFullRet = swingFullCoinRet.Concat(gridFullCoinRet).Concat(flFullCoinRet)
                                          .Concat(dlFullCoinRet).Concat(slFullCoinRet).Concat(rsFullCoinRet)

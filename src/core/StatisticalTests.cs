@@ -308,6 +308,9 @@ public static class StatisticalTests
     // Controls family-wise error rate (FWER) across multiple strategy tests.
     // Given m p-values sorted ascending, the adjusted threshold for the i-th
     // p-value is α/(m-i+1). Returns which hypotheses are rejected at the given α.
+    //
+    // CALL SITE: commands/CombinedBacktest.cs (line ~1345+) — wires per-strategy
+    // Monte Carlo p-values to correct for multiple testing across 6 strategies.
     public static bool[] HolmBonferroni(double[] pValues, double alpha = 0.05)
     {
         int m = pValues.Length;

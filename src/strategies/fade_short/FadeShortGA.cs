@@ -484,6 +484,37 @@ public class FadeShortGA
             population = nextGen;
         }
 
+        // ── Bayesian refinement, LowVol variant ────────────────────────────────
+        // Same rationale as Run's. Note this path MUST use the LowVol bounds and the LowVol
+        // vector reader: BoundsLowVol is a genuinely different box (see FadeShortGenotype), so
+        // refining against the normal Bounds here would propose genotypes outside the region
+        // this variant is defined on and then clamp them back in, biasing toward the boundary.
+        if (_verbose) Console.WriteLine("\n  BO refinement (60 iterations, TPE, LowVol bounds)...");
+        var boSeedLv = eliteIsland
+            .Select(g => (g.ToVector(), g.Fitness))
+            .ToList();
+
+        var boHistoryLv = BayesianOptimizer.Refine(
+            seedObs:    boSeedLv,
+            bounds:     FadeShortGenotype.BoundsLowVol,
+            evaluate:   v => { var g = FadeShortGenotype.FromVectorLowVol(v);
+                               g.Fitness = FitnessFromCache(g, trainCaches, useFolds: true, _cfg);
+                               return g.Fitness; },
+            iterations: 60,
+            rng:        _rng);
+
+        var boChampionLv = boHistoryLv.OrderByDescending(h => h.Fitness).First();
+        var boGenoLv     = FadeShortGenotype.FromVectorLowVol(boChampionLv.Params);
+        boGenoLv.Fitness = FitnessFromCache(boGenoLv, trainCaches, useFolds: true, _cfg);
+
+        if (boGenoLv.Fitness > eliteIsland.Last().Fitness)
+        {
+            eliteIsland[eliteIsland.Count - 1] = boGenoLv;
+            eliteIsland = eliteIsland.OrderByDescending(g => g.Fitness).ToList();
+            if (_verbose) Console.WriteLine($"  BO champion accepted: F={boGenoLv.Fitness:F3}");
+        }
+        else if (_verbose) Console.WriteLine($"  BO champion rejected (F={boGenoLv.Fitness:F3} <= elite floor {eliteIsland.Last().Fitness:F3})");
+
         if (_verbose) Console.WriteLine("\n=== Held-out validation (report-only, not used for selection) ===");
 
         var best = eliteIsland.First();

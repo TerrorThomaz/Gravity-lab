@@ -279,7 +279,7 @@ static class GridCommands
         var port5pct     = Simulator.SimulatePortfolio(tradesWithConf, maxPositionPct: 0.05);
         var portHalfKel  = Simulator.SimulatePortfolio(tradesWithConf, maxPositionPct: 1.0);
         var portExposure = Simulator.SimulatePortfolioExposureCapped(
-            tradesForExposure, Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps);
+            tradesForExposure, Config.MaxTotalExposurePct);
 
         Console.WriteLine($"\n{new string('═', 70)}");
         Console.WriteLine($"  GRID BACKTEST SUMMARY  (val 20%, 1h candles)");

@@ -27,9 +27,8 @@ namespace TradingGA;
 //   1. Slippage is charged EXACTLY ONCE per trade, here, on BOTH sides of the round trip.
 //   2. Config.SlippageBps is its only magnitude authority. Every slippage figure in this
 //      repo is that constant times a dimensionless shape; there is no second knob.
-//   3. SimulatePortfolioExposure* charges NO slippage. Its `slippageBps` parameter is
-//      retained only because call sites this change cannot reach still pass it, and it is
-//      ignored (with a one-time warning).
+//   3. SimulatePortfolioExposure* charges NO slippage and takes no slippage parameter — it
+//      was removed outright, so a call site that still tries to pass one fails to compile.
 //   4. Exchange fees are separate, unchanged, and also charged exactly once — the
 //      portfolio layer has never had a fee term.
 public static class TradeCosts
@@ -84,7 +83,6 @@ public static class TradeCosts
 
 public static class Simulator
 {
-    public const double FeeRoundTrip = 0.21;
 
     public record PortfolioResult(
         double StartBalance,
@@ -136,23 +134,11 @@ public static class Simulator
                 "on paths that would have been liquidated. Add a liquidation model before raising the cap.");
     }
 
-    // ── Deprecated portfolio-level slippage ──────────────────────────────────────────────
-    // Slippage is now charged exactly once, at trade level, by TradeCosts (see the header of
-    // this file for why it has to live there). The `slippageBps` parameters below are retained
-    // ONLY so existing call sites keep compiling, and their value is ignored — applying it here
-    // would re-introduce the double charge this model exists to remove. Warn once so an ignored
-    // argument can never become a silent one.
-    private static bool _slippageBpsWarned;
-
-    private static void WarnDeprecatedSlippageBps(double slippageBps)
-    {
-        if (slippageBps == 0.0 || _slippageBpsWarned) return;
-        _slippageBpsWarned = true;
-        Console.Error.WriteLine(
-            $"[Simulator] slippageBps: {slippageBps} is DEPRECATED and IGNORED. Slippage is charged once " +
-            "per trade inside the simulators via TradeCosts/Config.SlippageBps, so both GA fitness and " +
-            "backtest reporting see it. Drop the argument from the call site.");
-    }
+    // NOTE: these portfolio entry points take NO slippage parameter. Slippage is charged
+    // exactly once, at trade level, by TradeCosts — see the header of this file for why it has
+    // to live there. The parameter was removed rather than deprecated-and-ignored so that any
+    // call site still trying to pass one fails to COMPILE instead of silently handing a number
+    // to something that discards it.
 
     // kellyMultiplier: 1.0 = half-Kelly (default), 2.0 = full Kelly, etc.
     // drawdownBrakeAt: fraction of peak drawdown at which sizing reaches 20% floor.
@@ -219,11 +205,9 @@ public static class Simulator
         double startBalance        = 100.0,
         double drawdownBrakeAt     = 0.15,
         double kellyMultiplier     = 1.0,
-        double maxPositionFrac     = 0.15,  // hard cap per position (e.g. 0.05 = 5% max each)
-        double slippageBps         = 0.0)   // DEPRECATED and IGNORED — see WarnDeprecatedSlippageBps
+        double maxPositionFrac     = 0.15)  // hard cap per position (e.g. 0.05 = 5% max each)
     {
         GuardExposureCap(maxTotalExposurePct);
-        WarnDeprecatedSlippageBps(slippageBps);
 
         if (trades.Count == 0) return new PortfolioResult(startBalance, startBalance, 0, startBalance, 0, 0, 0, 0, -1);
 
@@ -396,11 +380,9 @@ public static class Simulator
         double confLossCapMax           = 1.0,
         double profitProtectThreshold   = 1.0,   // portfolio gain fraction that arms protection; 1.0 = disabled
         double profitProtectDrawback    = 0.10,  // drawback from peak that triggers protection
-        double profitProtectFactor      = 1.0,   // size multiplier in protection mode; 1.0 = no reduction
-        double slippageBps              = 0.0)   // DEPRECATED and IGNORED — see WarnDeprecatedSlippageBps
+        double profitProtectFactor      = 1.0)   // size multiplier in protection mode; 1.0 = no reduction
     {
         GuardExposureCap(maxTotalExposurePct);
-        WarnDeprecatedSlippageBps(slippageBps);
 
         if (trades.Count == 0) return new PortfolioResult(startBalance, startBalance, 0, startBalance, 0, 0, 0, 0, -1);
 
@@ -481,8 +463,7 @@ public static class Simulator
         double startBalance        = 100.0,
         double drawdownBrakeAt     = 0.15,
         double kellyMultiplier     = 1.0,
-        double maxPositionFrac     = 0.15,  // forwarded, not defaulted away — see below
-        double slippageBps         = 0.0)   // DEPRECATED and IGNORED — see WarnDeprecatedSlippageBps
+        double maxPositionFrac     = 0.15)  // forwarded, not defaulted away — see below
     {
         GuardExposureCap(maxTotalExposurePct);
 
@@ -498,11 +479,9 @@ public static class Simulator
         // kellyMultiplier is already folded into `eff` above, so it must be 1.0 here or it
         // would be applied twice. maxPositionFrac is forwarded explicitly: omitting it
         // silently substituted this overload's callers with the inner overload's defaults.
-        // slippageBps is forwarded only so the deprecation warning fires once at the outermost
-        // call site; the inner overload ignores it, as does this one.
         return SimulatePortfolioExposureCapped(
             adapted, maxTotalExposurePct, startBalance, drawdownBrakeAt,
-            kellyMultiplier: 1.0, maxPositionFrac: maxPositionFrac, slippageBps: slippageBps);
+            kellyMultiplier: 1.0, maxPositionFrac: maxPositionFrac);
     }
 
     // Time-normalised Sharpe. candleCount = number of 5m-equivalent candles in the window;

@@ -41,7 +41,7 @@ static class Config
     // trade, inside the simulators via TradeCosts, so GA fitness and backtest reporting price
     // the same trade identically — see the header of src/core/Simulator.cs for why trade level
     // is the only placement that achieves that. The portfolio layer no longer charges it, and
-    // its leftover `slippageBps` parameters are ignored.
+    // the portfolio entry points take no slippage parameter at all.
     //
     // Changing this number changes the objective the GAs select on. Genotypes trained under a
     // different value are not comparable and must be retrained. Results recorded before

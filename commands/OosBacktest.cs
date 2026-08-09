@@ -749,8 +749,8 @@ static class OosBacktest
                 OosStrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG), t.Strategy))
             .ToList();
 
-        var port5cap  = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
-        var portKelly = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps);
+        var port5cap  = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+        var portKelly = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct);
 
         void PrintPort(string label, Simulator.PortfolioResult p)
         {
@@ -768,7 +768,7 @@ static class OosBacktest
         // information printed alongside them, never in place of them.
         GuardedPortfolio.PrintComparison(
             "OOS portfolio (never-seen coins, full history)",
-            allTradesGuardInput, guardCtx, Config.MaxTotalExposurePct, Config.SlippageBps);
+            allTradesGuardInput, guardCtx, Config.MaxTotalExposurePct);
 
         if (allTrades.Count >= 2)
         {
@@ -872,7 +872,7 @@ static class OosBacktest
             Console.WriteLine($"  Calmar:       {Simulator.CalmarRatio(highVolRet):F2}");
             var hvPort = Simulator.SimulatePortfolioExposureCapped(
                 highVolTrades.Select(t => (t.Time, t.Return, t.Conf, TimeSpan.FromHours(48))).ToList(),
-                Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
+                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
             Console.WriteLine($"  Portfolio:    €{hvPort.EndBalance:F2}  ({(hvPort.EndBalance - 100) / 100 * 100:+0.0;-0.0}%)  DD={hvPort.MaxDrawdownPct:F1}%");
             Console.WriteLine();
             Console.WriteLine($"  Per-coin (sorted by Sharpe):");
@@ -913,7 +913,7 @@ static class OosBacktest
             Console.WriteLine($"  Calmar:       {Simulator.CalmarRatio(lowVolRet):F2}");
             var lvPort = Simulator.SimulatePortfolioExposureCapped(
                 lowVolTrades.Select(t => (t.Time, t.Return, t.Conf, TimeSpan.FromHours(48))).ToList(),
-                Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
+                Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
             Console.WriteLine($"  Portfolio:    €{lvPort.EndBalance:F2}  ({(lvPort.EndBalance - 100) / 100 * 100:+0.0;-0.0}%)  DD={lvPort.MaxDrawdownPct:F1}%");
             Console.WriteLine();
             Console.WriteLine($"  Per-coin (sorted by Sharpe):");
@@ -1403,8 +1403,8 @@ static class OosBacktest
             .Select(t => (t.Time, t.Return, t.Conf, AcHold(t.Strategy, swingG, gridG, flG, dlG, rsG)))
             .ToList();
 
-        var port5cap = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
-        var portKel  = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps);
+        var port5cap = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+        var portKel  = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct);
 
         void PrintSim(string label, Simulator.PortfolioResult p)
         {

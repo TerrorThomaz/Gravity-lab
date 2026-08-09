@@ -58,7 +58,7 @@ public class GuardedPortfolioTests
 
         var fourTuple = raw.Select(t => (t.Time, t.Return, t.Conf, t.Hold)).ToList();
         var expected  = Simulator.SimulatePortfolioExposureCapped(
-            fourTuple, 0.30, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
+            fourTuple, 0.30, maxPositionFrac: 0.05);
 
         var off = GuardedPortfolio.PortfolioGuardConfig.Off;
         var actual = Simulator.SimulatePortfolioExposureCapped(
@@ -69,8 +69,7 @@ public class GuardedPortfolioTests
             confLossCapMax:         off.ConfLossCapMax,
             profitProtectThreshold: off.ProfitProtectThreshold,
             profitProtectDrawback:  off.ProfitProtectDrawback,
-            profitProtectFactor:    off.ProfitProtectFactor,
-            slippageBps:            Config.SlippageBps);
+            profitProtectFactor:    off.ProfitProtectFactor);
 
         Assert.Equal(expected.EndBalance,     actual.EndBalance,     10);
         Assert.Equal(expected.MaxDrawdownPct, actual.MaxDrawdownPct, 10);
@@ -180,7 +179,7 @@ public class GuardedPortfolioTests
             Tr(48, 10.0, 0.04, "grid"),
         };
 
-        var r = GuardedPortfolio.Run(raw, ctx, 0.30, Config.SlippageBps);
+        var r = GuardedPortfolio.Run(raw, ctx, 0.30);
 
         Assert.Equal(3, r.UnguardedTrades);
         Assert.Equal(3, r.GuardedTrades);
@@ -194,7 +193,7 @@ public class GuardedPortfolioTests
         // And the unguarded column must still equal the plain headline simulation.
         var headline = Simulator.SimulatePortfolioExposureCapped(
             raw.Select(t => (t.Time, t.Return, t.Conf, t.Hold)).ToList(),
-            0.30, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
+            0.30, maxPositionFrac: 0.05);
         Assert.Equal(headline.EndBalance, r.UnguardedFivePct.EndBalance, 10);
     }
 
@@ -215,7 +214,7 @@ public class GuardedPortfolioTests
         };
 
         string output = Capture(() =>
-            GuardedPortfolio.PrintComparison("UnitTest", raw, ctx, 0.30, Config.SlippageBps));
+            GuardedPortfolio.PrintComparison("UnitTest", raw, ctx, 0.30));
 
         Assert.Contains("Unguarded", output);
         Assert.Contains("Guarded",   output);
@@ -223,7 +222,7 @@ public class GuardedPortfolioTests
         Assert.Contains("Kelly(15%)",      output);
 
         // Both magnitudes must actually be printed, not just the headings.
-        var r = GuardedPortfolio.Run(raw, ctx, 0.30, Config.SlippageBps);
+        var r = GuardedPortfolio.Run(raw, ctx, 0.30);
         Assert.Contains(GuardedPortfolio.ReturnPct(r.UnguardedFivePct).ToString("+0.0;-0.0"), output);
         Assert.Contains(GuardedPortfolio.ReturnPct(r.GuardedFivePct).ToString("+0.0;-0.0"),   output);
 
@@ -236,7 +235,7 @@ public class GuardedPortfolioTests
     public void PrintComparison_WithNoGuard_SaysTheNumbersAreUnguarded()
     {
         string output = Capture(() =>
-            GuardedPortfolio.PrintComparison("UnitTest", new List<GuardedPortfolio.Trade>(), null, 0.30, 10.0));
+            GuardedPortfolio.PrintComparison("UnitTest", new List<GuardedPortfolio.Trade>(), null, 0.30));
         Assert.Contains("UNGUARDED", output);
     }
 

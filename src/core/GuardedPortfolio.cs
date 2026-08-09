@@ -134,8 +134,7 @@ public static class GuardedPortfolio
     public static SideBySide Run(
         IReadOnlyList<Trade> trades,
         Context ctx,
-        double maxTotalExposurePct,
-        double slippageBps)
+        double maxTotalExposurePct)
     {
         var unguarded = Passthrough(trades);
         var guarded   = Apply(trades, ctx.Session);
@@ -144,17 +143,16 @@ public static class GuardedPortfolio
 
         return new SideBySide(
             unguarded.Count, guarded.Count,
-            Sim(unguarded, off, maxTotalExposurePct, slippageBps, maxPositionFrac: 0.05),
-            Sim(guarded,   on,  maxTotalExposurePct, slippageBps, maxPositionFrac: 0.05),
-            Sim(unguarded, off, maxTotalExposurePct, slippageBps, maxPositionFrac: 0.15),
-            Sim(guarded,   on,  maxTotalExposurePct, slippageBps, maxPositionFrac: 0.15));
+            Sim(unguarded, off, maxTotalExposurePct, maxPositionFrac: 0.05),
+            Sim(guarded,   on,  maxTotalExposurePct, maxPositionFrac: 0.05),
+            Sim(unguarded, off, maxTotalExposurePct, maxPositionFrac: 0.15),
+            Sim(guarded,   on,  maxTotalExposurePct, maxPositionFrac: 0.15));
     }
 
     static Simulator.PortfolioResult Sim(
         List<(DateTime, double, double, TimeSpan, string)> trades,
         PortfolioGuardConfig cfg,
         double maxTotalExposurePct,
-        double slippageBps,
         double maxPositionFrac) =>
         Simulator.SimulatePortfolioExposureCapped(
             trades,
@@ -165,8 +163,7 @@ public static class GuardedPortfolio
             confLossCapMax:               cfg.ConfLossCapMax,
             profitProtectThreshold:       cfg.ProfitProtectThreshold,
             profitProtectDrawback:        cfg.ProfitProtectDrawback,
-            profitProtectFactor:          cfg.ProfitProtectFactor,
-            slippageBps:                  slippageBps);
+            profitProtectFactor:          cfg.ProfitProtectFactor);
 
     public static double ReturnPct(Simulator.PortfolioResult p) =>
         p.StartBalance > 0 ? (p.EndBalance - p.StartBalance) / p.StartBalance * 100.0 : 0.0;
@@ -178,8 +175,7 @@ public static class GuardedPortfolio
         string title,
         IReadOnlyList<Trade> trades,
         Context? ctx,
-        double maxTotalExposurePct,
-        double slippageBps)
+        double maxTotalExposurePct)
     {
         Console.WriteLine($"\n── {title}: DynamicGuard applied vs not ──────────────────────────────");
 
@@ -194,7 +190,7 @@ public static class GuardedPortfolio
             return;
         }
 
-        var r = Run(trades, ctx, maxTotalExposurePct, slippageBps);
+        var r = Run(trades, ctx, maxTotalExposurePct);
 
         Console.WriteLine($"  Guard genotype: {ctx.Genotype}");
         Console.WriteLine($"  Guarded set:    {r.GuardedTrades} trades ({r.TradesRemoved} removed by the ATR entry gate; " +

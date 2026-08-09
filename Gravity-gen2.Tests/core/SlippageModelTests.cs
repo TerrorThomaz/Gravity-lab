@@ -61,15 +61,15 @@ public class SlippageModelTests
         // GA path: fitness sees this number and nothing else.
         double gaRet = grossPct - FadeShortSimulator.TradeCost(isStop: false, atr, entryPx);
 
-        // Portfolio path: the identical trade, priced by the reporting layer. The call site
-        // still passes slippageBps the way production code does today.
+        // Portfolio path: the identical trade, priced by the reporting layer. That layer takes
+        // no slippage parameter at all any more, so it cannot re-charge what the trade already paid.
         var trades = new List<(DateTime, double, double, TimeSpan)>
         {
             (T0, gaRet, 0.05, TimeSpan.FromHours(24)),
         };
         var res = Simulator.SimulatePortfolioExposureCapped(
             trades, maxTotalExposurePct: 0.30, startBalance: 100.0,
-            maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
+            maxPositionFrac: 0.05);
 
         double posEur           = res.AvgPositionEur;
         double portfolioNetPct  = (res.EndBalance - 100.0) / posEur * 100.0;
@@ -118,45 +118,8 @@ public class SlippageModelTests
     }
 
     // ── 3. The portfolio layer charges nothing — all three overloads ─────────────────────
-    [Fact]
-    public void PortfolioLayer_IgnoresSlippageBps_PlainOverload()
-    {
-        var trades = new List<(DateTime, double, double, TimeSpan)>
-        {
-            (T0,                    5.0, 0.5, TimeSpan.FromHours(48)),
-            (T0.AddDays(1),         3.0, 0.5, TimeSpan.FromHours(48)),
-            (T0.AddDays(2),        -4.0, 0.5, TimeSpan.FromHours(48)),
-        };
-        var off = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: 0.0);
-        var on  = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: Config.SlippageBps);
-        Assert.Equal(off.EndBalance, on.EndBalance, 12);
-    }
 
-    [Fact]
-    public void PortfolioLayer_IgnoresSlippageBps_StrategyAwareOverload()
-    {
-        var trades = new List<(DateTime, double, double, TimeSpan, string)>
-        {
-            (T0,            5.0, 0.5, TimeSpan.FromHours(48), "fade_short"),
-            (T0.AddDays(1), 3.0, 0.5, TimeSpan.FromHours(48), "diplong"),
-        };
-        var off = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: 0.0);
-        var on  = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: Config.SlippageBps);
-        Assert.Equal(off.EndBalance, on.EndBalance, 12);
-    }
 
-    [Fact]
-    public void PortfolioLayer_IgnoresSlippageBps_RiskCapOverload()
-    {
-        var trades = new List<(DateTime, double, double, double, TimeSpan)>
-        {
-            (T0,            5.0, 0.5, 0.05, TimeSpan.FromHours(48)),
-            (T0.AddDays(1), 3.0, 0.5, 0.05, TimeSpan.FromHours(48)),
-        };
-        var off = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: 0.0);
-        var on  = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: Config.SlippageBps);
-        Assert.Equal(off.EndBalance, on.EndBalance, 12);
-    }
 
     // ── 4. Every simulator shares the one model — no private slippage constants left ─────
     [Theory]

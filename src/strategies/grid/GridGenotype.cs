@@ -47,25 +47,47 @@ public class GridGenotype
 
     public double Fitness { get; set; } = double.MinValue;
 
+    // ── Seeded initialisation ────────────────────────────────────────────────────
+    // Probability that a seeded Random draw returns a LOOSE mutant of the seed
+    // rather than an independent uniform draw. Matches RegimeRouterGenotype.Random,
+    // which sits on the identical GA Run skeleton; one number across the whole
+    // strategy suite keeps the initial-diversity mix comparable between GAs.
+    //
+    // Resulting population mix at popSize 80 with a seed (the GA's Run block
+    // installs the clamped seed at index 0 and tight rate-0.25 mutants at 1..16):
+    //   1  exact seed
+    //   16 tight  (rate 0.25) mutants  — the seed's immediate neighbourhood
+    //   ~19 loose (rate 0.50) mutants  — 30% of the remaining 63 slots
+    //   ~44 fully independent random genotypes
+    // ≈ 45% anchored on the incumbent, ≈ 55% genuine exploration. Before this
+    // change the last 63 slots were byte-identical copies of the seed, leaving
+    // at most 17 distinct starting points (78.75% duplicates) — a hill-climb,
+    // not a GA.
+    private const double SeedMutantProbability = 0.3;
+
     // adxCeiling: dynamic upper bound loaded from swing genotype at train time.
-    // Pass swing.AdxThreshold − 1 so the two strategies never overlap.
+    // Pass swing.AdxThreshold − 1 so the two strategies never overlap. The
+    // seed-mutant branch threads it through both the clamp and the mutation so a
+    // seeded draw can never breach the grid/swing regime partition either.
     public static GridGenotype Random(System.Random rng, GridGenotype? seed = null, double adxCeiling = 20.0)
     {
-        T Pick<T>(T random, T seeded) => seed == null ? random : seeded;
+        if (seed != null && rng.NextDouble() < SeedMutantProbability)
+            return seed.ClampToBounds(adxCeiling).Mutate(rng, 0.5, adxCeiling);
+
         double adxMax = Math.Min(adxCeiling, 20.0);
         double adxMin = 8.0;
         return new()
         {
-            AdxThreshold     = Pick(adxMin + rng.NextDouble() * (adxMax - adxMin), seed?.AdxThreshold ?? Math.Min(16.0, adxMax)),
-            BbPeriod         = Pick(rng.Next(10, 51),                              seed?.BbPeriod     ?? 20),
-            BbWidthMaxPct    = Pick(0.8  + rng.NextDouble() * 1.7,                seed?.BbWidthMaxPct ?? 1.8),
-            EmaPeriod        = Pick(rng.Next(10, 101),                             seed?.EmaPeriod    ?? 50),
-            GridStepAtrMult  = Pick(0.3  + rng.NextDouble() * 1.7,                seed?.GridStepAtrMult   ?? 0.8),
-            GridLevels       = Pick(rng.Next(1, 4),                                seed?.GridLevels        ?? 2),
-            TakeProfitAtrMult= Pick(0.5  + rng.NextDouble() * 2.5,                seed?.TakeProfitAtrMult ?? 1.5),
-            HardStopAtrMult  = Pick(1.5  + rng.NextDouble() * 1.5,                seed?.HardStopAtrMult   ?? 2.2),
-            BailOutAtrMult   = Pick(1.0  + rng.NextDouble() * 3.0,                seed?.BailOutAtrMult    ?? 2.5),
-            MaxHoldCandles   = Pick(rng.Next(24, 201),                             seed?.MaxHoldCandles    ?? 96),
+            AdxThreshold     = adxMin + rng.NextDouble() * (adxMax - adxMin),
+            BbPeriod         = rng.Next(10, 51),
+            BbWidthMaxPct    = 0.8  + rng.NextDouble() * 1.7,
+            EmaPeriod        = rng.Next(10, 101),
+            GridStepAtrMult  = 0.3  + rng.NextDouble() * 1.7,
+            GridLevels       = rng.Next(1, 4),
+            TakeProfitAtrMult= 0.5  + rng.NextDouble() * 2.5,
+            HardStopAtrMult  = 1.5  + rng.NextDouble() * 1.5,
+            BailOutAtrMult   = 1.0  + rng.NextDouble() * 3.0,
+            MaxHoldCandles   = rng.Next(24, 201),
         };
     }
 

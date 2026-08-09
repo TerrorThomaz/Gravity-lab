@@ -42,26 +42,46 @@ public class FadeLongGenotype
 
     public double Fitness { get; set; } = double.MinValue;
 
+    // ── Seeded initialisation ────────────────────────────────────────────────────
+    // Probability that a seeded Random draw returns a LOOSE mutant of the seed
+    // rather than an independent uniform draw. Matches RegimeRouterGenotype.Random,
+    // which sits on the identical GA Run skeleton; one number across the whole
+    // strategy suite keeps the initial-diversity mix comparable between GAs.
+    //
+    // Resulting population mix at popSize 80 with a seed (the GA's Run block
+    // installs the clamped seed at index 0 and tight rate-0.25 mutants at 1..16):
+    //   1  exact seed
+    //   16 tight  (rate 0.25) mutants  — the seed's immediate neighbourhood
+    //   ~19 loose (rate 0.50) mutants  — 30% of the remaining 63 slots
+    //   ~44 fully independent random genotypes
+    // ≈ 45% anchored on the incumbent, ≈ 55% genuine exploration. Before this
+    // change the last 63 slots were byte-identical copies of the seed, leaving
+    // at most 17 distinct starting points (78.75% duplicates) — a hill-climb,
+    // not a GA.
+    private const double SeedMutantProbability = 0.3;
+
     public static FadeLongGenotype Random(System.Random rng, FadeLongGenotype? seed = null)
     {
-        T Seed<T>(T random, T seeded) => seed == null ? random : seeded;
+        if (seed != null && rng.NextDouble() < SeedMutantProbability)
+            return seed.ClampToBounds().Mutate(rng, 0.5);
+
         return new()
         {
-            RegimePeriod     = Seed(rng.Next(100, 301),                   seed?.RegimePeriod     ?? 200),
-            EmaPeriod        = Seed(rng.Next(20, 101),                    seed?.EmaPeriod        ?? 50),
-            AdxThreshold     = Seed(22.0 + rng.NextDouble() * 23.0,       seed?.AdxThreshold     ?? 27.0),
-            LookbackCandles  = Seed(rng.Next(12, 121),                    seed?.LookbackCandles  ?? 48),
-            RsiOversold      = Seed(20.0 + rng.NextDouble() * 20.0,       seed?.RsiOversold      ?? 30.0),
-            RsiDivThreshold  = Seed(5.0  + rng.NextDouble() * 10.0,       seed?.RsiDivThreshold  ?? 8.0),
-            MinDropAtrMult   = Seed(5.0  + rng.NextDouble() * 7.0,        seed?.MinDropAtrMult   ?? 7.0),
-            StopLossAtrMult           = Seed(0.3 + rng.NextDouble() * 1.7,  seed?.StopLossAtrMult           ?? 0.8),
-            MaeAtrMult                = Seed(1.5 + rng.NextDouble() * 2.5,  seed?.MaeAtrMult                ?? 2.5),
-            TakeProfitAtrMult         = Seed(2.0 + rng.NextDouble() * 13.0, seed?.TakeProfitAtrMult         ?? 7.0),
-            TrailingActivationAtrMult = Seed(1.0 + rng.NextDouble() * 3.0,  seed?.TrailingActivationAtrMult ?? 2.0),
-            TrailingStopAtrMult       = Seed(1.0 + rng.NextDouble() * 4.0,  seed?.TrailingStopAtrMult       ?? 2.0),
-            MaxHoldCandles            = Seed(rng.Next(24, 121),              seed?.MaxHoldCandles            ?? 42),
-            PositionSizePct           = Seed(0.01 + rng.NextDouble() * 0.04, seed?.PositionSizePct           ?? 0.03),
-            RegimeSustainedBars  = Seed(rng.Next(10, 101),                   seed?.RegimeSustainedBars  ?? 30),
+            RegimePeriod     = rng.Next(100, 301),
+            EmaPeriod        = rng.Next(20, 101),
+            AdxThreshold     = 22.0 + rng.NextDouble() * 23.0,
+            LookbackCandles  = rng.Next(12, 121),
+            RsiOversold      = 20.0 + rng.NextDouble() * 20.0,
+            RsiDivThreshold  = 5.0  + rng.NextDouble() * 10.0,
+            MinDropAtrMult   = 5.0  + rng.NextDouble() * 7.0,
+            StopLossAtrMult           = 0.3 + rng.NextDouble() * 1.7,
+            MaeAtrMult                = 1.5 + rng.NextDouble() * 2.5,
+            TakeProfitAtrMult         = 2.0 + rng.NextDouble() * 13.0,
+            TrailingActivationAtrMult = 1.0 + rng.NextDouble() * 3.0,
+            TrailingStopAtrMult       = 1.0 + rng.NextDouble() * 4.0,
+            MaxHoldCandles            = rng.Next(24, 121),
+            PositionSizePct           = 0.01 + rng.NextDouble() * 0.04,
+            RegimeSustainedBars  = rng.Next(10, 101),
         };
     }
 

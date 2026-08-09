@@ -48,25 +48,45 @@ public class DipLongGenotype
 
     public double Fitness { get; set; } = double.MinValue;
 
+    // ── Seeded initialisation ────────────────────────────────────────────────────
+    // Probability that a seeded Random* draw returns a LOOSE mutant of the seed
+    // rather than an independent uniform draw. Matches RegimeRouterGenotype.Random,
+    // which sits on the identical GA Run skeleton; one number across the whole
+    // strategy suite keeps the initial-diversity mix comparable between GAs.
+    //
+    // Resulting population mix at popSize 80 with a seed (the GA's Run block
+    // installs the clamped seed at index 0 and tight rate-0.25 mutants at 1..16):
+    //   1  exact seed
+    //   16 tight  (rate 0.25) mutants  — the seed's immediate neighbourhood
+    //   ~19 loose (rate 0.50) mutants  — 30% of the remaining 63 slots
+    //   ~44 fully independent random genotypes
+    // ≈ 45% anchored on the incumbent, ≈ 55% genuine exploration. Before this
+    // change the last 63 slots were byte-identical copies of the seed, leaving
+    // at most 17 distinct starting points (78.75% duplicates) — a hill-climb,
+    // not a GA.
+    private const double SeedMutantProbability = 0.3;
+
     public static DipLongGenotype Random(System.Random rng, DipLongGenotype? seed = null)
     {
-        T Seed<T>(T random, T seeded) => seed == null ? random : seeded;
+        if (seed != null && rng.NextDouble() < SeedMutantProbability)
+            return seed.ClampToBounds().Mutate(rng, 0.5);
+
         return new()
         {
-            RegimeLongEmaPeriod = Seed(rng.Next(100, 501),                    seed?.RegimeLongEmaPeriod ?? 200),
-            RegimeSlopeLookback = Seed(rng.Next(10, 61),                      seed?.RegimeSlopeLookback ?? 30),
-            EmaPeriod           = Seed(rng.Next(20, 101),                     seed?.EmaPeriod           ?? 50),
-            AdxThreshold        = Seed(15.0 + rng.NextDouble() * 20.0,        seed?.AdxThreshold        ?? 25.0),
-            RsiDipThreshold     = Seed(35.0 + rng.NextDouble() * 20.0,        seed?.RsiDipThreshold     ?? 48.0),
-            StopLossAtrMult           = Seed(0.5 + rng.NextDouble() * 1.5,    seed?.StopLossAtrMult           ?? 0.8),
-            TakeProfitAtrMult         = Seed(2.0 + rng.NextDouble() * 13.0,   seed?.TakeProfitAtrMult         ?? 7.0),
-            TrailingActivationAtrMult = Seed(1.5 + rng.NextDouble() * 3.5,    seed?.TrailingActivationAtrMult ?? 2.5),
-            TrailingStopAtrMult       = Seed(1.0 + rng.NextDouble() * 4.0,    seed?.TrailingStopAtrMult       ?? 2.0),
-            MaxHoldCandles            = Seed(rng.Next(10, 61),                 seed?.MaxHoldCandles            ?? 30),
-            PositionSizePct           = Seed(0.01 + rng.NextDouble() * 0.04,  seed?.PositionSizePct           ?? 0.03),
-            TimeStopBars              = Seed(rng.Next(5, 51),                  seed?.TimeStopBars              ?? 999),
-            TimeStopLossPct           = Seed(0.02 + rng.NextDouble() * 0.23,  seed?.TimeStopLossPct           ?? 0.99),
-            RegimeSustainedBars  = Seed(rng.Next(10, 101),                    seed?.RegimeSustainedBars  ?? 30),
+            RegimeLongEmaPeriod = rng.Next(100, 501),
+            RegimeSlopeLookback = rng.Next(10, 61),
+            EmaPeriod           = rng.Next(20, 101),
+            AdxThreshold        = 15.0 + rng.NextDouble() * 20.0,
+            RsiDipThreshold     = 35.0 + rng.NextDouble() * 20.0,
+            StopLossAtrMult           = 0.5 + rng.NextDouble() * 1.5,
+            TakeProfitAtrMult         = 2.0 + rng.NextDouble() * 13.0,
+            TrailingActivationAtrMult = 1.5 + rng.NextDouble() * 3.5,
+            TrailingStopAtrMult       = 1.0 + rng.NextDouble() * 4.0,
+            MaxHoldCandles            = rng.Next(10, 61),
+            PositionSizePct           = 0.01 + rng.NextDouble() * 0.04,
+            TimeStopBars              = rng.Next(5, 51),
+            TimeStopLossPct           = 0.02 + rng.NextDouble() * 0.23,
+            RegimeSustainedBars  = rng.Next(10, 101),
         };
     }
 
@@ -209,26 +229,74 @@ public class DipLongGenotype
         "RegimeSustainedBars",
     ];
 
+    // Same seeded-init contract as Random (see SeedMutantProbability), but the
+    // seed-mutant branch is confined to BoundsHighVol via ClampToBoundsHighVol +
+    // MutateHighVol — never the normal-regime Mutate, which would propose
+    // genotypes outside the region the high-vol variant is defined on.
     public static DipLongGenotype RandomHighVol(System.Random rng, DipLongGenotype? seed = null)
     {
-        T Seed<T>(T random, T seeded) => seed == null ? random : seeded;
+        if (seed != null && rng.NextDouble() < SeedMutantProbability)
+            return seed.MutateHighVol(rng, 0.5);
+
         return new()
         {
-            RegimeLongEmaPeriod = Seed(rng.Next(150, 401),                    seed?.RegimeLongEmaPeriod ?? 250),
-            RegimeSlopeLookback = Seed(rng.Next(15, 46),                      seed?.RegimeSlopeLookback ?? 25),
-            EmaPeriod           = Seed(rng.Next(30, 81),                      seed?.EmaPeriod           ?? 50),
-            AdxThreshold        = Seed(30.0 + rng.NextDouble() * 20.0,        seed?.AdxThreshold        ?? 38.0),
-            RsiDipThreshold     = Seed(38.0 + rng.NextDouble() * 14.0,        seed?.RsiDipThreshold     ?? 45.0),
-            StopLossAtrMult           = Seed(1.5 + rng.NextDouble() * 1.0,    seed?.StopLossAtrMult           ?? 2.0),
-            TakeProfitAtrMult         = Seed(5.0 + rng.NextDouble() * 10.0,   seed?.TakeProfitAtrMult         ?? 12.0),
-            TrailingActivationAtrMult = Seed(2.5 + rng.NextDouble() * 2.5,    seed?.TrailingActivationAtrMult ?? 3.5),
-            TrailingStopAtrMult       = Seed(2.0 + rng.NextDouble() * 3.0,    seed?.TrailingStopAtrMult       ?? 3.0),
-            MaxHoldCandles            = Seed(rng.Next(24, 73),                 seed?.MaxHoldCandles            ?? 40),
-            PositionSizePct           = Seed(0.03 + rng.NextDouble() * 0.04,  seed?.PositionSizePct           ?? 0.05),
-            TimeStopBars              = Seed(rng.Next(15, 46),                 seed?.TimeStopBars              ?? 30),
-            TimeStopLossPct           = Seed(0.08 + rng.NextDouble() * 0.12,  seed?.TimeStopLossPct           ?? 0.15),
-            RegimeSustainedBars  = Seed(rng.Next(15, 81),                     seed?.RegimeSustainedBars  ?? 40),
+            RegimeLongEmaPeriod = rng.Next(150, 401),
+            RegimeSlopeLookback = rng.Next(15, 46),
+            EmaPeriod           = rng.Next(30, 81),
+            AdxThreshold        = 30.0 + rng.NextDouble() * 20.0,
+            RsiDipThreshold     = 38.0 + rng.NextDouble() * 14.0,
+            StopLossAtrMult           = 1.5 + rng.NextDouble() * 1.0,
+            TakeProfitAtrMult         = 5.0 + rng.NextDouble() * 10.0,
+            TrailingActivationAtrMult = 2.5 + rng.NextDouble() * 2.5,
+            TrailingStopAtrMult       = 2.0 + rng.NextDouble() * 3.0,
+            MaxHoldCandles            = rng.Next(24, 73),
+            PositionSizePct           = 0.03 + rng.NextDouble() * 0.04,
+            TimeStopBars              = rng.Next(15, 46),
+            TimeStopLossPct           = 0.08 + rng.NextDouble() * 0.12,
+            RegimeSustainedBars  = rng.Next(15, 81),
         };
+    }
+
+    // ── High-vol variant operators ───────────────────────────────────────────────
+    // The low-vol variant already had ClampToBoundsLowVol / MutateLowVol; the
+    // high-vol variant had only BoundsHighVol, so seeded RandomHighVol had no
+    // in-region mutation operator to call. Both are driven off the BoundsHighVol
+    // table so they can never drift out of the high-vol region.
+    public static DipLongGenotype FromVectorHighVol(double[] v) => new()
+    {
+        RegimeLongEmaPeriod       = (int)Math.Clamp(Math.Round(v[0]),  BoundsHighVol[0, 0],  BoundsHighVol[0, 1]),
+        RegimeSlopeLookback       = (int)Math.Clamp(Math.Round(v[1]),  BoundsHighVol[1, 0],  BoundsHighVol[1, 1]),
+        EmaPeriod                 = (int)Math.Clamp(Math.Round(v[2]),  BoundsHighVol[2, 0],  BoundsHighVol[2, 1]),
+        AdxThreshold              = Math.Clamp(v[3],  BoundsHighVol[3, 0],  BoundsHighVol[3, 1]),
+        RsiDipThreshold           = Math.Clamp(v[4],  BoundsHighVol[4, 0],  BoundsHighVol[4, 1]),
+        StopLossAtrMult           = Math.Clamp(v[5],  BoundsHighVol[5, 0],  BoundsHighVol[5, 1]),
+        TakeProfitAtrMult         = Math.Clamp(v[6],  BoundsHighVol[6, 0],  BoundsHighVol[6, 1]),
+        TrailingActivationAtrMult = Math.Clamp(v[7],  BoundsHighVol[7, 0],  BoundsHighVol[7, 1]),
+        TrailingStopAtrMult       = Math.Clamp(v[8],  BoundsHighVol[8, 0],  BoundsHighVol[8, 1]),
+        MaxHoldCandles            = (int)Math.Clamp(Math.Round(v[9]),  BoundsHighVol[9, 0],  BoundsHighVol[9, 1]),
+        PositionSizePct           = Math.Clamp(v[10], BoundsHighVol[10, 0], BoundsHighVol[10, 1]),
+        TimeStopBars              = (int)Math.Clamp(Math.Round(v[11]), BoundsHighVol[11, 0], BoundsHighVol[11, 1]),
+        TimeStopLossPct           = Math.Clamp(v[12], BoundsHighVol[12, 0], BoundsHighVol[12, 1]),
+        RegimeSustainedBars       = (int)Math.Clamp(Math.Round(v[13]), BoundsHighVol[13, 0], BoundsHighVol[13, 1]),
+    };
+
+    public DipLongGenotype ClampToBoundsHighVol()
+    {
+        var g = FromVectorHighVol(ToVector());
+        g.Fitness = Fitness;
+        return g;
+    }
+
+    public DipLongGenotype MutateHighVol(System.Random rng, double rate)
+    {
+        double[] v = ClampToBoundsHighVol().ToVector();
+        for (int i = 0; i < v.Length; i++)
+        {
+            if (rng.NextDouble() > rate) continue;
+            double lo = BoundsHighVol[i, 0], hi = BoundsHighVol[i, 1];
+            v[i] = Math.Clamp(v[i] + (rng.NextDouble() - 0.5) * (hi - lo) * 0.2, lo, hi);
+        }
+        return FromVectorHighVol(v);
     }
 
     public double[] ToVector() =>
@@ -278,25 +346,30 @@ public class DipLongGenotype
         RegimeSustainedBars       = Math.Clamp((int)Math.Round(v[13]), 10, 100),
     };
 
+    // Same seeded-init contract as Random (see SeedMutantProbability), but the
+    // seed-mutant branch uses the low-vol clamp + mutate pair so it stays inside
+    // BoundsLowVol.
     public static DipLongGenotype RandomLowVol(System.Random rng, DipLongGenotype? seed = null)
     {
-        T Seed<T>(T random, T seeded) => seed == null ? random : seeded;
+        if (seed != null && rng.NextDouble() < SeedMutantProbability)
+            return seed.ClampToBoundsLowVol().MutateLowVol(rng, 0.5);
+
         return new()
         {
-            RegimeLongEmaPeriod = Seed(rng.Next(100, 501),                    seed?.RegimeLongEmaPeriod ?? 200),
-            RegimeSlopeLookback = Seed(rng.Next(10, 61),                      seed?.RegimeSlopeLookback ?? 30),
-            EmaPeriod           = Seed(rng.Next(20, 101),                     seed?.EmaPeriod           ?? 50),
-            AdxThreshold        = Seed(10.0 + rng.NextDouble() * 20.0,        seed?.AdxThreshold        ?? 18.0),
-            RsiDipThreshold     = Seed(35.0 + rng.NextDouble() * 20.0,        seed?.RsiDipThreshold     ?? 48.0),
-            StopLossAtrMult           = Seed(0.5 + rng.NextDouble() * 1.0,    seed?.StopLossAtrMult           ?? 1.0),
-            TakeProfitAtrMult         = Seed(2.0 + rng.NextDouble() * 4.0,    seed?.TakeProfitAtrMult         ?? 5.0),
-            TrailingActivationAtrMult = Seed(1.5 + rng.NextDouble() * 2.5,    seed?.TrailingActivationAtrMult ?? 3.0),
-            TrailingStopAtrMult       = Seed(1.0 + rng.NextDouble() * 2.0,    seed?.TrailingStopAtrMult       ?? 1.5),
-            MaxHoldCandles            = Seed(rng.Next(72, 201),                seed?.MaxHoldCandles            ?? 100),
-            PositionSizePct           = Seed(0.01 + rng.NextDouble() * 0.02,  seed?.PositionSizePct           ?? 0.02),
-            TimeStopBars              = Seed(rng.Next(20, 81),                 seed?.TimeStopBars              ?? 30),
-            TimeStopLossPct           = Seed(0.02 + rng.NextDouble() * 0.18,  seed?.TimeStopLossPct           ?? 0.15),
-            RegimeSustainedBars  = Seed(rng.Next(10, 101),                    seed?.RegimeSustainedBars  ?? 30),
+            RegimeLongEmaPeriod = rng.Next(100, 501),
+            RegimeSlopeLookback = rng.Next(10, 61),
+            EmaPeriod           = rng.Next(20, 101),
+            AdxThreshold        = 10.0 + rng.NextDouble() * 20.0,
+            RsiDipThreshold     = 35.0 + rng.NextDouble() * 20.0,
+            StopLossAtrMult           = 0.5 + rng.NextDouble() * 1.0,
+            TakeProfitAtrMult         = 2.0 + rng.NextDouble() * 4.0,
+            TrailingActivationAtrMult = 1.5 + rng.NextDouble() * 2.5,
+            TrailingStopAtrMult       = 1.0 + rng.NextDouble() * 2.0,
+            MaxHoldCandles            = rng.Next(72, 201),
+            PositionSizePct           = 0.01 + rng.NextDouble() * 0.02,
+            TimeStopBars              = rng.Next(20, 81),
+            TimeStopLossPct           = 0.02 + rng.NextDouble() * 0.18,
+            RegimeSustainedBars  = rng.Next(10, 101),
         };
     }
 

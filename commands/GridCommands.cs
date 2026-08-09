@@ -8,10 +8,13 @@ static class GridCommands
     public static async Task RunGridTrain(BybitRestClient client, string[]? args = null)
     {
         string variant  = TrainCommands.ResolveVariant(args);
+        int?   rngSeed  = GaSearch.ResolveSeed(args);
         var    cfg      = FitnessConfig.Load();
         string genoPath = TrainCommands.VariantGenoPath("grid_best", variant, Config.GridGenoFile);
         Console.WriteLine("=== Gravity-gen2 | GRID TRAIN (ranging long grid, 1h candles, 26 coins) ===");
-        Console.WriteLine($"Training Grid / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
+        Console.WriteLine($"Training Grid / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]");
+        GaSearch.AnnounceCommandSeed("gridtrain", rngSeed);
+        Console.WriteLine();
 
         var trainCoins = new[]
         {
@@ -68,7 +71,7 @@ static class GridCommands
 
         Console.WriteLine($"\n  Training on {coinData.Count} coins\n");
         Console.WriteLine("─── Grid GA training ───");
-        var best = new GridGeneticAlgorithm(60, 100, verbose: true, cfg: cfg).Run(coinData, seed, adxCeiling);
+        var best = new GridGeneticAlgorithm(60, 100, verbose: true, cfg: cfg, seed: rngSeed).Run(coinData, seed, adxCeiling);
 
         Console.WriteLine($"\nFrozen genotype:\n  {best}\n");
         File.WriteAllText(genoPath, JsonSerializer.Serialize(GridGenotypeDto.From(best, cfg),
@@ -108,10 +111,13 @@ static class GridCommands
     public static async Task RunGridShortTrain(BybitRestClient client, string[]? args = null)
     {
         string variant  = TrainCommands.ResolveVariant(args);
+        int?   rngSeed  = GaSearch.ResolveSeed(args);
         var    cfg      = FitnessConfig.Load();
         string genoPath = TrainCommands.VariantGenoPath("grid_short", variant, Config.GridShortGenoFile);
         Console.WriteLine("=== Gravity-gen2 | GRIDSHORTTRAIN (ranging short grid, 1h candles, 26 coins) ===");
-        Console.WriteLine($"Training GridShort / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
+        Console.WriteLine($"Training GridShort / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]");
+        GaSearch.AnnounceCommandSeed("gridshorttrain", rngSeed);
+        Console.WriteLine();
 
         var trainCoins = new[]
         {
@@ -168,7 +174,7 @@ static class GridCommands
 
         Console.WriteLine($"\n  Training on {coinData.Count} coins\n");
         Console.WriteLine("─── GridShort GA training ───");
-        var best = new GridShortGA(60, 100, verbose: true, cfg: cfg).Run(coinData, seed, adxCeiling);
+        var best = new GridShortGA(60, 100, verbose: true, cfg: cfg, seed: rngSeed).Run(coinData, seed, adxCeiling);
 
         Console.WriteLine($"\nFrozen genotype:\n  {best}\n");
         File.WriteAllText(genoPath, JsonSerializer.Serialize(GridGenotypeDto.From(best, cfg),

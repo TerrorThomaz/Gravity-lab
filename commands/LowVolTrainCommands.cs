@@ -9,7 +9,9 @@ static class LowVolTrainCommands
     {
         Console.WriteLine("=== Gravity-gen2 | LOWVOLTRAIN (Low-volatility optimized variants) ===");
         Console.WriteLine("Training low-vol variants: FadeShortLowVol, DipLongLowVol, SwingLongLowVol, RipShortLowVol");
-        Console.WriteLine("ATR ratio threshold: < 0.8 (low volatility regime)\n");
+        Console.WriteLine("ATR ratio threshold: < 0.8 (low volatility regime)");
+        GaSearch.AnnounceCommandSeed("lowvoltrain", GaSearch.ResolveSeed(args));
+        Console.WriteLine();
 
         await RunFadeShortLowVolTrain(client, args);
         await RunDipLongLowVolTrain(client, args);
@@ -23,6 +25,7 @@ static class LowVolTrainCommands
     {
         const int TrainWindowH1 = 12_960;
         string variant = TrainCommands.ResolveVariant(args);
+        int?   rngSeed = GaSearch.ResolveSeed(args);
         var cfg = FitnessConfig.Load();
         string genoPath = TrainCommands.VariantGenoPath("fade_short_lowvol", variant, "genotypes/fade_short_lowvol_genotype.json");
         Console.WriteLine($"=== Gravity-gen2 | FADESHORTLOWVOLTRAIN (low-vol fade short, {Config.BacktestCoins.Length} coins) ===");
@@ -85,7 +88,7 @@ static class LowVolTrainCommands
         if (seed != null) Console.WriteLine($"  Seed: {seed}");
         else Console.WriteLine("  Training from scratch");
 
-        var best = new FadeShortGA(80, 150, verbose: true, cfg: cfg).RunLowVol(gaCoins, seed);
+        var best = new FadeShortGA(80, 150, verbose: true, cfg: cfg, seed: rngSeed).RunLowVol(gaCoins, seed);
 
         // Post-GA TPE pass removed — see the "Post-GA refinement" note at the top of
         // commands/TrainCommands.cs. This site was the worst of the six: it did not even
@@ -108,6 +111,7 @@ static class LowVolTrainCommands
     {
         const int TrainWindowH1 = 12_960;
         string variant = TrainCommands.ResolveVariant(args);
+        int?   rngSeed = GaSearch.ResolveSeed(args);
         var cfg = FitnessConfig.Load();
         string genoPath = TrainCommands.VariantGenoPath("dip_long_lowvol", variant, "genotypes/dip_long_lowvol_genotype.json");
         Console.WriteLine($"=== Gravity-gen2 | DIPLONGLOWVOLTRAIN (low-vol dip long, {Config.BacktestCoins.Length} coins) ===");
@@ -163,7 +167,7 @@ static class LowVolTrainCommands
             ? JsonSerializer.Deserialize<DipLongGenotype>(File.ReadAllText(genoPath))
             : null;
 
-        var best = new DipLongGA(80, 150, verbose: true, cfg: cfg).RunLowVol(gaCoins, seed);
+        var best = new DipLongGA(80, 150, verbose: true, cfg: cfg, seed: rngSeed).RunLowVol(gaCoins, seed);
 
         Console.WriteLine($"\n  Best: {best}");
         Console.WriteLine($"  Fitness: {best.Fitness:F4}");
@@ -177,6 +181,7 @@ static class LowVolTrainCommands
     {
         const int TrainWindowH1 = 12_960;
         string variant = TrainCommands.ResolveVariant(args);
+        int?   rngSeed = GaSearch.ResolveSeed(args);
         var cfg = FitnessConfig.Load();
         string genoPath = TrainCommands.VariantGenoPath("swing_long_lowvol", variant, "genotypes/swing_long_lowvol_genotype.json");
         Console.WriteLine($"=== Gravity-gen2 | SWINGLONGLOWVOLTRAIN (low-vol swing long, {Config.BacktestCoins.Length} coins) ===");
@@ -232,7 +237,7 @@ static class LowVolTrainCommands
             ? JsonSerializer.Deserialize<SwingLongGenotype>(File.ReadAllText(genoPath))
             : null;
 
-        var best = new SwingLongGA(80, 150, verbose: true, cfg: cfg).RunLowVol(gaCoins, seed);
+        var best = new SwingLongGA(80, 150, verbose: true, cfg: cfg, seed: rngSeed).RunLowVol(gaCoins, seed);
 
         Console.WriteLine($"\n  Best: {best}");
         Console.WriteLine($"  Fitness: {best.Fitness:F4}");
@@ -246,6 +251,7 @@ static class LowVolTrainCommands
     {
         const int TrainWindowH1 = 12_960;
         string variant = TrainCommands.ResolveVariant(args);
+        int?   rngSeed = GaSearch.ResolveSeed(args);
         var cfg = FitnessConfig.Load();
         string genoPath = TrainCommands.VariantGenoPath("rip_short_lowvol", variant, "genotypes/rip_short_lowvol_genotype.json");
         Console.WriteLine($"=== Gravity-gen2 | RIPSHORTLOWVOLTRAIN (low-vol rip short, {Config.BacktestCoins.Length} coins) ===");
@@ -301,7 +307,7 @@ static class LowVolTrainCommands
             ? JsonSerializer.Deserialize<RipShortGenotype>(File.ReadAllText(genoPath))
             : null;
 
-        var best = new RipShortGA(80, 150, verbose: true, cfg: cfg).RunLowVol(gaCoins, seed);
+        var best = new RipShortGA(80, 150, verbose: true, cfg: cfg, seed: rngSeed).RunLowVol(gaCoins, seed);
 
         Console.WriteLine($"\n  Best: {best}");
         Console.WriteLine($"  Fitness: {best.Fitness:F4}");

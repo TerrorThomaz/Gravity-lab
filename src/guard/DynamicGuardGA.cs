@@ -1,23 +1,52 @@
 namespace TradingGA;
 
+// NOT a GA in the sense the rest of this repo uses the word — it is a (mu + lambda) evolution
+// strategy: `pop[_rng.Next(Math.Min(10, pop.Count))]` is truncation selection over the top 10 of
+// 40 (truncation-25%), there is a single parent and NO crossover, and every child is a mutated
+// copy of one incumbent. The tournament-k and cataclysm changes made to the strategy GAs do not
+// transfer here without redesigning the reproduction operator, so this file keeps its structure.
+//
+// HANDOFF: the two things worth revisiting are (a) truncation-25 with a single parent is strong
+// pressure for a 60-generation budget, and (b) there is no stagnation handling at all, so a run
+// that plateaus early spends the rest of the budget creeping. Both are structural.
+//
+// It was already the ONLY seeded search in the repo (`new Random(42)`), so reproducibility was
+// never broken here; the change below only makes the seed settable and printed.
 public class DynamicGuardGA
 {
     private readonly int    _populationSize;
     private readonly int    _generations;
     private readonly Random _rng;
+    private readonly string _seedLabel;
 
-    public DynamicGuardGA(int populationSize = 40, int generations = 60, Random? rng = null)
+    // seed: used only when `rng` is null. Defaults to the historical hardcoded 42 so an
+    // unseeded run reproduces the previously trained guard genotype exactly.
+    public DynamicGuardGA(int populationSize = 40, int generations = 60, Random? rng = null, int? seed = null)
     {
         _populationSize = populationSize;
         _generations    = generations;
-        _rng            = rng ?? new Random(42);
+        if (rng != null)
+        {
+            _rng       = rng;
+            _seedLabel = "caller-supplied Random instance (seed not observable here)";
+        }
+        else
+        {
+            int s      = seed ?? DefaultSeed;
+            _rng       = new Random(s);
+            _seedLabel = seed is null ? $"{s} (default)" : $"{s} (supplied)";
+        }
     }
+
+    internal const int DefaultSeed = 42;
 
     public DynamicGuardGenotype Run(
         Candle[] btcH1,
         List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> valTrades,
         List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> oosTrades)
     {
+        Console.WriteLine($"  [seed] DynamicGuardGA rng seed = {_seedLabel}");
+
         int nDim   = DynamicGuardGenotype.Bounds.GetLength(0);
         int elites = Math.Max(2, _populationSize / 5);
 

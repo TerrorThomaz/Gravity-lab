@@ -27,13 +27,22 @@ public class RipShortGA
     private readonly int                   _migrationInterval;
     private readonly bool                  _verbose;
     private readonly Func<DateTime, double>? _tradeGate;  // null = no gating; returns weight 0..1 (set by CoevolveGA)
-    private readonly Random _rng = new();
+    private readonly int                   _tournamentK;
+    private readonly int                   _eliteCarryOver;
+    private readonly int                   _cataclysmStagnantGens;
+    private readonly int                   _seed;
+    private readonly bool                  _seedSupplied;
+    private readonly Random _rng;
     private readonly FitnessConfig _cfg;
     private readonly RegimeBar[]? _btcSeries;
 
     private const int MinTradesPerFold = 25;   // VC theory requires N > d per fold; d=14
     private const int D                = 14;   // genotype parameter count (excl. Fitness)
 
+    // eliteCount sizes the reporting slice / BO seed set / final-winner pool ONLY.
+    // eliteCarryOver is the real elitism knob (was a hardcoded literal 5). See GaSearch for the
+    // tournamentK = 2 rationale and for why stagnation now triggers a cataclysmic restart.
+    // seed: null draws one explicitly and prints it, so any run can be reproduced.
     public RipShortGA(
         int  populationSize    = 50,
         int  generations       = 80,
@@ -42,7 +51,11 @@ public class RipShortGA
         bool verbose           = true,
         Func<DateTime, double>? tradeGate = null,
         FitnessConfig? cfg = null,
-        RegimeBar[]? btcSeries = null)
+        RegimeBar[]? btcSeries = null,
+        int  tournamentK           = GaSearch.DefaultTournamentK,
+        int  eliteCarryOver        = GaSearch.DefaultEliteCarryOver,
+        int  cataclysmStagnantGens = GaSearch.DefaultCataclysmStagnantGens,
+        int? seed                  = null)
     {
         _populationSize    = populationSize;
         _generations       = generations;
@@ -52,6 +65,10 @@ public class RipShortGA
         _tradeGate         = tradeGate;
         _cfg               = cfg ?? new FitnessConfig();
         _btcSeries         = btcSeries;
+        _tournamentK           = tournamentK;
+        _eliteCarryOver        = eliteCarryOver;
+        _cataclysmStagnantGens = cataclysmStagnantGens;
+        (_rng, _seed, _seedSupplied) = GaSearch.CreateRng(seed);
     }
 
     // Canonical fold score, filtered to trades that fired during a CONFIRMED bear regime
@@ -185,6 +202,8 @@ public class RipShortGA
     {
         if (coins.Count == 0) throw new ArgumentException("No training data.");
 
+        GaSearch.AnnounceSeed("RipShortGA.Run", _seed, _seedSupplied);
+
         if (_verbose)
         {
             foreach (var (coin, i) in coins.Select((c, i) => (c, i)))
@@ -213,9 +232,15 @@ public class RipShortGA
 
         for (int gen = 0; gen < _generations; gen++)
         {
-            double baseMutRate  = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
-            double mutationRate = stagnantGens >= 15 ? Math.Min(baseMutRate * 2.0, 0.9) : baseMutRate;
+            // Mutation rate anneals 0.65 → 0.05 across the run. The old
+            // `stagnantGens >= 15 ? rate * 2` boost is gone — see GaSearch.Cataclysm for why
+            // doubling a per-gene PROBABILITY on a fixed creep step cannot escape a basin, and
+            // why the boost latched on permanently once it fired.
+            double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
 
+            // WARNING: this parallel body must stay RNG-FREE. System.Random is not thread-safe;
+            // a single _rng draw added here would silently corrupt its internal state (and
+            // destroy reproducibility) with no exception to point at it.
             Parallel.ForEach(population, ind =>
                 ind.Fitness = Fitness(ind, coins, useValidation: false));
 
@@ -228,7 +253,7 @@ public class RipShortGA
 
             if (_verbose && (gen + 1) % _migrationInterval == 0)
             {
-                string tag = stagnantGens >= 15 ? $" [STAGNANT×{stagnantGens} boost]" : "";
+                string tag = stagnantGens > 0 ? $" [stagnant×{stagnantGens}]" : "";
                 Console.WriteLine($"Gen {gen + 1,3} — elite: {eliteIsland.First()}{tag}");
             }
 
@@ -249,17 +274,34 @@ public class RipShortGA
                         new System.Text.Json.JsonSerializerOptions { WriteIndented = false }));
             }
 
-            var nextGen = new List<RipShortGenotype>();
-            nextGen.AddRange(eliteIsland.Take(5));
-            while (nextGen.Count < _populationSize)
+            if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                var child = RipShortGenotype.Crossover(
-                                TournamentSelect(population),
-                                TournamentSelect(population), _rng)
-                            .Mutate(_rng, mutationRate);
-                nextGen.Add(child);
+                // CHC restart. `population` is already sorted best-first, so the survivors are
+                // exactly the individuals the normal path would have carried over — the
+                // best-so-far genotype lives through the restart, and eliteIsland (captured
+                // above from the same sorted list) still holds the champion regardless.
+                // Random(_rng) with NO genotype seed: the restart must sample the whole bounds
+                // box, not a neighbourhood of the incumbent.
+                population = GaSearch.Cataclysm(population, _populationSize, _eliteCarryOver,
+                                                () => RipShortGenotype.Random(_rng), ref stagnantGens);
+                if (_verbose)
+                    Console.WriteLine($"Gen {gen + 1,3} — CATACLYSM: kept top {Math.Min(_eliteCarryOver, _populationSize)}, " +
+                                      $"reinitialised {_populationSize - Math.Min(_eliteCarryOver, _populationSize)} at random");
             }
-            population = nextGen;
+            else
+            {
+                var nextGen = new List<RipShortGenotype>();
+                nextGen.AddRange(eliteIsland.Take(_eliteCarryOver));
+                while (nextGen.Count < _populationSize)
+                {
+                    var child = RipShortGenotype.Crossover(
+                                    TournamentSelect(population),
+                                    TournamentSelect(population), _rng)
+                                .Mutate(_rng, mutationRate);
+                    nextGen.Add(child);
+                }
+                population = nextGen;
+            }
         }
 
         // ── Bayesian refinement: TPE polishes the GA's elite region ─────────────
@@ -304,6 +346,8 @@ public class RipShortGA
     {
         if (coins.Count == 0) throw new ArgumentException("No training data.");
 
+        GaSearch.AnnounceSeed("RipShortGA.RunLowVol", _seed, _seedSupplied);
+
         if (_verbose)
         {
             foreach (var (coin, i) in coins.Select((c, i) => (c, i)))
@@ -332,9 +376,10 @@ public class RipShortGA
 
         for (int gen = 0; gen < _generations; gen++)
         {
-            double baseMutRate  = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
-            double mutationRate = stagnantGens >= 15 ? Math.Min(baseMutRate * 2.0, 0.9) : baseMutRate;
+            // See Run() for why the stagnation mutation-rate boost was removed.
+            double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
 
+            // WARNING: this parallel body must stay RNG-FREE — System.Random is not thread-safe.
             Parallel.ForEach(population, ind =>
                 ind.Fitness = Fitness(ind, coins, useValidation: false));
 
@@ -347,7 +392,7 @@ public class RipShortGA
 
             if (_verbose && (gen + 1) % _migrationInterval == 0)
             {
-                string tag = stagnantGens >= 15 ? $" [STAGNANT×{stagnantGens} boost]" : "";
+                string tag = stagnantGens > 0 ? $" [stagnant×{stagnantGens}]" : "";
                 Console.WriteLine($"Gen {gen + 1,3} — elite: {eliteIsland.First()}{tag}");
             }
 
@@ -368,17 +413,30 @@ public class RipShortGA
                         new System.Text.Json.JsonSerializerOptions { WriteIndented = false }));
             }
 
-            var nextGen = new List<RipShortGenotype>();
-            nextGen.AddRange(eliteIsland.Take(5));
-            while (nextGen.Count < _populationSize)
+            if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                var child = RipShortGenotype.Crossover(
-                                TournamentSelect(population),
-                                TournamentSelect(population), _rng)
-                            .MutateLowVol(_rng, mutationRate);
-                nextGen.Add(child);
+                // Restart draws from the LowVol random factory (this run's own bounds box),
+                // unseeded — see Run() for the full rationale.
+                population = GaSearch.Cataclysm(population, _populationSize, _eliteCarryOver,
+                                                () => RipShortGenotype.RandomLowVol(_rng), ref stagnantGens);
+                if (_verbose)
+                    Console.WriteLine($"Gen {gen + 1,3} — CATACLYSM: kept top {Math.Min(_eliteCarryOver, _populationSize)}, " +
+                                      $"reinitialised {_populationSize - Math.Min(_eliteCarryOver, _populationSize)} at random");
             }
-            population = nextGen;
+            else
+            {
+                var nextGen = new List<RipShortGenotype>();
+                nextGen.AddRange(eliteIsland.Take(_eliteCarryOver));
+                while (nextGen.Count < _populationSize)
+                {
+                    var child = RipShortGenotype.Crossover(
+                                    TournamentSelect(population),
+                                    TournamentSelect(population), _rng)
+                                .MutateLowVol(_rng, mutationRate);
+                    nextGen.Add(child);
+                }
+                population = nextGen;
+            }
         }
 
         if (_verbose) Console.WriteLine("\n  BO refinement (30 iterations, TPE)...");
@@ -415,9 +473,8 @@ public class RipShortGA
         return best;
     }
 
-    private RipShortGenotype TournamentSelect(List<RipShortGenotype> pop, int k = 4) =>
-        Enumerable.Range(0, k)
-            .Select(_ => pop[_rng.Next(pop.Count)])
-            .OrderByDescending(g => g.Fitness)
-            .First();
+    // Tournament size comes from the constructor (default GaSearch.DefaultTournamentK = 2), not
+    // from a defaulted method parameter that no call site ever overrode.
+    internal RipShortGenotype TournamentSelect(List<RipShortGenotype> pop) =>
+        GaSearch.Tournament(pop, _tournamentK, _rng, g => g.Fitness);
 }

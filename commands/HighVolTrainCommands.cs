@@ -8,10 +8,28 @@ static class HighVolTrainCommands
     private const int MinTradesPerFold = 20;
     private const double PosFrac = 0.10;
 
+    // Historical hardcoded seed of the four inline GAs in this file. Kept as the default so an
+    // unseeded highvoltrain reproduces the previously committed high-vol genotypes exactly.
+    internal const int DefaultHighVolSeed = 42;
+
     public static async Task RunHighVolTrain(BybitRestClient client, string[]? args = null)
     {
         Console.WriteLine("=== Gravity-gen2 | HIGHVOLTRAIN (high-volatility optimized variants) ===");
-        Console.WriteLine("Training FadeShort-HV + DipLong-HV + SwingLong-HV + RipShort-HV (5-fold WFV, 5% embargo)\n");
+        Console.WriteLine("Training FadeShort-HV + DipLong-HV + SwingLong-HV + RipShort-HV (5-fold WFV, 5% embargo)");
+
+        // The four inline GAs below were already deterministic — they hardcoded `new Random(42)`
+        // — so the defect here was not irreproducibility but that the seed was neither settable
+        // nor printed. DefaultHighVolSeed keeps 42 as the default so an unseeded rerun reproduces
+        // every previously trained high-vol genotype bit-for-bit; --seed N overrides it.
+        //
+        // NOTE ON SELECTION: these loops use truncation selection (both parents drawn uniformly
+        // from the top half of the population) with elitism 15/100, not the tournament the
+        // strategy GAs use, and they carry no stagnation handling at all. They are therefore
+        // outside the scope of the tournament-k and cataclysm changes; converting them to the
+        // shared GaSearch operators is a separate, validated change.
+        int seed = GaSearch.ResolveSeed(args) ?? DefaultHighVolSeed;
+        GaSearch.AnnounceCommandSeed("highvoltrain", seed);
+        Console.WriteLine();
 
         Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins (15m → 1h, ~3yr)...");
         var sem = new SemaphoreSlim(4);
@@ -43,7 +61,7 @@ static class HighVolTrainCommands
         var cfg = FitnessConfig.Load();
 
         Console.WriteLine("══ FADESHORT HIGHVOL ══════════════════════════════════════════════════");
-        var fsBest = TrainFadeShortHighVol(passed, cfg);
+        var fsBest = TrainFadeShortHighVol(passed, cfg, seed);
         if (fsBest != null)
         {
             string fsPath = "genotypes/fade_short_highvol_genotype.json";
@@ -53,7 +71,7 @@ static class HighVolTrainCommands
         }
 
         Console.WriteLine("══ DIPLONG HIGHVOL ════════════════════════════════════════════════════");
-        var dlBest = TrainDipLongHighVol(passed, cfg);
+        var dlBest = TrainDipLongHighVol(passed, cfg, seed);
         if (dlBest != null)
         {
             string dlPath = "genotypes/dip_long_highvol_genotype.json";
@@ -63,7 +81,7 @@ static class HighVolTrainCommands
         }
 
         Console.WriteLine("══ SWINGLONG HIGHVOL ══════════════════════════════════════════════════");
-        var slBest = TrainSwingLongHighVol(passed, cfg);
+        var slBest = TrainSwingLongHighVol(passed, cfg, seed);
         if (slBest != null)
         {
             string slPath = "genotypes/swing_long_highvol_genotype.json";
@@ -73,7 +91,7 @@ static class HighVolTrainCommands
         }
 
         Console.WriteLine("══ RIPSHORT HIGHVOL ═══════════════════════════════════════════════════");
-        var rsBest = TrainRipShortHighVol(passed, cfg);
+        var rsBest = TrainRipShortHighVol(passed, cfg, seed);
         if (rsBest != null)
         {
             string rsPath = "genotypes/rip_short_highvol_genotype.json";
@@ -102,9 +120,9 @@ static class HighVolTrainCommands
         List<double> foldScores, List<int> foldTradeCounts, int d, int attemptedFolds)
         => FoldScoreHelper.AggregateFoldScores(foldScores, foldTradeCounts, d, attemptedFolds);
 
-    private static FadeShortGenotype? TrainFadeShortHighVol(List<(string Sym, Candle[] H1, Candle[] M15)> coins, FitnessConfig cfg)
+    private static FadeShortGenotype? TrainFadeShortHighVol(List<(string Sym, Candle[] H1, Candle[] M15)> coins, FitnessConfig cfg, int seed)
     {
-        var rng = new Random(42);
+        var rng = new Random(seed);
         int popSize = 100, generations = 200, eliteCount = 15;
         var population = Enumerable.Range(0, popSize)
             .Select(_ => FadeShortGenotype.RandomHighVol(rng))
@@ -112,6 +130,9 @@ static class HighVolTrainCommands
 
         for (int gen = 0; gen < generations; gen++)
         {
+            // WARNING: this parallel body must stay RNG-FREE. System.Random is not thread-safe;
+            // a single `rng` draw added here would silently corrupt its internal state (and
+            // destroy reproducibility) with no exception to point at it.
             Parallel.ForEach(population, g =>
             {
                 g.Fitness = EvaluateFadeShortHighVol(g, coins, cfg);
@@ -181,9 +202,9 @@ static class HighVolTrainCommands
         return ComputeFitness(foldScores, foldCounts, FadeShortGenotype.Bounds.GetLength(0), folds);
     }
 
-    private static DipLongGenotype? TrainDipLongHighVol(List<(string Sym, Candle[] H1, Candle[] M15)> coins, FitnessConfig cfg)
+    private static DipLongGenotype? TrainDipLongHighVol(List<(string Sym, Candle[] H1, Candle[] M15)> coins, FitnessConfig cfg, int seed)
     {
-        var rng = new Random(42);
+        var rng = new Random(seed);
         int popSize = 100, generations = 200, eliteCount = 15;
         var population = Enumerable.Range(0, popSize)
             .Select(_ => DipLongGenotype.RandomHighVol(rng))
@@ -191,6 +212,9 @@ static class HighVolTrainCommands
 
         for (int gen = 0; gen < generations; gen++)
         {
+            // WARNING: this parallel body must stay RNG-FREE. System.Random is not thread-safe;
+            // a single `rng` draw added here would silently corrupt its internal state (and
+            // destroy reproducibility) with no exception to point at it.
             Parallel.ForEach(population, g =>
             {
                 g.Fitness = EvaluateDipLongHighVol(g, coins, cfg);
@@ -260,9 +284,9 @@ static class HighVolTrainCommands
         return ComputeFitness(foldScores, foldCounts, DipLongGenotype.Bounds.GetLength(0), folds);
     }
 
-    private static SwingLongGenotype? TrainSwingLongHighVol(List<(string Sym, Candle[] H1, Candle[] M15)> coins, FitnessConfig cfg)
+    private static SwingLongGenotype? TrainSwingLongHighVol(List<(string Sym, Candle[] H1, Candle[] M15)> coins, FitnessConfig cfg, int seed)
     {
-        var rng = new Random(42);
+        var rng = new Random(seed);
         int popSize = 100, generations = 200, eliteCount = 15;
         var population = Enumerable.Range(0, popSize)
             .Select(_ => SwingLongGenotype.RandomHighVol(rng))
@@ -270,6 +294,9 @@ static class HighVolTrainCommands
 
         for (int gen = 0; gen < generations; gen++)
         {
+            // WARNING: this parallel body must stay RNG-FREE. System.Random is not thread-safe;
+            // a single `rng` draw added here would silently corrupt its internal state (and
+            // destroy reproducibility) with no exception to point at it.
             Parallel.ForEach(population, g =>
             {
                 g.Fitness = EvaluateSwingLongHighVol(g, coins, cfg);
@@ -339,9 +366,9 @@ static class HighVolTrainCommands
         return ComputeFitness(foldScores, foldCounts, SwingLongGenotype.Bounds.GetLength(0), folds);
     }
 
-    private static RipShortGenotype? TrainRipShortHighVol(List<(string Sym, Candle[] H1, Candle[] M15)> coins, FitnessConfig cfg)
+    private static RipShortGenotype? TrainRipShortHighVol(List<(string Sym, Candle[] H1, Candle[] M15)> coins, FitnessConfig cfg, int seed)
     {
-        var rng = new Random(42);
+        var rng = new Random(seed);
         int popSize = 100, generations = 200, eliteCount = 15;
         var population = Enumerable.Range(0, popSize)
             .Select(_ => RipShortGenotype.RandomHighVol(rng))
@@ -349,6 +376,9 @@ static class HighVolTrainCommands
 
         for (int gen = 0; gen < generations; gen++)
         {
+            // WARNING: this parallel body must stay RNG-FREE. System.Random is not thread-safe;
+            // a single `rng` draw added here would silently corrupt its internal state (and
+            // destroy reproducibility) with no exception to point at it.
             Parallel.ForEach(population, g =>
             {
                 g.Fitness = EvaluateRipShortHighVol(g, coins, cfg);

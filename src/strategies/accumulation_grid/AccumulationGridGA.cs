@@ -10,7 +10,11 @@ public class AccumulationGridGA
     private readonly int _generations;
     private readonly int _eliteCount;
     private readonly bool _verbose;
-    private readonly Random _rng = new();
+    private readonly int _tournamentK;
+    private readonly int _cataclysmStagnantGens;
+    private readonly int _seed;
+    private readonly bool _seedSupplied;
+    private readonly Random _rng;
     private readonly FitnessConfig _cfg;
     private readonly MarketRegime _targetRegime;
 
@@ -18,13 +22,26 @@ public class AccumulationGridGA
     private const double FitPosFrac = 0.03;
     private const int D = 8;   // genotype parameter count — see RandomGenotype()
 
+    // NOTE: unlike the other GAs in this repo, eliteCount here IS the real elitism knob — this
+    // GA has no reporting slice / BO seed set, and eliteCount is the number of individuals
+    // copied unchanged into the next generation (and the number that survives a cataclysm). Its
+    // 15-of-60 default (25%) is left unchanged so a retrain of the committed accumulation-grid
+    // genotype is not silently re-based; the knob to turn if that proves too greedy is right
+    // here rather than buried in a literal.
+    //
+    // tournamentK was a defaulted method parameter of 3 that no call site overrode; it defaults
+    // to GaSearch.DefaultTournamentK = 2 now — see GaSearch for the takeover-time argument.
+    // seed: null draws one explicitly and prints it, so any run can be reproduced.
     public AccumulationGridGA(
         MarketRegime targetRegime,
         int populationSize = 60,
         int generations = 100,
         int eliteCount = 15,
         bool verbose = true,
-        FitnessConfig? cfg = null)
+        FitnessConfig? cfg = null,
+        int tournamentK           = GaSearch.DefaultTournamentK,
+        int cataclysmStagnantGens = GaSearch.DefaultCataclysmStagnantGens,
+        int? seed                 = null)
     {
         _targetRegime = targetRegime;
         _populationSize = populationSize;
@@ -32,6 +49,9 @@ public class AccumulationGridGA
         _eliteCount = eliteCount;
         _verbose = verbose;
         _cfg = cfg ?? new FitnessConfig();
+        _tournamentK           = tournamentK;
+        _cataclysmStagnantGens = cataclysmStagnantGens;
+        (_rng, _seed, _seedSupplied) = GaSearch.CreateRng(seed);
     }
 
     // Canonical fold score under the Grid-family shape transform — see
@@ -150,39 +170,57 @@ public class AccumulationGridGA
         };
     }
 
-    private AccumulationGridGenotype Tournament(IReadOnlyList<(AccumulationGridGenotype g, double f)> pop, int k = 3)
-    {
-        var best = pop[_rng.Next(pop.Count)];
-        for (int i = 1; i < k; i++)
-        {
-            var c = pop[_rng.Next(pop.Count)];
-            if (c.f > best.f) best = c;
-        }
-        return best.g;
-    }
+    // Tournament size comes from the constructor (default GaSearch.DefaultTournamentK = 2), not
+    // from a defaulted method parameter that no call site ever overrode.
+    internal AccumulationGridGenotype Tournament(IReadOnlyList<(AccumulationGridGenotype g, double f)> pop) =>
+        GaSearch.Tournament(pop, _tournamentK, _rng, x => x.f).g;
 
     public (AccumulationGridGenotype Best, double Fitness) Train(IReadOnlyList<CoinData> coins)
     {
+        GaSearch.AnnounceSeed($"AccumulationGridGA.Train({_targetRegime})", _seed, _seedSupplied);
+
         var population = Enumerable.Range(0, _populationSize).Select(_ => RandomGenotype()).ToList();
         var scored = population.Select(g => (g, f: Fitness(g, coins, useValidation: false))).ToList();
         scored.Sort((a, b) => b.f.CompareTo(a.f));
 
+        double bestFitnessSeen = scored[0].f;
+        int    stagnantGens    = 0;
+
         for (int gen = 0; gen < _generations; gen++)
         {
-            var next = new List<AccumulationGridGenotype>();
-            for (int i = 0; i < _eliteCount; i++) next.Add(scored[i].g);
-
-            while (next.Count < _populationSize)
+            if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                var p1 = Tournament(scored);
-                var p2 = Tournament(scored);
-                var child = _rng.NextDouble() < 0.7 ? Crossover(p1, p2) : p1;
-                next.Add(_rng.NextDouble() < 0.3 ? Mutate(child) : child);
+                // CHC restart. `scored` is sorted best-first, so the survivors are exactly the
+                // individuals the elitism path would have carried over — the best-so-far
+                // genotype lives through the restart. RandomGenotype() is this GA's own uniform
+                // draw over the whole bounds box (it has no seeded variant to fall into).
+                population = GaSearch.Cataclysm(scored.Select(s => s.g).ToList(),
+                                                _populationSize, _eliteCount,
+                                                RandomGenotype, ref stagnantGens);
+                if (_verbose)
+                    Console.WriteLine($"  Gen {gen,3}: CATACLYSM — kept top {Math.Min(_eliteCount, _populationSize)}, " +
+                                      $"reinitialised {_populationSize - Math.Min(_eliteCount, _populationSize)} at random");
+            }
+            else
+            {
+                var next = new List<AccumulationGridGenotype>();
+                for (int i = 0; i < Math.Min(_eliteCount, scored.Count); i++) next.Add(scored[i].g);
+
+                while (next.Count < _populationSize)
+                {
+                    var p1 = Tournament(scored);
+                    var p2 = Tournament(scored);
+                    var child = _rng.NextDouble() < 0.7 ? Crossover(p1, p2) : p1;
+                    next.Add(_rng.NextDouble() < 0.3 ? Mutate(child) : child);
+                }
+                population = next;
             }
 
-            population = next;
             scored = population.Select(g => (g, f: Fitness(g, coins, useValidation: false))).ToList();
             scored.Sort((a, b) => b.f.CompareTo(a.f));
+
+            if (scored[0].f > bestFitnessSeen + 1e-6) { bestFitnessSeen = scored[0].f; stagnantGens = 0; }
+            else stagnantGens++;
 
             if (_verbose && gen % 10 == 0)
                 Console.WriteLine($"  Gen {gen,3}: best={scored[0].f:F3}  {scored[0].g}");

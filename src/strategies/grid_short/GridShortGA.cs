@@ -24,20 +24,33 @@ public class GridShortGA
     private readonly int           _eliteCount;
     private readonly int           _migrationInterval;
     private readonly bool          _verbose;
-    private readonly Random        _rng = new();
+    private readonly int           _tournamentK;
+    private readonly int           _eliteCarryOver;
+    private readonly int           _cataclysmStagnantGens;
+    private readonly int           _seed;
+    private readonly bool          _seedSupplied;
+    private readonly Random        _rng;
     private readonly FitnessConfig _cfg;
 
     private const int    MinTradesPerFold = 10;
     private const double FitPosFrac       = 0.03;
     private const int    D                = 10;   // genotype parameter count (excl. Fitness) — see GridGenotype.Bounds
 
+    // eliteCount sizes the reporting slice / BO seed set / final-winner pool ONLY.
+    // eliteCarryOver is the real elitism knob (was a hardcoded literal 5). See GaSearch for the
+    // tournamentK = 2 rationale and for why stagnation now triggers a cataclysmic restart.
+    // seed: null draws one explicitly and prints it, so any run can be reproduced.
     public GridShortGA(
         int            populationSize    = 60,
         int            generations       = 100,
         int            eliteCount        = 15,
         int            migrationInterval = 10,
         bool           verbose           = true,
-        FitnessConfig? cfg               = null)
+        FitnessConfig? cfg               = null,
+        int            tournamentK           = GaSearch.DefaultTournamentK,
+        int            eliteCarryOver        = GaSearch.DefaultEliteCarryOver,
+        int            cataclysmStagnantGens = GaSearch.DefaultCataclysmStagnantGens,
+        int?           seed                  = null)
     {
         _populationSize    = populationSize;
         _generations       = generations;
@@ -45,6 +58,10 @@ public class GridShortGA
         _migrationInterval = migrationInterval;
         _verbose           = verbose;
         _cfg               = cfg ?? new FitnessConfig();
+        _tournamentK           = tournamentK;
+        _eliteCarryOver        = eliteCarryOver;
+        _cataclysmStagnantGens = cataclysmStagnantGens;
+        (_rng, _seed, _seedSupplied) = GaSearch.CreateRng(seed);
     }
 
     // Canonical fold score under the Grid-family shape transform.
@@ -159,6 +176,8 @@ public class GridShortGA
         if (coins.Count == 0 || coins.All(c => c.TrainCandles.Length == 0))
             throw new ArgumentException("No training candles found.");
 
+        GaSearch.AnnounceSeed("GridShortGA.Run", _seed, _seedSupplied);
+
         if (_verbose)
         {
             foreach (var (coin, i) in coins.Select((c, i) => (c, i)))
@@ -187,9 +206,15 @@ public class GridShortGA
 
         for (int gen = 0; gen < _generations; gen++)
         {
-            double baseMutRate  = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
-            double mutationRate = stagnantGens >= 15 ? Math.Min(baseMutRate * 2.0, 0.9) : baseMutRate;
+            // Mutation rate anneals 0.65 → 0.05 across the run. The old
+            // `stagnantGens >= 15 ? rate * 2` boost is gone — see GaSearch.Cataclysm for why
+            // doubling a per-gene PROBABILITY on a fixed creep step cannot escape a basin, and
+            // why the boost latched on permanently once it fired.
+            double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
 
+            // WARNING: this parallel body must stay RNG-FREE. System.Random is not thread-safe;
+            // a single _rng draw added here would silently corrupt its internal state (and
+            // destroy reproducibility) with no exception to point at it.
             Parallel.ForEach(population, ind =>
                 ind.Fitness = Fitness(ind, coins, useValidation: false));
 
@@ -202,21 +227,38 @@ public class GridShortGA
 
             if (_verbose && (gen + 1) % _migrationInterval == 0)
             {
-                string tag = stagnantGens >= 15 ? $" [STAGNANT×{stagnantGens} boost]" : "";
+                string tag = stagnantGens > 0 ? $" [stagnant×{stagnantGens}]" : "";
                 Console.WriteLine($"Gen {gen + 1,3} — elite: {eliteIsland.First()}{tag}");
             }
 
-            var nextGen = new List<GridGenotype>();
-            nextGen.AddRange(eliteIsland.Take(5));
-            while (nextGen.Count < _populationSize)
+            if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                var child = GridGenotype.Crossover(
-                                TournamentSelect(population),
-                                TournamentSelect(population), _rng)
-                            .Mutate(_rng, mutationRate, adxCeiling);
-                nextGen.Add(child);
+                // CHC restart. `population` is already sorted best-first, so the survivors are
+                // exactly the individuals the normal path would have carried over — the
+                // best-so-far genotype lives through the restart, and eliteIsland (captured
+                // above from the same sorted list) still holds the champion regardless.
+                // Random(_rng, seed: null, adxCeiling) — NO genotype seed, so the restart
+                // samples the whole bounds box rather than a neighbourhood of the incumbent.
+                population = GaSearch.Cataclysm(population, _populationSize, _eliteCarryOver,
+                                                () => GridGenotype.Random(_rng, null, adxCeiling), ref stagnantGens);
+                if (_verbose)
+                    Console.WriteLine($"Gen {gen + 1,3} — CATACLYSM: kept top {Math.Min(_eliteCarryOver, _populationSize)}, " +
+                                      $"reinitialised {_populationSize - Math.Min(_eliteCarryOver, _populationSize)} at random");
             }
-            population = nextGen;
+            else
+            {
+                var nextGen = new List<GridGenotype>();
+                nextGen.AddRange(eliteIsland.Take(_eliteCarryOver));
+                while (nextGen.Count < _populationSize)
+                {
+                    var child = GridGenotype.Crossover(
+                                    TournamentSelect(population),
+                                    TournamentSelect(population), _rng)
+                                .Mutate(_rng, mutationRate, adxCeiling);
+                    nextGen.Add(child);
+                }
+                population = nextGen;
+            }
         }
 
         // ── Bayesian refinement ──────────────────────────────────────────────────
@@ -253,9 +295,8 @@ public class GridShortGA
         return best;
     }
 
-    private GridGenotype TournamentSelect(List<GridGenotype> pop, int k = 4) =>
-        Enumerable.Range(0, k)
-            .Select(_ => pop[_rng.Next(pop.Count)])
-            .OrderByDescending(g => g.Fitness)
-            .First();
+    // Tournament size comes from the constructor (default GaSearch.DefaultTournamentK = 2), not
+    // from a defaulted method parameter that no call site ever overrode.
+    internal GridGenotype TournamentSelect(List<GridGenotype> pop) =>
+        GaSearch.Tournament(pop, _tournamentK, _rng, g => g.Fitness);
 }

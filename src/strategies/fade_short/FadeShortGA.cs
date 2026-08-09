@@ -63,19 +63,34 @@ public class FadeShortGA
     private readonly int          _eliteCount;
     private readonly int          _migrationInterval;
     private readonly bool         _verbose;
-    private readonly Random       _rng = new();
+    private readonly int          _tournamentK;
+    private readonly int          _eliteCarryOver;
+    private readonly int          _cataclysmStagnantGens;
+    private readonly int          _seed;
+    private readonly bool         _seedSupplied;
+    private readonly Random       _rng;
     private readonly FitnessConfig _cfg;
 
     private const int MinTradesPerFold = 30;
     private const int D                = 13;   // genotype parameter count (excl. Fitness) — see FadeShortGenotype.Bounds
 
+    // eliteCount sizes the reporting slice / BO seed set / final-winner pool ONLY.
+    // eliteCarryOver is the real elitism knob — the number of individuals copied unchanged into
+    // the next generation, previously a hardcoded literal 5. See GaSearch for why tournamentK
+    // defaults to 2 (takeover ~8.5 generations at N=80, vs ~4.2 at the old k=4) and why
+    // stagnation now triggers a cataclysmic restart instead of a mutation-rate boost.
+    // seed: null draws a seed explicitly and prints it, so any run can be reproduced.
     public FadeShortGA(
         int           populationSize    = 50,
         int           generations       = 80,
         int           eliteCount        = 15,
         int           migrationInterval = 10,
         bool          verbose           = true,
-        FitnessConfig? cfg              = null)
+        FitnessConfig? cfg              = null,
+        int           tournamentK           = GaSearch.DefaultTournamentK,
+        int           eliteCarryOver        = GaSearch.DefaultEliteCarryOver,
+        int           cataclysmStagnantGens = GaSearch.DefaultCataclysmStagnantGens,
+        int?          seed                  = null)
     {
         _populationSize    = populationSize;
         _generations       = generations;
@@ -83,6 +98,10 @@ public class FadeShortGA
         _migrationInterval = migrationInterval;
         _verbose           = verbose;
         _cfg               = cfg ?? new FitnessConfig();
+        _tournamentK           = tournamentK;
+        _eliteCarryOver        = eliteCarryOver;
+        _cataclysmStagnantGens = cataclysmStagnantGens;
+        (_rng, _seed, _seedSupplied) = GaSearch.CreateRng(seed);
     }
 
     private static double FoldScore(List<double> returns, double posFrac, FitnessConfig cfg, double volWeight = 1.0)
@@ -257,6 +276,8 @@ public class FadeShortGA
         if (coins.Count == 0 || coins.All(c => c.TrainCandles.Length == 0))
             throw new ArgumentException("No training candles found.");
 
+        GaSearch.AnnounceSeed("FadeShortGA.Run", _seed, _seedSupplied);
+
         if (_verbose)
         {
             foreach (var (coin, i) in coins.Select((c, i) => (c, i)))
@@ -297,9 +318,15 @@ public class FadeShortGA
 
         for (int gen = 0; gen < _generations; gen++)
         {
-            double baseMutRate  = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
-            double mutationRate = stagnantGens >= 15 ? Math.Min(baseMutRate * 2.0, 0.9) : baseMutRate;
+            // Mutation rate anneals 0.65 → 0.05 across the run. The old
+            // `stagnantGens >= 15 ? rate * 2` boost is gone — see GaSearch.Cataclysm for why
+            // doubling a per-gene PROBABILITY on a fixed creep step cannot escape a basin, and
+            // why the boost latched on permanently once it fired.
+            double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
 
+            // WARNING: this parallel body must stay RNG-FREE. System.Random is not thread-safe;
+            // a single _rng draw added here would silently corrupt its internal state (and
+            // destroy reproducibility) with no exception to point at it.
             Parallel.ForEach(population, ind =>
                 ind.Fitness = FitnessFromCache(ind, trainCaches, useFolds: true, _cfg));
 
@@ -312,7 +339,7 @@ public class FadeShortGA
 
             if (_verbose && (gen + 1) % _migrationInterval == 0)
             {
-                string tag = stagnantGens >= 15 ? $" [STAGNANT×{stagnantGens} boost]" : "";
+                string tag = stagnantGens > 0 ? $" [stagnant×{stagnantGens}]" : "";
                 Console.WriteLine($"Gen {gen + 1,3} — elite: {eliteIsland.First()}{tag}");
             }
 
@@ -333,17 +360,34 @@ public class FadeShortGA
                         new System.Text.Json.JsonSerializerOptions { WriteIndented = false }));
             }
 
-            var nextGen = new List<FadeShortGenotype>();
-            nextGen.AddRange(eliteIsland.Take(5));
-            while (nextGen.Count < _populationSize)
+            if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                var child = FadeShortGenotype.Crossover(
-                                TournamentSelect(population),
-                                TournamentSelect(population), _rng)
-                            .Mutate(_rng, mutationRate);
-                nextGen.Add(child);
+                // CHC restart. `population` is already sorted best-first, so the survivors are
+                // exactly the individuals the normal path would have carried over — the
+                // best-so-far genotype lives through the restart, and eliteIsland (captured
+                // above from the same sorted list) still holds the champion regardless.
+                // Random(_rng) with NO genotype seed: the restart must sample the whole bounds
+                // box, not a neighbourhood of the incumbent.
+                population = GaSearch.Cataclysm(population, _populationSize, _eliteCarryOver,
+                                                () => FadeShortGenotype.Random(_rng), ref stagnantGens);
+                if (_verbose)
+                    Console.WriteLine($"Gen {gen + 1,3} — CATACLYSM: kept top {Math.Min(_eliteCarryOver, _populationSize)}, " +
+                                      $"reinitialised {_populationSize - Math.Min(_eliteCarryOver, _populationSize)} at random");
             }
-            population = nextGen;
+            else
+            {
+                var nextGen = new List<FadeShortGenotype>();
+                nextGen.AddRange(eliteIsland.Take(_eliteCarryOver));
+                while (nextGen.Count < _populationSize)
+                {
+                    var child = FadeShortGenotype.Crossover(
+                                    TournamentSelect(population),
+                                    TournamentSelect(population), _rng)
+                                .Mutate(_rng, mutationRate);
+                    nextGen.Add(child);
+                }
+                population = nextGen;
+            }
         }
 
         // ── Bayesian refinement: TPE polishes the GA's elite region ─────────────
@@ -399,6 +443,8 @@ public class FadeShortGA
         if (coins.Count == 0 || coins.All(c => c.TrainCandles.Length == 0))
             throw new ArgumentException("No training candles found.");
 
+        GaSearch.AnnounceSeed("FadeShortGA.RunLowVol", _seed, _seedSupplied);
+
         if (_verbose)
         {
             foreach (var (coin, i) in coins.Select((c, i) => (c, i)))
@@ -436,9 +482,10 @@ public class FadeShortGA
 
         for (int gen = 0; gen < _generations; gen++)
         {
-            double baseMutRate  = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
-            double mutationRate = stagnantGens >= 15 ? Math.Min(baseMutRate * 2.0, 0.9) : baseMutRate;
+            // See Run() for why the stagnation mutation-rate boost was removed.
+            double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
 
+            // WARNING: this parallel body must stay RNG-FREE — System.Random is not thread-safe.
             Parallel.ForEach(population, ind =>
                 ind.Fitness = FitnessFromCache(ind, trainCaches, useFolds: true, _cfg));
 
@@ -451,7 +498,7 @@ public class FadeShortGA
 
             if (_verbose && (gen + 1) % _migrationInterval == 0)
             {
-                string tag = stagnantGens >= 15 ? $" [STAGNANT×{stagnantGens} boost]" : "";
+                string tag = stagnantGens > 0 ? $" [stagnant×{stagnantGens}]" : "";
                 Console.WriteLine($"Gen {gen + 1,3} — elite: {eliteIsland.First()}{tag}");
             }
 
@@ -472,17 +519,30 @@ public class FadeShortGA
                         new System.Text.Json.JsonSerializerOptions { WriteIndented = false }));
             }
 
-            var nextGen = new List<FadeShortGenotype>();
-            nextGen.AddRange(eliteIsland.Take(5));
-            while (nextGen.Count < _populationSize)
+            if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                var child = FadeShortGenotype.Crossover(
-                                TournamentSelect(population),
-                                TournamentSelect(population), _rng)
-                            .MutateLowVol(_rng, mutationRate);
-                nextGen.Add(child);
+                // Restart draws from the LowVol random factory (this run's own bounds box),
+                // unseeded — see Run() for the full rationale.
+                population = GaSearch.Cataclysm(population, _populationSize, _eliteCarryOver,
+                                                () => FadeShortGenotype.RandomLowVol(_rng), ref stagnantGens);
+                if (_verbose)
+                    Console.WriteLine($"Gen {gen + 1,3} — CATACLYSM: kept top {Math.Min(_eliteCarryOver, _populationSize)}, " +
+                                      $"reinitialised {_populationSize - Math.Min(_eliteCarryOver, _populationSize)} at random");
             }
-            population = nextGen;
+            else
+            {
+                var nextGen = new List<FadeShortGenotype>();
+                nextGen.AddRange(eliteIsland.Take(_eliteCarryOver));
+                while (nextGen.Count < _populationSize)
+                {
+                    var child = FadeShortGenotype.Crossover(
+                                    TournamentSelect(population),
+                                    TournamentSelect(population), _rng)
+                                .MutateLowVol(_rng, mutationRate);
+                    nextGen.Add(child);
+                }
+                population = nextGen;
+            }
         }
 
         // ── Bayesian refinement, LowVol variant ────────────────────────────────
@@ -528,9 +588,9 @@ public class FadeShortGA
         return best;
     }
 
-    private FadeShortGenotype TournamentSelect(List<FadeShortGenotype> pop, int k = 4) =>
-        Enumerable.Range(0, k)
-            .Select(_ => pop[_rng.Next(pop.Count)])
-            .OrderByDescending(g => g.Fitness)
-            .First();
+    // Tournament size comes from the constructor (default GaSearch.DefaultTournamentK = 2), not
+    // from a defaulted method parameter that no call site ever overrode. internal so the
+    // selection-pressure test can exercise the REAL selector rather than a copy of it.
+    internal FadeShortGenotype TournamentSelect(List<FadeShortGenotype> pop) =>
+        GaSearch.Tournament(pop, _tournamentK, _rng, g => g.Fitness);
 }

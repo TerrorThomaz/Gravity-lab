@@ -27,7 +27,12 @@ public class RegimeRouterGA
     private readonly int    _eliteCount;
     private readonly int    _migrationInterval;
     private readonly bool   _verbose;
-    private readonly Random _rng = new();
+    private readonly int    _tournamentK;
+    private readonly int    _eliteCarryOver;
+    private readonly int    _cataclysmStagnantGens;
+    private readonly int    _seed;
+    private readonly bool   _seedSupplied;
+    private readonly Random _rng;
 
     private const int MinTrades = 30;   // min combined active trades to score a fold
 
@@ -35,18 +40,34 @@ public class RegimeRouterGA
     // Weights are applied in time order (index 0 = oldest fold, last = most recent).
     private static readonly double[] FoldWeights = [1.0, 1.0, 1.0, 1.5, 2.0];
 
+    // eliteCount sizes the reporting slice / BO seed set / final-winner pool ONLY.
+    // eliteCarryOver is the real elitism knob — this GA carried a hardcoded literal 3 (of 50),
+    // and it keeps 3 as its default so the router's historical elitism ratio is unchanged; the
+    // point of the parameter is that it is now visible and settable. See GaSearch for the
+    // tournamentK = 2 rationale and for why stagnation now triggers a cataclysmic restart.
+    // seed: null draws one explicitly and prints it, so any run can be reproduced. This GA runs
+    // 150 generations, the longest budget in the repo, and so had the most to lose from a
+    // population that converged by generation ~5.
     public RegimeRouterGA(
         int  populationSize    = 50,
         int  generations       = 150,
         int  eliteCount        = 10,
         int  migrationInterval = 10,
-        bool verbose           = true)
+        bool verbose           = true,
+        int  tournamentK           = GaSearch.DefaultTournamentK,
+        int  eliteCarryOver        = 3,
+        int  cataclysmStagnantGens = GaSearch.DefaultCataclysmStagnantGens,
+        int? seed                  = null)
     {
         _populationSize    = populationSize;
         _generations       = generations;
         _eliteCount        = eliteCount;
         _migrationInterval = migrationInterval;
         _verbose           = verbose;
+        _tournamentK           = tournamentK;
+        _eliteCarryOver        = eliteCarryOver;
+        _cataclysmStagnantGens = cataclysmStagnantGens;
+        (_rng, _seed, _seedSupplied) = GaSearch.CreateRng(seed);
     }
 
     // ── Entry point ───────────────────────────────────────────────────────────
@@ -59,6 +80,8 @@ public class RegimeRouterGA
     {
         if (btcSeries.Length < 500)
             throw new ArgumentException("Need at least 500 BTC h1 bars for router training.");
+
+        GaSearch.AnnounceSeed("RegimeRouterGA.Run", _seed, _seedSupplied);
 
         // Build timestamp → BTC bar index lookup (hour-rounded)
         var btcTimeIndex = BuildTimeIndex(btcSeries);
@@ -101,9 +124,15 @@ public class RegimeRouterGA
 
         for (int gen = 0; gen < _generations; gen++)
         {
-            double baseMutRate  = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
-            double mutationRate = stagnantGens >= 15 ? Math.Min(baseMutRate * 2.0, 0.90) : baseMutRate;
+            // Mutation rate anneals 0.65 → 0.05 across the run. The old
+            // `stagnantGens >= 15 ? rate * 2` boost is gone — see GaSearch.Cataclysm for why
+            // doubling a per-gene PROBABILITY on a fixed creep step cannot escape a basin, and
+            // why the boost latched on permanently once it fired.
+            double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
 
+            // WARNING: this parallel body must stay RNG-FREE. System.Random is not thread-safe;
+            // a single _rng draw added here would silently corrupt its internal state (and
+            // destroy reproducibility) with no exception to point at it.
             Parallel.ForEach(population, ind =>
                 ind.Fitness = Fitness(ind, btcSeries, ethSeries, btcTimeIndex,
                                       validTrades, useValidation: false,
@@ -118,21 +147,38 @@ public class RegimeRouterGA
 
             if (_verbose && (gen + 1) % _migrationInterval == 0)
             {
-                string tag = stagnantGens >= 15 ? $" [STAGNANT×{stagnantGens}]" : "";
+                string tag = stagnantGens > 0 ? $" [stagnant×{stagnantGens}]" : "";
                 Console.WriteLine($"Gen {gen + 1,3} — elite: {eliteIsland[0]}{tag}");
             }
 
-            var nextGen = new List<RegimeRouterGenotype>();
-            nextGen.AddRange(eliteIsland.Take(3));
-            while (nextGen.Count < _populationSize)
+            if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                var child = RegimeRouterGenotype.Crossover(
-                                TournamentSelect(population),
-                                TournamentSelect(population), _rng)
-                            .Mutate(_rng, mutationRate);
-                nextGen.Add(child);
+                // CHC restart. `population` is already sorted best-first, so the survivors are
+                // exactly the individuals the normal path would have carried over — the
+                // best-so-far genotype lives through the restart, and eliteIsland (captured
+                // above from the same sorted list) still holds the champion regardless.
+                // Random(_rng) with NO genotype seed: the restart must sample the whole bounds
+                // box, not a neighbourhood of the incumbent.
+                population = GaSearch.Cataclysm(population, _populationSize, _eliteCarryOver,
+                                                () => RegimeRouterGenotype.Random(_rng), ref stagnantGens);
+                if (_verbose)
+                    Console.WriteLine($"Gen {gen + 1,3} — CATACLYSM: kept top {Math.Min(_eliteCarryOver, _populationSize)}, " +
+                                      $"reinitialised {_populationSize - Math.Min(_eliteCarryOver, _populationSize)} at random");
             }
-            population = nextGen;
+            else
+            {
+                var nextGen = new List<RegimeRouterGenotype>();
+                nextGen.AddRange(eliteIsland.Take(_eliteCarryOver));
+                while (nextGen.Count < _populationSize)
+                {
+                    var child = RegimeRouterGenotype.Crossover(
+                                    TournamentSelect(population),
+                                    TournamentSelect(population), _rng)
+                                .Mutate(_rng, mutationRate);
+                    nextGen.Add(child);
+                }
+                population = nextGen;
+            }
         }
 
         // ── Bayesian refinement ───────────────────────────────────────────────
@@ -369,9 +415,8 @@ public class RegimeRouterGA
         return Math.Clamp(maxBar - 1, 0, maxBar - 1);
     }
 
-    private RegimeRouterGenotype TournamentSelect(List<RegimeRouterGenotype> pop, int k = 4) =>
-        Enumerable.Range(0, k)
-            .Select(_ => pop[_rng.Next(pop.Count)])
-            .OrderByDescending(g => g.Fitness)
-            .First();
+    // Tournament size comes from the constructor (default GaSearch.DefaultTournamentK = 2), not
+    // from a defaulted method parameter that no call site ever overrode.
+    internal RegimeRouterGenotype TournamentSelect(List<RegimeRouterGenotype> pop) =>
+        GaSearch.Tournament(pop, _tournamentK, _rng, g => g.Fitness);
 }

@@ -42,9 +42,16 @@ static class LongTrainCommands
     public static async Task RunCoevolve(BybitRestClient client, string[]? args = null)
     {
         string variant = TrainCommands.ResolveVariant(args);
+        int?   rngSeed = GaSearch.ResolveSeed(args);
         var    cfg     = FitnessConfig.Load();
         Console.WriteLine("=== Gravity-gen2 | COEVOLVETRAIN (FadeLong + DipLong + SwingLong + RipShort + Router + DynamicGuard, 4 cycles) ===");
-        Console.WriteLine($"Training Coevolve / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
+        Console.WriteLine($"Training Coevolve / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]");
+        // HANDOFF: CoevolveGA (src/coevolve/CoevolveGA.cs) constructs the Router and Guard GAs
+        // itself and takes no seed parameter, so --seed cannot be forwarded to them from here.
+        // Each GA still prints the seed it drew, so a coevolve run stays reproducible after the
+        // fact; wiring --seed through CoevolveGA is a follow-up in a file this change did not own.
+        GaSearch.AnnounceCommandSeed("coevolvetrain", rngSeed);
+        Console.WriteLine();
 
         string flPath = TrainCommands.VariantGenoPath("fade_long",     variant, Config.FadeLongGenoFile);
         string dlPath = TrainCommands.VariantGenoPath("dip_long",      variant, Config.DipLongGenoFile);
@@ -273,10 +280,13 @@ static class LongTrainCommands
     public static async Task RunFadeLongTrain(BybitRestClient client, string[]? args = null)
     {
         string variant  = TrainCommands.ResolveVariant(args);
+        int?   rngSeed  = GaSearch.ResolveSeed(args);
         var    cfg      = FitnessConfig.Load();
         string genoPath = TrainCommands.VariantGenoPath("fade_long", variant, Config.FadeLongGenoFile);
         Console.WriteLine($"=== Gravity-gen2 | FADELONGTRAIN (oversold bounce, 1h setup + 15m entry/exit, {Config.BacktestCoins.Length} coins, ~3yr) ===");
-        Console.WriteLine($"Training FadeLong / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
+        Console.WriteLine($"Training FadeLong / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]");
+        GaSearch.AnnounceCommandSeed("fadelongtrain", rngSeed);
+        Console.WriteLine();
 
         Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins (15m → 1h, ~3yr)...");
         var semFl = new SemaphoreSlim(4);
@@ -394,7 +404,7 @@ static class LongTrainCommands
             else Console.WriteLine("  Skipping seed (fitness ≤ 0 — training from scratch)");
         }
 
-        var flBest = new FadeLongGA(80, 150, verbose: true, cfg: cfg, btcSeries: flBtcSeries).Run(flCoins, flSeed);
+        var flBest = new FadeLongGA(80, 150, verbose: true, cfg: cfg, btcSeries: flBtcSeries, seed: rngSeed).Run(flCoins, flSeed);
 
         // Post-GA TPE pass removed — see the "Post-GA refinement" note at the top of
         // commands/TrainCommands.cs. FadeLongGA already runs 60 TPE iterations internally
@@ -466,10 +476,13 @@ static class LongTrainCommands
     public static async Task RunRipShortTrain(BybitRestClient client, string[]? args = null)
     {
         string variant  = TrainCommands.ResolveVariant(args);
+        int?   rngSeed  = GaSearch.ResolveSeed(args);
         var    cfg      = FitnessConfig.Load();
         string genoPath = TrainCommands.VariantGenoPath("rip_short", variant, Config.RipShortGenoFile);
         Console.WriteLine($"=== Gravity-gen2 | RIPSHORTTRAIN (bear-regime relief-rally short, 1h setup + 15m entry/exit, {Config.BacktestCoins.Length} coins, ~3yr) ===");
-        Console.WriteLine($"Training RipShort / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
+        Console.WriteLine($"Training RipShort / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]");
+        GaSearch.AnnounceCommandSeed("ripshorttrain", rngSeed);
+        Console.WriteLine();
 
         Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins (15m → 1h, ~3yr)...");
         var semRs = new SemaphoreSlim(4);
@@ -587,7 +600,7 @@ static class LongTrainCommands
             else Console.WriteLine("  Skipping seed (fitness ≤ 0 — training from scratch)");
         }
 
-        var rsBest = new RipShortGA(80, 150, verbose: true, cfg: cfg, btcSeries: rsBtcSeries).Run(rsCoins, rsSeed);
+        var rsBest = new RipShortGA(80, 150, verbose: true, cfg: cfg, btcSeries: rsBtcSeries, seed: rngSeed).Run(rsCoins, rsSeed);
 
         // Post-GA TPE pass removed — see the "Post-GA refinement" note at the top of
         // commands/TrainCommands.cs. RipShortGA already runs 60 TPE iterations internally
@@ -685,10 +698,13 @@ static class LongTrainCommands
     public static async Task RunRegimeRouterTrain(BybitRestClient client, string[]? args = null)
     {
         string variant  = TrainCommands.ResolveVariant(args);
+        int?   rngSeed  = GaSearch.ResolveSeed(args);
         var    cfg      = FitnessConfig.Load();
         string genoPath = TrainCommands.VariantGenoPath("regime_router", variant, Config.RouterGenoFile);
         Console.WriteLine("=== Gravity-gen2 | ROUTERTRAIN (RegimeRouter GA · BTC-anchored · full history) ===");
-        Console.WriteLine($"Training RegimeRouter / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
+        Console.WriteLine($"Training RegimeRouter / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]");
+        GaSearch.AnnounceCommandSeed("routertrain", rngSeed);
+        Console.WriteLine();
 
         if (!File.Exists(Config.FadeShortGenoFile))
         { Console.WriteLine("No FadeShort genotype — run train first."); return; }
@@ -863,7 +879,8 @@ static class LongTrainCommands
             generations:       150,
             eliteCount:        10,
             migrationInterval: 10,
-            verbose:           true)
+            verbose:           true,
+            seed:              rngSeed)
             .Run(btcRegimeSeries, ethRegimeSeries, allTrades, routerSeed);
 
         Console.WriteLine($"\nFrozen router genotype:\n  {routerBest}\n");
@@ -878,10 +895,13 @@ static class LongTrainCommands
     {
         const int TrainWindowH1 = 12_960;
         string variant  = TrainCommands.ResolveVariant(args);
+        int?   rngSeed  = GaSearch.ResolveSeed(args);
         var    cfg      = FitnessConfig.Load();
         string genoPath = TrainCommands.VariantGenoPath("dip_long", variant, Config.DipLongGenoFile);
         Console.WriteLine($"=== Gravity-gen2 | DIPLONGTRAIN (bull pullback, 1h setup + 15m entry/exit, {Config.BacktestCoins.Length} coins, last 18 months) ===");
-        Console.WriteLine($"Training DipLong / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
+        Console.WriteLine($"Training DipLong / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]");
+        GaSearch.AnnounceCommandSeed("diplongtrain", rngSeed);
+        Console.WriteLine();
 
         Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins (15m → 1h, ~3yr)...");
         var semDl = new SemaphoreSlim(4);
@@ -990,7 +1010,7 @@ static class LongTrainCommands
         var dlBtcSeries = btcDlEntry.H1Full is { Length: > 220 }
             ? RegimeClassifier.ClassifySeriesWithDuration(btcDlEntry.H1Full)
             : null;
-        var dlBest = new DipLongGA(80, 150, verbose: true, cfg: cfg, btcSeries: dlBtcSeries).Run(dlCoins, dlSeed);
+        var dlBest = new DipLongGA(80, 150, verbose: true, cfg: cfg, btcSeries: dlBtcSeries, seed: rngSeed).Run(dlCoins, dlSeed);
 
         // Post-GA TPE pass removed — see the "Post-GA refinement" note at the top of
         // commands/TrainCommands.cs. DipLongGA already runs 60 TPE iterations internally
@@ -1060,10 +1080,13 @@ static class LongTrainCommands
     public static async Task RunSwingLongTrain(BybitRestClient client, string[]? args = null)
     {
         string variant  = TrainCommands.ResolveVariant(args);
+        int?   rngSeed  = GaSearch.ResolveSeed(args);
         var    cfg      = FitnessConfig.Load();
         string genoPath = TrainCommands.VariantGenoPath("swing_long", variant, Config.SwingLongGenoFile);
         Console.WriteLine($"=== Gravity-gen2 | SWINGLONG TRAIN (bull divergence long, 1h+15m, {Config.BacktestCoins.Length} coins, ~3yr) ===");
-        Console.WriteLine($"Training SwingLong / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
+        Console.WriteLine($"Training SwingLong / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]");
+        GaSearch.AnnounceCommandSeed("swinglongtrain", rngSeed);
+        Console.WriteLine();
 
         Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins (15m → 1h, ~3yr)...");
         var sem = new SemaphoreSlim(4);
@@ -1109,7 +1132,7 @@ static class LongTrainCommands
         var slBtcSeries = btcSwingEntry.h1 is { Length: > 220 }
             ? RegimeClassifier.ClassifySeriesWithDuration(btcSwingEntry.h1)
             : null;
-        var best = new SwingLongGA(80, 150, verbose: true, cfg: cfg, btcSeries: slBtcSeries).Run(coins, seed);
+        var best = new SwingLongGA(80, 150, verbose: true, cfg: cfg, btcSeries: slBtcSeries, seed: rngSeed).Run(coins, seed);
 
         // Post-GA TPE pass removed — see the "Post-GA refinement" note at the top of
         // commands/TrainCommands.cs. SwingLongGA already runs 60 TPE iterations internally
@@ -1173,10 +1196,13 @@ static class LongTrainCommands
     {
         const int TrainWindowH1 = 12_960;
         string variant = TrainCommands.ResolveVariant(args);
+        int?   rngSeed = GaSearch.ResolveSeed(args);
         var cfg = FitnessConfig.Load();
         string genoPath = TrainCommands.VariantGenoPath("accumulation_grid", variant, "genotypes/accumulation_grid_genotype.json");
         Console.WriteLine($"=== Gravity-gen2 | ACCUMGRIDTRAIN (EMA-based dynamic grid, replaces FadeShort, {Config.BacktestCoins.Length} coins) ===");
-        Console.WriteLine($"Training AccumulationGrid / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW}\n");
+        Console.WriteLine($"Training AccumulationGrid / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW}");
+        GaSearch.AnnounceCommandSeed("accumgridtrain", rngSeed);
+        Console.WriteLine();
 
         Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins (1h, ~3yr)...");
         var sem = new SemaphoreSlim(4);
@@ -1214,13 +1240,16 @@ static class LongTrainCommands
 
         Console.WriteLine("Training Bull regime AccumulationGrid...");
         var bullGa = new GravityGen2.Strategies.AccumulationGrid.AccumulationGridGA(
-            MarketRegime.Bull, populationSize: 60, generations: 100, eliteCount: 15, verbose: true, cfg: cfg);
+            MarketRegime.Bull, populationSize: 60, generations: 100, eliteCount: 15, verbose: true, cfg: cfg,
+            seed: rngSeed);
         var (bullBest, bullFitness) = bullGa.Train(coins);
         Console.WriteLine($"\nBull best: {bullBest}  fitness={bullFitness:F3}");
 
         Console.WriteLine("\nTraining Bear regime AccumulationGrid...");
         var bearGa = new GravityGen2.Strategies.AccumulationGrid.AccumulationGridGA(
-            MarketRegime.Bear, populationSize: 60, generations: 100, eliteCount: 15, verbose: true, cfg: cfg);
+            MarketRegime.Bear, populationSize: 60, generations: 100, eliteCount: 15, verbose: true, cfg: cfg,
+            // +1 so Bull and Bear do not replay the identical RNG stream under one --seed.
+            seed: rngSeed is int agSeed ? unchecked(agSeed + 1) : null);
         var (bearBest, bearFitness) = bearGa.Train(coins);
         Console.WriteLine($"\nBear best: {bearBest}  fitness={bearFitness:F3}");
 

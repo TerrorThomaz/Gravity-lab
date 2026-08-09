@@ -48,11 +48,14 @@ static class TrainCommands
     public static async Task RunFadeShortTrain(BybitRestClient client, string[]? args = null, bool invertScreen = false)
     {
         string variant  = ResolveVariant(args);
+        int?   rngSeed  = GaSearch.ResolveSeed(args);
         var    cfg      = FitnessConfig.Load();
         string genoPath = VariantGenoPath("fade_short", variant, Config.FadeShortGenoFile);
         string modeLabel = invertScreen ? "RETRAIN (generalisation pass — unknown coins)" : "TRAIN (1h setup + 15m entry/exit, 40 coins, ~3yr)";
         Console.WriteLine($"=== Gravity-gen2 | {modeLabel} ===");
-        Console.WriteLine($"Training FadeShort / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]\n");
+        Console.WriteLine($"Training FadeShort / variant={variant} | SharpeW={cfg.SharpeW} CalmarW={cfg.CalmarW} AtrRange=[{cfg.AtrLow},{cfg.AtrHigh}]");
+        GaSearch.AnnounceCommandSeed(invertScreen ? "retrain" : "train", rngSeed);
+        Console.WriteLine();
 
         string[] heldOutSyms = ["BTCUSDT", "LTCUSDT", "FILUSDT", "DYDXUSDT", "ENAUSDT"];
 
@@ -233,7 +236,7 @@ static class TrainCommands
         Console.WriteLine($"\n  Training on {coinData.Count} coins simultaneously\n");
 
         Console.WriteLine("─── Swing GA training (universal — all coins) ───");
-        var best = new FadeShortGA(80, 150, verbose: true, cfg: cfg).Run(coinData, seed);
+        var best = new FadeShortGA(80, 150, verbose: true, cfg: cfg, seed: rngSeed).Run(coinData, seed);
 
         // Post-GA TPE pass removed — see the "Post-GA refinement" note at the top of this
         // file. FadeShortGA has no inner BO pass yet, so FadeShort is GA-only for now.
@@ -291,7 +294,10 @@ static class TrainCommands
                 ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(clFile))!.ToGenotype() is { Fitness: > 0 } prev ? prev : best
                 : best;
 
-            var clusterBest = new FadeShortGA(60, 100, verbose: false).Run(clusterCoins, clusterSeed);
+            // Offset per cluster so the cluster runs do not all replay the identical RNG stream
+            // under one --seed; unchecked so a seed near int.MaxValue wraps instead of throwing.
+            int? clusterRngSeed = rngSeed is int rs ? unchecked(rs + (int)clusterType + 1) : null;
+            var clusterBest = new FadeShortGA(60, 100, verbose: false, seed: clusterRngSeed).Run(clusterCoins, clusterSeed);
             Console.WriteLine($"  [{clLabel}] best: {clusterBest}");
             File.WriteAllText(clFile, JsonSerializer.Serialize(FadeShortGenotypeDto.From(clusterBest),
                 new JsonSerializerOptions { WriteIndented = true }));

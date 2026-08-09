@@ -22,19 +22,16 @@ public static class GridShortSimulator
     private const int    AdxPeriod    = 14;
     private const int    MaxLevels    = 5;
 
-    private const double FeeExchange = 0.11;
-    private const double SlipTpK     = 0.01;
-    private const double SlipMarketK = 0.03;
-    private const double SlipStopGap = 0.18;
+    // Cost model: see TradeCosts in src/core/Simulator.cs. Same as GridSimulator's — the two
+    // are direction mirrors and must price a round trip identically.
+    private const double StopGapAtrK = 0.18;
 
-    private static double TradeCost(double atrAtStart, double entryPx, bool isStop, bool isTp = false)
-    {
-        double atrPct = atrAtStart / entryPx * 100.0;
-        double slip   = isStop ? SlipStopGap * atrPct
-                       : isTp  ? SlipTpK     * atrPct
-                               : SlipMarketK * atrPct;
-        return FeeExchange + slip;
-    }
+    // isTp is retained on the signature (call sites read better with it) but no longer changes
+    // the cost: the per-exit-quality slip constants it used to select are gone, because they
+    // were an independent slippage magnitude competing with Config.SlippageBps. See the note
+    // in GridSimulator.TradeCost on why the limit-fill discount is deliberately not modelled.
+    internal static double TradeCost(double atrAtStart, double entryPx, bool isStop, bool isTp = false)
+        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrAtStart, entryPx), isStop, StopGapAtrK);
 
     public static List<(DateTime Time, double Return, string Kind)> GetGridShortReturns(
         GridGenotype g, ReadOnlySpan<Candle> h1, FundingRateSession? funding = null)

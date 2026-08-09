@@ -234,6 +234,29 @@ static class CombinedBacktest
         var fetched = await Task.WhenAll(fetchTasks);
         Console.WriteLine($"  Done.\n");
 
+        // ── Funding rate sessions, ONE PER SYMBOL ────────────────────────────────────────
+        // Until now this command constructed no FundingRateSession at all (`grep -c -i funding
+        // commands/CombinedBacktest.cs` returned 0), so every simulator ran the `funding == null`
+        // branch and priced funding at the flat interest-rate floor. Real rates are a real cost
+        // this backtest has never paid, and they are anti-correlated with what the long
+        // strategies trade: funding prints positive >90% of the time and hardest in bull markets,
+        // which is exactly when DipLong/SwingLong/AccumGrid are active and holding. EXPECT THE
+        // NUMBERS BELOW TO GET WORSE. That is the correction, not a regression.
+        Console.WriteLine("  Fetching per-symbol funding rate history...");
+        var funding = await CandleFetcher.FetchFundingSessionsAsync(client, fetched.Select(f => f.sym));
+        funding.PrintSummary();
+        Console.WriteLine();
+
+        // ── DynamicGuard session ─────────────────────────────────────────────────────────
+        // Built here, applied at the portfolio-summary step. Before this change `grep -rn
+        // DynamicGuardSession commands/` had no hit in this file at all: the guard was trained
+        // by 'dynamicguardtrain' and reported in papertrade, but the headline numbers this
+        // command prints — the ones CLAUDE.md tells you to compare after any simulator change —
+        // were produced with the guard switched off entirely.
+        var btcH1ForGuard = fetched.FirstOrDefault(f => f.sym == "BTCUSDT").h1;
+        var guardCtx      = GuardedPortfolio.TryLoad(btcH1ForGuard);
+        if (guardCtx != null) Console.WriteLine($"  Guard: {guardCtx.Genotype}\n");
+
         RegimeRouterSession? session  = null;
         RegimeBar[]?         btcRegimeSeries = null;
         if (routerG != null)
@@ -347,7 +370,7 @@ static class CombinedBacktest
             var screenM15 = screenH1.Length == h1.Length ? m15 : m15Train;
             var (coinFsG, fsVarLabel) = SelectVariantLabeled(fsVariants, m15);
             coinFsG ??= swingG;
-            var tRet  = FadeShortSimulator.GetFadeShortReturns(coinFsG, screenH1, screenM15).Select(t => t.Return).ToList();
+            var tRet  = FadeShortSimulator.GetFadeShortReturns(coinFsG, screenH1, screenM15, funding.For(sym)).Select(t => t.Return).ToList();
             double tExp  = tRet.Count >= 20 ? tRet.Average() : double.NegativeInfinity;
             double tSort = tRet.Count >= 20 ? Simulator.SortinoRatio(tRet, screenH1.Length * 12) : double.NegativeInfinity;
             double tPF   = tRet.Count >= 20 ? Simulator.ProfitFactor(tRet) : 0;
@@ -358,7 +381,7 @@ static class CombinedBacktest
             }
 
             double conf   = Simulator.ComputeConfidence(tRet);
-            var    vSwing = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1Val, m15Val);
+            var    vSwing = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1Val, m15Val, funding.For(sym));
             var    vRet   = vSwing.Select(t => t.Return).ToList();
             int    vCC    = h1Val.Length * 12;
             swingTotalVCC += vCC;
@@ -406,7 +429,11 @@ static class CombinedBacktest
 
             var (coinGridG, gridVarLabel) = SelectVariantLabeled(gridVariants, m15Grid);
             coinGridG ??= gridG;
-            var tRet  = GridSimulator.GetGridReturns(coinGridG, h1Train).Select(t => t.Return).ToList();
+            // Grid books funding too. Historically it did NOT — GridSimulator carried no funding
+            // term at all, so the grid family held positions up to MaxHoldCandles (77 h1 bars in
+            // the trained genotype) free of carry while the other six strategies paid. Any
+            // Grid-vs-other comparison in older output is biased in Grid's favour by that amount.
+            var tRet  = GridSimulator.GetGridReturns(coinGridG, h1Train, funding.For(sym)).Select(t => t.Return).ToList();
             double tExp  = tRet.Count >= 20 ? tRet.Average()               : double.NegativeInfinity;
             double tPF   = tRet.Count >= 20 ? Simulator.ProfitFactor(tRet)  : 0;
             double tSort = tRet.Count >= 20 ? Simulator.SortinoRatio(tRet, h1Train.Length)  : double.NegativeInfinity;
@@ -417,7 +444,7 @@ static class CombinedBacktest
             }
 
             double conf  = Simulator.ComputeConfidence(tRet);
-            var    vGrid = GridSimulator.GetGridReturns(coinGridG, h1Val);
+            var    vGrid = GridSimulator.GetGridReturns(coinGridG, h1Val, funding.For(sym));
             var    vRet  = vGrid.Select(t => t.Return).ToList();
             int    vCC   = h1Val.Length * 12;
             gridTotalVCC += vCC;
@@ -469,7 +496,7 @@ static class CombinedBacktest
 
                 var (coinFlG, flVarLabel) = SelectVariantLabeled(flVariants, m15);
                 coinFlG ??= flG;
-                var raw    = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1Val, m15Val);
+                var raw    = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1Val, m15Val, funding.For(sym));
                 var gated  = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList()
                     : raw;
@@ -529,7 +556,7 @@ static class CombinedBacktest
 
                 var (coinDlG, dlVarLabel) = SelectVariantLabeled(dlVariants, m15);
                 coinDlG ??= dlG;
-                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1Val, m15Val);
+                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1Val, m15Val, funding.For(sym));
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
@@ -589,7 +616,7 @@ static class CombinedBacktest
 
                 var (coinSlG, slVarLabel) = SelectVariantLabeled(slVariants, m15);
                 coinSlG ??= slG;
-                var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1Val, m15Val);
+                var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1Val, m15Val, funding.For(sym));
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
@@ -649,7 +676,7 @@ static class CombinedBacktest
 
                 var (coinRsG, rsVarLabel) = SelectVariantLabeled(rsVariants, m15);
                 coinRsG ??= rsG;
-                var raw    = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val);
+                var raw    = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val, funding.For(sym));
                 var gated  = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList()
                     : raw;
@@ -705,8 +732,8 @@ static class CombinedBacktest
                 int vCC = h1Val.Length;
                 agTotalVCC += vCC;
 
-                var bullTrades = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator.GetAccumulationReturns(agBullG, h1Val, MarketRegime.Bull);
-                var bearTrades = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator.GetAccumulationReturns(agBearG, h1Val, MarketRegime.Bear);
+                var bullTrades = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator.GetAccumulationReturns(agBullG, h1Val, MarketRegime.Bull, funding.For(sym));
+                var bearTrades = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator.GetAccumulationReturns(agBearG, h1Val, MarketRegime.Bear, funding.For(sym));
                 var raw = bullTrades.Concat(bearTrades).OrderBy(t => t.Time).ToList();
 
                 var gated = session != null
@@ -1059,6 +1086,13 @@ static class CombinedBacktest
             .Select(t => (t.Time, t.Return, t.Conf, StrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG, agBullG)))
             .ToList();
 
+        // Same trades, strategy label retained, for the guarded/unguarded comparison further down.
+        var allTradesGuardInput = allTrades
+            .Select(t => new GuardedPortfolio.Trade(
+                t.Time, t.Return, t.Conf,
+                StrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG, agBullG), t.Strategy))
+            .ToList();
+
         var port5cap   = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
         var portKelly  = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps);
 
@@ -1096,6 +1130,15 @@ static class CombinedBacktest
 
         PrintCombinedPort($"5% per position · {Config.MaxTotalExposurePct:P0} total cap  [concurrent-aware]", port5cap);
         PrintCombinedPort($"Kelly(15%) · {Config.MaxTotalExposurePct:P0} total cap  [concurrent-aware]", portKelly);
+
+        // ── DynamicGuard: applied vs not ─────────────────────────────────────────────────
+        // The two portfolio blocks printed immediately above are UNGUARDED, exactly as they have
+        // always been — the guard was trained, saved and reported but never applied here. Rather
+        // than swap the headline (which would be indistinguishable from a P&L regression in a
+        // diff), both columns are printed side by side and the delta is made explicit.
+        GuardedPortfolio.PrintComparison(
+            "Combined portfolio (val window, router-gated)",
+            allTradesGuardInput, guardCtx, Config.MaxTotalExposurePct, Config.SlippageBps);
 
         if (allTrades.Count >= 2)
         {
@@ -1271,7 +1314,7 @@ static class CombinedBacktest
         {
             var coinFsGFull = SelectVariant(fsVariants, m15f) ?? swingG;
             var coinRet = new List<double>();
-            foreach (var (t, ret, _) in FadeShortSimulator.GetFadeShortReturns(coinFsGFull, h1f, m15f))
+            foreach (var (t, ret, _) in FadeShortSimulator.GetFadeShortReturns(coinFsGFull, h1f, m15f, funding.For(sym)))
             {
                 fullHistTrades.Add((t, ret, conf, TimeSpan.FromHours(coinFsGFull.MaxHoldCandles)));
                 coinRet.Add(ret);
@@ -1283,7 +1326,7 @@ static class CombinedBacktest
         {
             // gridFullCoins doesn't store m15 — use the representative gridG for hold-time
             var coinRet = new List<double>();
-            foreach (var (t, ret, _) in GridSimulator.GetGridReturns(gridG, h1f))
+            foreach (var (t, ret, _) in GridSimulator.GetGridReturns(gridG, h1f, funding.For(sym)))
             {
                 if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.Grid, t)) continue;
                 fullHistTrades.Add((t, ret, conf, TimeSpan.FromHours(gridG.MaxHoldCandles)));
@@ -1297,7 +1340,7 @@ static class CombinedBacktest
             {
                 var coinFlGFull = SelectVariant(flVariants, m15f) ?? flG;
                 var coinRet = new List<double>();
-                foreach (var t in FadeLongSimulator.GetFadeLongReturns(coinFlGFull, h1f, m15f))
+                foreach (var t in FadeLongSimulator.GetFadeLongReturns(coinFlGFull, h1f, m15f, funding.For(sym)))
                 {
                     if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)) continue;
                     fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(coinFlGFull.MaxHoldCandles)));
@@ -1311,7 +1354,7 @@ static class CombinedBacktest
             {
                 var coinDlGFull = SelectVariant(dlVariants, m15f) ?? dlG;
                 var coinRet = new List<double>();
-                foreach (var t in DipLongSimulator.GetDipLongReturns(coinDlGFull, h1f, m15f))
+                foreach (var t in DipLongSimulator.GetDipLongReturns(coinDlGFull, h1f, m15f, funding.For(sym)))
                 {
                     if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)) continue;
                     fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(coinDlGFull.MaxHoldCandles)));
@@ -1325,7 +1368,7 @@ static class CombinedBacktest
             {
                 var coinSlGFull = SelectVariant(slVariants, m15f) ?? slG;
                 var coinRet = new List<double>();
-                foreach (var t in SwingLongSimulator.GetSwingLongReturns(coinSlGFull, h1f, m15f))
+                foreach (var t in SwingLongSimulator.GetSwingLongReturns(coinSlGFull, h1f, m15f, funding.For(sym)))
                 {
                     if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)) continue;
                     fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(coinSlGFull.MaxHoldCandles)));
@@ -1339,7 +1382,7 @@ static class CombinedBacktest
             {
                 var coinRsGFull = SelectVariant(rsVariants, m15f) ?? rsG;
                 var coinRet = new List<double>();
-                foreach (var t in RipShortSimulator.GetRipShortReturns(coinRsGFull, h1f, m15f))
+                foreach (var t in RipShortSimulator.GetRipShortReturns(coinRsGFull, h1f, m15f, funding.For(sym)))
                 {
                     if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)) continue;
                     fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(coinRsGFull.MaxHoldCandles)));

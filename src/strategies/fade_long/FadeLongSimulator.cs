@@ -27,9 +27,9 @@ public static class FadeLongSimulator
     private const int RsiPeriod = 7;
     private const int AdxPeriod = 7;
 
-    private const double FeeExchange = 0.11;
-    private const double SlipK       = 0.025;
-    private const double SlipStopGap = 0.015;
+    // Cost model: see TradeCosts in src/core/Simulator.cs. Fee + slippage on BOTH sides
+    // (magnitude from Config.SlippageBps alone) + this gap premium on stop exits only.
+    private const double StopGapAtrK = 0.015;
 
     public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive)> GetFadeLongReturns(
         FadeLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
@@ -243,10 +243,6 @@ public static class FadeLongSimulator
         return (result, new FadeLongTradeState(inTrade, entry, hardStop, maeStop, target, trailArmed, trailHigh, finalHold));
     }
 
-    private static double TradeCost(bool isStop, double atrEntry, double entryPx)
-    {
-        double atrPct = atrEntry / entryPx * 100.0;
-        double slip   = SlipK * atrPct + (isStop ? SlipStopGap * atrPct : 0.0);
-        return FeeExchange + slip;
-    }
+    internal static double TradeCost(bool isStop, double atrEntry, double entryPx)
+        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrEntry, entryPx), isStop, StopGapAtrK);
 }

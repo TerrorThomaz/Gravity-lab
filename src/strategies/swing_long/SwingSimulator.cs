@@ -21,16 +21,12 @@ public static class FadeShortSimulator
     internal const int AtrPeriod    = 14;
     internal const int RsiPeriod    = 7;   // fixed — not a gene; GA always converges here
     internal const int AdxPeriod    = 7;   // fixed — not a gene; GA always converges here (faster ADX, more reactive to trend onset)
-    // Fee model: exchange taker fee + ATR-proportional slippage.
-    // Execution is on 15m bars; ATR reference is h4. Calibrated so the average round-trip
-    // stays ~0.21% for liquid coins (h4 ATR ≈ 2-3% of price), while volatile coins
-    // (memes, h4 ATR ≈ 5-8%) pay proportionally more, especially on stop exits.
-    //   SlipK       = 0.025 → slip per side = 0.025 × atrPct  (at 3% ATR → 0.075% each side)
-    //   SlipStopGap = 0.030 → extra gap on stops               (at 3% ATR → +0.090% extra)
-    // Liquid coin TP ≈ 0.185%, Stop ≈ 0.275%. Meme TP ≈ 0.26%, Stop ≈ 0.41%.
-    private const double FeeExchange = 0.11;   // 0.055% taker × 2 sides
-    private const double SlipK       = 0.025;  // entry + normal-exit slip = k × (atr/price × 100)
-    private const double SlipStopGap = 0.030;  // stop gap premium = k × (atr/price × 100) — doubled to reflect fast-stop fill risk
+    // Cost model: see TradeCosts in src/core/Simulator.cs. Fee + slippage on BOTH sides
+    // (slippage magnitude comes from Config.SlippageBps and nowhere else) + a gap premium on
+    // stop exits only. Execution is on 15m bars; the ATR reference passed in is h4.
+    // At the 3% reference ATR: TP ≈ 0.21%, Stop ≈ 0.30%. A meme perp at 8% ATR pays ≈ 0.38% /
+    // 0.62% — the volatility scaling is in TradeCosts, not here.
+    private const double StopGapAtrK = 0.030;  // stop gap premium = k × atrPct — fast-stop fill risk
 
     public static List<(DateTime Time, double Return, string Kind)> GetFadeShortReturns(
         FadeShortGenotype g, ReadOnlySpan<Candle> candles)
@@ -424,15 +420,12 @@ public static class FadeShortSimulator
     }
 
     // ── Cost model ────────────────────────────────────────────────────────────────
-
-    // Total round-trip cost for one trade.
-    // isStop=true adds gap-risk premium: price often blows through the stop level in a volatile bar.
-    private static double TradeCost(bool isStop, double atrEntry, double entryPx)
-    {
-        double atrPct  = atrEntry / entryPx * 100.0;
-        double slip    = SlipK * atrPct + (isStop ? SlipStopGap * atrPct : 0.0);
-        return FeeExchange + slip;
-    }
+    // Total round-trip cost for one trade. Delegates to the single repo-wide model so this
+    // strategy stays comparable with the other seven; the only strategy-specific input is the
+    // stop gap shape. isStop=true adds the gap premium: price often blows through the stop
+    // level in a volatile bar.
+    internal static double TradeCost(bool isStop, double atrEntry, double entryPx)
+        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrEntry, entryPx), isStop, StopGapAtrK);
 
 }
 
@@ -447,9 +440,12 @@ public static class SwingLongSimulator
     internal const int RsiPeriod =  7;
     internal const int AdxPeriod =  7;
 
-    private const double FeeExchange = 0.11;
-    private const double SlipK       = 0.025;
-    private const double SlipStopGap = 0.030;
+    // Cost model: see TradeCosts in src/core/Simulator.cs. Identical shape to FadeShort —
+    // this is its long-side mirror, so it must not price a round trip differently.
+    private const double StopGapAtrK = 0.030;
+
+    internal static double TradeCost(bool isStop, double atrEntry, double entryPx)
+        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrEntry, entryPx), isStop, StopGapAtrK);
 
     public record SwingLongTradeState(
         bool   InTrade,
@@ -628,12 +624,9 @@ public static class SwingLongSimulator
                 {
                     double exitPx   = hitStop   ? hardStop :
                                       hitTarget ? target   : m15Price;
-                    double atrPct   = atrEntry / entry * 100.0;
-                    double slip     = SlipK * atrPct;
-                    double stopSlip = hitStop ? SlipStopGap * atrPct : 0;
-                    double cost     = FeeExchange + slip * 2 + stopSlip;
                     double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: true);
-                    double ret      = (exitPx - entry) / entry * 100.0 - cost + fundingPnl;
+                    double ret      = (exitPx - entry) / entry * 100.0
+                                    - TradeCost(hitStop, atrEntry, entry) + fundingPnl;
                     result.Add((m15[im15].Time, ret, "swing_long"));
                     inTrade = false;
                 }
@@ -643,9 +636,9 @@ public static class SwingLongSimulator
         if (inTrade)
         {
             double finalPx = m15Closes[^1];
-            double atrPct  = atrEntry / entry * 100.0;
             double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[^1].Time, funding, isLong: true);
-            double ret     = (finalPx - entry) / entry * 100.0 - (FeeExchange + SlipK * atrPct * 2) + fundingPnl;
+            double ret     = (finalPx - entry) / entry * 100.0
+                           - TradeCost(isStop: false, atrEntry, entry) + fundingPnl;
             result.Add((m15[^1].Time, ret, "swing_long"));
         }
 

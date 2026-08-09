@@ -304,7 +304,23 @@ static class TrainCommands
             Console.WriteLine($"  Saved → {clFile}");
         }
 
+        // ┌── KNOWN GAP: FUNDING IS NOT PRICED ANYWHERE IN THIS COMMAND ─────────────────────┐
+        // │ Every figure below — the overfit check, the held-out coins, the time-embargoed   │
+        // │ slice and the regime-stratified buckets — is produced by the SINGLE-TIMEFRAME    │
+        // │ overload `FadeShortSimulator.GetFadeShortReturns(g, candles)`, which takes no    │
+        // │ FundingRateSession parameter at all (only the h1+m15 overload does). So funding  │
+        // │ is charged at the flat interest-rate floor here, while `combinedbacktest` and    │
+        // │ `oosbacktest` now charge real per-symbol rates. The two are NOT comparable, and  │
+        // │ this command's numbers are the optimistic ones.                                  │
+        // │                                                                                  │
+        // │ Wiring it requires adding a `FundingRateSession?` parameter to the single-TF     │
+        // │ overload in src/strategies/swing_long/SwingSimulator.cs and a symbol field to    │
+        // │ FadeShortGA.CoinData — both outside this change's ownership. Handoff, not an     │
+        // │ oversight.                                                                       │
+        // └──────────────────────────────────────────────────────────────────────────────────┘
         Console.WriteLine("\n─── Overfit check (train 75% vs val 12.5%) ───");
+        Console.WriteLine("  (funding priced at the interest-rate floor — this command has no per-symbol");
+        Console.WriteLine("   funding path; combinedbacktest/oosbacktest now charge real rates and will be worse)");
         var tRet = coinData.SelectMany(cd =>
             FadeShortSimulator.GetFadeShortReturns(best, cd.TrainCandles.Span).Select(t => t.Return)).ToList();
         var vRet = coinData.SelectMany(cd =>

@@ -778,6 +778,24 @@ static class LongTrainCommands
 
         var allTrades = new List<RegimeRouterGA.TradeRecord>();
 
+        // ── Per-symbol funding for the router's training trade pool ─────────────────────
+        // The router is trained on the trade list assembled below, so the funding cost baked
+        // into these returns IS the router's fitness landscape. Previously no session existed
+        // anywhere in this file and every simulator ran the interest-rate-floor fallback, which
+        // systematically understated the cost of the long strategies the router decides to
+        // enable in bull regimes — i.e. the router was choosing when to turn longs on using
+        // returns that had not paid for holding them. Expect the trained thresholds to move.
+        //
+        // NOTE — this is the ONLY training path here that can take per-symbol funding today.
+        // The FadeLong / DipLong / SwingLong / RipShort GA paths route their candles through
+        // `CoinData` records (defined in the *GA.cs files) that carry no symbol, and the GAs
+        // re-simulate internally with `funding: null` regardless. Both fixes need changes inside
+        // files this change does not own — see the handoff note in the change report.
+        Console.WriteLine("  Fetching per-symbol funding rate history...");
+        var fundingRt = await CandleFetcher.FetchFundingSessionsAsync(client, fetchedRt.Select(x => x.sym));
+        fundingRt.PrintSummary();
+        Console.WriteLine();
+
         Console.WriteLine("  Running strategy simulators (full 3yr)...");
         foreach (var (sym, m15List) in fetchedRt)
         {
@@ -794,7 +812,7 @@ static class LongTrainCommands
             var fsGenoC = clusterGenosRt[coinCl];
             try
             {
-                var fsTrs = FadeShortSimulator.GetFadeShortReturns(fsGenoC, h1, m15);
+                var fsTrs = FadeShortSimulator.GetFadeShortReturns(fsGenoC, h1, m15, fundingRt.For(sym));
                 foreach (var t in fsTrs)
                     allTrades.Add(new(RegimeRouterGA.StrategyKind.FadeShort, t.Time, t.Return, fsGeno.PositionSizePct));
             }
@@ -804,7 +822,7 @@ static class LongTrainCommands
             {
                 try
                 {
-                    var gridTrs = GridSimulator.GetGridReturns(gridGenoRt, h1);
+                    var gridTrs = GridSimulator.GetGridReturns(gridGenoRt, h1, fundingRt.For(sym));
                     foreach (var t in gridTrs)
                         allTrades.Add(new(RegimeRouterGA.StrategyKind.Grid, t.Time, t.Return, 0.05));
                 }
@@ -815,7 +833,7 @@ static class LongTrainCommands
             {
                 try
                 {
-                    var gsTrs = GridShortSimulator.GetGridShortReturns(gsGenoRt, h1);
+                    var gsTrs = GridShortSimulator.GetGridShortReturns(gsGenoRt, h1, fundingRt.For(sym));
                     foreach (var t in gsTrs)
                         allTrades.Add(new(RegimeRouterGA.StrategyKind.GridShort, t.Time, t.Return, 0.05));
                 }
@@ -826,7 +844,7 @@ static class LongTrainCommands
             {
                 try
                 {
-                    var flTrs = FadeLongSimulator.GetFadeLongReturns(flGenoRt, h1, m15)
+                    var flTrs = FadeLongSimulator.GetFadeLongReturns(flGenoRt, h1, m15, fundingRt.For(sym))
                         .Where(t => t.RegimeBarsActive >= flGenoRt.RegimeSustainedBars);
                     foreach (var t in flTrs)
                         allTrades.Add(new(RegimeRouterGA.StrategyKind.FadeLong, t.Time, t.Return, flGenoRt.PositionSizePct));
@@ -838,7 +856,7 @@ static class LongTrainCommands
             {
                 try
                 {
-                    var dlTrs = DipLongSimulator.GetDipLongReturns(dlGenoRt, h1, m15)
+                    var dlTrs = DipLongSimulator.GetDipLongReturns(dlGenoRt, h1, m15, fundingRt.For(sym))
                         .Where(t => t.RegimeBarsActive >= dlGenoRt.RegimeSustainedBars);
                     foreach (var t in dlTrs)
                         allTrades.Add(new(RegimeRouterGA.StrategyKind.DipLong, t.Time, t.Return, dlGenoRt.PositionSizePct));
@@ -850,7 +868,7 @@ static class LongTrainCommands
             {
                 try
                 {
-                    var rsTrs = RipShortSimulator.GetRipShortReturnsWithRegime(rsGenoRt, h1, m15)
+                    var rsTrs = RipShortSimulator.GetRipShortReturnsWithRegime(rsGenoRt, h1, m15, fundingRt.For(sym))
                         .Where(t => t.RegimeBarsActive >= rsGenoRt.RegimeSustainedBars);
                     foreach (var t in rsTrs)
                         allTrades.Add(new(RegimeRouterGA.StrategyKind.RipShort, t.Time, t.Return, rsGenoRt.PositionSizePct));

@@ -32,9 +32,11 @@ public static class DipLongSimulator
     private const int AdxPeriod        = 7;
     private const int SwingLowLookback = 20;   // h1 bars to locate the recent pullback low for stop placement
 
-    private const double FeeExchange = 0.11;
-    private const double SlipK       = 0.025;
-    private const double SlipStopGap = 0.015;
+    // Cost model: see TradeCosts in src/core/Simulator.cs. Fee + slippage on BOTH sides
+    // (magnitude from Config.SlippageBps alone) + this gap premium on stop exits only.
+    // DipLong stops sit inside an established uptrend's pullback band, so the gap shape is
+    // half the swing family's — that is a stop-placement difference, not a slippage knob.
+    private const double StopGapAtrK = 0.015;
 
     public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive)> GetDipLongReturns(
         DipLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
@@ -246,10 +248,6 @@ public static class DipLongSimulator
         return (result, new DipLongTradeState(inTrade, entry, hardStop, target, trailArmed, trailHigh, finalHold));
     }
 
-    private static double TradeCost(bool isStop, double atrEntry, double entryPx)
-    {
-        double atrPct = atrEntry / entryPx * 100.0;
-        double slip   = SlipK * atrPct + (isStop ? SlipStopGap * atrPct : 0.0);
-        return FeeExchange + slip;
-    }
+    internal static double TradeCost(bool isStop, double atrEntry, double entryPx)
+        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrEntry, entryPx), isStop, StopGapAtrK);
 }

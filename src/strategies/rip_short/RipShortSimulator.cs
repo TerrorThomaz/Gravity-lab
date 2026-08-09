@@ -47,9 +47,12 @@ public static class RipShortSimulator
     private const int AdxPeriod         = 7;
     private const int SwingHighLookback = 20;   // h1 bars to locate the recent rally high for stop placement
 
-    private const double FeeExchange = 0.11;
-    private const double SlipK       = 0.025;
-    private const double SlipStopGap = 0.030;
+    // Cost model: see TradeCosts in src/core/Simulator.cs. Fee + slippage on BOTH sides
+    // (magnitude from Config.SlippageBps alone) + this gap premium on stop exits only.
+    // RipShort used to be the only simulator that charged its ATR slip term twice while three
+    // others charged it once; the two-sided charge now lives in TradeCosts for every strategy,
+    // so this file no longer expresses a slippage magnitude of its own.
+    private const double StopGapAtrK = 0.030;
 
     // Experimental loss-mitigation override, applied post-hoc on top of a frozen
     // genotype (not GA-evolved — sparse bear-window data already overfits the
@@ -443,11 +446,7 @@ public static class RipShortSimulator
         return (entry + addPrice * addSize) / (1.0 + addSize);
     }
 
-    private static double TradeCost(bool isStop, double atrEntry, double entryPx)
-    {
-        double atrPct = atrEntry / entryPx * 100.0;
-        double slip   = SlipK * atrPct * 2.0 + (isStop ? SlipStopGap * atrPct : 0.0);
-        return FeeExchange + slip;
-    }
+    internal static double TradeCost(bool isStop, double atrEntry, double entryPx)
+        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrEntry, entryPx), isStop, StopGapAtrK);
 
 }

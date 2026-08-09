@@ -3,63 +3,223 @@ using Xunit;
 
 namespace Gravity_gen2.Tests;
 
+// ── Proof that slippage is charged EXACTLY ONCE ─────────────────────────────────────────
+// This file used to assert the opposite invariant: that SimulatePortfolioExposureCapped
+// subtracts Config.SlippageBps on top of whatever the simulators already charged. That was
+// the bug. Two uncoordinated layers priced the same trade — an ATR-proportional term inside
+// each simulator (applied once in three of them, twice in two more, and with three different
+// exit-quality constants in the grid family) plus a flat bps term at the portfolio layer —
+// and only the first layer was visible to GA fitness, which never runs a portfolio simulation.
+// The GA therefore selected genotypes against ~0.185pp of round-trip cost while every report
+// published ~0.285pp for the same trade.
+//
+// The invariant now: Config.SlippageBps is the single magnitude authority, it is charged once
+// per trade inside the simulators (TradeCosts), and the portfolio layer charges nothing.
 public class SlippageModelTests
 {
+    private static readonly DateTime T0 = new(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    // Every simulator's cost function, paired with the stop-gap shape it declares.
+    // Signature normalised to (isStop, atr, entryPx) -> cost in percentage points.
+    public static TheoryData<string, double> SimulatorGapShapes => new()
+    {
+        { "fade_short", 0.030 },
+        { "swing_long", 0.030 },
+        { "rip_short",  0.030 },
+        { "dip_long",   0.015 },
+        { "fade_long",  0.015 },
+        { "grid",       0.18  },
+        { "grid_short", 0.18  },
+        { "accum_grid", 0.18  },
+    };
+
+    private static double SimulatorCost(string name, bool isStop, double atr, double entryPx) => name switch
+    {
+        "fade_short" => FadeShortSimulator.TradeCost(isStop, atr, entryPx),
+        "swing_long" => SwingLongSimulator.TradeCost(isStop, atr, entryPx),
+        "rip_short"  => RipShortSimulator.TradeCost(isStop, atr, entryPx),
+        "dip_long"   => DipLongSimulator.TradeCost(isStop, atr, entryPx),
+        "fade_long"  => FadeLongSimulator.TradeCost(isStop, atr, entryPx),
+        "grid"       => GridSimulator.TradeCost(atr, entryPx, isStop),
+        "grid_short" => GridShortSimulator.TradeCost(atr, entryPx, isStop),
+        "accum_grid" => GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator
+                            .TradeCost(atr, entryPx, isStop),
+        _ => throw new ArgumentOutOfRangeException(nameof(name), name, "unknown simulator"),
+    };
+
+    // ── 1. THE hard requirement: one trade, both consumers, identical cost ───────────────
+    // The GA scores the raw simulator return. The backtest feeds that same return through the
+    // portfolio simulator. If the two disagree, selection and reporting are optimising
+    // different worlds — which is exactly what this change removes.
     [Fact]
-    public void Slippage_ZeroBps_MatchesNoSlippage()
+    public void SameTrade_GaPathAndPortfolioPath_ChargeIdenticalCost()
+    {
+        const double entryPx  = 100.0;
+        const double grossPct = 2.0;                                  // +2% raw price move
+        double atr = entryPx * TradeCosts.ReferenceAtrPct / 100.0;    // the 3% reference coin
+
+        // GA path: fitness sees this number and nothing else.
+        double gaRet = grossPct - FadeShortSimulator.TradeCost(isStop: false, atr, entryPx);
+
+        // Portfolio path: the identical trade, priced by the reporting layer. The call site
+        // still passes slippageBps the way production code does today.
+        var trades = new List<(DateTime, double, double, TimeSpan)>
+        {
+            (T0, gaRet, 0.05, TimeSpan.FromHours(24)),
+        };
+        var res = Simulator.SimulatePortfolioExposureCapped(
+            trades, maxTotalExposurePct: 0.30, startBalance: 100.0,
+            maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
+
+        double posEur           = res.AvgPositionEur;
+        double portfolioNetPct  = (res.EndBalance - 100.0) / posEur * 100.0;
+
+        Assert.Equal(gaRet, portfolioNetPct, 10);
+
+        // And the cost both of them charged is fee + EXACTLY ONE slippage round trip.
+        double chargedCost = grossPct - portfolioNetPct;
+        Assert.Equal(TradeCosts.FeeRoundTripPct + Config.SlippageBps / 100.0, chargedCost, 10);
+
+        // Guard the specific regression: the old double layer would have cost 2× slippage.
+        Assert.NotEqual(TradeCosts.FeeRoundTripPct + 2.0 * Config.SlippageBps / 100.0, chargedCost, 10);
+    }
+
+    // ── 2. Config.SlippageBps is the only magnitude, and it is a ROUND-TRIP figure ───────
+    [Fact]
+    public void SlippageAtReferenceAtr_EqualsConfigSlippageBps()
+    {
+        Assert.Equal(Config.SlippageBps / 100.0,
+                     TradeCosts.SlippageRoundTripPct(TradeCosts.ReferenceAtrPct), 12);
+    }
+
+    // The comment in the simulators claimed "each side" for years while three of them charged
+    // it once. Both sides are now charged, and each side is exactly half the authority.
+    [Fact]
+    public void Slippage_IsChargedOnBothSides_EachSideIsHalf()
+    {
+        foreach (double atrPct in new[] { 0.5, 3.0, 8.0 })
+        {
+            double perSide = TradeCosts.SlippagePerSidePct(atrPct);
+            Assert.Equal(2.0 * perSide, TradeCosts.SlippageRoundTripPct(atrPct), 12);
+            Assert.Equal(Config.SlippageBps / 100.0 / 2.0 * (atrPct / TradeCosts.ReferenceAtrPct),
+                         perSide, 12);
+        }
+    }
+
+    // Scaling is linear in the coin's ATR and anchored on the single constant: a meme perp at
+    // 8% ATR pays 8/3 of what the reference coin pays, and nothing else moves the magnitude.
+    [Fact]
+    public void Slippage_ScalesLinearlyWithAtr_AnchoredOnTheOneConstant()
+    {
+        double atRef = TradeCosts.SlippageRoundTripPct(TradeCosts.ReferenceAtrPct);
+        Assert.Equal(atRef * (8.0 / TradeCosts.ReferenceAtrPct),
+                     TradeCosts.SlippageRoundTripPct(8.0), 12);
+        Assert.Equal(0.0, TradeCosts.SlippageRoundTripPct(0.0), 12);
+    }
+
+    // ── 3. The portfolio layer charges nothing — all three overloads ─────────────────────
+    [Fact]
+    public void PortfolioLayer_IgnoresSlippageBps_PlainOverload()
     {
         var trades = new List<(DateTime, double, double, TimeSpan)>
         {
-            (new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc), 5.0, 0.5, TimeSpan.FromHours(48)),
-            (new DateTime(2024, 1, 2, 0, 0, 0, DateTimeKind.Utc), 3.0, 0.5, TimeSpan.FromHours(48)),
+            (T0,                    5.0, 0.5, TimeSpan.FromHours(48)),
+            (T0.AddDays(1),         3.0, 0.5, TimeSpan.FromHours(48)),
+            (T0.AddDays(2),        -4.0, 0.5, TimeSpan.FromHours(48)),
         };
-        var noSlip = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: 0.0);
-        var zeroSlip = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: 0.0);
-        Assert.Equal(noSlip.EndBalance, zeroSlip.EndBalance, 10);
+        var off = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: 0.0);
+        var on  = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: Config.SlippageBps);
+        Assert.Equal(off.EndBalance, on.EndBalance, 12);
     }
 
     [Fact]
-    public void Slippage_ReducesEndBalance()
-    {
-        var trades = new List<(DateTime, double, double, TimeSpan)>
-        {
-            (new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc), 5.0, 0.5, TimeSpan.FromHours(48)),
-            (new DateTime(2024, 1, 2, 0, 0, 0, DateTimeKind.Utc), 3.0, 0.5, TimeSpan.FromHours(48)),
-            (new DateTime(2024, 1, 3, 0, 0, 0, DateTimeKind.Utc), 4.0, 0.5, TimeSpan.FromHours(48)),
-        };
-        var noSlip = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: 0.0);
-        var withSlip = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: 10.0);
-        Assert.True(withSlip.EndBalance < noSlip.EndBalance,
-            $"Slippage should reduce balance: {withSlip.EndBalance:F4} vs {noSlip.EndBalance:F4}");
-    }
-
-    [Fact]
-    public void Slippage_ProportionalToPositionSize()
-    {
-        var trades = new List<(DateTime, double, double, TimeSpan)>
-        {
-            (new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc), 0.0, 0.5, TimeSpan.FromHours(48)),
-        };
-        var noSlip = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: 0.0);
-        var withSlip = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: 5.0);
-        double slipCost = noSlip.EndBalance - withSlip.EndBalance;
-        Assert.True(slipCost > 0, $"Slip cost should be positive, got {slipCost:F6}");
-        double expectedSlip = 100.0 * 0.30 * 0.5 * (5.0 / 10000.0);
-        Assert.True(Math.Abs(slipCost - expectedSlip) < 0.01,
-            $"Slip cost {slipCost:F4} should be near {expectedSlip:F4}");
-    }
-
-    [Fact]
-    public void Slippage_StrategyAware_ReducesEndBalance()
+    public void PortfolioLayer_IgnoresSlippageBps_StrategyAwareOverload()
     {
         var trades = new List<(DateTime, double, double, TimeSpan, string)>
         {
-            (new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc), 5.0, 0.5, TimeSpan.FromHours(48), "fade_short"),
-            (new DateTime(2024, 1, 2, 0, 0, 0, DateTimeKind.Utc), 3.0, 0.5, TimeSpan.FromHours(48), "diplong"),
+            (T0,            5.0, 0.5, TimeSpan.FromHours(48), "fade_short"),
+            (T0.AddDays(1), 3.0, 0.5, TimeSpan.FromHours(48), "diplong"),
         };
-        var noSlip = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: 0.0);
-        var withSlip = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: 10.0);
-        Assert.True(withSlip.EndBalance < noSlip.EndBalance,
-            $"Strategy-aware slippage should reduce balance: {withSlip.EndBalance:F4} vs {noSlip.EndBalance:F4}");
+        var off = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: 0.0);
+        var on  = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: Config.SlippageBps);
+        Assert.Equal(off.EndBalance, on.EndBalance, 12);
+    }
+
+    [Fact]
+    public void PortfolioLayer_IgnoresSlippageBps_RiskCapOverload()
+    {
+        var trades = new List<(DateTime, double, double, double, TimeSpan)>
+        {
+            (T0,            5.0, 0.5, 0.05, TimeSpan.FromHours(48)),
+            (T0.AddDays(1), 3.0, 0.5, 0.05, TimeSpan.FromHours(48)),
+        };
+        var off = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: 0.0);
+        var on  = Simulator.SimulatePortfolioExposureCapped(trades, slippageBps: Config.SlippageBps);
+        Assert.Equal(off.EndBalance, on.EndBalance, 12);
+    }
+
+    // ── 4. Every simulator shares the one model — no private slippage constants left ─────
+    [Theory]
+    [MemberData(nameof(SimulatorGapShapes))]
+    public void EverySimulator_DelegatesToTheSharedCostModel(string simulator, double stopGapAtrK)
+    {
+        const double entryPx = 250.0;
+        foreach (double atrPct in new[] { 1.0, TradeCosts.ReferenceAtrPct, 7.5 })
+        {
+            double atr = entryPx * atrPct / 100.0;
+            foreach (bool isStop in new[] { false, true })
+            {
+                Assert.Equal(TradeCosts.RoundTripPct(atrPct, isStop, stopGapAtrK),
+                             SimulatorCost(simulator, isStop, atr, entryPx), 12);
+            }
+        }
+    }
+
+    // The load-bearing consequence of the above: on a non-stop exit, every one of the eight
+    // strategies charges fee + exactly one slippage round trip. No more, no less, no variation.
+    [Theory]
+    [MemberData(nameof(SimulatorGapShapes))]
+    public void EverySimulator_ChargesExactlyOneSlippageRoundTrip(string simulator, double stopGapAtrK)
+    {
+        _ = stopGapAtrK;
+        const double entryPx = 250.0;
+        double atr  = entryPx * TradeCosts.ReferenceAtrPct / 100.0;
+        double cost = SimulatorCost(simulator, isStop: false, atr, entryPx);
+        Assert.Equal(TradeCosts.FeeRoundTripPct + Config.SlippageBps / 100.0, cost, 12);
+    }
+
+    // ── 5. Exchange fees: charged once, and NOT double-counted (verified, not assumed) ───
+    // At zero ATR both slippage and the stop gap vanish, so whatever remains is the fee term.
+    // It must equal FeeRoundTripPct — one 2×0.055% Bybit taker round trip — for every
+    // simulator, on stop and non-stop exits alike. And the portfolio layer has no fee term at
+    // all, so a trade's fee cannot be applied a second time downstream.
+    [Theory]
+    [MemberData(nameof(SimulatorGapShapes))]
+    public void ExchangeFee_ChargedExactlyOnce(string simulator, double stopGapAtrK)
+    {
+        _ = stopGapAtrK;
+        Assert.Equal(TradeCosts.FeeRoundTripPct, SimulatorCost(simulator, false, 0.0, 100.0), 12);
+        Assert.Equal(TradeCosts.FeeRoundTripPct, SimulatorCost(simulator, true,  0.0, 100.0), 12);
+        Assert.Equal(0.11, TradeCosts.FeeRoundTripPct, 12);
+    }
+
+    [Fact]
+    public void PortfolioLayer_AddsNoFee()
+    {
+        var trades = new List<(DateTime, double, double, TimeSpan)> { (T0, 1.0, 0.05, TimeSpan.FromHours(24)) };
+        var res = Simulator.SimulatePortfolioExposureCapped(trades, maxPositionFrac: 0.05);
+        double posEur = res.AvgPositionEur;
+        Assert.Equal(1.0, (res.EndBalance - 100.0) / posEur * 100.0, 10);
+    }
+
+    // ── 6. The stop-gap premium is a stop-only term, not a second slippage knob ──────────
+    [Fact]
+    public void StopGap_AppliesOnlyToStopExits()
+    {
+        const double atrPct = 4.0, k = 0.030;
+        Assert.Equal(TradeCosts.RoundTripPct(atrPct, false, k) + k * atrPct,
+                     TradeCosts.RoundTripPct(atrPct, true, k), 12);
+        Assert.Equal(TradeCosts.RoundTripPct(atrPct, false, k),
+                     TradeCosts.RoundTripPct(atrPct, false, stopGapAtrK: 999.0), 12);
     }
 }

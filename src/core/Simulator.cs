@@ -1,5 +1,87 @@
 namespace TradingGA;
 
+// ── THE trade-cost model ─────────────────────────────────────────────────────────────
+// Every cost a trade pays is priced here and nowhere else, at TRADE level, inside the
+// simulators. That placement is the whole point, so read this before moving anything.
+//
+// WHY TRADE LEVEL AND NOT THE PORTFOLIO LAYER
+//   Two consumers price the same trade:
+//     · GA fitness      — scores the RAW per-trade returns the simulators emit. It never
+//                         runs a portfolio simulation, so anything charged only in
+//                         SimulatePortfolioExposure* is INVISIBLE to selection.
+//     · backtest / live — feeds those same returns through SimulatePortfolioExposure*.
+//   The simulator return is the ONLY object both consumers share. So the single place a
+//   cost can live and still be seen by both is the trade return itself. "The portfolio
+//   layer is authoritative" cannot be implemented as "only the portfolio layer charges",
+//   or the GA goes right back to optimising a cheaper world than the one being reported.
+//
+//   Historically slippage was charged in BOTH places and the two disagreed: each simulator
+//   applied its own ATR-proportional term (and three of them applied it once where the
+//   comment claimed "each side", while two applied it twice), then
+//   SimulatePortfolioExposure* subtracted a further flat Config.SlippageBps. GA selection
+//   saw ~0.185pp of round-trip cost on a 3% ATR trade while the report showed ~0.285pp — a
+//   54% gap between the objective being optimised and the number being published. Every
+//   genotype in genotypes/ was selected under the cheaper number.
+//
+// THE RULE NOW
+//   1. Slippage is charged EXACTLY ONCE per trade, here, on BOTH sides of the round trip.
+//   2. Config.SlippageBps is its only magnitude authority. Every slippage figure in this
+//      repo is that constant times a dimensionless shape; there is no second knob.
+//   3. SimulatePortfolioExposure* charges NO slippage. Its `slippageBps` parameter is
+//      retained only because call sites this change cannot reach still pass it, and it is
+//      ignored (with a one-time warning).
+//   4. Exchange fees are separate, unchanged, and also charged exactly once — the
+//      portfolio layer has never had a fee term.
+public static class TradeCosts
+{
+    // Exchange taker fee for a full round trip: 2 × 0.055% Bybit taker.
+    // NOT slippage, and not double-counted: this is the only fee term in the codebase.
+    public const double FeeRoundTripPct = 0.11;
+
+    // The ATR (as a % of price) at which Config.SlippageBps is quoted. A liquid perp's h4
+    // ATR sits near 3% of price; that is the coin Config.SlippageBps was calibrated on.
+    // This is a CALIBRATION ANCHOR, not a second magnitude knob — it fixes *where on the
+    // volatility axis* the authority constant is measured, so changing Config.SlippageBps
+    // still scales every slippage charge in the repo by the same factor.
+    public const double ReferenceAtrPct = 3.0;
+
+    // Slippage for ONE side of the trade, in percentage points.
+    // Config.SlippageBps is a ROUND-TRIP figure, so a side costs half of it — which is what
+    // finally makes the old "0.075% each side" comment true; it never was.
+    // Scales linearly with the coin's own ATR: a meme perp at 8% ATR pays 2.7× what a liquid
+    // major pays, which is the behaviour the per-simulator ATR terms were reaching for before
+    // they drifted out of sync with each other and with Config.SlippageBps.
+    public static double SlippagePerSidePct(double atrPct)
+        => Config.SlippageBps / 100.0 / 2.0 * (atrPct / ReferenceAtrPct);
+
+    // Slippage for the whole round trip = entry side + exit side. At ReferenceAtrPct this is
+    // exactly Config.SlippageBps / 100 percentage points, i.e. bit-for-bit the charge the
+    // portfolio layer used to apply — the migration moves the charge, it does not invent one.
+    public static double SlippageRoundTripPct(double atrPct)
+        => 2.0 * SlippagePerSidePct(atrPct);
+
+    // Extra fill degradation when the exit is a STOP the market gapped through.
+    // This is a different event from spread/impact slippage — the stop level simply is not
+    // available — and it is zero on every non-stop exit, so it is not a second slippage term
+    // competing with Config.SlippageBps. Its size scales with the coin's volatility, and
+    // `stopGapAtrK` is the per-strategy shape: swing-family stops sit inside the noise band
+    // (0.015–0.030) while a grid stop closes a whole ladder into a broken range (0.18).
+    public static double StopGapPct(double stopGapAtrK, double atrPct)
+        => stopGapAtrK * atrPct;
+
+    // Total round-trip cost of one trade, in PERCENTAGE POINTS — the same unit as a trade's
+    // `ret`, so simulators subtract it directly. Every simulator's TradeCost is a one-line
+    // delegation to this; that is what keeps the eight strategies mutually comparable.
+    public static double RoundTripPct(double atrPct, bool isStop, double stopGapAtrK)
+        => FeeRoundTripPct
+         + SlippageRoundTripPct(atrPct)
+         + (isStop ? StopGapPct(stopGapAtrK, atrPct) : 0.0);
+
+    // Convenience for the simulators, which hold ATR in price units and the entry price.
+    public static double AtrPct(double atr, double entryPx)
+        => entryPx > 1e-12 ? atr / entryPx * 100.0 : 0.0;
+}
+
 public static class Simulator
 {
     public const double FeeRoundTrip = 0.21;
@@ -29,6 +111,47 @@ public static class Simulator
         double b       = avgWin / avgLoss;
         double kelly   = (p * b - (1 - p)) / b;
         return Math.Clamp(kelly / 2.0, 0.0, 1.0);
+    }
+
+    // ── Gross-exposure guard — the reason this repo needs no liquidation model ───────────
+    // There is NO liquidation model anywhere in the simulator. That is sound only while gross
+    // notional stays a fraction of equity: at Config.MaxTotalExposurePct = 0.30 the book runs
+    // at 0.30x gross leverage, so a maintenance-margin breach would need roughly a 40x larger
+    // position before it could bind ahead of any modelled stop. Every exit in this codebase is
+    // therefore a stop, a target, a trail or a timeout — never a forced liquidation.
+    //
+    // Above 1.0x that stops being true, and the failure is SILENT: the backtest keeps printing
+    // clean stop-outs on paths where a real account would have been liquidated first, so raising
+    // the cap to chase returns manufactures exactly the returns it is chasing. Refuse instead.
+    private const double MaxSupportableExposurePct = 1.0;
+
+    private static void GuardExposureCap(double maxTotalExposurePct)
+    {
+        if (maxTotalExposurePct > MaxSupportableExposurePct)
+            throw new ArgumentOutOfRangeException(
+                nameof(maxTotalExposurePct), maxTotalExposurePct,
+                $"maxTotalExposurePct > {MaxSupportableExposurePct:0.##} is not supported: this simulator has no " +
+                "liquidation model. Below 1.0x gross leverage that omission is defensible because margin could " +
+                "never bind before a modelled stop; above it, every backtest would silently report clean stop-outs " +
+                "on paths that would have been liquidated. Add a liquidation model before raising the cap.");
+    }
+
+    // ── Deprecated portfolio-level slippage ──────────────────────────────────────────────
+    // Slippage is now charged exactly once, at trade level, by TradeCosts (see the header of
+    // this file for why it has to live there). The `slippageBps` parameters below are retained
+    // ONLY so existing call sites keep compiling, and their value is ignored — applying it here
+    // would re-introduce the double charge this model exists to remove. Warn once so an ignored
+    // argument can never become a silent one.
+    private static bool _slippageBpsWarned;
+
+    private static void WarnDeprecatedSlippageBps(double slippageBps)
+    {
+        if (slippageBps == 0.0 || _slippageBpsWarned) return;
+        _slippageBpsWarned = true;
+        Console.Error.WriteLine(
+            $"[Simulator] slippageBps: {slippageBps} is DEPRECATED and IGNORED. Slippage is charged once " +
+            "per trade inside the simulators via TradeCosts/Config.SlippageBps, so both GA fitness and " +
+            "backtest reporting see it. Drop the argument from the call site.");
     }
 
     // kellyMultiplier: 1.0 = half-Kelly (default), 2.0 = full Kelly, etc.
@@ -97,15 +220,17 @@ public static class Simulator
         double drawdownBrakeAt     = 0.15,
         double kellyMultiplier     = 1.0,
         double maxPositionFrac     = 0.15,  // hard cap per position (e.g. 0.05 = 5% max each)
-        double slippageBps         = 0.0)   // per-trade slippage in basis points (e.g. 5 = 0.05%)
+        double slippageBps         = 0.0)   // DEPRECATED and IGNORED — see WarnDeprecatedSlippageBps
     {
+        GuardExposureCap(maxTotalExposurePct);
+        WarnDeprecatedSlippageBps(slippageBps);
+
         if (trades.Count == 0) return new PortfolioResult(startBalance, startBalance, 0, startBalance, 0, 0, 0, 0, -1);
 
         var sorted = trades.OrderBy(t => t.EntryTime).ToList();
 
         double balance      = startBalance, peak = startBalance, maxDd = 0, totalPosSizeEur = 0;
         int tradesToTenPct  = -1;
-        double slipFrac     = slippageBps / 10000.0;
 
         var openPos = new List<(DateTime Close, double EurAllocated)>();
 
@@ -129,7 +254,8 @@ public static class Simulator
             openPos.Add((entryTime + hold, posEur));
 
             totalPosSizeEur += posEur;
-            balance += ret / 100.0 * posEur - slipFrac * posEur;
+            // No slippage term: `ret` already carries it (TradeCosts, charged once per trade).
+            balance += ret / 100.0 * posEur;
 
             if (tradesToTenPct < 0 && balance >= startBalance * 1.10)
                 tradesToTenPct = i + 1;
@@ -168,6 +294,8 @@ public static class Simulator
             double kellyMultiplier     = 1.0,
             double maxPositionFrac     = 0.15)
     {
+        GuardExposureCap(maxTotalExposurePct);
+
         if (trades.Count == 0)
             return (new PortfolioResult(startBalance, startBalance, 0, startBalance, 0, 0, 0, 0, -1), null, []);
 
@@ -269,15 +397,17 @@ public static class Simulator
         double profitProtectThreshold   = 1.0,   // portfolio gain fraction that arms protection; 1.0 = disabled
         double profitProtectDrawback    = 0.10,  // drawback from peak that triggers protection
         double profitProtectFactor      = 1.0,   // size multiplier in protection mode; 1.0 = no reduction
-        double slippageBps              = 0.0)   // per-trade slippage in basis points (e.g. 5 = 0.05%)
+        double slippageBps              = 0.0)   // DEPRECATED and IGNORED — see WarnDeprecatedSlippageBps
     {
+        GuardExposureCap(maxTotalExposurePct);
+        WarnDeprecatedSlippageBps(slippageBps);
+
         if (trades.Count == 0) return new PortfolioResult(startBalance, startBalance, 0, startBalance, 0, 0, 0, 0, -1);
 
         var sorted = trades.OrderBy(t => t.EntryTime).ToList();
         double balance = startBalance, peak = startBalance, maxDd = 0, totalPosSizeEur = 0;
         int tradesToTenPct = -1;
         var openPos = new List<(DateTime Close, double EurAllocated)>();
-        double slipFrac = slippageBps / 10000.0;
 
         for (int i = 0; i < sorted.Count; i++)
         {
@@ -318,7 +448,8 @@ public static class Simulator
 
             openPos.Add((entryTime + hold, posEur));
             totalPosSizeEur += posEur;
-            balance += effectiveRet / 100.0 * posEur - slipFrac * posEur;
+            // No slippage term: `ret` already carries it (TradeCosts, charged once per trade).
+            balance += effectiveRet / 100.0 * posEur;
 
             if (tradesToTenPct < 0 && balance >= startBalance * 1.10)
                 tradesToTenPct = i + 1;
@@ -351,8 +482,10 @@ public static class Simulator
         double drawdownBrakeAt     = 0.15,
         double kellyMultiplier     = 1.0,
         double maxPositionFrac     = 0.15,  // forwarded, not defaulted away — see below
-        double slippageBps         = 0.0)   // per-trade slippage in basis points (e.g. 5 = 0.05%)
+        double slippageBps         = 0.0)   // DEPRECATED and IGNORED — see WarnDeprecatedSlippageBps
     {
+        GuardExposureCap(maxTotalExposurePct);
+
         // Fold riskCap into conf upfront: effectiveFrac = min(conf × km, riskCap)
         var adapted = trades
             .Select(t =>
@@ -363,9 +496,10 @@ public static class Simulator
             })
             .ToList();
         // kellyMultiplier is already folded into `eff` above, so it must be 1.0 here or it
-        // would be applied twice. maxPositionFrac and slippageBps are forwarded explicitly:
-        // omitting them silently substituted this overload's callers with the inner
-        // overload's defaults, dropping slippage entirely.
+        // would be applied twice. maxPositionFrac is forwarded explicitly: omitting it
+        // silently substituted this overload's callers with the inner overload's defaults.
+        // slippageBps is forwarded only so the deprecation warning fires once at the outermost
+        // call site; the inner overload ignores it, as does this one.
         return SimulatePortfolioExposureCapped(
             adapted, maxTotalExposurePct, startBalance, drawdownBrakeAt,
             kellyMultiplier: 1.0, maxPositionFrac: maxPositionFrac, slippageBps: slippageBps);

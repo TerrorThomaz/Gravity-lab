@@ -247,6 +247,24 @@ static class OosBacktest
         var fetched = await Task.WhenAll(fetchTasks);
         Console.WriteLine($"  Done.\n");
 
+        // ── Funding rate sessions, ONE PER SYMBOL ────────────────────────────────────────
+        // This command previously constructed no FundingRateSession at all, so every simulator
+        // took the `funding == null` branch and paid the flat interest-rate floor. These are
+        // never-seen coins over full history — the longest holds in the suite — so the floor
+        // understates the true cost most here. Real rates make these numbers WORSE, which is
+        // the correction rather than a regression.
+        Console.WriteLine("  Fetching per-symbol funding rate history...");
+        var funding = await CandleFetcher.FetchFundingSessionsAsync(client, fetched.Select(f => f.sym));
+        funding.PrintSummary();
+        Console.WriteLine();
+
+        // ── DynamicGuard session ─────────────────────────────────────────────────────────
+        // Applied at the portfolio-summary step, alongside the unguarded numbers rather than
+        // replacing them. Before this change the guard never ran in this command.
+        var btcH1ForGuard = fetched.FirstOrDefault(f => f.sym == "BTCUSDT").h1;
+        var guardCtx      = GuardedPortfolio.TryLoad(btcH1ForGuard);
+        if (guardCtx != null) Console.WriteLine($"  Guard: {guardCtx.Genotype}\n");
+
         RegimeRouterSession? session = null;
         if (routerG != null)
         {
@@ -339,7 +357,7 @@ static class OosBacktest
 
             var (coinFsG, fsVarLabel) = SelectVariantLabeled(fsVariants, m15);
             coinFsG ??= swingG;
-            var trades = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1, m15);
+            var trades = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1, m15, funding.For(sym));
             var split  = SizeThenScore(trades, t => t.Time, t => t.Return);
             var scored = split.Scored;
             var vRet   = scored.Select(t => t.Return).ToList();
@@ -388,7 +406,7 @@ static class OosBacktest
 
             var (coinGridG, gridVarLabel) = SelectVariantLabeled(gridVariants, m15Grid);
             coinGridG ??= gridG;
-            var raw   = GridSimulator.GetGridReturns(coinGridG, h1);
+            var raw   = GridSimulator.GetGridReturns(coinGridG, h1, funding.For(sym));
             var gated = session != null
                 ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList()
                 : raw;
@@ -441,7 +459,7 @@ static class OosBacktest
 
                 var (coinFlG, flVarLabel) = SelectVariantLabeled(flVariants, m15);
                 coinFlG ??= flG;
-                var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1, m15);
+                var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1, m15, funding.For(sym));
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList()
                     : raw;
@@ -497,7 +515,7 @@ static class OosBacktest
 
                 var (coinDlG, dlVarLabel) = SelectVariantLabeled(dlVariants, m15);
                 coinDlG ??= dlG;
-                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1, m15);
+                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1, m15, funding.For(sym));
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
@@ -553,7 +571,7 @@ static class OosBacktest
 
                 var (coinSlG, slVarLabel) = SelectVariantLabeled(slVariants, m15);
                 coinSlG ??= slG;
-                var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1, m15);
+                var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1, m15, funding.For(sym));
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
@@ -609,7 +627,7 @@ static class OosBacktest
 
                 var (coinRsG, rsVarLabel) = SelectVariantLabeled(rsVariants, m15);
                 coinRsG ??= rsG;
-                var raw   = RipShortSimulator.GetRipShortReturns(coinRsG, h1, m15);
+                var raw   = RipShortSimulator.GetRipShortReturns(coinRsG, h1, m15, funding.For(sym));
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList()
                     : raw;
@@ -724,6 +742,13 @@ static class OosBacktest
             .Select(t => (t.Time, t.Return, t.Conf, OosStrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG)))
             .ToList();
 
+        // Same trades, strategy label retained, for the guarded/unguarded comparison below.
+        var allTradesGuardInput = allTrades
+            .Select(t => new GuardedPortfolio.Trade(
+                t.Time, t.Return, t.Conf,
+                OosStrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG), t.Strategy))
+            .ToList();
+
         var port5cap  = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, slippageBps: Config.SlippageBps);
         var portKelly = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, slippageBps: Config.SlippageBps);
 
@@ -738,6 +763,12 @@ static class OosBacktest
 
         PrintPort($"5% per position · {Config.MaxTotalExposurePct:P0} total cap  [concurrent-aware]", port5cap);
         PrintPort($"half-Kelly · {Config.MaxTotalExposurePct:P0} total cap  [concurrent-aware]", portKelly);
+
+        // Both blocks above are UNGUARDED, as they have always been. The guarded column is new
+        // information printed alongside them, never in place of them.
+        GuardedPortfolio.PrintComparison(
+            "OOS portfolio (never-seen coins, full history)",
+            allTradesGuardInput, guardCtx, Config.MaxTotalExposurePct, Config.SlippageBps);
 
         if (allTrades.Count >= 2)
         {
@@ -1018,6 +1049,13 @@ static class OosBacktest
         }));
         Console.WriteLine($"  Done.\n");
 
+        // Per-symbol funding, same rationale as RunOosBacktest above: this command previously
+        // priced every position at the flat interest-rate floor.
+        Console.WriteLine("  Fetching per-symbol funding rate history...");
+        var funding = await CandleFetcher.FetchFundingSessionsAsync(client, fetchedAll.Select(f => f.sym));
+        funding.PrintSummary();
+        Console.WriteLine();
+
         RegimeRouterSession? session = null;
         if (routerG != null)
         {
@@ -1088,11 +1126,11 @@ static class OosBacktest
                 {
                     var (screenH1, screenM15) = screenWin.Value;
                     var coinFsGAC = SelectVariant(fsVariantsAC, screenM15) ?? swingG;
-                    var tRet = FadeShortSimulator.GetFadeShortReturns(coinFsGAC, screenH1, screenM15).Select(t => t.Return).ToList();
+                    var tRet = FadeShortSimulator.GetFadeShortReturns(coinFsGAC, screenH1, screenM15, funding.For(sym)).Select(t => t.Return).ToList();
                     if (tRet.Count >= 5 && tRet.Average() > 0 && Simulator.ProfitFactor(tRet) >= 1.2 && Simulator.SortinoRatio(tRet, screenH1.Length * 12) >= 0.3)
                     {
                         double conf  = Simulator.ComputeConfidence(tRet);
-                        var    vRet  = FadeShortSimulator.GetFadeShortReturns(coinFsGAC, h1Val, m15Val);
+                        var    vRet  = FadeShortSimulator.GetFadeShortReturns(coinFsGAC, h1Val, m15Val, funding.For(sym));
                         btSwing++; btSwingT += vRet.Count;
                         if (vRet.Count > 0) NoteScoredSpan(h1, h1Val[0].Time);
                         foreach (var (t, ret, _) in vRet) allTrades.Add((t, ret, conf, "swing"));
@@ -1103,11 +1141,11 @@ static class OosBacktest
             // Grid — screen already reads h1Train only; variant selection now does too.
             {
                 var coinGridGAC = SelectVariant(gridVariantsAC, m15Train) ?? gridG;
-                var tRet = GridSimulator.GetGridReturns(coinGridGAC, h1Train).Select(t => t.Return).ToList();
+                var tRet = GridSimulator.GetGridReturns(coinGridGAC, h1Train, funding.For(sym)).Select(t => t.Return).ToList();
                 if (tRet.Count >= 5 && tRet.Average() > 0 && Simulator.ProfitFactor(tRet) >= 1.2 && Simulator.SortinoRatio(tRet, h1Train.Length) >= 0.3)
                 {
                     double conf = Simulator.ComputeConfidence(tRet);
-                    var    vRet = GridSimulator.GetGridReturns(coinGridGAC, h1Val);
+                    var    vRet = GridSimulator.GetGridReturns(coinGridGAC, h1Val, funding.For(sym));
                     int    kept = vRet.Count(t => session == null || session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time));
                     btGrid++; btGridT += kept;
                     if (kept > 0) NoteScoredSpan(h1, h1Val[0].Time);
@@ -1124,7 +1162,7 @@ static class OosBacktest
             if (flG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
                 var coinFlGAC = SelectVariant(flVariantsAC, m15Train) ?? flG;
-                var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlGAC, h1Val, m15Val);
+                var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlGAC, h1Val, m15Val, funding.For(sym));
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
                 if (split.Scored.Count > 0)
@@ -1140,7 +1178,7 @@ static class OosBacktest
             if (dlG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
                 var coinDlGAC = SelectVariant(dlVariantsAC, m15Train) ?? dlG;
-                var raw   = DipLongSimulator.GetDipLongReturns(coinDlGAC, h1Val, m15Val);
+                var raw   = DipLongSimulator.GetDipLongReturns(coinDlGAC, h1Val, m15Val, funding.For(sym));
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
                 if (split.Scored.Count > 0)
@@ -1156,7 +1194,7 @@ static class OosBacktest
             if (rsG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
                 var coinRsGAC = SelectVariant(rsVariantsAC, m15Train) ?? rsG;
-                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGAC, h1Val, m15Val);
+                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGAC, h1Val, m15Val, funding.For(sym));
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
                 if (split.Scored.Count > 0)
@@ -1201,7 +1239,7 @@ static class OosBacktest
             // FadeShort
             {
                 var coinFsGOos = SelectVariant(fsVariantsAC, m15) ?? swingG;
-                var trades = FadeShortSimulator.GetFadeShortReturns(coinFsGOos, h1, m15);
+                var trades = FadeShortSimulator.GetFadeShortReturns(coinFsGOos, h1, m15, funding.For(sym));
                 var split  = SizeThenScore(trades, t => t.Time, t => t.Return);
                 if (split.Scored.Count >= 5)
                 {
@@ -1215,7 +1253,7 @@ static class OosBacktest
             // Grid
             {
                 var coinGridGOos = SelectVariant(gridVariantsAC, m15) ?? gridG;
-                var raw   = GridSimulator.GetGridReturns(coinGridGOos, h1);
+                var raw   = GridSimulator.GetGridReturns(coinGridGOos, h1, funding.For(sym));
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
                 if (split.Scored.Count >= 5)
@@ -1231,7 +1269,7 @@ static class OosBacktest
             if (flG != null && m15.Length >= 1200)
             {
                 var coinFlGOos = SelectVariant(flVariantsAC, m15) ?? flG;
-                var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlGOos, h1, m15);
+                var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlGOos, h1, m15, funding.For(sym));
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
                 if (split.Scored.Count > 0)
@@ -1247,7 +1285,7 @@ static class OosBacktest
             if (dlG != null && m15.Length >= 1200)
             {
                 var coinDlGOos = SelectVariant(dlVariantsAC, m15) ?? dlG;
-                var raw   = DipLongSimulator.GetDipLongReturns(coinDlGOos, h1, m15);
+                var raw   = DipLongSimulator.GetDipLongReturns(coinDlGOos, h1, m15, funding.For(sym));
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
                 if (split.Scored.Count > 0)
@@ -1263,7 +1301,7 @@ static class OosBacktest
             if (rsG != null && m15.Length >= 1200)
             {
                 var coinRsGOos = SelectVariant(rsVariantsAC, m15) ?? rsG;
-                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGOos, h1, m15);
+                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGOos, h1, m15, funding.For(sym));
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
                 if (split.Scored.Count > 0)

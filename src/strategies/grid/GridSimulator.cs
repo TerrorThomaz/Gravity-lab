@@ -16,55 +16,73 @@ namespace TradingGA;
 // TP  detection: candle.High ≥ tp         → closed at tp.
 // Stop detection: candle.Low ≤ hard_stop  → closed at hard_stop.
 //
-// Return per level   = (exit − entry) / entry × 100 − FeeRoundTrip.
+// Return per level   = (exit − entry) / entry × 100 − TradeCost + funding.
 // Return per session = mean of all level returns in one grid activation.
+//
+// Direction: LONG. Verified from the gross-return formula, not the file name — every exit
+// books (exitPx − entryPrice[n]) / entryPrice[n], i.e. profit when price RISES, and levels are
+// buy-limits placed BELOW the anchor with TP = entry + TakeProfitAtrMult × ATR. So funding is
+// priced with isLong: true, which under the sign rule in FundingRateSession means a positive
+// rate is a COST. (GridShortSimulator books (entry − exit) and passes isLong: false.)
+//
+// Funding used to be missing here entirely — grid was the only family booking ZERO funding
+// while every other strategy paid at least the interest-rate floor, a systematic cost advantage
+// of ~0.01%/8h on holds up to MaxHoldCandles that biased every Grid-vs-other comparison.
+// One charge covers the whole grid activation: all levels are priced from the activation
+// timestamp, matching GridShortSimulator's convention. Levels that fill later are therefore
+// charged for ticks they were not open across — deliberately pessimistic, and identical on both
+// sides of the long/short mirror so it cannot tilt a Grid-vs-GridShort comparison.
 public static class GridSimulator
 {
     private const int    AtrPeriod    = 14;
     private const int    AdxPeriod    = 14;  // fixed — not a gene; regime splice with swing uses AdxThreshold only
     private const int    MaxLevels    = 5;   // hard cap matching GridLevels gene upper bound
 
-    // Grid entries are limit orders (price comes to you) → entry slip ≈ zero.
-    // TP exits are limit sells → near-zero slip. Stop exits gap through the stop level.
-    private const double FeeExchange = 0.11;   // 0.055% taker × 2 sides
-    private const double SlipTpK     = 0.01;   // TP exits (maker-style): k × (atr/price × 100)
-    private const double SlipMarketK = 0.03;   // regime-change / timeout exits
-    private const double SlipStopGap = 0.18;   // stop exits: gap risk = k × (atr/price × 100)
+    // Cost model: see TradeCosts in src/core/Simulator.cs.
+    // Stop exits close the whole ladder into a range that has just broken, so the gap premium
+    // is an order of magnitude above the swing family's — that is a stop-structure difference,
+    // not a slippage knob; the slippage magnitude comes from Config.SlippageBps alone.
+    private const double StopGapAtrK = 0.18;   // stop exits: gap risk = k × atrPct
 
-    // isStop=true applies gap premium (hard stop blown through in a fast move).
-    // isTp=true uses the minimal maker-side cost.
-    private static double TradeCost(double atrAtStart, double entryPx, bool isStop, bool isTp = false)
-    {
-        double atrPct = atrAtStart / entryPx * 100.0;
-        double slip   = isStop ? SlipStopGap * atrPct
-                       : isTp  ? SlipTpK     * atrPct
-                               : SlipMarketK * atrPct;
-        return FeeExchange + slip;
-    }
+    // isStop=true applies the gap premium (hard stop blown through in a fast move).
+    // isTp is retained on the signature but no longer changes the cost. It used to select
+    // between three independent per-exit-quality slip constants (0.01 / 0.03 / 0.18 × atrPct),
+    // which was a second slippage magnitude competing with Config.SlippageBps. Grid entries and
+    // TP exits are resting limit orders and would genuinely slip less than a taker fill, but
+    // that discount is deliberately NOT modelled: it is unprovable at bar resolution (a limit
+    // that fills in a fast move fills badly), and the direction of the error matters here —
+    // grid is the family this change is removing cost advantages from, so the conservative
+    // choice is to charge it the same round trip as everyone else.
+    internal static double TradeCost(double atrAtStart, double entryPx, bool isStop, bool isTp = false)
+        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrAtStart, entryPx), isStop, StopGapAtrK);
 
     // Per-fill returns — used for backtest display (trade count, per-trade stats).
+    // funding: optional real rate series. Passing null does NOT mean "no funding" — the
+    // fallback branch of FundingRateSession.PnlPct still charges the interest-rate floor
+    // (-0.01pp per 8h settlement crossed), same as every other strategy.
     public static List<(DateTime Time, double Return, string Kind)> GetGridReturns(
-        GridGenotype g, ReadOnlySpan<Candle> h1)
+        GridGenotype g, ReadOnlySpan<Candle> h1, FundingRateSession? funding = null)
     {
-        var (trades, _) = RunGrid(g, h1, sessionLevel: false);
+        var (trades, _) = RunGrid(g, h1, sessionLevel: false, funding: funding);
         return trades;
     }
 
     // Per-session returns — one record per grid activation, return = mean of all level fills.
     // Used by GridGA fitness to avoid inflating trade count and win-rate.
     public static List<(DateTime Time, double Return, string Kind)> GetGridSessionReturns(
-        GridGenotype g, ReadOnlySpan<Candle> h1)
+        GridGenotype g, ReadOnlySpan<Candle> h1, FundingRateSession? funding = null)
     {
-        var (trades, _) = RunGrid(g, h1, sessionLevel: true);
+        var (trades, _) = RunGrid(g, h1, sessionLevel: true, funding: funding);
         return trades;
     }
 
     // Returns scored session trades — one per grid activation — for ranked portfolio sim.
     // Score = adxMargin × bbMargin: both factors in [0,1], higher = more clearly ranging.
-    public static List<ScoredTrade> GetScoredGridTrades(string coin, GridGenotype g, ReadOnlySpan<Candle> h1)
+    public static List<ScoredTrade> GetScoredGridTrades(string coin, GridGenotype g, ReadOnlySpan<Candle> h1,
+        FundingRateSession? funding = null)
     {
         var scored = new List<ScoredTrade>();
-        RunGrid(g, h1, sessionLevel: true, coin: coin, scoredOut: scored);
+        RunGrid(g, h1, sessionLevel: true, coin: coin, scoredOut: scored, funding: funding);
         return scored;
     }
 
@@ -83,7 +101,8 @@ public static class GridSimulator
 
     private static (List<(DateTime, double, string)> Trades, GridTradeState FinalState)
         RunGrid(GridGenotype g, ReadOnlySpan<Candle> candles, bool sessionLevel,
-                string? coin = null, List<ScoredTrade>? scoredOut = null)
+                string? coin = null, List<ScoredTrade>? scoredOut = null,
+                FundingRateSession? funding = null)
     {
         int warmup = Math.Max(Math.Max(Math.Max(g.EmaPeriod, AtrPeriod), AdxPeriod * 2 + 1), g.BbPeriod) + 2;
         if (candles.Length <= warmup + 5)
@@ -130,11 +149,15 @@ public static class GridSimulator
 
         void CloseAllFilled(int i, double exitPx, bool isStop = false)
         {
+            // isLong: true — this grid buys below the anchor and books (exit − entry); a
+            // positive funding rate is a cost to it. See the sign rule in FundingRateSession.
+            double fundingPnl = FundingRateSession.PnlPct(sessionEntryTime, times[i], funding, isLong: true);
             for (int n = 0; n < levels; n++)
             {
                 if (!filled[n]) continue;
                 double ret = (exitPx - entryPrice[n]) / entryPrice[n] * 100.0
-                           - TradeCost(atrAtStart, entryPrice[n], isStop);
+                           - TradeCost(atrAtStart, entryPrice[n], isStop)
+                           + fundingPnl;
                 AddReturn(i, ret, "grid_long");
                 filled[n] = false;
             }
@@ -203,8 +226,10 @@ public static class GridSimulator
                     double tp = entryPrice[n] + g.TakeProfitAtrMult * atrAtStart;
                     if (highs[i] >= tp)
                     {
+                        double fundingPnl = FundingRateSession.PnlPct(sessionEntryTime, times[i], funding, isLong: true);
                         double ret = (tp - entryPrice[n]) / entryPrice[n] * 100.0
-                                   - TradeCost(atrAtStart, entryPrice[n], isStop: false, isTp: true);
+                                   - TradeCost(atrAtStart, entryPrice[n], isStop: false, isTp: true)
+                                   + fundingPnl;
                         AddReturn(i, ret, "grid_long");
                         filled[n] = false;
                     }
@@ -277,11 +302,13 @@ public static class GridSimulator
         if (gridActive)
         {
             double finalPx = closes[^1];
+            double fundingPnl = FundingRateSession.PnlPct(sessionEntryTime, times[^1], funding, isLong: true);
             for (int n = 0; n < levels; n++)
             {
                 if (!filled[n]) continue;
                 double ret = (finalPx - entryPrice[n]) / entryPrice[n] * 100.0
-                           - TradeCost(atrAtStart, entryPrice[n], isStop: false);
+                           - TradeCost(atrAtStart, entryPrice[n], isStop: false)
+                           + fundingPnl;
                 AddReturn(candles.Length - 1, ret, "grid_long");
             }
             FlushSession(candles.Length - 1);

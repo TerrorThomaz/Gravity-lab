@@ -223,8 +223,123 @@ static class CandleFetcher
     }
 
     // ── Funding rate ─────────────────────────────────────────────────────────
-    // Bybit perp funding settles every 8h. Cache: candle_cache/{symbol}_funding.csv.
-    // 3.2yr ≈ 3504 records; ~18 API calls to build from scratch.
+    // Cache: candle_cache/{symbol}_funding.csv.
+    //
+    // ┌── THE SETTLEMENT INTERVAL IS NOT 8h FOR EVERY SYMBOL ──────────────────────────────┐
+    // │ Bybit settles BTCUSDT/ETHUSDT every 8h, but many alt perps settle every 4h or 2h,  │
+    // │ and a symbol auto-switches to HOURLY settlement while its rate is pinned at the    │
+    // │ cap. Two consequences, both of which used to be silent:                            │
+    // │                                                                                    │
+    // │  1. HISTORY DEPTH. This method used to backfill to a hardcoded `Needed = 3504`     │
+    // │     records, commented as "3.2yr at 8h". For a 4h symbol that is 1.6yr and for a   │
+    // │     2h symbol 0.8yr — so the funding cache silently stopped short of the candle    │
+    // │     history, and FundingRateSession's coverage rule then priced the uncovered      │
+    // │     leading window at the interest-rate floor. The target is now expressed in      │
+    // │     HOURS (TargetHistoryHours) and converted to a record count using the spacing   │
+    // │     actually observed in the returned timestamps.                                  │
+    // │                                                                                    │
+    // │  2. COST MODEL. FundingRateSession hardcodes an 8h settlement grid and charges one │
+    // │     interval per grid tick crossed. On a 4h symbol that books HALF the settlements │
+    // │     that really occurred, and during a capped-rate hourly window it books an        │
+    // │     eighth — i.e. it undercounts funding hardest exactly when the crowding gate     │
+    // │     says the position is most dangerous. This file cannot fix that (it does not     │
+    // │     own FundingRateSession); it DETECTS and REPORTS the mismatch via                │
+    // │     FundingSeriesInfo.MatchesModelGrid so no caller can consume a mispriced series  │
+    // │     without the discrepancy appearing in its own output.                            │
+    // └────────────────────────────────────────────────────────────────────────────────────┘
+
+    // How much funding history to try to hold, in hours. 28032h ≈ 3.2yr, matching the
+    // `batches: 113` candle depth the backtests fetch. Expressed in TIME, not in records,
+    // precisely because records-per-hour is per-symbol.
+    public const double TargetFundingHistoryHours = 28032.0;
+
+    // Hard ceiling on backfill records, so a 1h-settling symbol cannot spin 28k records
+    // (140 API calls) out of one call. 200 records per API call × 25 calls, as before — the
+    // per-symbol API budget is deliberately unchanged from when only BTCUSDT was fetched,
+    // because the callers now fetch ~190 symbols instead of one.
+    //
+    // CONSEQUENCE, AND IT IS REPORTED RATHER THAN HIDDEN: a sub-8h symbol will hit this ceiling
+    // before it reaches TargetFundingHistoryHours (4h ⇒ ~2.3yr, 2h ⇒ ~1.1yr). FundingSeriesInfo
+    // carries the real First/Last span so the shortfall shows up in the caller's own output, and
+    // FundingRateSession prices the uncovered leading window at the interest-rate floor rather
+    // than flat-extrapolating an invented rate over it.
+    public const int MaxFundingRecords        = 5000;
+    public const int MaxFundingBackfillCalls  = 25;
+
+    /// <summary>
+    /// What a fetched funding series actually looks like, as opposed to what the 8h model assumes.
+    /// <para><b>MedianIntervalHours</b> is the median spacing of consecutive prints — the robust
+    /// estimator, so an exchange outage or a burst of capped hourly settlements does not move it.</para>
+    /// <para><b>MatchesModelGrid</b> is false whenever that spacing disagrees with
+    /// <see cref="FundingRateSession.FundingIntervalHours"/>, which is the condition under which
+    /// every funding cost computed from this series is wrong by the ratio of the two.</para>
+    /// </summary>
+    public readonly record struct FundingSeriesInfo(
+        string Symbol,
+        int Records,
+        double MedianIntervalHours,
+        DateTime First,
+        DateTime Last)
+    {
+        public bool MatchesModelGrid =>
+            Records < 2 || Math.Abs(MedianIntervalHours - FundingRateSession.FundingIntervalHours) < 1e-6;
+
+        // Multiplicative error in booked funding cost: how many real settlements occur per
+        // settlement the 8h model counts. 2.0 on a 4h symbol means the model books half the cost.
+        public double CostUndercountFactor =>
+            MedianIntervalHours > 1e-9 ? FundingRateSession.FundingIntervalHours / MedianIntervalHours : 1.0;
+
+        public double SpanDays => Records < 2 ? 0.0 : (Last - First).TotalDays;
+
+        public override string ToString() =>
+            Records == 0
+                ? $"{Symbol}: no funding data"
+                : $"{Symbol}: {Records} records · {MedianIntervalHours:0.##}h spacing · " +
+                  $"{First:yyyy-MM-dd}→{Last:yyyy-MM-dd} ({SpanDays / 365.25:0.0}yr)" +
+                  (MatchesModelGrid ? "" : $"  ⚠ model assumes {FundingRateSession.FundingIntervalHours:0.#}h → " +
+                                           $"funding cost undercounted ×{CostUndercountFactor:0.##}");
+    }
+
+    /// <summary>
+    /// Median spacing, in hours, between consecutive funding prints. Returns 0 for fewer than
+    /// two records. Median rather than mean so gaps in the exchange's own history (which do
+    /// occur, and which appear as one enormous spacing) cannot drag the estimate.
+    /// </summary>
+    public static double MedianFundingIntervalHours(IReadOnlyList<DateTime> times)
+    {
+        if (times.Count < 2) return 0.0;
+        var gaps = new List<double>(times.Count - 1);
+        for (int i = 1; i < times.Count; i++)
+        {
+            double h = (times[i] - times[i - 1]).TotalHours;
+            if (h > 0) gaps.Add(h);
+        }
+        if (gaps.Count == 0) return 0.0;
+        gaps.Sort();
+        int mid = gaps.Count / 2;
+        return gaps.Count % 2 == 1 ? gaps[mid] : (gaps[mid - 1] + gaps[mid]) / 2.0;
+    }
+
+    /// <summary>
+    /// Records needed to cover <paramref name="targetHours"/> at the observed spacing. Falls back
+    /// to the 8h assumption only while too few records exist to measure a spacing at all, and is
+    /// clamped to <see cref="MaxFundingRecords"/> so a 1h-settling symbol cannot run away.
+    /// </summary>
+    public static int RecordsNeededFor(double medianIntervalHours, double targetHours)
+    {
+        double interval = medianIntervalHours > 1e-9
+            ? medianIntervalHours
+            : FundingRateSession.FundingIntervalHours;
+        int needed = (int)Math.Ceiling(targetHours / interval);
+        return Math.Clamp(needed, 1, MaxFundingRecords);
+    }
+
+    public static FundingSeriesInfo DescribeFundingSeries(string symbol, IReadOnlyList<FundingBar> bars)
+    {
+        if (bars.Count == 0) return new FundingSeriesInfo(symbol, 0, 0.0, default, default);
+        var times = bars.Select(b => b.Time).OrderBy(t => t).ToList();
+        return new FundingSeriesInfo(symbol, bars.Count, MedianFundingIntervalHours(times), times[0], times[^1]);
+    }
 
     public static async Task<FundingBar[]> FetchFundingRateCachedAsync(BybitRestClient client, string symbol)
     {
@@ -250,8 +365,17 @@ static class CandleFetcher
 
         bool dirty = false;
 
-        // Forward fill: catch up to "now" from the last cached record
-        bool isFresh = cached.Count > 0 && (DateTime.UtcNow - cached.Keys.Max()).TotalHours < 8.0;
+        // Spacing observed so far, refreshed as the cache grows. Every "step back one interval"
+        // below uses THIS rather than a literal 8, so a 4h/2h/1h symbol pages correctly instead
+        // of skipping over records it then has to re-request.
+        double Spacing() => cached.Count >= 2
+            ? MedianFundingIntervalHours(cached.Keys.ToList())
+            : FundingRateSession.FundingIntervalHours;
+
+        // Forward fill: catch up to "now" from the last cached record. Staleness is judged
+        // against the symbol's own spacing — an 8h staleness window on a 2h symbol would call
+        // a cache three settlements behind "fresh".
+        bool isFresh = cached.Count > 0 && (DateTime.UtcNow - cached.Keys.Max()).TotalHours < Spacing();
         if (!isFresh)
         {
             DateTime stopAt = cached.Count > 0 ? cached.Keys.Max() : DateTime.MinValue;
@@ -262,22 +386,24 @@ static class CandleFetcher
                 if (!await FetchFundingBatch(cached, client, symbol, endTime)) break;
                 if (cached.Count > before) dirty = true;
                 if (cached.Keys.Min() >= stopAt) break;
-                endTime = cached.Keys.Min().AddHours(-8);
+                endTime = cached.Keys.Min().AddHours(-Spacing());
             }
         }
 
-        // Backward fill: extend to ~3.2yr (3504 records at 8h intervals)
-        const int Needed = 3504;
-        if (cached.Count < Needed)
+        // Backward fill: extend to TargetFundingHistoryHours of WALL-CLOCK history. The record
+        // count that represents is derived from the spacing actually seen, and is recomputed each
+        // pass because the first pass may be the one that first reveals the symbol is not 8h.
+        // (Was: a hardcoded `Needed = 3504` commented "3.2yr" — true only at 8h.)
         {
-            DateTime? endTime = cached.Count > 0 ? cached.Keys.Min().AddHours(-8) : null;
-            for (int i = 0; i < 25 && cached.Count < Needed; i++)
+            DateTime? endTime = cached.Count > 0 ? cached.Keys.Min().AddHours(-Spacing()) : null;
+            for (int i = 0; i < MaxFundingBackfillCalls; i++)
             {
+                if (cached.Count >= RecordsNeededFor(Spacing(), TargetFundingHistoryHours)) break;
                 int before = cached.Count;
                 if (!await FetchFundingBatch(cached, client, symbol, endTime)) break;
-                if (cached.Count == before) break;
+                if (cached.Count == before) break;   // exchange has no more history
                 dirty = true;
-                endTime = cached.Keys.Min().AddHours(-8);
+                endTime = cached.Keys.Min().AddHours(-Spacing());
             }
         }
 
@@ -305,6 +431,92 @@ static class CandleFetcher
         }
 
         return [.. cached.Select(kv => new FundingBar(kv.Key, kv.Value))];
+    }
+
+    // ── Per-symbol funding sessions ──────────────────────────────────────────────────────
+    //
+    // The two pre-existing call sites (FullTest, Papertrade) each fetched "BTCUSDT" alone and
+    // applied that one rate series to every one of ~190 symbols. That is wrong in both
+    // directions and not by a small amount: BTC funding is the market's calmest series, so an
+    // alt's crowded-long blow-off (rates several times BTC's) is priced at BTC's rate, and the
+    // FundingRateSession crowding gates — which are absolute thresholds in rate space — fire on
+    // BTC's crowding rather than on the crowding of the coin actually being traded.
+    //
+    // This builds one session per symbol. Symbols with no funding history map to null, which the
+    // simulators already accept and price at the interest-rate floor — the same one-sided
+    // "never book unprovable funding income" fallback FundingRateSession documents.
+    public sealed record FundingSessions(
+        IReadOnlyDictionary<string, FundingRateSession> Sessions,
+        IReadOnlyList<FundingSeriesInfo> Info)
+    {
+        // Null for an unknown symbol, by design: a missing session must not silently borrow
+        // another symbol's rates, which is exactly the bug this replaces.
+        public FundingRateSession? For(string symbol) =>
+            Sessions.TryGetValue(symbol, out var s) ? s : null;
+
+        public IEnumerable<FundingSeriesInfo> OffGridSymbols => Info.Where(i => i.Records >= 2 && !i.MatchesModelGrid);
+
+        public void PrintSummary()
+        {
+            var withData = Info.Where(i => i.Records > 0).ToList();
+            Console.WriteLine($"  Funding: {withData.Count}/{Info.Count} symbols have rate history " +
+                              $"(per-symbol sessions; symbols without history fall back to the " +
+                              $"{FundingRateSession.FallbackIntervalPct:0.##}%/interval floor).");
+            if (withData.Count > 0)
+            {
+                double medSpan = withData.Select(i => i.SpanDays / 365.25).OrderBy(x => x).ElementAt(withData.Count / 2);
+                Console.WriteLine($"    Median history depth: {medSpan:0.0}yr");
+            }
+
+            var off = OffGridSymbols.ToList();
+            if (off.Count == 0)
+            {
+                Console.WriteLine($"    All series settle on the {FundingRateSession.FundingIntervalHours:0.#}h grid the cost model assumes.");
+                return;
+            }
+            Console.WriteLine($"    ⚠ {off.Count} symbol(s) do NOT settle on the {FundingRateSession.FundingIntervalHours:0.#}h grid " +
+                              "FundingRateSession hardcodes — their funding cost is UNDERCOUNTED:");
+            foreach (var i in off.OrderByDescending(x => x.CostUndercountFactor).Take(15))
+                Console.WriteLine($"      {i}");
+            if (off.Count > 15) Console.WriteLine($"      … and {off.Count - 15} more");
+            Console.WriteLine("      Fixing this needs a per-symbol settlement grid inside FundingRateSession, " +
+                              "which hardcodes FundingIntervalHours = 8 for every symbol.");
+        }
+    }
+
+    public static async Task<FundingSessions> FetchFundingSessionsAsync(
+        BybitRestClient client, IEnumerable<string> symbols, int maxConcurrency = 4)
+    {
+        var unique = symbols.Distinct().ToArray();
+        var sem    = new SemaphoreSlim(Math.Max(1, maxConcurrency));
+
+        var results = await Task.WhenAll(unique.Select(async sym =>
+        {
+            await sem.WaitAsync();
+            try
+            {
+                var bars = await FetchFundingRateCachedAsync(client, sym);
+                return (sym, bars);
+            }
+            // A single symbol's funding fetch failing must not take down a whole backtest —
+            // it degrades that symbol to the floor fallback, which is the documented behaviour
+            // for "no rate series", not a new failure mode.
+            catch (Exception ex)
+            {
+                Console.WriteLine($"    Funding fetch failed for {sym}: {ex.GetType().Name} — falling back to the interest-rate floor.");
+                return (sym, bars: Array.Empty<FundingBar>());
+            }
+            finally { sem.Release(); }
+        }));
+
+        var sessions = new Dictionary<string, FundingRateSession>();
+        var info     = new List<FundingSeriesInfo>();
+        foreach (var (sym, bars) in results)
+        {
+            info.Add(DescribeFundingSeries(sym, bars));
+            if (bars.Length > 0) sessions[sym] = new FundingRateSession(bars);
+        }
+        return new FundingSessions(sessions, info);
     }
 
     private static async Task<bool> FetchFundingBatch(

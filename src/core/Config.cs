@@ -49,6 +49,13 @@ static class Config
     // (simulator-only in training, simulator + portfolio in reporting).
     public const double SlippageBps = 10.0;
 
+    // Max concurrent positions per strategy PER COIN. 1 preserves today's behaviour exactly —
+    // every signal simulator holds one position per coin via its `inTrade` flag, so this merely
+    // makes that implicit property explicit and enforceable at the risk layer. Raise it only
+    // alongside a multi-leg simulator, and never without PortfolioReplay.Trade.Symbol populated
+    // (the cap warns and no-ops when symbols are missing rather than silently passing).
+    public const int MaxPerSymbolConcurrent = 1;
+
     // ATR-ratio band claimed by the low-vol variant files. VariantRouter.Select picks the
     // NARROWEST band containing the current ratio, so this is what stops a lowvol genotype
     // from tying the base band [0, 9999] and shadowing the base genotype outright.

@@ -36,9 +36,9 @@ public static class FadeLongSimulator
     // for the four consumers that need the entry rather than the exit.
     public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)> GetFadeLongReturns(
         FadeLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
-        FundingRateSession? funding = null)
+        FundingRateSession? funding = null, RatchetConfig ratchet = default)
     {
-        var (trades, _) = RunFadeLongMultiTF(g, h1, m15, funding);
+        var (trades, _) = RunFadeLongMultiTF(g, h1, m15, funding, ratchet);
         return trades;
     }
 
@@ -67,7 +67,7 @@ public static class FadeLongSimulator
 
     private static (List<(DateTime, double, string, int, DateTime, double)> Trades, FadeLongTradeState FinalState)
         RunFadeLongMultiTF(FadeLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
-                           FundingRateSession? funding = null)
+                           FundingRateSession? funding = null, RatchetConfig ratchet = default)
     {
         int h1Warmup = Math.Max(Math.Max(g.RegimePeriod, Math.Max(g.EmaPeriod, RsiPeriod)), AdxPeriod * 2 + 1)
                        + g.LookbackCandles + 2;
@@ -120,6 +120,7 @@ public static class FadeLongSimulator
         double trailHigh       = 0;
         double atrEntry        = 0;
         bool   trailArmed      = false;
+        bool   lockArmed       = false;
         int    entryIH1        = 0;
         int    entryRegimeBars = 0;
         DateTime entryTime     = default;
@@ -201,6 +202,7 @@ public static class FadeLongSimulator
                     target         = entry + g.TakeProfitAtrMult * atrEntry;
                     trailHigh      = entry;
                     trailArmed     = false;
+                    lockArmed      = false;
                     entryIH1       = nextBar / 4;
                     entryRegimeBars = cachedRegimeBars;
                     entryTime      = m15[nextBar].Time;
@@ -213,6 +215,12 @@ public static class FadeLongSimulator
                     trailArmed = true;
 
                 int holdH1 = ih1 - entryIH1;
+
+                if (ratchet.Enabled && !lockArmed
+                    && ExitRatchet.ShouldArm(true, entry, atrEntry, trailHigh, ratchet))
+                    lockArmed = true;
+                if (lockArmed && ExitRatchet.LockPrice(true, entry, atrEntry, ratchet) is double lkPx)
+                    hardStop = ExitRatchet.Tighten(true, hardStop, lkPx);
 
                 bool hitHardStop = m15Price <= hardStop;
                 bool hitMae      = m15Price <= maeStop;

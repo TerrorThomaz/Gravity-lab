@@ -291,7 +291,10 @@ static class OosBacktest
         var dlTrades    = new List<(DateTime Time, double Return, double Conf)>();
         var slTrades    = new List<(DateTime Time, double Return, double Conf)>();
         var rsTrades    = new List<(DateTime Time, double Return, double Conf)>();
-        var allTrades   = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
+        // Entry/Sym carried so the concurrency cap models the window a position was ACTUALLY open.
+        // It previously received the EXIT bar as EntryTime plus a hardcoded 48/72h HoldDuration,
+        // so occupancy was modelled entirely AFTER the trade closed. Same bug as CombinedBacktest.
+        var allTrades   = new List<(DateTime Time, double Return, double Conf, string Strategy, DateTime Entry, string Sym)>();
 
         var highVolTrades   = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
         var lowVolTrades    = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
@@ -418,10 +421,10 @@ static class OosBacktest
             fsCoins++; fsSizingTrades += split.SizingCount; fsScoredTrades += vRet.Count;
             if (split.UsedFallback) fsFallbacks++;
             swingCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
-            foreach (var (t, ret, _, _, _) in scored)
+            foreach (var (t, ret, _, et, _) in scored)
             {
                 swingTrades.Add((t, ret, conf));
-                allTrades.Add((t, ret, conf, "swing"));
+                allTrades.Add((t, ret, conf, "swing", et, sym));
                 RouteVolVariant(fsVarLabel, sym, t, ret, conf, "swing", vCC);
             }
             RecordAppliedConf(fsVarLabel, sym, conf);
@@ -486,7 +489,7 @@ static class OosBacktest
             foreach (var t in scored)
             {
                 gridTrades.Add((t.Time, t.Return, conf));
-                allTrades.Add((t.Time, t.Return, conf, "grid"));
+                allTrades.Add((t.Time, t.Return, conf, "grid", t.EntryTime, sym));
                 RouteVolVariant(gridVarLabel, sym, t.Time, t.Return, conf, "grid", vCC);
             }
             RecordAppliedConf(gridVarLabel, sym, conf);
@@ -541,7 +544,7 @@ static class OosBacktest
                 foreach (var t in scored)
                 {
                     flTrades.Add((t.Time, t.Return, conf));
-                    allTrades.Add((t.Time, t.Return, conf, "fadelong"));
+                    allTrades.Add((t.Time, t.Return, conf, "fadelong", t.EntryTime, sym));
                     RouteVolVariant(flVarLabel, sym, t.Time, t.Return, conf, "fadelong", vCC);
                 }
                 RecordAppliedConf(flVarLabel, sym, conf);
@@ -597,7 +600,7 @@ static class OosBacktest
                 foreach (var t in scored)
                 {
                     dlTrades.Add((t.Time, t.Return, conf));
-                    allTrades.Add((t.Time, t.Return, conf, "diplong"));
+                    allTrades.Add((t.Time, t.Return, conf, "diplong", t.EntryTime, sym));
                     RouteVolVariant(dlVarLabel, sym, t.Time, t.Return, conf, "diplong", vCC);
                 }
                 RecordAppliedConf(dlVarLabel, sym, conf);
@@ -653,7 +656,7 @@ static class OosBacktest
                 foreach (var t in scored)
                 {
                     slTrades.Add((t.Time, t.Return, conf));
-                    allTrades.Add((t.Time, t.Return, conf, "swing_long"));
+                    allTrades.Add((t.Time, t.Return, conf, "swing_long", t.EntryTime, sym));
                     RouteVolVariant(slVarLabel, sym, t.Time, t.Return, conf, "swing_long", vCC);
                 }
                 RecordAppliedConf(slVarLabel, sym, conf);
@@ -709,7 +712,7 @@ static class OosBacktest
                 foreach (var t in scored)
                 {
                     rsTrades.Add((t.Time, t.Return, conf));
-                    allTrades.Add((t.Time, t.Return, conf, "ripshort"));
+                    allTrades.Add((t.Time, t.Return, conf, "ripshort", t.EntryTime, sym));
                     RouteVolVariant(rsVarLabel, sym, t.Time, t.Return, conf, "ripshort", vCC);
                 }
                 RecordAppliedConf(rsVarLabel, sym, conf);
@@ -732,21 +735,17 @@ static class OosBacktest
         {
             var capInput = allTrades.Select(t => new PortfolioReplay.Trade(
                 t.Strategy,
-                t.Time,
-                t.Strategy switch {
-                    "swing"      => TimeSpan.FromHours(48),
-                    "swing_long" => TimeSpan.FromHours(48),
-                    "diplong"    => TimeSpan.FromHours(48),
-                    "fadelong"   => TimeSpan.FromHours(72),
-                    "ripshort"   => TimeSpan.FromHours(72),
-                    "grid"       => TimeSpan.FromHours(72),
-                    _            => TimeSpan.FromHours(48),
-                },
+                t.Entry == default ? t.Time : t.Entry,
+                t.Entry == default ? TimeSpan.FromHours(48) : (t.Time - t.Entry),
                 t.Return,
-                t.Conf)).ToList();
-            var filtered = PortfolioReplay.FilterByConcurrentCap(capInput, directionalCap: Config.MaxDirectionalConcurrent);
+                t.Conf,
+                t.Sym)).ToList();
+            int noEntry = allTrades.Count(t => t.Entry == default);
+            if (noEntry > 0)
+                Console.WriteLine($"  !! {noEntry} trades carry no entry time — concurrency modelled with the legacy constant");
+            var filtered = PortfolioReplay.FilterByConcurrentCap(capInput, directionalCap: Config.MaxDirectionalConcurrent, perSymbolCap: Config.MaxPerSymbolConcurrent);
             Console.WriteLine($"  Concurrent cap: {allTrades.Count} → {filtered.Count} trades ({allTrades.Count - filtered.Count} removed)");
-            allTrades = filtered.Select(t => (t.EntryTime, t.Return, t.Conf, t.Strategy)).ToList();
+            allTrades = filtered.Select(t => (t.EntryTime + t.HoldDuration, t.Return, t.Conf, t.Strategy, t.EntryTime, t.Symbol)).ToList();
         }
 
         var swingRet = swingTrades.Select(t => t.Return).ToList();
@@ -1123,7 +1122,7 @@ static class OosBacktest
             }
         }
 
-        var allTrades = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
+        var allTrades = new List<(DateTime Time, double Return, double Conf, string Strategy, DateTime Entry, string Sym)>();
 
         static TimeSpan AcHold(string s, FadeShortGenotype sw, GridGenotype gr, FadeLongGenotype? fl, DipLongGenotype? dl, RipShortGenotype? rs) => s switch
         {
@@ -1185,7 +1184,7 @@ static class OosBacktest
                         var    vRet  = FadeShortSimulator.GetFadeShortReturns(coinFsGAC, h1Val, m15Val, funding.For(sym));
                         btSwing++; btSwingT += vRet.Count;
                         if (vRet.Count > 0) NoteScoredSpan(h1, h1Val[0].Time);
-                        foreach (var (t, ret, _, _, _) in vRet) allTrades.Add((t, ret, conf, "swing"));
+                        foreach (var (t, ret, _, et, _) in vRet) allTrades.Add((t, ret, conf, "swing", et, sym));
                     }
                 }
             }
@@ -1201,10 +1200,10 @@ static class OosBacktest
                     int    kept = vRet.Count(t => session == null || session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time));
                     btGrid++; btGridT += kept;
                     if (kept > 0) NoteScoredSpan(h1, h1Val[0].Time);
-                    foreach (var (t, ret, _, _, _) in vRet)
+                    foreach (var (t, ret, _, et, _) in vRet)
                     {
                         if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.Grid, t)) continue;
-                        allTrades.Add((t, ret, conf, "grid"));
+                        allTrades.Add((t, ret, conf, "grid", et, sym));
                     }
                 }
             }
@@ -1222,7 +1221,7 @@ static class OosBacktest
                     btFL++; btFLT += split.Scored.Count; btFLSize += split.SizingCount;
                     if (split.UsedFallback) btFLFb++;
                     NoteScoredSpan(h1, split.Scored[0].Time);
-                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "fadelong"));
+                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "fadelong", t.EntryTime, sym));
                 }
             }
 
@@ -1238,7 +1237,7 @@ static class OosBacktest
                     btDL++; btDLT += split.Scored.Count; btDLSize += split.SizingCount;
                     if (split.UsedFallback) btDLFb++;
                     NoteScoredSpan(h1, split.Scored[0].Time);
-                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "diplong"));
+                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "diplong", t.EntryTime, sym));
                 }
             }
 
@@ -1254,7 +1253,7 @@ static class OosBacktest
                     btRS++; btRST += split.Scored.Count; btRSSize += split.SizingCount;
                     if (split.UsedFallback) btRSFb++;
                     NoteScoredSpan(h1, split.Scored[0].Time);
-                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "ripshort"));
+                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "ripshort", t.EntryTime, sym));
                 }
             }
         }
@@ -1298,7 +1297,7 @@ static class OosBacktest
                     oSwing++; oSwingT += split.Scored.Count; oSwingS += split.SizingCount;
                     if (split.UsedFallback) oSwingFb++;
                     NoteScoredSpan(h1, split.Scored[0].Time);
-                    foreach (var (t, ret, _, _, _) in split.Scored) allTrades.Add((t, ret, split.Conf, "swing"));
+                    foreach (var (t, ret, _, et, _) in split.Scored) allTrades.Add((t, ret, split.Conf, "swing", et, sym));
                 }
             }
 
@@ -1313,7 +1312,7 @@ static class OosBacktest
                     oGrid++; oGridT += split.Scored.Count; oGridS += split.SizingCount;
                     if (split.UsedFallback) oGridFb++;
                     NoteScoredSpan(h1, split.Scored[0].Time);
-                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "grid"));
+                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "grid", t.EntryTime, sym));
                 }
             }
 
@@ -1329,7 +1328,7 @@ static class OosBacktest
                     oFL++; oFLT += split.Scored.Count; oFLS += split.SizingCount;
                     if (split.UsedFallback) oFLFb++;
                     NoteScoredSpan(h1, split.Scored[0].Time);
-                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "fadelong"));
+                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "fadelong", t.EntryTime, sym));
                 }
             }
 
@@ -1345,7 +1344,7 @@ static class OosBacktest
                     oDL++; oDLT += split.Scored.Count; oDLS += split.SizingCount;
                     if (split.UsedFallback) oDLFb++;
                     NoteScoredSpan(h1, split.Scored[0].Time);
-                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "diplong"));
+                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "diplong", t.EntryTime, sym));
                 }
             }
 
@@ -1361,7 +1360,7 @@ static class OosBacktest
                     oRS++; oRST += split.Scored.Count; oRSS += split.SizingCount;
                     if (split.UsedFallback) oRSFb++;
                     NoteScoredSpan(h1, split.Scored[0].Time);
-                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "ripshort"));
+                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "ripshort", t.EntryTime, sym));
                 }
             }
         }
@@ -1380,21 +1379,17 @@ static class OosBacktest
         {
             var capInput = allTrades.Select(t => new PortfolioReplay.Trade(
                 t.Strategy,
-                t.Time,
-                t.Strategy switch {
-                    "swing"      => TimeSpan.FromHours(48),
-                    "swing_long" => TimeSpan.FromHours(48),
-                    "diplong"    => TimeSpan.FromHours(48),
-                    "fadelong"   => TimeSpan.FromHours(72),
-                    "ripshort"   => TimeSpan.FromHours(72),
-                    "grid"       => TimeSpan.FromHours(72),
-                    _            => TimeSpan.FromHours(48),
-                },
+                t.Entry == default ? t.Time : t.Entry,
+                t.Entry == default ? TimeSpan.FromHours(48) : (t.Time - t.Entry),
                 t.Return,
-                t.Conf)).ToList();
-            var filtered = PortfolioReplay.FilterByConcurrentCap(capInput, directionalCap: Config.MaxDirectionalConcurrent);
+                t.Conf,
+                t.Sym)).ToList();
+            int noEntry = allTrades.Count(t => t.Entry == default);
+            if (noEntry > 0)
+                Console.WriteLine($"  !! {noEntry} trades carry no entry time — concurrency modelled with the legacy constant");
+            var filtered = PortfolioReplay.FilterByConcurrentCap(capInput, directionalCap: Config.MaxDirectionalConcurrent, perSymbolCap: Config.MaxPerSymbolConcurrent);
             Console.WriteLine($"  Concurrent cap: {allTrades.Count} → {filtered.Count} trades ({allTrades.Count - filtered.Count} removed)");
-            allTrades = filtered.Select(t => (t.EntryTime, t.Return, t.Conf, t.Strategy)).ToList();
+            allTrades = filtered.Select(t => (t.EntryTime + t.HoldDuration, t.Return, t.Conf, t.Strategy, t.EntryTime, t.Symbol)).ToList();
         }
 
         var allRet   = allTrades.Select(t => t.Return).ToList();

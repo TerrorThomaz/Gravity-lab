@@ -116,6 +116,7 @@ public static class FadeShortSimulator
         double maeStop    = 0;
         double target     = 0;
         double trailLow   = 0;
+        bool   lockArmed  = false;
         double atrEntry   = 0;
         bool   trailArmed = false;
         int    holdCount  = 0;
@@ -160,6 +161,7 @@ public static class FadeShortSimulator
                 target     = entry - g.TakeProfitAtrMult * atrEntry;
                 trailLow   = price;
                 trailArmed = false;
+                lockArmed  = false;
                 holdCount  = 0;
             }
             else
@@ -231,9 +233,9 @@ public static class FadeShortSimulator
     // t.Time / t.Return consumers compile unchanged.
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetFadeShortReturns(
         FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
-        FundingRateSession? funding = null)
+        FundingRateSession? funding = null, RatchetConfig ratchet = default)
     {
-        var (trades, _) = RunSwingMultiTF(g, h1, m15, funding: funding);
+        var (trades, _) = RunSwingMultiTF(g, h1, m15, funding: funding, ratchet: ratchet);
         return trades;
     }
 
@@ -255,7 +257,7 @@ public static class FadeShortSimulator
     private static (List<(DateTime, double, string, DateTime, double)> Trades, FadeShortTradeState FinalState)
         RunSwingMultiTF(FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
                         string? coin = null, List<ScoredTrade>? scoredOut = null,
-                        FundingRateSession? funding = null)
+                        FundingRateSession? funding = null, RatchetConfig ratchet = default)
     {
         int h1Warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
                        + g.LookbackCandles + 2;
@@ -290,6 +292,7 @@ public static class FadeShortSimulator
         double maeStop    = 0;
         double target     = 0;
         double trailLow   = 0;
+        bool   lockArmed  = false;
         double atrEntry   = 0;
         bool   trailArmed = false;
         int    entryIH1   = 0;
@@ -378,6 +381,7 @@ public static class FadeShortSimulator
                     target     = entry - g.TakeProfitAtrMult * atrEntry;
                     trailLow   = entry;
                     trailArmed = false;
+                    lockArmed  = false;
                     entryIH1   = nextBar / 4;
                     entryScore = cachedScore;
                     entryTime  = m15[nextBar].Time;
@@ -390,6 +394,12 @@ public static class FadeShortSimulator
                     trailArmed = true;
 
                 int holdH1 = ih1 - entryIH1;   // elapsed h1 bars since entry
+
+                if (ratchet.Enabled && !lockArmed
+                    && ExitRatchet.ShouldArm(false, entry, atrEntry, trailLow, ratchet))
+                    lockArmed = true;
+                if (lockArmed && ExitRatchet.LockPrice(false, entry, atrEntry, ratchet) is double lkPxS)
+                    hardStop = ExitRatchet.Tighten(false, hardStop, lkPxS);
 
                 bool hitHardStop = m15Price >= hardStop;
                 bool hitMae      = m15Price >= maeStop;
@@ -466,9 +476,9 @@ public static class SwingLongSimulator
     // t.Time / t.Return consumers compile unchanged.
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetSwingLongReturns(
         SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
-        FundingRateSession? funding = null)
+        FundingRateSession? funding = null, RatchetConfig ratchet = default)
     {
-        var (trades, _) = RunSwingLongMultiTF(g, h1, m15, funding);
+        var (trades, _) = RunSwingLongMultiTF(g, h1, m15, funding, ratchet);
         return trades;
     }
 
@@ -489,7 +499,7 @@ public static class SwingLongSimulator
 
     private static (List<(DateTime, double, string, DateTime, double)> Trades, SwingLongTradeState FinalState)
         RunSwingLongMultiTF(SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
-                            FundingRateSession? funding = null)
+                            FundingRateSession? funding = null, RatchetConfig ratchet = default)
     {
         int h1Warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
                        + g.LookbackCandles + 2;
@@ -522,6 +532,7 @@ public static class SwingLongSimulator
         double hardStop   = 0;
         double target     = 0;
         double trailHigh  = 0;
+        bool   lockArmed  = false;
         double atrEntry   = 0;
         bool   trailArmed = false;
         int    entryIH1   = 0;
@@ -600,6 +611,7 @@ public static class SwingLongSimulator
                     target     = entry + g.TakeProfitAtrMult * atrEntry;
                     trailHigh  = entry;
                     trailArmed = false;
+                    lockArmed  = false;
                     entryIH1   = nextBar / 4;
                     entryTime  = m15[nextBar].Time;
                 }

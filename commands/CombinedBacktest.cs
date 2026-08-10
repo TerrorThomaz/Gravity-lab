@@ -380,6 +380,10 @@ static class CombinedBacktest
         var rsLockRet         = new List<double>();   // ... plus a minimum-profit ratchet
         var rsAtrCapRet       = new List<double>();   // ATR-scaled cap, absolutely ceilinged
         var rsHybRet          = new List<double>();   // ATR-scaled cap + ATR-scaled ratchet
+        // Does MaxHold need to exist at all, once an ATR-scaled cap and the trail are in place?
+        // Anatomy says ~every trade closes on time, so this is the dominant exit being tested.
+        var rsMaxHoldSweep    = new Dictionary<int, List<double>>();
+        var maxHoldProbe      = new[] { 53, 160, 100_000 };   // production · new ceiling · effectively off
         // Profit-ratchet grid, printed in full. Tuning these to a maximum after seeing the table
         // is how a 2-parameter safety feature becomes as overfit as the strategies it protects.
         var rsRatchetGrid     = new Dictionary<(double Trig, double Lock), List<double>>();
@@ -390,7 +394,26 @@ static class CombinedBacktest
         var ratchetTriggers   = new[] { 2.0, 4.0, 6.0 };
         var ratchetLocks      = new[] { 0.5, 1.5, 3.0 };
         var agAcqFills        = new List<int>();
-        var allTrades         = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
+        // Entry/Symbol carried so the concurrency cap can model the window a position was ACTUALLY
+        // open. It previously received `t.Time` (the EXIT bar) as EntryTime plus a hardcoded
+        // HoldDuration, so occupancy was modelled as [exit, exit + const] — a window entirely AFTER
+        // the trade had closed. The caps are the portfolio's concentration control; they were
+        // filtering on the wrong interval.
+        var allTrades         = new List<(DateTime Time, double Return, double Conf, string Strategy, DateTime Entry, string Sym)>();
+        // GRAVITY_RATCHET=1 applies the minimum-profit floor to EVERY strategy. ATR-scaled with
+        // percentage ceilings, because a flat trigger arms on noise for volatile coins — measured
+        // on RipShort at 1.67pp/trade of truncated upside. Off by default: this changes exits.
+        // GRAVITY_RATCHET=<lockAtrMult>. The lock is ATR-scaled by design: entering at high ATR
+        // carries more risk but also has more profit worth protecting once breakeven is cleared,
+        // so a 4%-ATR coin locks 4x what a 1%-ATR coin does. Percentage values are ceilings.
+        double lockMult = double.TryParse(Environment.GetEnvironmentVariable("GRAVITY_RATCHET"),
+                              System.Globalization.NumberStyles.Float,
+                              System.Globalization.CultureInfo.InvariantCulture, out var lm) ? lm : 0.0;
+        var globalRatchet = lockMult > 0.0
+            ? new RatchetConfig(TriggerPct: 8.0, LockPct: 3.0, TriggerAtrMult: 1.5, LockAtrMult: lockMult)
+            : default;
+        if (globalRatchet.Enabled)
+            Console.WriteLine($"  [RATCHET] floor active on all strategies (arm 1.5xATR cap 8%, lock {lockMult}xATR cap 3%)");
         // Val-window price series per coin, collected once for the random-entry control below.
         var controlSeries     = new List<(string Sym, Candle[] H1Val)>();
         var allTradesNoRouter = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
@@ -492,7 +515,7 @@ static class CombinedBacktest
             }
 
             double conf   = Simulator.ComputeConfidence(tRet);
-            var    vSwing = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1Val, m15Val, funding.For(sym));
+            var    vSwing = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1Val, m15Val, funding.For(sym), globalRatchet);
             var    vRet   = vSwing.Select(t => t.Return).ToList();
             int    vCC    = h1Val.Length * 12;
             swingTotalVCC += vCC;
@@ -508,10 +531,10 @@ static class CombinedBacktest
             swingCoinRet.Add((sym, vRet));
             swingFullCoins.Add((sym, h1, m15, conf));
             controlSeries.Add((sym, h1Val.ToArray()));
-            foreach (var (t, ret, _, _, _) in vSwing)
+            foreach (var (t, ret, _, et, _) in vSwing)
             {
                 swingTrades.Add((t, ret, conf));
-                allTrades.Add((t, ret, conf, "swing"));
+                allTrades.Add((t, ret, conf, "swing", et, sym));
                 allTradesNoRouter.Add((t, ret, conf, "swing"));
                 RouteVolVariant(fsVarLabel, sym, t, ret, conf, "swing", vCC);
             }
@@ -571,12 +594,12 @@ static class CombinedBacktest
             gridCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
             gridFullCoins.Add((sym, h1, conf));
             var gridGated = new List<double>();
-            foreach (var (t, ret, _, _, _) in vGrid)
+            foreach (var (t, ret, _, et, _) in vGrid)
             {
                 allTradesNoRouter.Add((t, ret, conf, "grid"));
                 if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.Grid, t)) continue;
                 gridTrades.Add((t, ret, conf));
-                allTrades.Add((t, ret, conf, "grid"));
+                allTrades.Add((t, ret, conf, "grid", et, sym));
                 gridGated.Add(ret);
                 RouteVolVariant(gridVarLabel, sym, t, ret, conf, "grid", vCC);
             }
@@ -608,7 +631,7 @@ static class CombinedBacktest
 
                 var (coinFlG, flVarLabel) = SelectVariantLabeled(flVariants, m15);
                 coinFlG ??= flG;
-                var raw    = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1Val, m15Val, funding.For(sym));
+                var raw    = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1Val, m15Val, funding.For(sym), globalRatchet);
                 var gated  = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList()
                     : raw;
@@ -637,7 +660,7 @@ static class CombinedBacktest
                 foreach (var t in gated)
                 {
                     flTrades.Add((t.Time, t.Return, conf));
-                    allTrades.Add((t.Time, t.Return, conf, "fadelong"));
+                    allTrades.Add((t.Time, t.Return, conf, "fadelong", t.EntryTime, sym));
                     RouteVolVariant(flVarLabel, sym, t.Time, t.Return, conf, "fadelong", vCC);
                 }
             }
@@ -668,7 +691,7 @@ static class CombinedBacktest
 
                 var (coinDlG, dlVarLabel) = SelectVariantLabeled(dlVariants, m15);
                 coinDlG ??= dlG;
-                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1Val, m15Val, funding.For(sym));
+                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1Val, m15Val, funding.For(sym), globalRatchet);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
@@ -697,7 +720,7 @@ static class CombinedBacktest
                 foreach (var t in gated)
                 {
                     dlTrades.Add((t.Time, t.Return, conf));
-                    allTrades.Add((t.Time, t.Return, conf, "diplong"));
+                    allTrades.Add((t.Time, t.Return, conf, "diplong", t.EntryTime, sym));
                     RouteVolVariant(dlVarLabel, sym, t.Time, t.Return, conf, "diplong", vCC);
                 }
             }
@@ -728,7 +751,7 @@ static class CombinedBacktest
 
                 var (coinSlG, slVarLabel) = SelectVariantLabeled(slVariants, m15);
                 coinSlG ??= slG;
-                var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1Val, m15Val, funding.For(sym));
+                var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1Val, m15Val, funding.For(sym), globalRatchet);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
@@ -757,7 +780,7 @@ static class CombinedBacktest
                 foreach (var t in gated)
                 {
                     slTrades.Add((t.Time, t.Return, conf));
-                    allTrades.Add((t.Time, t.Return, conf, "swing_long"));
+                    allTrades.Add((t.Time, t.Return, conf, "swing_long", t.EntryTime, sym));
                     RouteVolVariant(slVarLabel, sym, t.Time, t.Return, conf, "swing_long", vCC);
                 }
             }
@@ -860,6 +883,33 @@ static class CombinedBacktest
                             : rg))
                         lst.Add(t.Return);
                 }
+                // Two ratchet settings per MaxHold. The question being tested: with a profit lock
+                // armed, a trade held very long should exit AT OR ABOVE the lock by construction —
+                // so MaxHold ought to be redundant. It is redundant only for trades that ARM; a
+                // trade that never reaches the trigger can drift indefinitely, and that residual
+                // population is the only thing a time exit is still catching.
+                foreach (var mh in maxHoldProbe)
+                foreach (var withRatchet in new[] { false, true })
+                {
+                    var gMh = coinRsG.ClampToBounds();
+                    gMh.MaxHoldCandles = mh;      // deliberately past the clamp: 100k = no time exit
+                    var cfgMh = withRatchet
+                        ? new RipShortSimulator.ExitOverrideConfig(RipShortSimulator.ExitOverrideMode.None,
+                              MaxLossPct: 10.0, MaxLossAtrMult: 2.5, MaxLossPctFloor: 3.0,
+                              LockTriggerPct: 8.0, LockProfitPct: 3.0,
+                              LockTriggerAtrMult: 1.5, LockProfitAtrMult: 0.5)
+                        : new RipShortSimulator.ExitOverrideConfig(RipShortSimulator.ExitOverrideMode.None,
+                              MaxLossPct: 10.0, MaxLossAtrMult: 2.5, MaxLossPctFloor: 3.0);
+                    var rmh = RipShortSimulator.GetRipShortReturns(gMh, h1Val, m15Val, funding.For(sym), cfgMh);
+                    int key = mh * (withRatchet ? -1 : 1);
+                    if (!rsMaxHoldSweep.TryGetValue(key, out var lst))
+                        rsMaxHoldSweep[key] = lst = new List<double>();
+                    foreach (var t in (session != null
+                            ? rmh.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time))
+                            : rmh))
+                        lst.Add(t.Return);
+                }
+
                 // Hybrid: ATR-scaled cap AND ATR-scaled ratchet. Arms at 1.5x the coin's own ATR
                 // (ceiling 8%), locks 0.5x ATR (ceiling 3%) — so it arms late on volatile coins
                 // instead of on their noise, which is what the flat-percentage grid punished.
@@ -907,7 +957,7 @@ static class CombinedBacktest
                 foreach (var t in gated)
                 {
                     rsTrades.Add((t.Time, t.Return, conf));
-                    allTrades.Add((t.Time, t.Return, conf, "ripshort"));
+                    allTrades.Add((t.Time, t.Return, conf, "ripshort", t.EntryTime, sym));
                     RouteVolVariant(rsVarLabel, sym, t.Time, t.Return, conf, "ripshort", vCC);
                 }
             }
@@ -1291,26 +1341,27 @@ static class CombinedBacktest
         // Per-strategy concurrent cap — prevents catastrophic correlation clustering
         if (allTrades.Count > 0)
         {
+            // Real entry time and ACTUAL hold, not the exit bar and a constant. Falls back to the
+            // old constant only when a trade carries no entry (Entry == default), so the change is
+            // visible rather than silent.
             var capInput = allTrades.Select(t => new PortfolioReplay.Trade(
                 t.Strategy,
-                t.Time,
-                t.Strategy switch {
-                    "swing"      => TimeSpan.FromHours(48),
-                    "swing_long" => TimeSpan.FromHours(48),
-                    "diplong"    => TimeSpan.FromHours(48),
-                    "fadelong"   => TimeSpan.FromHours(72),
-                    "ripshort"   => TimeSpan.FromHours(72),
-                    "grid"       => TimeSpan.FromHours(72),
-                    "accumgrid"  => TimeSpan.FromHours(150),
-                    _            => TimeSpan.FromHours(48),
-                },
+                t.Entry == default ? t.Time : t.Entry,
+                t.Entry == default ? TimeSpan.FromHours(48) : (t.Time - t.Entry),
                 t.Return,
-                t.Conf)).ToList();
-            var capFiltered = PortfolioReplay.FilterByConcurrentCap(capInput, directionalCap: Config.MaxDirectionalConcurrent);
+                t.Conf,
+                t.Sym)).ToList();
+            int noEntry = allTrades.Count(t => t.Entry == default);
+            if (noEntry > 0)
+                Console.WriteLine($"  !! {noEntry} trades carry no entry time — concurrency modelled with the legacy constant");
+            var capFiltered = PortfolioReplay.FilterByConcurrentCap(capInput, directionalCap: Config.MaxDirectionalConcurrent,
+                                                                    perSymbolCap: Config.MaxPerSymbolConcurrent);
             int skipped = allTrades.Count - capFiltered.Count;
             if (skipped > 0)
                 Console.WriteLine($"  Concurrent cap removed {skipped} trades");
-            allTrades = capFiltered.Select(t => (t.EntryTime, t.Return, t.Conf, t.Strategy)).ToList();
+            // Restore the EXIT bar as Time — downstream portfolio sims key off it — while keeping
+            // entry and symbol attached.
+            allTrades = capFiltered.Select(t => (t.EntryTime + t.HoldDuration, t.Return, t.Conf, t.Strategy, t.EntryTime, t.Symbol)).ToList();
         }
 
         var allTradesForExposure = allTrades
@@ -1479,6 +1530,22 @@ static class CombinedBacktest
                 }
                 Console.WriteLine($"  {"worst / CVaR5 prod",-22} {tProd.Worst,6:F2}% {tProd.Cvar5,13:F2}%");
                 Console.WriteLine($"  {"worst / CVaR5 wait",-22} {tWait.Worst,6:F2}% {tWait.Cvar5,13:F2}%");
+                if (rsMaxHoldSweep.Count > 0)
+                {
+                    Console.WriteLine($"\n  ── MaxHold sweep (ATR cap on, no wait/ratchet) ──");
+                    Console.WriteLine($"  {"MaxHold",8} {"ratchet",8} {"PF",6} {"WR",6} {"Avg%",8} {"N",6} {"worst",8} {"CVaR5",8}");
+                    foreach (var kv in rsMaxHoldSweep.OrderBy(k => Math.Abs(k.Key)).ThenBy(k => k.Key))
+                    {
+                        var r = kv.Value; if (r.Count < 20) continue;
+                        var t3 = Tail(r);
+                        int mhAbs = Math.Abs(kv.Key);
+                        Console.WriteLine($"  {(mhAbs >= 100_000 ? "OFF" : mhAbs.ToString()),8} {(kv.Key < 0 ? "on" : "off"),8} {Simulator.ProfitFactor(r),6:F2} " +
+                                          $"{(double)r.Count(x => x > 0) / r.Count,6:P0} {r.Average(),+7:F2}% {r.Count,6} " +
+                                          $"{t3.Worst,7:F2}% {t3.Cvar5,7:F2}%");
+                    }
+                    Console.WriteLine($"  If OFF holds up, the time exit is redundant once the cap and trail carry the risk.");
+                }
+
                 if (rsAnatomy.Count >= 40)
                 {
                     var srt = rsAnatomy.OrderBy(a => a.Ret).ToList();

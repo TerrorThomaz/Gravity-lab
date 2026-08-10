@@ -41,18 +41,29 @@ public static class PortfolioReplay
       : ShortStrategies.Contains(strategy) ? false
       : null;
 
+    // Symbol enables a PER-COIN concurrency cap. Without it this record cannot tell
+    // "8 positions on 8 coins" from "8 positions on ONE coin" — the cap counts per STRATEGY
+    // only, so all per-coin exposure was invisible to the risk layer. That is the same
+    // accounting hole that keeps RipShort's DcaAndWait marked MUST NOT BE ENABLED, and it has
+    // to close before any multi-leg mode can be trusted.
+    //
+    // Optional with a default so existing call sites compile, but PerSymbolCap warns loudly
+    // when it is asked to enforce a limit on trades that carry no symbol — a silent no-op here
+    // would be worse than the missing feature.
     public record Trade(
         string   Strategy,
         DateTime EntryTime,
         TimeSpan HoldDuration,
         double   Return,
-        double   Conf);
+        double   Conf,
+        string   Symbol = "");
 
     // Filter trades by concurrent position cap. Returns a new list with capped trades removed.
     public static List<Trade> FilterByConcurrentCap(
         IEnumerable<Trade> trades,
         Dictionary<string, int>? caps = null,
-        int directionalCap = int.MaxValue)
+        int directionalCap = int.MaxValue,
+        int perSymbolCap   = int.MaxValue)
     {
         caps ??= DefaultCaps;
         var sorted  = trades.OrderBy(t => t.EntryTime).ToList();
@@ -62,6 +73,9 @@ public static class PortfolioReplay
         var shortCloses = new List<DateTime>();
         var warnedLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var warnedNoCap = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Per-coin open positions, keyed strategy|symbol. Only consulted when a cap is asked for.
+        var symbolCloses = new Dictionary<string, List<DateTime>>(StringComparer.OrdinalIgnoreCase);
+        bool warnedNoSymbol = false;
 
         foreach (var t in sorted)
         {
@@ -87,6 +101,31 @@ public static class PortfolioReplay
 
             if (closes.Count >= cap) continue;
 
+            // Per-coin cap. This is what makes a multi-leg mode safe: without it, N legs on one
+            // coin look identical to N positions spread across N coins, and the concentration
+            // risk is invisible.
+            List<DateTime>? symCloses = null;
+            if (perSymbolCap != int.MaxValue)
+            {
+                if (string.IsNullOrEmpty(t.Symbol))
+                {
+                    if (!warnedNoSymbol)
+                    {
+                        warnedNoSymbol = true;
+                        Console.WriteLine("  !! PortfolioReplay: perSymbolCap requested but trades carry no Symbol — " +
+                                          "per-coin concentration is NOT being capped");
+                    }
+                }
+                else
+                {
+                    string key = t.Strategy + "|" + t.Symbol;
+                    if (!symbolCloses.TryGetValue(key, out symCloses))
+                        symbolCloses[key] = symCloses = new List<DateTime>();
+                    symCloses.RemoveAll(ct => ct <= t.EntryTime);
+                    if (symCloses.Count >= perSymbolCap) continue;
+                }
+            }
+
             // An unrecognised label has no known direction, so it counts against BOTH
             // directional caps rather than escaping them — the conservative choice.
             bool knownLong  = LongStrategies.Contains(t.Strategy);
@@ -104,6 +143,7 @@ public static class PortfolioReplay
 
             var closeTime = t.EntryTime + t.HoldDuration;
             closes.Add(closeTime);
+            symCloses?.Add(closeTime);
             if (countsLong)  longCloses.Add(closeTime);
             if (countsShort) shortCloses.Add(closeTime);
             result.Add(t);

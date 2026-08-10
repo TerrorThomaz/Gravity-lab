@@ -43,11 +43,13 @@ public static class DipLongSimulator
     // leading-slice OOS sizing (aba8c1b documents the seam), accumulator acquisition quality,
     // and 1m execution. Appended as NAMED fields so existing t.Time / t.Return consumers are
     // untouched — the same low-risk shape already proven on AccumulationGridSimulator.
+    // ratchet: opt-in minimum-profit floor (see src/core/ExitRatchet.cs). Default is disabled,
+    // so production behaviour is bit-identical unless a caller asks for it.
     public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)> GetDipLongReturns(
         DipLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
-        FundingRateSession? funding = null)
+        FundingRateSession? funding = null, RatchetConfig ratchet = default)
     {
-        var (trades, _) = RunDipLongMultiTF(g, h1, m15, funding);
+        var (trades, _) = RunDipLongMultiTF(g, h1, m15, funding, ratchet);
         return trades;
     }
 
@@ -75,7 +77,7 @@ public static class DipLongSimulator
 
     private static (List<(DateTime, double, string, int, DateTime, double)> Trades, DipLongTradeState FinalState)
         RunDipLongMultiTF(DipLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
-                          FundingRateSession? funding = null)
+                          FundingRateSession? funding = null, RatchetConfig ratchet = default)
     {
         int h1Warmup = Math.Max(
                            Math.Max(g.RegimeLongEmaPeriod, Math.Max(g.EmaPeriod, RsiPeriod + 2)),
@@ -126,6 +128,7 @@ public static class DipLongSimulator
         double trailHigh     = 0;
         double atrEntry      = 0;
         bool   trailArmed    = false;
+        bool   lockArmed     = false;
         int    entryIH1      = 0;
         int    entryRegimeBars = 0;
         DateTime entryTime   = default;
@@ -200,6 +203,7 @@ public static class DipLongSimulator
                     target         = entry + g.TakeProfitAtrMult * atrEntry;
                     trailHigh      = entry;
                     trailArmed     = false;
+                    lockArmed      = false;
                     entryIH1       = nextBar / 4;
                     entryRegimeBars = cachedRegimeBars;
                     entryTime      = m15[nextBar].Time;
@@ -212,6 +216,15 @@ public static class DipLongSimulator
                     trailArmed = true;
 
                 int holdH1 = ih1 - entryIH1;
+
+                // Minimum-profit ratchet: once armed, the stop can only move UP for a long, so the
+                // trade can no longer come back through breakeven. trailHigh is already the running
+                // favourable excursion, so nothing extra needs tracking.
+                if (ratchet.Enabled && !lockArmed
+                    && ExitRatchet.ShouldArm(true, entry, atrEntry, trailHigh, ratchet))
+                    lockArmed = true;
+                if (lockArmed && ExitRatchet.LockPrice(true, entry, atrEntry, ratchet) is double lkPx)
+                    hardStop = ExitRatchet.Tighten(true, hardStop, lkPx);
 
                 bool hitStop   = m15Price <= hardStop;
                 bool hitTarget = m15Price >= target;

@@ -1,10 +1,32 @@
 using Bybit.Net.Clients;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace TradingGA;
 
 static class LowVolTrainCommands
 {
+    // Persist a vol-variant genotype WITH the ATR band it was trained on.
+    //
+    // These four sites serialize the raw genotype record, which has no AtrLow/AtrHigh — those
+    // fields live only on the DTO. A file written without them deserializes to the DTO defaults
+    // [0, 9999], i.e. the BASE band. That is not a cosmetic tag: VariantRouter.Select picks the
+    // NARROWEST band containing the current ATR ratio and breaks ties by array order, and the
+    // glob puts variant files before the appended default — so a bandless "lowvol" file stops
+    // specialising the low-vol regime and instead SHADOWS the base genotype at every ATR level.
+    // This is exactly how the retired high-vol variants broke, and it is invisible in every
+    // report: the symptom is a base genotype that is simply never selected.
+    // NB: the band comes from Config, NOT from cfg — FitnessConfig.Load() returns the defaults
+    // [0, 9999] here, so stamping cfg would write the base band and reintroduce the shadowing.
+    static void SaveVariant(string path, object geno)
+    {
+        var node = JsonSerializer.SerializeToNode(geno)!.AsObject();
+        node["AtrLow"]  = Config.LowVolAtrLow;
+        node["AtrHigh"] = Config.LowVolAtrHigh;
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+    }
+
     public static async Task RunLowVolTrain(BybitRestClient client, string[]? args = null)
     {
         Console.WriteLine("=== Gravity-gen2 | LOWVOLTRAIN (Low-volatility optimized variants) ===");
@@ -102,9 +124,8 @@ static class LowVolTrainCommands
         Console.WriteLine($"\n  Best: {best}");
         Console.WriteLine($"  Fitness (GA scale, held-out): {best.Fitness:F4}");
 
-        Directory.CreateDirectory(Path.GetDirectoryName(genoPath)!);
-        File.WriteAllText(genoPath, JsonSerializer.Serialize(best, new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved to {genoPath}");
+        SaveVariant(genoPath, best);
+        Console.WriteLine($"  Saved to {genoPath}  (routing band [{Config.LowVolAtrLow}, {Config.LowVolAtrHigh}])");
     }
 
     public static async Task RunDipLongLowVolTrain(BybitRestClient client, string[]? args = null)
@@ -172,9 +193,8 @@ static class LowVolTrainCommands
         Console.WriteLine($"\n  Best: {best}");
         Console.WriteLine($"  Fitness: {best.Fitness:F4}");
 
-        Directory.CreateDirectory(Path.GetDirectoryName(genoPath)!);
-        File.WriteAllText(genoPath, JsonSerializer.Serialize(best, new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved to {genoPath}");
+        SaveVariant(genoPath, best);
+        Console.WriteLine($"  Saved to {genoPath}  (routing band [{Config.LowVolAtrLow}, {Config.LowVolAtrHigh}])");
     }
 
     public static async Task RunSwingLongLowVolTrain(BybitRestClient client, string[]? args = null)
@@ -242,9 +262,8 @@ static class LowVolTrainCommands
         Console.WriteLine($"\n  Best: {best}");
         Console.WriteLine($"  Fitness: {best.Fitness:F4}");
 
-        Directory.CreateDirectory(Path.GetDirectoryName(genoPath)!);
-        File.WriteAllText(genoPath, JsonSerializer.Serialize(best, new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved to {genoPath}");
+        SaveVariant(genoPath, best);
+        Console.WriteLine($"  Saved to {genoPath}  (routing band [{Config.LowVolAtrLow}, {Config.LowVolAtrHigh}])");
     }
 
     public static async Task RunRipShortLowVolTrain(BybitRestClient client, string[]? args = null)
@@ -312,8 +331,7 @@ static class LowVolTrainCommands
         Console.WriteLine($"\n  Best: {best}");
         Console.WriteLine($"  Fitness: {best.Fitness:F4}");
 
-        Directory.CreateDirectory(Path.GetDirectoryName(genoPath)!);
-        File.WriteAllText(genoPath, JsonSerializer.Serialize(best, new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved to {genoPath}");
+        SaveVariant(genoPath, best);
+        Console.WriteLine($"  Saved to {genoPath}  (routing band [{Config.LowVolAtrLow}, {Config.LowVolAtrHigh}])");
     }
 }

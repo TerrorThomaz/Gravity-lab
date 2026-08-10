@@ -1132,6 +1132,48 @@ static class FullTest
                     Console.WriteLine($"  BTC 4H ATR ratio at trough: {atrTrough:F3}×");
                     bool wouldBlock = dgSession.IsEntryBlocked(ddEvent.TroughTime, "diplong");
                     Console.WriteLine($"  Entry gate would block DipLong/SwingLong at trough: {wouldBlock}");
+
+                    // ── What were the protections actually DOING through this window? ──
+                    // Peak/trough snapshots alone cannot answer "did the guard fire, and did the
+                    // regime turn?" — the two questions you always ask of a drawdown. Report the
+                    // guard's trajectory and the regime mix across the whole window, plus how many
+                    // of the losing trades each protection would have stopped.
+                    Console.WriteLine($"\n  ── Protection state through the DD window ──");
+
+                    var ddTimes  = ddTrades.Select(t => t.Time).ToList();
+                    if (ddTimes.Count > 0 && btcSeries != null && btcSeries.Length > 0)
+                    {
+                        var ddRegimes = RegimeBarLookup.TagRegimes(btcSeries, ddTimes);
+                        var mix = ddRegimes.GroupBy(r => r).OrderByDescending(g => g.Count())
+                            .Select(g => $"{g.Key}:{g.Count()} ({(double)g.Count() / ddRegimes.Length:P0})");
+                        Console.WriteLine($"  BTC regime at entry, across DD trades: {string.Join("  ", mix)}");
+                        Console.WriteLine($"  BTC regime at peak / trough:           " +
+                            $"{RegimeBarLookup.TagRegimes(btcSeries, new[] { ddEvent.PeakTime })[0]} / " +
+                            $"{RegimeBarLookup.TagRegimes(btcSeries, new[] { ddEvent.TroughTime })[0]}");
+                    }
+
+                    // Guard multiplier trajectory. 1.0 = guard idle; the floor gene is the most it
+                    // can ever cut. A guard that sat at 1.0 through the whole event did nothing.
+                    var ddMults = ddTimes.Select(t => dgSession.GetMult(t)).ToList();
+                    if (ddMults.Count > 0)
+                    {
+                        Console.WriteLine($"  Guard mult over DD trades: min={ddMults.Min():F3}  " +
+                            $"mean={ddMults.Average():F3}  max={ddMults.Max():F3}  " +
+                            $"(1.000 = idle; SizeFloor gene = {dgGeno?.SizeFloor:F3})");
+                        int idle = ddMults.Count(m => m > 0.999);
+                        Console.WriteLine($"  Guard was IDLE for {idle}/{ddMults.Count} DD-window entries " +
+                            $"({(double)idle / ddMults.Count:P0})");
+                    }
+
+                    // How many of these trades each protection would actually have stopped.
+                    int gateBlocked = ddTrades.Count(t => dgSession.IsEntryBlocked(t.Time, t.Strategy));
+                    Console.WriteLine($"  Entry-ATR gate would have blocked {gateBlocked}/{ddTrades.Count} of them");
+
+                    // Sum% in the table above is a SUM OF PER-TRADE PERCENTAGES, not a portfolio
+                    // loss — 30 trades at -2% sum to -60% while costing ~-3% of equity at 5%
+                    // sizing. The portfolio number is DropPct on the line above.
+                    Console.WriteLine($"  NOTE: 'Sum%' above sums per-trade returns and is NOT a portfolio loss; " +
+                        $"the portfolio drop for this event is {ddEvent.DropPct:F2}%.");
                 }
                 if (fundingSession != null)
                 {

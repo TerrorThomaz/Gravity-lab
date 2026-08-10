@@ -1,17 +1,15 @@
 {
   "BullMinBars": 50,
-  "BullMinConf": 0.6299274066044116,
-  "BearMinBars": 154.45647687065863,
-  "BearMinConf": 0.6541974660653002,
-  "GridMaxConf": 0.2567056993942268,
-  "EthBlendWeight": 0.022482410636121056,
-  "Fitness": 1.1657261937083983,
+  "BullMinConf": 0.5743417660684562,
+  "BearMinBars": 109.94610040712806,
+  "BearMinConf": 0.38887718765186075,
+  "GridMaxConf": 0.38943240970886783,
+  "EthBlendWeight": 0.036856927706133885,
+  "Fitness": 3.130278677389592,
   "TransitionSizeMult": 0,
-  "EarlyBullFromBearMult": 1,
-  "EarlyBullFromRangingMult": 0.3066125304736788,
-  "EarlyBullBearCarry": 0.8479225573960224,
+  "EarlyBullFromBearMult": 0.2525589674299018,
+  "EarlyBullFromRangingMult": 0.6298550122399722,
+  "EarlyBullBearCarry": 0.594631921795545,
   "RipShortBearMinBars": 50,
-  "RipShortBearMinConf": 0.8,
-  "EarlyBearFromBullMult": 1,
-  "EarlyBearFromRangingMult": 0.3611760277209499
+  "RipShortBearMinConf": 0.8
 }

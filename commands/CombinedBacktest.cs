@@ -89,6 +89,20 @@ static class CombinedBacktest
         }).ToArray();
     }
 
+    // Portfolio trade labels → router StrategyKind. Null means the router does not gate this
+    // label (accumgrid is routed by its own Bull/Bear sub-genotypes, not by a StrategyKind).
+    static RegimeRouterGA.StrategyKind? StrategyKindOf(string strategy) => strategy switch
+    {
+        "swing" or "fade_short" => RegimeRouterGA.StrategyKind.FadeShort,
+        "grid"                  => RegimeRouterGA.StrategyKind.Grid,
+        "gridshort"             => RegimeRouterGA.StrategyKind.GridShort,
+        "diplong"               => RegimeRouterGA.StrategyKind.DipLong,
+        "swing_long"            => RegimeRouterGA.StrategyKind.SwingLong,
+        "fadelong"              => RegimeRouterGA.StrategyKind.FadeLong,
+        "ripshort"              => RegimeRouterGA.StrategyKind.RipShort,
+        _                       => null,
+    };
+
     static TG? SelectVariant<TG>(VariantSpec<TG>[] variants, Candle[] m15)
         where TG : class
     {
@@ -1139,6 +1153,92 @@ static class CombinedBacktest
         GuardedPortfolio.PrintComparison(
             "Combined portfolio (val window, router-gated)",
             allTradesGuardInput, guardCtx, Config.MaxTotalExposurePct);
+
+        // ── Graded router sizing vs the boolean gate ──────────────────────────────────
+        // Headline stays boolean. This measures whether scaling size by regime confidence beats
+        // the on/off gate before anything depends on it — the same discipline applied to the
+        // guard and the rotator.
+        if (session != null && allTradesGuardInput.Count >= 2)
+        {
+            var graded = new List<(DateTime, double, double, TimeSpan, string)>(allTradesGuardInput.Count);
+            var mults  = new List<double>(allTradesGuardInput.Count);
+            foreach (var t in allTradesGuardInput)
+            {
+                var kind = StrategyKindOf(t.Strategy);
+                // A label the router does not gate (e.g. accumgrid) keeps full size rather than
+                // being silently zeroed by a kind it was never routed by.
+                double m = kind is null ? 1.0 : session.SizeMult(kind.Value, t.Time);
+                mults.Add(m);
+                graded.Add((t.Time, t.Return, t.Conf * m, t.Hold, t.Strategy));
+            }
+
+            var gp5  = Simulator.SimulatePortfolioExposureCapped(
+                GuardedPortfolio.Passthrough(allTradesGuardInput), Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            var gp5g = Simulator.SimulatePortfolioExposureCapped(graded, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+
+            Console.WriteLine($"\n── Graded router sizing (val window): size scaled by regime confidence ──");
+            Console.WriteLine($"  Curve: conf {Config.GradedConfStart:F2} → floor {Config.GradedSizeFloor:P0} funding, " +
+                              $"conf {Config.GradedConfFull:F2} → 100%");
+            Console.WriteLine($"  Size mult over {mults.Count} trades: min={mults.Min():F3}  mean={mults.Average():F3}  max={mults.Max():F3}");
+            Console.WriteLine($"  {"Sizing",-18}  {"Boolean",10}  {"Graded",10}  {"Δ",9}  {"DD bool",8}  {"DD graded",9}");
+            Console.WriteLine($"  {"5% per position",-18}  {gp5.EndBalance - 100,+9:F1}%  {gp5g.EndBalance - 100,+9:F1}%  " +
+                              $"{gp5g.EndBalance - gp5.EndBalance,+8:F1}pp  {gp5.MaxDrawdownPct,7:F1}%  {gp5g.MaxDrawdownPct,8:F1}%");
+        }
+
+        // ── Rotator validation ────────────────────────────────────────────────────────
+        // The rotator had never appeared in ANY backtest: its only consumer was papertrade,
+        // where ComputeSafetyScore feeds a console line and a JSON field and sizes nothing.
+        // Its weights were therefore trained and saved without ever being scored against P&L.
+        // Same treatment as the guard — side by side, headline untouched.
+        //
+        // ponytail: capital rotated OUT of alts is modelled as FLAT, not as BTC/ETH exposure.
+        // That makes this a "de-risk to cash" LOWER BOUND rather than a true rotation test —
+        // crediting the BTC/ETH leg needs benchmark series threaded through here. It still
+        // answers the load-bearing question: does throttling alt exposure on stress help?
+        if (guardCtx != null && File.Exists(Config.RotatorGenoFile) && allTradesGuardInput.Count >= 2)
+        {
+            var rotGeno = JsonSerializer.Deserialize<VolatilityWeightedRotatorGenotypeDto>(
+                File.ReadAllText(Config.RotatorGenoFile))!.ToGenotype();
+            var rot = new VolatilityWeightedRotator(rotGeno);
+            var gs  = guardCtx.Session;
+
+            var rTimes   = allTradesGuardInput.Select(t => t.Time).ToList();
+            var rRegimes = btcRegimeSeries is { Length: > 0 }
+                ? RegimeBarLookup.TagRegimes(btcRegimeSeries, rTimes)
+                : Enumerable.Repeat(MarketRegime.Ranging, rTimes.Count).ToArray();
+
+            var scores  = new double[rTimes.Count];
+            var rotated = new List<(DateTime, double, double, TimeSpan, string)>(rTimes.Count);
+            for (int i = 0; i < allTradesGuardInput.Count; i++)
+            {
+                var t = allTradesGuardInput[i];
+                // Unknown label ⇒ treat as long, matching PortfolioReplay's convention of taking
+                // the conservative reading rather than silently exempting it from the haircut.
+                bool isLong = PortfolioReplay.IsLong(t.Strategy) ?? true;
+                double s = rot.ComputeSafetyScore(gs.GetMult(t.Time), gs.GetAtrRatio(t.Time), rRegimes[i], isLong);
+                scores[i] = s;
+                var (altShare, _, _) = rot.ComputeAllocation(s);
+                rotated.Add((t.Time, t.Return, t.Conf * altShare, t.Hold, t.Strategy));
+            }
+
+            var flatIn = GuardedPortfolio.Passthrough(allTradesGuardInput);
+            var rp5    = Simulator.SimulatePortfolioExposureCapped(flatIn,  Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+            var rp5r   = Simulator.SimulatePortfolioExposureCapped(rotated, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+
+            Console.WriteLine($"\n── Rotator (val window): alt exposure scaled by (1 − safety score) ──");
+            Console.WriteLine($"  Genotype: guardW={rotGeno.GuardWeight:E2}  atrW={rotGeno.AtrWeight:E2}  " +
+                              $"regimeW={rotGeno.RegimeWeight:F3}  btcShare={rotGeno.BtcShare:F2}  speed={rotGeno.RotationSpeed:F2}");
+            double wTot = rotGeno.GuardWeight + rotGeno.AtrWeight + rotGeno.RegimeWeight;
+            if (wTot > 1e-9)
+                Console.WriteLine($"  Signal mix: guard={rotGeno.GuardWeight / wTot:P4}  atr={rotGeno.AtrWeight / wTot:P4}  regime={rotGeno.RegimeWeight / wTot:P4}");
+            Console.WriteLine($"  Safety score: min={scores.Min():F3}  mean={scores.Average():F3}  max={scores.Max():F3}   " +
+                              $"→ mean alt share retained {1.0 - scores.Average():P1}");
+            Console.WriteLine($"  {"Sizing",-18}  {"Rot off",10}  {"Rot on",10}  {"Δ",9}  {"DD off",7}  {"DD on",7}");
+            Console.WriteLine($"  {"5% per position",-18}  {rp5.EndBalance - 100,+9:F1}%  {rp5r.EndBalance - 100,+9:F1}%  " +
+                              $"{rp5r.EndBalance - rp5.EndBalance,+8:F1}pp  {rp5.MaxDrawdownPct,6:F1}%  {rp5r.MaxDrawdownPct,6:F1}%");
+            Console.WriteLine($"  NOTE: rotated-out capital is modelled as FLAT (de-risk-to-cash lower bound),");
+            Console.WriteLine($"        not as BTC/ETH exposure — a true rotation test needs benchmark returns.");
+        }
 
         if (allTrades.Count >= 2)
         {

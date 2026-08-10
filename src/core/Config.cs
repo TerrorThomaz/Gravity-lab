@@ -49,6 +49,32 @@ static class Config
     // (simulator-only in training, simulator + portfolio in reporting).
     public const double SlippageBps = 10.0;
 
+    // ATR-ratio band claimed by the low-vol variant files. VariantRouter.Select picks the
+    // NARROWEST band containing the current ratio, so this is what stops a lowvol genotype
+    // from tying the base band [0, 9999] and shadowing the base genotype outright.
+    //
+    // WARNING — this band is an ASSERTION ABOUT ROUTING, not a property of the training.
+    // lowvoltrain applies no ATR filter of any kind: its only screen is median volume, and
+    // FadeShortGA.RunLowVol contains no ATR reference. The low-vol genotypes are fit on the
+    // SAME data as the base genotypes and differ only in their parameter box (BoundsLowVol).
+    // Serving them exclusively below 0.8 is therefore a train/serve mismatch. See CLAUDE.md.
+    public const double LowVolAtrLow  = 0.0;
+    public const double LowVolAtrHigh = 0.8;
+
+    // Graded router sizing. IsActive answers "may this strategy trade at all"; the graded curve
+    // answers "how much", so a barely-confirmed regime funds smaller than a deeply-confirmed one.
+    // A boolean gate is a cliff, and cliffs are the defect shape this codebase keeps finding
+    // (the n=100 tail gate, rrMult at rr=1, the PF<1.3 Sharpe gate) — the GA is rewarded for
+    // sitting just past the edge rather than for being right.
+    //
+    // Deliberately NOT new genes: the curve rides on the confidence the classifier already emits
+    // and the thresholds the router already has, so nothing is added to a parameter count whose
+    // effective sample is dozens of independent regime episodes, not thousands of trades.
+    // Promote to genes only if the fixed curve demonstrably beats the boolean baseline.
+    public const double GradedConfStart = 0.20;   // at/below this → floor funding
+    public const double GradedConfFull  = 0.80;   // at/above this → full funding
+    public const double GradedSizeFloor = 0.30;   // never fund an active strategy below this
+
     public static readonly string[] BacktestCoins =
     [
         // large caps

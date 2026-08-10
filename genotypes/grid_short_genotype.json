@@ -3,12 +3,12 @@
   "BbPeriod": 10,
   "BbWidthMaxPct": 2.5,
   "EmaPeriod": 10,
-  "GridStepAtrMult": 0.626148639576961,
+  "GridStepAtrMult": 0.6316515499094837,
   "GridLevels": 3,
-  "TakeProfitAtrMult": 2.156657263123659,
-  "HardStopAtrMult": 2.958616507755246,
+  "TakeProfitAtrMult": 2.7192345721000186,
+  "HardStopAtrMult": 2.938960998011269,
   "MaxHoldCandles": 24,
-  "Fitness": 76.60082090293443,
+  "Fitness": 70.7340671147107,
   "AtrLow": 0,
   "AtrHigh": 9999
 }

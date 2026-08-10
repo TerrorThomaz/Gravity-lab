@@ -1,7 +1,7 @@
 {
-  "GuardWeight": 7.792499575530893E-05,
-  "AtrWeight": 4.6445930655201585E-05,
-  "RegimeWeight": 0.8404445281647008,
-  "BtcShare": 0.7999542699059584,
+  "GuardWeight": 0,
+  "AtrWeight": 0,
+  "RegimeWeight": 0.5529546308913228,
+  "BtcShare": 0.7999999850033164,
   "RotationSpeed": 1
 }

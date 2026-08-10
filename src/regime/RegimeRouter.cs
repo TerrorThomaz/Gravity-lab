@@ -379,6 +379,26 @@ public class RegimeRouterSession
             _idx.TryAdd(HourKey(btcSeries[i].Time), i);
     }
 
+    // Graded position size for this strategy at this timestamp, in [0, 1].
+    //
+    // Returns 0 when the strategy is gated off — the boolean gate still decides IF, this only
+    // decides HOW MUCH once active. Confidence at GradedConfStart funds at GradedSizeFloor and
+    // ramps linearly to full size at GradedConfFull, so "just barely in regime" and "deeply in
+    // regime" stop being the same bet.
+    //
+    // This is NOT the old SizeMult that was deleted in abad698. That one was computed on every
+    // route, consumed by nothing but a JSON status field, and never validated. This is applied
+    // at the point exposure is actually decided and is reported side by side against the boolean
+    // baseline before anything adopts it.
+    public double SizeMult(RegimeRouterGA.StrategyKind kind, DateTime tradeTime, double atrRatio = 1.0)
+    {
+        if (!IsActive(kind, tradeTime, atrRatio)) return 0.0;
+        int bar = Lookup(tradeTime);
+        double conf = Blend(_btc[bar], bar);
+        double t = (conf - Config.GradedConfStart) / (Config.GradedConfFull - Config.GradedConfStart);
+        return Config.GradedSizeFloor + (1.0 - Config.GradedSizeFloor) * Math.Clamp(t, 0.0, 1.0);
+    }
+
     // Is this strategy active at the given trade timestamp?
     // Delegates to RegimeRouter.ComputeActivation — the same shared gate logic used by the live
     // Route()/ActivateWithGeno path — so live and backtest activation can never drift again.

@@ -19,7 +19,6 @@ dotnet run -- ripshorttrain      # RipShort GA: bear-regime relief-rally continu
 dotnet run -- diplongtrain       # DipLong GA: bull-regime RSI dip + bullish BoS, regime-gated
 dotnet run -- swinglongtrain     # SwingLong GA: bull-regime RSI bullish divergence + bullish BoS
 dotnet run -- accumgridtrain     # AccumulationGrid GA (separate Bull and Bear genotypes)
-dotnet run -- highvoltrain       # High-vol variant genotypes (ATR ratio > 1.5)
 dotnet run -- lowvoltrain        # Low-vol variant genotypes (ATR ratio < 0.8)
 dotnet run -- routertrain        # RegimeRouter GA: train routing thresholds + duration gates
 dotnet run -- coevolvetrain      # Red-Queen coevolution of Router <-> DynamicGuard (8 rounds; strategies FROZEN)
@@ -111,11 +110,24 @@ Most strategies use a dual-timeframe setup: **1h candles** for regime/setup dete
 | **FadeLong** | Bear (`FadeLongActive`) | Long | 1h + 15m | RSI bearish divergence at bottom + bullish BoS on 15m |
 | **RipShort** | Bear (`RipShortActive`) | Short | 1h + 15m | RSI relief rally (≥40–60) in established downtrend + bearish BoS on 15m |
 
-Several strategies additionally have low-vol (ATR ratio < 0.8) and high-vol (> 1.5) variant genotypes, selected by `VariantRouter.Select` in `oosbacktest`. Note that `StrategyActivation` also carries `*LowVolActive` / `*HighVolActive` flags and `RegimeRouterGA.StrategyKind` has matching entries — **nothing calls `IsActive` with those kinds**, so today the vol variants are chosen by `VariantRouter`, not by the router.
+Several strategies additionally have low-vol (ATR ratio < 0.8) variant genotypes, selected by `VariantRouter.Select`, which picks the **narrowest ATR band** containing the current ratio — fitness plays no part in that choice. Note that `StrategyActivation` also carries `*LowVolActive` / `*HighVolActive` flags and `RegimeRouterGA.StrategyKind` has matching entries — **nothing calls `IsActive` with those kinds**, so the vol variants are chosen by `VariantRouter`, not by the router.
+
+**High-vol variants are RETIRED** (2026-08; files and trainer in `legacy/`). A genotype tuned to trade *harder* when ATR spikes works directly against `DynamicGuard`, whose entire purpose is to cut exposure under exactly that condition, and high vol is where being wrong costs most. High-vol bars are now served by the base genotype with the guard in charge. `fade_short_hival_genotype.json` went with them: despite its "high-value screen" name its band was `[1.5, 9999]`, so it only ever activated in the high-vol regime.
+
+**If high-vol is ever reintroduced**, the variant must be *more selective* than the base, never more aggressive — the failure mode was a genotype with free rein in exactly the regime the guard exists to throttle. Two admission criteria, both with machinery already half in place:
+
+- **High confidence in the move.** `RegimeClassifier` already emits a 0–1 confidence alongside the regime, but `VariantRouter.Select(atr, barIndex, variants)` takes *only* the ATR array — confidence never reaches variant selection. Gating would mean widening that signature, not inventing a signal.
+- **Funding not crowded against the trade.** `FundingRateSession.IsCrowdedLong` / `IsCrowdedShort` already exist as boolean gates (`CrowdedLongThreshold = +0.08%/8h`, `CrowdedShortThreshold = −0.05%/8h`). Crowded funding in a high-vol regime is the squeeze setup — that is the tail risk that makes high-vol trading expensive, so it should veto entry rather than merely be priced.
+
+Precondition before any of that: **fix the `AtrLow`/`AtrHigh` serialization first.** Reintroducing the files without it silently recreates the shadowing described below, and the symptom (a base genotype that is simply never selected) is invisible in every report.
+
+Two bugs made this urgent rather than cosmetic. `HighVolTrainCommands` never serialized `AtrLow`/`AtrHigh`, so every `*_highvol_genotype.json` was written with the DTO defaults `[0, 9999]` — the *base* band. Since `VariantRouter` breaks width ties by array order and the glob puts `highvol` before the appended default, **the high-vol genotype silently shadowed the retrained base genotype at every ATR level**, and a genotype fit only on ATR>1.5 segments was being served across the whole range. `FullTest.cs`'s `label == "highvol"` branch is now simply unreachable. The `BoundsHighVol` / `RandomHighVol` / `MutateHighVol` operators remain in the genotype classes — dead but harmless, and covered by tests; removing them is a separate, larger change.
 
 Exit uses four layers: hard ATR stop · fixed ATR profit target · trailing ATR stop (armed after `TrailingActivationAtrMult` × ATR move) · `MaxHoldCandles` forced close. RipShort's stop/target are wick-triggered (intrabar high/low, not close) since bear-rally squeezes are its dominant tail risk.
 
-**Funding — known gap.** FadeShort, SwingLong, DipLong, FadeLong, RipShort and GridShort all price perp funding through `FundingRateSession.PnlPct` (real rate when the funding cache covers the trade, else the interest-rate floor charged on the same discrete 8h ticks). **Grid and AccumulationGrid do not.** Neither `src/strategies/grid/GridSimulator.cs` nor `src/strategies/accumulation_grid/AccumulationGridSimulator.cs` contains a funding term, and neither takes a `FundingRateSession` parameter, so both book **zero** funding on every position — a systematic cost advantage over the other strategies on holds up to Grid's `MaxHoldCandles` cap (bounds 24–200 h1 bars; the trained `grid_best_genotype.json` uses 77). Any Grid-vs-other-strategy comparison is biased in Grid's favour by that amount.
+**Funding.** All eight strategies now price perp funding through `FundingRateSession.PnlPct` (real rate when the funding cache covers the trade, else the interest-rate floor charged on the same discrete 8h ticks). The grid family was the last holdout — `GridSimulator` and `AccumulationGridSimulator` booked **zero** funding on every position, a systematic cost advantage that biased every Grid-vs-other comparison in Grid's favour. Both now take a `FundingRateSession?` and charge with `isLong: true` (grid entries are buy-limits below the anchor, so a positive rate is a cost). Passing `funding: null` does **not** mean "no funding" — the fallback branch still charges the interest-rate floor.
+
+Real per-symbol funding also reaches the backtests now: the previous call sites fetched BTCUSDT only and applied that one rate series to ~190 symbols. Unknown symbols resolve to null (floor fallback) rather than borrowing another symbol's rates. Off-grid symbols (4h settlement, capped hourly windows) are surfaced by name with a `CostUndercountFactor`.
 
 Grid has an EMA slope gate: skips entries when 20-bar EMA slope < −0.5% (prevents buying dips in confirmed downtrends).
 
@@ -138,7 +150,13 @@ Both paths delegate their gating to `RegimeRouter.ComputeActivation`, the single
 
 ### Red-Queen coevolution (Router ↔ Guard only)
 
-`src/coevolve/CoevolveGA.cs` — **8 rounds** (`RedQueenRounds = 8`), and **only the Router and the DynamicGuard evolve**. FadeLong, DipLong, SwingLong and RipShort are *frozen at their seed genotypes*: their trade lists are built once before the loop and reused every round, and the seeds are returned in `CoevolveResult` unmodified. Each round the router trains on the raw strategy trade lists while the guard trains on the previous round's router-gated lists, so the two co-adapt against a fixed signal pool.
+`src/coevolve/CoevolveGA.cs` — **8 rounds** (`RedQueenRounds = 8`). Router and DynamicGuard evolve in parallel each round, **and then the four regime-gated strategies re-adapt to the router that just evolved** before the trade lists are rebuilt for the next round.
+
+The strategies used to be frozen at their seeds, which reproduced the exact train-then-gate misalignment this class exists to remove. The cost was measurable: strategy GAs score *every* trade, then the router discards **54–57%** of them (DipLong 1221→531, SwingLong 2087→963). DipLong's ungated held-out PF is **0.64** against a router-gated val PF of **2.44** — the edge lives in the gating, and the strategy was never allowed to see it.
+
+The hook this needed already existed and was simply never wired: every strategy GA takes a `Func<DateTime, double>? tradeGate` and **no caller passed one**. It weights by `t.Time`, which every simulator records as the *exit* bar — the same field `CombinedBacktest` gates on, so train and serve agree by construction (both share the entry-vs-exit approximation).
+
+The gate is **soft** (`GateFloor = 0.10`), not 0/1. A hard gate would drop out-of-window trades entirely, and a fold falling under `MinTradesPerFold` now enters the aggregate at `ThinFoldScore = -5.0` — so an over-eager router in an early round could starve a strategy into a score it can never climb out of. Strategies retrain at `RouterGens / 2` generations per round, so `coevolvetrain` is now substantially slower than the router-and-guard-only version.
 
 `src/core/BayesianOptimizer.cs` — TPE post-GA refinement (60 iterations). Applied after the FadeShort (both normal and LowVol paths), FadeLong, DipLong, SwingLong, RipShort, Grid, GridShort and RegimeRouter GA runs, and inside `DynamicGuardGA`.
 
@@ -155,17 +173,23 @@ score = base * (1 + SharpeW·f(sharpe)) * (1 + CalmarW·f(calmar))
              * volWeight * CVaRPenalty * TailRatioBonus
 ```
 
-where sharpe/sortino are the *per-trade*, non-time-normalised variants (`PerTradeSharpe`/`PerTradeSortino` — deliberately not `Simulator.SharpeRatio`, which would smuggle in a second frequency term), the six `FitnessConfig` term weights are floored at 0 and are bit-for-bit no-ops at 1.0, and both tail terms return the neutral 1.0 below `MinTailSampleSize = 100` returns. `retentionMult` penalises giving back gains at fold end (pushes toward tight trailing, not peak capture).
+where sharpe/sortino are the *per-trade*, non-time-normalised variants (`PerTradeSharpe`/`PerTradeSortino` — deliberately not `Simulator.SharpeRatio`, which would smuggle in a second frequency term), the six `FitnessConfig` term weights are floored at 0 and are bit-for-bit no-ops at 1.0, and both tail terms **ramp** over `[TailRampLo = 40, TailRampHi = MinTailSampleSize = 100]` returns via `w(n) = clamp((n − 40)/60, 0, 1)` — neutral at 40 (the 5% bucket holds 2 observations), fully on at 100 (5 observations). They were previously a hard gate at 100, which was a cliff the GA was paid to sit under: deleting one *winning* trade at n=100 raised the fold score 35.8%; it now costs 4.2%. `TailRatioBonus` is also capped (`MaxRrMult`-style) rather than unbounded.
+
+`qualityMult`'s payoff-ratio term is the bounded hyperbola `1.6·rr/(rr + 1.5)`, anchored so `rrMult(2.5) == 1.0` exactly. The old linear ramp floored at 0, which made `qualityMult` zero for any fold with `rr < 1.0` — and since `base` is a pure product, the whole fold score collapsed to exactly 0.0 with no gradient back toward `rr = 1`. `retentionMult` penalises giving back gains at fold end (pushes toward tight trailing, not peak capture).
 
 **Aggregation across folds** — `FoldScoreHelper.AggregateFoldScores`:
 
 ```
-combined = λ·CVaR_α({fold scores}) + (1 − λ)·mean({fold scores})
-fitness  = combined ≥ 0 ? combined · coverage : combined / coverage
-coverage = survivingFolds / attemptedFolds        (capped at 1.0)
+scores[]  = the k scored folds, then one ThinFoldScore entry per attempted-but-thin fold
+            (CONSTANT LENGTH = attemptedFolds)
+fitness   = λ·CVaR_α(scores) + (1 − λ)·mean(scores)
 ```
 
-`CVaR_α` is the mean of the worst `ceil(α·k)` folds (`α = CVaRFoldAlpha = 0.4`); `λ` runs from `LambdaThick = 0.4` to `LambdaThin = 0.8` as the sample thins and depends only on per-fold *trade counts*, never on the scores. Zero surviving folds returns `DeadFoldFitness = -1000.0`. Folds that never reach `MinTradesPerFold` are excluded from the aggregate but still count toward `attemptedFolds`, so gating everything into one favourable window costs coverage. This replaced the old `mean − stdMult·std`, which was non-monotone (improving a good fold could *lower* fitness).
+`CVaR_α` is the mean of the worst `ceil(α·k)` folds (`α = CVaRFoldAlpha = 0.4`); `λ` runs from `LambdaThick = 0.4` to `LambdaThin = 0.8` as the sample thins and depends only on per-fold *trade counts*, never on the scores. Zero surviving folds returns `DeadFoldFitness = -1000.0`.
+
+**There is no coverage factor, and folds are never dropped.** A fold that never reached `MinTradesPerFold` enters the vector at `ThinFoldScore = -5.0` instead of vanishing, so "withdraw from your worst window" is not a move in the search space at all. The earlier `combined · coverage` haircut did *not* close that exploit: coverage is a **bounded linear** penalty while the gain from deleting a bad fold is **unbounded**, so at k=5 with four folds at g, dropping the fifth won whenever it scored below `0.375·g` — at g=30 a genotype was better off discarding a fold that scored **+11**, a profitable one. The `-5.0` floor sits below `Canonical`'s minimum of `-2.0`, which is why "produce no trades here" no longer beats "trade and lose here" (the old `-1.0` sentinel sat *above* the losing band — that was the original inversion).
+
+Both terms are monotone non-decreasing in every fold score, so the sum is monotone **by construction** for any k. This replaced `mean − stdMult·std`, which was non-monotone: folds (10,10,30) scored 1.817 and (10,10,40) scored −2.274. Measured `d(fitness)/d(fold score)` is now **+0.196** at k=2 with 1 floored fold, where the old form measured **−0.38**.
 
 **This is not cross-validation.** `k` defaults to 5 and folds are cut per coin on that coin's own array (`PerCoinFoldRange`), but **there is no held-out test fold** — every fold from 0..k−1 is scored and every one of them feeds the fitness the GA selects on. It is a dispersion/robustness penalty across time slices, and it produces **no out-of-sample estimate**. Likewise `FitnessConfig.EmbargoPct` (default 0.05) trims the leading 5% off each fold after the first, which separates two folds that are *both in-sample* — it prevents no leakage into any held-out set, because there isn't one. Genuine OOS evidence comes only from `oosbacktest` / `fulltest` on never-trained coins.
 
@@ -173,9 +197,10 @@ coverage = survivingFolds / attemptedFolds        (capped at 1.0)
 
 `src/guard/DynamicGuardSession.cs` — per-strategy drawdown guard, trained by `DynamicGuardGA` on the portfolio trade distribution. Supersedes the older DrawdownGuard and ExitModifier (archived in `legacy/`).
 
-**Where it is actually applied — narrower than it looks:**
-- `combinedbacktest`, `oosbacktest`, `allcoinsbacktest`, `backtest`, `gridbacktest`: **not applied at all.** `DynamicGuardSession` does not appear anywhere in `CombinedBacktest.cs`, `OosBacktest.cs` or `BacktestCommands.cs`, so the headline backtest numbers are *unguarded*.
-- `fulltest`: applied, but through a local `ToSimGuarded` helper in `FullTest.cs`, and only as a **guarded-variant comparison** alongside the unguarded run. It also only touches the strategies in `DynamicGuardSession.IsGuarded` — `grid`, `gridshort`, `diplong`, `swing_long`.
+**Where it is actually applied:**
+- `combinedbacktest`, `oosbacktest`: applied via the shared `src/core/GuardedPortfolio.cs` (`TryLoad` → `Apply` → `PrintComparison`). Guarded and unguarded are reported **side by side**; the headline row stays unguarded. That is deliberate — the guard had never been applied here, so swapping the headline would be indistinguishable from a regression. `GuardedPortfolio` also carries the six simulator-level knobs (`DdEntryGatePct`, conf loss caps, profit protection) that `FullTest`'s old local lambda hand-threaded as loose locals and never passed through.
+- `allcoinsbacktest`, `backtest`, `gridbacktest`: **not applied** — those numbers are unguarded.
+- `fulltest`: applied, but still through its own local `ToSimGuarded` helper rather than the shared `GuardedPortfolio` (known handoff). Only touches the strategies in `DynamicGuardSession.IsGuarded` — `grid`, `gridshort`, `diplong`, `swing_long`.
 - `papertrade`: **reporting only.** `guardSession.GetMult(...)` feeds a `Guard: STRESS ×N` console line, the rotator's safety score (which itself only prints and lands in JSON), and a `guard.mult` JSON status field. No signal is sized, filtered or suppressed by it.
 - `dynamicguardtrain`: applied, since that is the training objective.
 
@@ -206,17 +231,18 @@ coverage = survivingFolds / attemptedFolds        (capped at 1.0)
 | `genotypes/accumulation_grid_genotype.json` | AccumulationGrid (Bull + Bear sub-objects) |
 | `genotypes/vol_rotator_genotype.json` | VolatilityWeightedRotator |
 | `genotypes/{fade_short,dip_long,swing_long,rip_short}_lowvol_genotype.json` | low-vol variants |
-| `genotypes/{fade_short,dip_long,swing_long,rip_short}_highvol_genotype.json` | high-vol variants |
-| `genotypes/fade_short_hival_genotype.json` | FadeShort – high-value screen |
 | `genotypes/{drawdown_guard,exit_modifier}_genotype.json` | archived (`legacy/`), not loaded by any live path |
+| `legacy/genotypes/*_highvol_genotype.json`, `fade_short_hival_genotype.json` | **retired** — see the high-vol note above |
 
 **Caution — a GA retrain overwrites the genotype in place and GA runs are non-deterministic.** A rerun can land in a worse basin and silently regress an already-validated genotype (observed: RipShort held-out PF dropped from profitable to 0.95, overfit flag tripped, after a routine retrain). Every file above is now tracked in git, so `git checkout genotypes/<file>` *can* recover the last committed version — but only what was committed. Commit or `cp` aside any genotype you care about before retraining.
 
 **Caution — the four regime-gated genotypes committed in `15f8b2b` were selected under a broken fitness.** `dip_long_genotype.json`, `swing_long_genotype.json`, `fade_long_genotype.json` and `rip_short_genotype.json` were retrained in the same commit that introduced the absolute-index fold bug (fold boundaries computed in BTC's full-history index space, then applied to per-coin arrays). Coins shorter than a fold's start index were dropped from that fold entirely, leaving folds empty; empty folds returned the constant `-1.0` sentinel, which inverted the `mean − stdMult·std` aggregation. Measured `d(fitness)/d(fold score)` was **−0.38 with 2 dead folds and −0.60 with 4** — the GA was selecting *against* performance. FadeLong and RipShort were worst affected (bear-window-filtered train arrays of a few thousand bars against a ~28k-bar BTC index ⇒ effectively one live fold, permanently inverted).
 
-The fold logic is now fixed (per-coin fold boundaries via `FoldScoreHelper.PerCoinFoldRange`, thin folds excluded from the aggregate while still counting toward coverage) and the `mean − stdMult·std` aggregator described above no longer exists — it was replaced by the monotone CVaR/mean blend documented in "GA fitness". But **these genotypes predate the fix and have not been reselected under the corrected objective.** Retrain all four before any live use, and compare against `git show 15f8b2b^:genotypes/<file>` on OOS before accepting the new ones. The backtest figures quoted in the `15f8b2b` commit message (CAGR 25.26%, DipLong PF=3.28, RipShort PF=5.34) were produced from these genotypes and additionally assumed zero slippage — see below.
+The fold logic is now fixed (per-coin fold boundaries via `FoldScoreHelper.PerCoinFoldRange`; thin folds enter the constant-length vector at `ThinFoldScore = -5.0` rather than being dropped) and the `mean − stdMult·std` aggregator described above no longer exists — it was replaced by the monotone CVaR/mean blend documented in "GA fitness". But **these genotypes predate the fix and have not been reselected under the corrected objective.** Retrain all four before any live use, and compare against `git show 15f8b2b^:genotypes/<file>` on OOS before accepting the new ones. The backtest figures quoted in the `15f8b2b` commit message (CAGR 25.26%, DipLong PF=3.28, RipShort PF=5.34) were produced from these genotypes and additionally assumed zero slippage — see below.
 
-**Slippage is now applied at 10 bps.** `Config.SlippageBps = 10.0` (0.10% per trade) is passed to every production `Simulator.SimulatePortfolioExposure*` call, including inside `DynamicGuardGA` and `DynamicGuardTrainCommands` so the guard calibrates on the same net-of-slippage distribution the backtests report. Any result recorded before 2026-08 assumed **zero** slippage and is not comparable to current output. Note the `slippageBps` parameter **defaults to 0.0** — a new call site that forgets to pass `Config.SlippageBps` silently reverts to a zero-slippage simulation, so pass it explicitly.
+**Slippage is charged at TRADE level, not at the portfolio layer.** `Config.SlippageBps = 10.0` is the sole magnitude authority; every slippage figure is that constant times a dimensionless shape. This matters because it is what GA selection sees: previously `grep -rln slippageBps src/strategies/` returned **nothing**, so the GA optimised against ~0.185pp of round-trip cost while every report printed ~0.285pp — a 54% gap between the objective and the published number, and every genotype in `genotypes/` was chosen under the cheaper one. At the 3% reference ATR the round-trip charge is bit-for-bit what the portfolio layer used to apply: the charge **moved**, it was not invented. Stop-gap degradation stays separate (a different event, zero on every non-stop exit).
+
+There is no longer a `slippageBps` parameter to forget: it was deleted outright from the four portfolio entry points and all 46 call sites, so a site that tries to pass one now **fails to compile** rather than handing a number to something that discards it. `Simulator.FeeRoundTrip = 0.21` went with it (dead, and sat next to the live `TradeCosts.FeeRoundTripPct = 0.11` — two fee constants differing by exactly 2x is the shape of a double-count). Any result recorded before 2026-08 assumed **zero** slippage and is not comparable.
 
 ### Held-out validation: time-embargo + regime-stratification
 

@@ -32,7 +32,17 @@ public class VolatilityWeightedRotator
 
     // Compute safety score from current market signals.
     // Returns 0 (all alts) to 1 (all BTC/ETH).
-    public double ComputeSafetyScore(double guardMult, double atrRatio, MarketRegime regime)
+    // isLong: which side of the book this exposure is on. "Safety" means risk to THIS book,
+    // so the regime term has to invert — a Bear regime is danger for a long position and
+    // opportunity for a short one.
+    //
+    // Measured cost of getting this wrong: the direction-blind version scored -35.7pp of
+    // return in combinedbacktest AND pushed drawdown UP from 2.5% to 4.0%. It cut only ~13.8%
+    // of exposure on average, but the val window is 42.6% Bear, so it spent that budget
+    // throttling FadeShort and RipShort — the two strategies that exist to earn in Bear —
+    // and left the long book unhedged. A hedge that costs return and raises DD is strictly
+    // worse than no hedge, which is what made this a bug rather than a tuning choice.
+    public double ComputeSafetyScore(double guardMult, double atrRatio, MarketRegime regime, bool isLong = true)
     {
         // Guard signal: lower mult = more stress = higher safety
         double guardSignal = 1.0 - guardMult;
@@ -42,11 +52,12 @@ public class VolatilityWeightedRotator
         double atrSignal = Math.Clamp((atrRatio - 0.5) / 2.5, 0.0, 1.0);
 
         // Regime signal: Bear/HighVol = higher safety
+        // HighVol stays 1.0 for both sides: a volatility blow-up is direction-neutral danger.
         double regimeSignal = regime switch
         {
-            MarketRegime.Bull => 0.0,
+            MarketRegime.Bull => isLong ? 0.0 : 1.0,
+            MarketRegime.Bear => isLong ? 1.0 : 0.0,
             MarketRegime.Ranging => 0.5,
-            MarketRegime.Bear => 1.0,
             MarketRegime.HighVol => 1.0,
             _ => 0.5
         };

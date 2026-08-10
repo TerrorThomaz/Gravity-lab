@@ -7,6 +7,12 @@ internal static class Volatility
         int n = closes.Length;
         var tr  = new double[n];
         var atr = new double[n];
+        // A coin whose train/val slice came back empty reaches here with n == 0 (seen for
+        // real: lowvoltrain, where the ATR-ratio filter left two coins with 0 train candles).
+        // Rsi and Adx already tolerate that; this indexed the empty array and took the whole
+        // run down. Callers filter on length AFTER building the cache, so the guard belongs
+        // here — it covers all four BuildCache sites and any future one.
+        if (n == 0) return atr;
         tr[0] = highs[0] - lows[0];
         for (int i = 1; i < n; i++)
             tr[i] = Math.Max(highs[i] - lows[i],

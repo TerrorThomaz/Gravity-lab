@@ -30,7 +30,10 @@ switch (mode)
     case "rotatortrain":     VolatilityWeightedRotatorGA.Train();                                 break;
     case "accumgridtrain":   await LongTrainCommands.RunAccumulationGridTrain(client, args);      break;
     case "ripconfdiag":      await RipShortConfDiag.Run(client);                                break;
-    case "highvoltrain":     await HighVolTrainCommands.RunHighVolTrain(client, args);           break;
+    // highvoltrain RETIRED (see legacy/HighVolTrainCommands.cs). A genotype tuned to trade
+    // harder when ATR spikes works directly against DynamicGuard, whose whole job is to cut
+    // exposure under exactly that condition — and it is the regime where being wrong is most
+    // expensive. High-vol bars are now served by the base genotype with the guard in charge.
     case "lowvoltrain":      await LowVolTrainCommands.RunLowVolTrain(client, args);            break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
@@ -56,7 +59,6 @@ switch (mode)
         Console.WriteLine("  dotnet run -- dynamicguardtrain  Train BTC 4H ATR/momentum dynamic guard (proactive, corrects router)");
         Console.WriteLine("  dotnet run -- rotatortrain       Train volatility-weighted rotator (co-evolves with guard)");
         Console.WriteLine("  dotnet run -- accumgridtrain     Train AccumulationGrid (EMA-based dynamic grid, replaces FadeShort)");
-        Console.WriteLine("  dotnet run -- highvoltrain       Train high-volatility optimized variants (ATR>1.5, 5-fold WFV)");
         Console.WriteLine("  dotnet run -- lowvoltrain        Train low-volatility optimized variants (ATR<0.8, 5-fold WFV)");
         break;
 }

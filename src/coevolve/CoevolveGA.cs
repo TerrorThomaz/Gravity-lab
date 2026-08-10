@@ -2,8 +2,8 @@ using System.Collections.Concurrent;
 
 namespace TradingGA;
 
-// Red-Queen coevolution between Router and Guard only.
-// Strategies (DipLong, SwingLong, FadeLong) are FIXED at their seed values.
+// Red-Queen coevolution: Router, Guard AND the four regime-gated strategies.
+// Strategies CO-ADAPT: each round they retrain against the router's current gating.
 //
 //   Each round, in parallel:
 //     Router[t] ← raw strategy trade lists (finds profitable bull windows)
@@ -14,15 +14,15 @@ namespace TradingGA;
 //   They co-adapt: guard pressure changes what "profitable" routing looks like;
 //   router pressure changes which trades the guard must protect against.
 //
-//   Strategies never change — they provide the fixed signal pool that Router and Guard
-//   compete to exploit safely.
+//   Strategies then re-fit to the gating they are actually deployed under, so GA fitness
+//   and deployed behaviour describe the same object.
 public class CoevolveGA
 {
     public record AllData(
-        IReadOnlyList<FadeLongGA.CoinData>         FlCoins,   // kept for compatibility; not evolved
+        IReadOnlyList<FadeLongGA.CoinData>         FlCoins,
         IReadOnlyList<DipLongGA.CoinData>          DlCoins,
         IReadOnlyList<SwingLongGA.CoinData>        SlCoins,
-        IReadOnlyList<RipShortGA.CoinData>         RsCoins,   // not evolved — feeds Router training like DipLong/SwingLong
+        IReadOnlyList<RipShortGA.CoinData>         RsCoins,
         IReadOnlyList<(Candle[] H1, Candle[] M15)> AllCoins,
         RegimeBar[]                                BtcSeries,
         RegimeBar[]?                               EthSeries,
@@ -31,12 +31,15 @@ public class CoevolveGA
         GridGenotype?                              GridShortGeno);
 
     public record CoevolveResult(
-        FadeLongGenotype      FadeLong,       // passed through unchanged
-        DipLongGenotype       DipLong,        // passed through unchanged
-        SwingLongGenotype     SwingLong,      // passed through unchanged
-        RipShortGenotype      RipShort,       // passed through unchanged
+        FadeLongGenotype      FadeLong,       // re-adapted each round against Router[t]
+        DipLongGenotype       DipLong,        // re-adapted each round against Router[t]
+        SwingLongGenotype     SwingLong,      // re-adapted each round against Router[t]
+        RipShortGenotype      RipShort,       // re-adapted each round against Router[t]
         RegimeRouterGenotype  Router,
         DynamicGuardGenotype  DynamicGuard);
+
+    // Weight applied to a trade the router would gate OFF. Not 0.0 — see the [ADAPT] block.
+    private const double GateFloor = 0.10;
 
     private const int RedQueenRounds = 8;
     private const int RouterGens     = 40;
@@ -56,8 +59,20 @@ public class CoevolveGA
         var routerElite = routerSeed ?? RegimeRouterGenotype.Random(new Random(), null);
         var guardBest   = dgSeed;
 
-        // Strategies are frozen — build their trade lists once and reuse every round.
-        Console.WriteLine("  Building strategy trade lists (fixed)...");
+        // Strategies now CO-ADAPT: each round they retrain against the router's current gating.
+        //
+        // They used to be frozen, which reproduced exactly the train-then-gate misalignment this
+        // class exists to remove. Measured cost of that misalignment: the strategy GAs score every
+        // trade, then the router discards 54-57% of them (DipLong 1221 -> 531, SwingLong 2087 ->
+        // 963), so the GA was selecting on an object that is not what gets deployed. DipLong's
+        // ungated held-out PF is 0.64 while its router-gated val PF is 2.44 — the edge lives in
+        // the gating, and the strategy was never allowed to see it.
+        //
+        // The hook needed for this already existed: every strategy GA takes a `tradeGate`
+        // weight function and NO caller passed one. It gates on t.Time, which every simulator
+        // records as the EXIT bar — the same field CombinedBacktest gates on, so train and serve
+        // agree here by construction (both share the entry-vs-exit approximation).
+        Console.WriteLine("  Building strategy trade lists (round 0, ungated)...");
         var rawTrades = BuildTradeLists(fsSeed, dlSeed, slSeed, rsSeed, data.GridGeno, data.GridShortGeno, data);
         Console.WriteLine(
             $"  {rawTrades.Count} total — " +
@@ -115,6 +130,40 @@ public class CoevolveGA
 
             Console.WriteLine($"\n  Router: {routerElite}");
             if (guardBest != null) Console.WriteLine($"  Guard:  {guardBest}");
+
+            // ── Strategies re-adapt to the router that just evolved ──────────────────
+            // Soft gate, not a hard 0/1. A hard gate would drop out-of-window trades entirely,
+            // and a fold that falls under MinTradesPerFold now enters the aggregate at
+            // ThinFoldScore = -5.0 — so an over-eager router in an early round could starve a
+            // strategy into a score it can never climb out of. The floor keeps a gradient the
+            // GA can follow while still strongly preferring in-gate trades.
+            var gateSession = new RegimeRouterSession(data.BtcSeries, data.EthSeries, routerElite);
+            Func<RegimeRouterGA.StrategyKind, Func<DateTime, double>> gateFor =
+                kind => t => gateSession.IsActive(kind, t) ? 1.0 : GateFloor;
+
+            int stratGens = Math.Max(20, RouterGens / 2);
+            Console.WriteLine($"  [ADAPT] retraining strategies against Router[t] (gens={stratGens}, floor={GateFloor:F2})");
+
+            if (dlSeed != null)
+                dlSeed = new DipLongGA(generations: stratGens, verbose: false,
+                    tradeGate: gateFor(RegimeRouterGA.StrategyKind.DipLong),
+                    btcSeries: data.BtcSeries).Run(data.DlCoins, dlSeed);
+            if (slSeed != null)
+                slSeed = new SwingLongGA(generations: stratGens, verbose: false,
+                    tradeGate: gateFor(RegimeRouterGA.StrategyKind.SwingLong)).Run(data.SlCoins, slSeed);
+            if (rsSeed != null)
+                rsSeed = new RipShortGA(generations: stratGens, verbose: false,
+                    tradeGate: gateFor(RegimeRouterGA.StrategyKind.RipShort)).Run(data.RsCoins, rsSeed);
+            if (flSeed != null)
+                flSeed = new FadeLongGA(generations: stratGens, verbose: false,
+                    tradeGate: gateFor(RegimeRouterGA.StrategyKind.FadeLong),
+                    btcSeries: data.BtcSeries).Run(data.FlCoins, flSeed);
+
+            Console.WriteLine($"  [ADAPT] DipLong F={dlSeed?.Fitness:F3}  SwingLong F={slSeed?.Fitness:F3}  " +
+                              $"RipShort F={rsSeed?.Fitness:F3}  FadeLong F={flSeed?.Fitness:F3}");
+
+            // The router must now compete against the strategies it just reshaped.
+            rawTrades = BuildTradeLists(fsSeed, dlSeed, slSeed, rsSeed, data.GridGeno, data.GridShortGeno, data);
 
             // Rebuild guard trade lists using the just-evolved Router for the next round
             if (data.BtcH1.Length >= 50)

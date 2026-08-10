@@ -40,3 +40,4 @@ fulltest_results.json
 ## they must never be committed — a probe that proves its point gets rewritten as a
 ## properly-named permanent regression test in the normal suite instead.
 Gravity-gen2.Tests/**/ZZProbe_*.cs
+logs/

@@ -1,24 +1,24 @@
 {
   "Bull": {
     "EmaPeriod": 20,
-    "GridStepAtrMult": 1.915317047808608,
+    "GridStepAtrMult": 1.9842097493991746,
     "MaxLevels": 3,
-    "TakeProfitAtrMult": 2.584619701029215,
-    "StopLossAtrMult": 3.9898785175598723,
-    "MaxHoldBars": 177,
-    "PositionSizePct": 0.03598474628380111,
-    "RegimeSustainBars": 12
+    "TakeProfitAtrMult": 2.677402370986072,
+    "StopLossAtrMult": 3.966827503390064,
+    "MaxHoldBars": 160,
+    "PositionSizePct": 0.059078030010318805,
+    "RegimeSustainBars": 13
   },
-  "BullFitness": 37.147817971789394,
+  "BullFitness": 29.256438251113885,
   "Bear": {
     "EmaPeriod": 20,
-    "GridStepAtrMult": 3,
-    "MaxLevels": 4,
-    "TakeProfitAtrMult": 1.8850577486342386,
-    "StopLossAtrMult": 3.8749843557157537,
-    "MaxHoldBars": 153,
-    "PositionSizePct": 0.05859881329916005,
-    "RegimeSustainBars": 61
+    "GridStepAtrMult": 2.9698914692131297,
+    "MaxLevels": 5,
+    "TakeProfitAtrMult": 4.943762927307191,
+    "StopLossAtrMult": 3.9136116877933604,
+    "MaxHoldBars": 24,
+    "PositionSizePct": 0.0663537082796665,
+    "RegimeSustainBars": 69
   },
-  "BearFitness": 1.3263325406442839
+  "BearFitness": 1.9745321071391204
 }

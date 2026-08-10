@@ -32,6 +32,15 @@ public static class PortfolioReplay
     private static readonly HashSet<string> ShortStrategies = new(StringComparer.OrdinalIgnoreCase)
         { "swing", "fade_short", "ripshort", "gridshort" };
 
+    // Direction of a strategy label, for consumers that must treat long and short exposure
+    // differently — the rotator's safety score inverts its regime term by direction. Null means
+    // the label is unknown; callers should pick the conservative reading rather than guess,
+    // exactly as the concurrent-cap logic below counts an unknown label against BOTH caps.
+    public static bool? IsLong(string strategy) =>
+        LongStrategies.Contains(strategy)  ? true
+      : ShortStrategies.Contains(strategy) ? false
+      : null;
+
     public record Trade(
         string   Strategy,
         DateTime EntryTime,

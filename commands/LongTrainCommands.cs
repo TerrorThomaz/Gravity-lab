@@ -72,26 +72,46 @@ static class LongTrainCommands
         FadeLongGenotype? flSeed = File.Exists(flPath)
             ? JsonSerializer.Deserialize<FadeLongGenotypeDto>(File.ReadAllText(flPath))!.ToGenotype()
             : null;
-        if (flSeed is { Fitness: > 0 }) Console.WriteLine($"  FadeLong seed   : {flSeed}");
-        else { flSeed = null; Console.WriteLine("  FadeLong seed   : none (training from scratch)"); }
+        // A non-positive fitness here is the UNGATED score — precisely the misalignment coevolve
+        // exists to repair. Nulling the seed removed the strategy from the run entirely (observed:
+        // DipLong/SwingLong/RipShort/FadeLong all contributed 0 trades), so the gated re-adaptation
+        // step had nothing to adapt. Keep the genotype; only a missing/unreadable file yields null.
+        if (flSeed != null) Console.WriteLine($"  FadeLong seed   : {flSeed}"
+            + (flSeed.Fitness <= 0 ? "   [ungated fitness <= 0 — will be re-adapted under the router gate]" : ""));
+        else Console.WriteLine("  FadeLong seed   : none (file missing — training from scratch)");
 
         DipLongGenotype? dlSeed = File.Exists(dlPath)
             ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(dlPath))!.ToGenotype()
             : null;
-        if (dlSeed is { Fitness: > 0 }) Console.WriteLine($"  DipLong seed    : {dlSeed}");
-        else { dlSeed = null; Console.WriteLine("  DipLong seed    : none (training from scratch)"); }
+        // A non-positive fitness here is the UNGATED score — precisely the misalignment coevolve
+        // exists to repair. Nulling the seed removed the strategy from the run entirely (observed:
+        // DipLong/SwingLong/RipShort/FadeLong all contributed 0 trades), so the gated re-adaptation
+        // step had nothing to adapt. Keep the genotype; only a missing/unreadable file yields null.
+        if (dlSeed != null) Console.WriteLine($"  DipLong seed    : {dlSeed}"
+            + (dlSeed.Fitness <= 0 ? "   [ungated fitness <= 0 — will be re-adapted under the router gate]" : ""));
+        else Console.WriteLine("  DipLong seed    : none (file missing — training from scratch)");
 
         SwingLongGenotype? slSeed = File.Exists(slPath)
             ? JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(slPath))!.ToGenotype()
             : null;
-        if (slSeed is { Fitness: > 0 }) Console.WriteLine($"  SwingLong seed  : {slSeed}");
-        else { slSeed = null; Console.WriteLine("  SwingLong seed  : none (training from scratch)"); }
+        // A non-positive fitness here is the UNGATED score — precisely the misalignment coevolve
+        // exists to repair. Nulling the seed removed the strategy from the run entirely (observed:
+        // DipLong/SwingLong/RipShort/FadeLong all contributed 0 trades), so the gated re-adaptation
+        // step had nothing to adapt. Keep the genotype; only a missing/unreadable file yields null.
+        if (slSeed != null) Console.WriteLine($"  SwingLong seed  : {slSeed}"
+            + (slSeed.Fitness <= 0 ? "   [ungated fitness <= 0 — will be re-adapted under the router gate]" : ""));
+        else Console.WriteLine("  SwingLong seed  : none (file missing — training from scratch)");
 
         RipShortGenotype? rsSeed = File.Exists(rsPath)
             ? JsonSerializer.Deserialize<RipShortGenotypeDto>(File.ReadAllText(rsPath))!.ToGenotype()
             : null;
-        if (rsSeed is { Fitness: > 0 }) Console.WriteLine($"  RipShort seed   : {rsSeed}");
-        else { rsSeed = null; Console.WriteLine("  RipShort seed   : none (training from scratch)"); }
+        // A non-positive fitness here is the UNGATED score — precisely the misalignment coevolve
+        // exists to repair. Nulling the seed removed the strategy from the run entirely (observed:
+        // DipLong/SwingLong/RipShort/FadeLong all contributed 0 trades), so the gated re-adaptation
+        // step had nothing to adapt. Keep the genotype; only a missing/unreadable file yields null.
+        if (rsSeed != null) Console.WriteLine($"  RipShort seed   : {rsSeed}"
+            + (rsSeed.Fitness <= 0 ? "   [ungated fitness <= 0 — will be re-adapted under the router gate]" : ""));
+        else Console.WriteLine("  RipShort seed   : none (file missing — training from scratch)");
 
         GridGenotype? gsSeed = File.Exists(gsPath)
             ? JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(gsPath))!.ToGenotype()
@@ -233,25 +253,31 @@ static class LongTrainCommands
         var data   = new CoevolveGA.AllData(flCoins, dlCoins, slCoins, rsCoins, allCoins, btcSeries, ethSeries, btcEntry.H1, gridSeed, gsSeed);
         var result = new CoevolveGA().Run(data, fsSeed, flSeed, dlSeed, slSeed, rsSeed, routerSeed, dgSeed);
 
-        File.WriteAllText(flPath,
-            JsonSerializer.Serialize(FadeLongGenotypeDto.From(result.FadeLong, cfg),
-                new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"\n  Saved FadeLong   → {flPath}  {result.FadeLong}");
+        // CoevolveGA FREEZES the four strategies and returns the seeds it was handed, so a null
+        // here means no seed was loaded — the block above nulls any genotype whose Fitness <= 0.
+        // Nothing was evolved, so there is nothing to write; keep whatever is on disk.
+        //
+        // This MUST NOT throw. CoevolveResult declares these non-nullable, but nullable reference
+        // types are not enforced at runtime, and a null reached DipLongGenotypeDto.From and took
+        // the whole command down AFTER FadeLong had been written and BEFORE the Router and Guard
+        // saves below — discarding the only two things coevolvetrain actually evolves.
+        void SaveIfEvolved<T>(string path, T? geno, Func<T, object> toDto, string label) where T : class
+        {
+            if (geno is null)
+            {
+                Console.WriteLine($"  Skipped {label,-9} — no seed loaded (fitness ≤ 0); on-disk genotype kept");
+                return;
+            }
+            File.WriteAllText(path,
+                JsonSerializer.Serialize(toDto(geno), new JsonSerializerOptions { WriteIndented = true }));
+            Console.WriteLine($"  Saved {label,-9} → {path}  {geno}");
+        }
 
-        File.WriteAllText(dlPath,
-            JsonSerializer.Serialize(DipLongGenotypeDto.From(result.DipLong, cfg),
-                new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved DipLong    → {dlPath}  {result.DipLong}");
-
-        File.WriteAllText(slPath,
-            JsonSerializer.Serialize(SwingLongGenotypeDto.From(result.SwingLong, cfg),
-                new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved SwingLong  → {slPath}  {result.SwingLong}");
-
-        File.WriteAllText(rsPath,
-            JsonSerializer.Serialize(RipShortGenotypeDto.From(result.RipShort, cfg),
-                new JsonSerializerOptions { WriteIndented = true }));
-        Console.WriteLine($"  Saved RipShort   → {rsPath}  {result.RipShort}");
+        Console.WriteLine();
+        SaveIfEvolved(flPath, result.FadeLong,  g => FadeLongGenotypeDto.From(g, cfg),  "FadeLong");
+        SaveIfEvolved(dlPath, result.DipLong,   g => DipLongGenotypeDto.From(g, cfg),   "DipLong");
+        SaveIfEvolved(slPath, result.SwingLong, g => SwingLongGenotypeDto.From(g, cfg), "SwingLong");
+        SaveIfEvolved(rsPath, result.RipShort,  g => RipShortGenotypeDto.From(g, cfg),  "RipShort");
 
         File.WriteAllText(rrPath,
             JsonSerializer.Serialize(RegimeRouterGenotypeDto.From(result.Router),

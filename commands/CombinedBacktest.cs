@@ -375,6 +375,20 @@ static class CombinedBacktest
         var agTrades          = new List<(DateTime Time, double Return, double Conf)>();
         var agAcqDiscount     = new List<double>();   // per-coin % below VWAP (negative = paid above)
         var agAcqDiscountEma  = new List<double>();   // causal: vs trailing EMA at fill time
+        var rsWaitRet         = new List<double>();   // RipShort under ExitOverrideMode.WaitForBreakeven
+        var rsCapRet          = new List<double>();   // ... plus an absolute 6% loss cap
+        var rsLockRet         = new List<double>();   // ... plus a minimum-profit ratchet
+        var rsAtrCapRet       = new List<double>();   // ATR-scaled cap, absolutely ceilinged
+        var rsHybRet          = new List<double>();   // ATR-scaled cap + ATR-scaled ratchet
+        // Profit-ratchet grid, printed in full. Tuning these to a maximum after seeing the table
+        // is how a 2-parameter safety feature becomes as overfit as the strategies it protects.
+        var rsRatchetGrid     = new Dictionary<(double Trig, double Lock), List<double>>();
+        // Trade anatomy: what actually separates the big wins from the big losses. Only possible
+        // now that EntryTime/EntryPrice come out of the simulators — before, `Time` was the exit
+        // bar and hold duration and entry conditions were simply unavailable.
+        var rsAnatomy         = new List<(double Ret, double AtrPctEntry, double HoldH, double GuardMult, double BtcAtrRatio)>();
+        var ratchetTriggers   = new[] { 2.0, 4.0, 6.0 };
+        var ratchetLocks      = new[] { 0.5, 1.5, 3.0 };
         var agAcqFills        = new List<int>();
         var allTrades         = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
         // Val-window price series per coin, collected once for the random-entry control below.
@@ -775,6 +789,96 @@ static class CombinedBacktest
                 var (coinRsG, rsVarLabel) = SelectVariantLabeled(rsVariants, m15);
                 coinRsG ??= rsG;
                 var raw    = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val, funding.For(sym));
+                // WaitForBreakeven: suppress the MaxHoldCandles time exit while the position is
+                // underwater AND local vol is calm, capped at MaxExtraHoldCandles. Size stays 1x,
+                // so per-trade accounting stays honest — unlike DcaAndWait, which the simulator
+                // itself blocks for broken exposure accounting. Dormant since it was written
+                // (null at every production call site); this is the first time it is measured.
+                var rawWait = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val, funding.For(sym),
+                    new RipShortSimulator.ExitOverrideConfig(RipShortSimulator.ExitOverrideMode.WaitForBreakeven));
+                foreach (var t in (session != null
+                        ? rawWait.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time))
+                        : rawWait))
+                    rsWaitRet.Add(t.Return);
+                // Absolute loss cap: the only mechanism that can reach the tail, because the tail
+                // trades never arm the trailing stop (arming needs a favourable excursion).
+                // Ratchet: 6% loss cap + arm at 2% profit, lock 0.5% minimum profit.
+                var rawLock = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val, funding.For(sym),
+                    new RipShortSimulator.ExitOverrideConfig(RipShortSimulator.ExitOverrideMode.WaitForBreakeven,
+                        MaxLossPct: 6.0, LockTriggerPct: 2.0, LockProfitPct: 0.5));
+                foreach (var t in (session != null
+                        ? rawLock.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time))
+                        : rawLock))
+                    rsLockRet.Add(t.Return);
+                // ATR-aware cap: 2.5x the coin's own ATR, floored at 3% and ceilinged at 10%.
+                // Scales with volatility so it sits outside the noise, but a short's unbounded
+                // downside still meets an absolute line.
+                var rawAtrCap = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val, funding.For(sym),
+                    new RipShortSimulator.ExitOverrideConfig(RipShortSimulator.ExitOverrideMode.WaitForBreakeven,
+                        MaxLossPct: 10.0, MaxLossAtrMult: 2.5, MaxLossPctFloor: 3.0));
+                foreach (var t in (session != null
+                        ? rawAtrCap.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time))
+                        : rawAtrCap))
+                    rsAtrCapRet.Add(t.Return);
+                {
+                    var cl = h1Val.Select(c => c.Close).ToArray();
+                    var hi = h1Val.Select(c => c.High).ToArray();
+                    var lo = h1Val.Select(c => c.Low).ToArray();
+                    var atrArr = Volatility.Atr(hi, lo, cl, 14);
+                    var tms = h1Val.Select(c => c.Time).ToArray();
+                    foreach (var t in (session != null
+                            ? raw.Where(x => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, x.Time))
+                            : raw))
+                    {
+                        int ix = Array.BinarySearch(tms, t.EntryTime);
+                        if (ix < 0) ix = ~ix;
+                        ix = Math.Clamp(ix, 0, atrArr.Length - 1);
+                        if (t.EntryPrice <= 1e-9 || atrArr[ix] <= 1e-9) continue;
+                        // What were the risk mechanisms doing at THIS entry? The guard cuts size as
+                        // BTC 4H ATR expands and the rotator rotates to safety on the same signal —
+                        // so if the big winners entered at LOW guard mult, both are systematically
+                        // down-sizing the trades that pay best.
+                        double gm  = guardCtx?.Session.GetMult(t.EntryTime, "ripshort") ?? 1.0;
+                        double bar = guardCtx?.Session.GetAtrRatio(t.EntryTime) ?? 1.0;
+                        rsAnatomy.Add((t.Return, atrArr[ix] / t.EntryPrice * 100.0,
+                                       (t.Time - t.EntryTime).TotalHours, gm, bar));
+                    }
+                }
+
+                foreach (var trig in ratchetTriggers)
+                foreach (var lockPct in ratchetLocks)
+                {
+                    if (lockPct >= trig) continue;   // a floor at/above its own trigger is nonsense
+                    var rg = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val, funding.For(sym),
+                        new RipShortSimulator.ExitOverrideConfig(RipShortSimulator.ExitOverrideMode.WaitForBreakeven,
+                            MaxLossPct: 10.0, MaxLossAtrMult: 2.5, MaxLossPctFloor: 3.0,
+                            LockTriggerPct: trig, LockProfitPct: lockPct));
+                    if (!rsRatchetGrid.TryGetValue((trig, lockPct), out var lst))
+                        rsRatchetGrid[(trig, lockPct)] = lst = new List<double>();
+                    foreach (var t in (session != null
+                            ? rg.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time))
+                            : rg))
+                        lst.Add(t.Return);
+                }
+                // Hybrid: ATR-scaled cap AND ATR-scaled ratchet. Arms at 1.5x the coin's own ATR
+                // (ceiling 8%), locks 0.5x ATR (ceiling 3%) — so it arms late on volatile coins
+                // instead of on their noise, which is what the flat-percentage grid punished.
+                var rawHyb = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val, funding.For(sym),
+                    new RipShortSimulator.ExitOverrideConfig(RipShortSimulator.ExitOverrideMode.WaitForBreakeven,
+                        MaxLossPct: 10.0, MaxLossAtrMult: 2.5, MaxLossPctFloor: 3.0,
+                        LockTriggerPct: 8.0, LockProfitPct: 3.0,
+                        LockTriggerAtrMult: 1.5, LockProfitAtrMult: 0.5));
+                foreach (var t in (session != null
+                        ? rawHyb.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time))
+                        : rawHyb))
+                    rsHybRet.Add(t.Return);
+                var rawCap = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val, funding.For(sym),
+                    new RipShortSimulator.ExitOverrideConfig(RipShortSimulator.ExitOverrideMode.WaitForBreakeven,
+                                                             MaxLossPct: 6.0));
+                foreach (var t in (session != null
+                        ? rawCap.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time))
+                        : rawCap))
+                    rsCapRet.Add(t.Return);
                 var gated  = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList()
                     : raw;
@@ -1326,6 +1430,99 @@ static class CombinedBacktest
             }
             Console.WriteLine($"  Random entries are priced on real subsequent price moves and charged the same");
             Console.WriteLine($"  round-trip fee; they carry NO stop, target or trailing logic.");
+
+            if (rsWaitRet.Count >= 20 && rsRet.Count >= 20)
+            {
+                Console.WriteLine($"\n── RipShort exit override: WaitForBreakeven vs production ──");
+                Console.WriteLine($"  {"Variant",-22} {"PF",6} {"WR",6} {"Avg%",8} {"N",6}");
+                Console.WriteLine($"  {"production (hard MaxHold)",-22} {Simulator.ProfitFactor(rsRet),6:F2} " +
+                                  $"{(double)rsRet.Count(r => r > 0) / rsRet.Count,6:P0} {rsRet.Average(),+7:F2}% {rsRet.Count,6}");
+                Console.WriteLine($"  {"WaitForBreakeven",-22} {Simulator.ProfitFactor(rsWaitRet),6:F2} " +
+                                  $"{(double)rsWaitRet.Count(r => r > 0) / rsWaitRet.Count,6:P0} {rsWaitRet.Average(),+7:F2}% {rsWaitRet.Count,6}");
+                // The tail is the whole question. "Wait for breakeven" improves PF and WR by
+                // converting small realised losses into eventual wins — right up until one does
+                // not recover. Averages cannot show that; the worst trade and the 5% CVaR can.
+                static (double Worst, double Cvar5) Tail(List<double> r)
+                {
+                    var srt = r.OrderBy(x => x).ToList();
+                    int m = Math.Max(1, (int)Math.Ceiling(srt.Count * 0.05));
+                    return (srt[0], srt.Take(m).Average());
+                }
+                var tProd = Tail(rsRet); var tWait = Tail(rsWaitRet);
+                if (rsHybRet.Count >= 20)
+                {
+                    var tH = Tail(rsHybRet);
+                    Console.WriteLine($"  {"ATR cap + ATR ratchet",-22} {Simulator.ProfitFactor(rsHybRet),6:F2} " +
+                                      $"{(double)rsHybRet.Count(r => r > 0) / rsHybRet.Count,6:P0} {rsHybRet.Average(),+7:F2}% {rsHybRet.Count,6}" +
+                                      $"   worst {tH.Worst,6:F2}%  CVaR5 {tH.Cvar5,6:F2}%");
+                }
+                if (rsAtrCapRet.Count >= 20)
+                {
+                    var tA = Tail(rsAtrCapRet);
+                    Console.WriteLine($"  {"ATR cap 2.5A [3,10]%",-22} {Simulator.ProfitFactor(rsAtrCapRet),6:F2} " +
+                                      $"{(double)rsAtrCapRet.Count(r => r > 0) / rsAtrCapRet.Count,6:P0} {rsAtrCapRet.Average(),+7:F2}% {rsAtrCapRet.Count,6}" +
+                                      $"   worst {tA.Worst,6:F2}%  CVaR5 {tA.Cvar5,6:F2}%");
+                }
+                if (rsLockRet.Count >= 20)
+                {
+                    var tLock = Tail(rsLockRet);
+                    Console.WriteLine($"  {"Cap + profit ratchet",-22} {Simulator.ProfitFactor(rsLockRet),6:F2} " +
+                                      $"{(double)rsLockRet.Count(r => r > 0) / rsLockRet.Count,6:P0} {rsLockRet.Average(),+7:F2}% {rsLockRet.Count,6}" +
+                                      $"   worst {tLock.Worst,6:F2}%  CVaR5 {tLock.Cvar5,6:F2}%");
+                }
+                if (rsCapRet.Count >= 20)
+                {
+                    var tCap = Tail(rsCapRet);
+                    Console.WriteLine($"  {"Wait + 6% loss cap",-22} {Simulator.ProfitFactor(rsCapRet),6:F2} " +
+                                      $"{(double)rsCapRet.Count(r => r > 0) / rsCapRet.Count,6:P0} {rsCapRet.Average(),+7:F2}% {rsCapRet.Count,6}" +
+                                      $"   worst {tCap.Worst,6:F2}%  CVaR5 {tCap.Cvar5,6:F2}%");
+                }
+                Console.WriteLine($"  {"worst / CVaR5 prod",-22} {tProd.Worst,6:F2}% {tProd.Cvar5,13:F2}%");
+                Console.WriteLine($"  {"worst / CVaR5 wait",-22} {tWait.Worst,6:F2}% {tWait.Cvar5,13:F2}%");
+                if (rsAnatomy.Count >= 40)
+                {
+                    var srt = rsAnatomy.OrderBy(a => a.Ret).ToList();
+                    int d = Math.Max(5, srt.Count / 10);
+                    var worst = srt.Take(d).ToList();
+                    var best  = srt.Skip(srt.Count - d).ToList();
+                    static double Med(IEnumerable<double> xs)
+                    { var l = xs.OrderBy(x => x).ToList(); return l.Count == 0 ? 0 : l[l.Count / 2]; }
+
+                    Console.WriteLine($"\n  ── Trade anatomy: bottom vs top decile (N={srt.Count}, decile={d}) ──");
+                    Console.WriteLine($"  {"",-14} {"median ret",11} {"ATR% @entry",12} {"hold h",8} {"guardMult",10} {"BTC atrRatio",13}");
+                    Console.WriteLine($"  {"big LOSSES",-14} {Med(worst.Select(a => a.Ret)),10:F2}% " +
+                                      $"{Med(worst.Select(a => a.AtrPctEntry)),11:F2}% {Med(worst.Select(a => a.HoldH)),7:F0} " +
+                                      $"{Med(worst.Select(a => a.GuardMult)),10:F3} {Med(worst.Select(a => a.BtcAtrRatio)),13:F3}");
+                    Console.WriteLine($"  {"big WINS",-14} {Med(best.Select(a => a.Ret)),10:F2}% " +
+                                      $"{Med(best.Select(a => a.AtrPctEntry)),11:F2}% {Med(best.Select(a => a.HoldH)),7:F0} " +
+                                      $"{Med(best.Select(a => a.GuardMult)),10:F3} {Med(best.Select(a => a.BtcAtrRatio)),13:F3}");
+                    Console.WriteLine($"  {"all",-14} {Med(srt.Select(a => a.Ret)),10:F2}% " +
+                                      $"{Med(srt.Select(a => a.AtrPctEntry)),11:F2}% {Med(srt.Select(a => a.HoldH)),7:F0} " +
+                                      $"{Med(srt.Select(a => a.GuardMult)),10:F3} {Med(srt.Select(a => a.BtcAtrRatio)),13:F3}");
+                    Console.WriteLine($"  Entry ATR is HIGHER for BOTH tails than the median trade — it is a variance");
+                    Console.WriteLine($"  amplifier, not a loss predictor, so filtering it would cut the 3:1 upside too.");
+                    Console.WriteLine($"  If guardMult is LOWER on the wins, guard+rotator are down-sizing the best trades.");
+                }
+
+                if (rsRatchetGrid.Count > 0)
+                {
+                    Console.WriteLine($"\n  ── Profit-ratchet grid (on top of the ATR cap 2.5A [3,10]%) ──");
+                    Console.WriteLine($"  {"Trig%",6} {"Lock%",6} {"PF",6} {"WR",6} {"Avg%",8} {"N",6} {"worst",8} {"CVaR5",8}");
+                    foreach (var kv in rsRatchetGrid.OrderBy(k => k.Key.Trig).ThenBy(k => k.Key.Lock))
+                    {
+                        var r = kv.Value;
+                        if (r.Count < 20) continue;
+                        var t2 = Tail(r);
+                        Console.WriteLine($"  {kv.Key.Trig,6:F1} {kv.Key.Lock,6:F1} {Simulator.ProfitFactor(r),6:F2} " +
+                                          $"{(double)r.Count(x => x > 0) / r.Count,6:P0} {r.Average(),+7:F2}% {r.Count,6} " +
+                                          $"{t2.Worst,7:F2}% {t2.Cvar5,7:F2}%");
+                    }
+                    Console.WriteLine($"  Whole grid shown — pick on risk appetite, not on the maximum cell.");
+                }
+
+                Console.WriteLine($"  Holding a losing SHORT longer is the risky direction — bear-rally squeezes are");
+                Console.WriteLine($"  RipShort's documented dominant tail. If CVaR5 worsens, PF is buying that with tail risk.");
+            }
 
             GatedExposureBaseline(controlSeries, session);
         }

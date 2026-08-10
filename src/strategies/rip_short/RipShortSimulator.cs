@@ -101,6 +101,70 @@ public static class RipShortSimulator
         DcaAndWait
     }
 
+    /// <summary>
+    /// MaxLossPct: absolute per-trade loss cap in percent (0 = disabled). Applied as a SECOND
+    /// stop alongside the ATR stop; whichever is tighter wins.
+    ///
+    /// Why shorts specifically: the hard stop is swingHigh + StopLossAtrMult x ATR_at_entry, so
+    /// it is volatility-RELATIVE and fixed at entry. Enter during a violent bear rally and the
+    /// stop sits far away, so the loss scales with exactly the volatility that is about to hurt.
+    /// A long's worst case is bounded (-100%); a short's is not, which is why an absolute cap
+    /// belongs on this side of the book and why averaging down does not.
+    ///
+    /// Measured: the tail trades never arm the trailing stop at all (arming needs a favourable
+    /// excursion of TrailingActivationAtrMult x ATR, which a -18% trade never had), so neither
+    /// trailing nor a move-to-breakeven rule can reach them. Only an absolute cap can.
+    /// </summary>
+    /// <summary>
+    /// Minimum-profit ratchet (LockTriggerPct / LockProfitPct, 0 = disabled).
+    ///
+    /// Once the position is LockTriggerPct in profit, the stop moves to LockProfitPct in profit
+    /// and never goes back. It is a FLOOR, not a trail: the trailing stop may still take the
+    /// trade further out, but it can no longer come back through breakeven.
+    ///
+    /// Why this is not redundant with the existing trailing stop: arming that trail does NOT
+    /// guarantee a profitable exit, because the trail DISTANCE can exceed the ACTIVATION
+    /// distance. Measured on the live genotype — RipShort arms at 2.13 x ATR but trails by
+    /// 3.20 x ATR, so a trade can move in your favour, arm the trail, and still stop out
+    /// 1.07 x ATR at a LOSS. The other four strategies happen to have distance &lt; activation
+    /// and are structurally safe; RipShort, which carries the worst tail, is the one that is not.
+    ///
+    /// Percent rather than ATR is deliberate on the short side: an ATR-relative level widens
+    /// exactly when a squeeze makes volatility spike.
+    /// </summary>
+    /// <summary>
+    /// ATR-AWARE loss cap. When MaxLossAtrMult &gt; 0 the cap level becomes
+    ///     clamp(MaxLossAtrMult x ATR%, MaxLossPctFloor, MaxLossPct)
+    /// instead of the flat MaxLossPct.
+    ///
+    /// Why a flat percentage is the wrong shape: ATR% ranges roughly 1-8% across this universe,
+    /// so one number is simultaneously far outside the noise on a liquid perp and INSIDE the
+    /// noise on a meme perp. Measured — a flat 6% cap raised trade count 48% (462 -&gt; 682) and
+    /// halved average return, because on high-ATR coins it was being brushed by ordinary
+    /// movement rather than protecting against anything.
+    ///
+    /// Slippage compounds it: exit slippage scales linearly with the coin's own ATR
+    /// (TradeCosts.SlippagePerSidePct) and stop exits pay an extra ATR-scaled gap premium
+    /// (StopGapAtrK), so in a volatile squeeze the REALISED loss overshoots the intended level
+    /// by more, exactly when the cap is meant to be doing its job. A cap set inside the noise
+    /// buys premature exits and still does not bound the tail.
+    ///
+    /// The ceiling (MaxLossPct) is retained rather than dropped: a short's downside is unbounded,
+    /// so ATR-scaling alone would let the cap widen without limit in precisely the regime it
+    /// exists to survive. Scale with volatility, but never past an absolute line.
+    /// </summary>
+    /// <summary>
+    /// ATR-scaled ratchet. When LockTriggerAtrMult &gt; 0 the arm/lock levels become
+    ///     trigger% = LockTriggerAtrMult x ATR%,  lock% = LockProfitAtrMult x ATR%
+    /// with LockTriggerPct / LockProfitPct acting as absolute CEILINGS.
+    ///
+    /// Same reasoning that fixed the loss cap: a flat 2% arm is noise on an 8%-ATR perp and a
+    /// real move on a 1%-ATR one, so one number arms far too early on exactly the coins whose
+    /// moves are largest. The grid showed it — trigger 2.0 produced 643 trades and 2.32% avg
+    /// against trigger 6.0's 447 trades and 3.77%: arming early converts running winners into
+    /// small locked ones, and it is the TRIGGER, not the lock size, that does the damage.
+    /// Scaling the trigger by the coin's own ATR is the direct fix.
+    /// </summary>
     /// <summary>Tuning for the dormant post-hoc exit override. Null at every production call site.</summary>
     /// <param name="Mode">Which override behaviour to apply (see <see cref="ExitOverrideMode"/>).</param>
     /// <param name="AtrGateRatio">Local h4 ATR ratio must be ≤ this to keep waiting ("calm").</param>
@@ -118,7 +182,14 @@ public static class RipShortSimulator
         double AtrGateRatio        = 1.4,
         double DcaAtrMult          = 1.2,
         int    MaxExtraHoldCandles = 60,
-        double MaxSizeMult         = 2.0);
+        double MaxSizeMult         = 2.0,
+        double MaxLossPct          = 0.0,
+        double LockTriggerPct      = 0.0,
+        double LockProfitPct       = 0.0,
+        double MaxLossAtrMult      = 0.0,
+        double MaxLossPctFloor     = 0.0,
+        double LockTriggerAtrMult  = 0.0,
+        double LockProfitAtrMult   = 0.0);
 
     // EntryTime/EntryPrice: `Time` is the EXIT bar. EntryPrice is the BLENDED entry when a DCA
     // add has fired (see BlendedEntry), which is the economically correct basis. Appended as
@@ -229,6 +300,7 @@ public static class RipShortSimulator
         double   trailLow        = 0;
         double   atrEntry        = 0;
         bool     trailArmed      = false;
+        bool     lockArmed       = false;
         int      entryIH1        = 0;
         int      entryRegimeBars = 0;
         DateTime entryTime       = default;
@@ -306,6 +378,7 @@ public static class RipShortSimulator
                     target          = entry - g.TakeProfitAtrMult * atrEntry;
                     trailLow        = entry;
                     trailArmed      = false;
+                    lockArmed       = false;
                     entryIH1        = nextBar / 4;
                     entryRegimeBars = cachedRegimeBars;
                     entryTime       = m15[nextBar].Time;
@@ -322,7 +395,39 @@ public static class RipShortSimulator
                 int holdH1 = ih1 - entryIH1;
 
                 // Wick-triggered hard levels (pessimistic — intrabar extremes trigger)
-                bool hitStop   = m15Highs[im15] >= hardStop;
+                // Absolute loss cap (opt-in). Wick-triggered like the ATR stop, and deliberately
+                // evaluated on the SAME bar so the tighter of the two always wins.
+                double capPct = overrideCfg?.MaxLossPct ?? 0.0;
+                if (capPct > 0.0 && (overrideCfg?.MaxLossAtrMult ?? 0.0) > 0.0 && entry > 1e-9)
+                {
+                    double atrPctNow = atrEntry / entry * 100.0;
+                    capPct = Math.Clamp(overrideCfg!.MaxLossAtrMult * atrPctNow,
+                                        overrideCfg.MaxLossPctFloor, overrideCfg.MaxLossPct);
+                }
+                double capPx = capPct > 0.0 ? entry * (1.0 + capPct / 100.0) : double.MaxValue;
+                bool hitCap    = m15Highs[im15] >= capPx;
+
+                // Minimum-profit ratchet: arm on favourable excursion, then floor the stop at a
+                // guaranteed profit. For a short the stop sits ABOVE entry, so "tighter" is lower.
+                double lockTrig = overrideCfg?.LockTriggerPct ?? 0.0;
+                double lockProf = overrideCfg?.LockProfitPct  ?? 0.0;
+                if ((overrideCfg?.LockTriggerAtrMult ?? 0.0) > 0.0 && entry > 1e-9)
+                {
+                    double atrPctE = atrEntry / entry * 100.0;
+                    double tCeil = lockTrig > 0 ? lockTrig : double.MaxValue;
+                    double pCeil = lockProf > 0 ? lockProf : double.MaxValue;
+                    lockTrig = Math.Min(overrideCfg!.LockTriggerAtrMult * atrPctE, tCeil);
+                    lockProf = Math.Min(overrideCfg.LockProfitAtrMult  * atrPctE, pCeil);
+                }
+                if (lockTrig > 0.0 && !lockArmed && entry > 1e-9
+                    && (entry - trailLow) / entry * 100.0 >= lockTrig)
+                    lockArmed = true;
+                double lockPx = lockArmed && lockProf > 0.0
+                    ? entry * (1.0 - lockProf / 100.0)
+                    : double.MaxValue;
+
+                bool hitStop   = m15Highs[im15] >= hardStop || hitCap
+                                 || (lockArmed && m15Highs[im15] >= lockPx);
                 bool hitTarget = m15Lows[im15]  <= target;
                 bool hitTrail  = trailArmed && m15Price > trailLow + g.TrailingStopAtrMult * atrEntry;
                 bool pastMaxHold = holdH1 >= g.MaxHoldCandles;
@@ -391,7 +496,12 @@ public static class RipShortSimulator
                 if (hitStop || hitTarget || hitTrail || timedOut || hitTimeStop)
                 {
                     // Same bar touches both stop and target → STOP wins (pessimistic)
-                    double exitPx = hitStop   ? hardStop :
+                    // Fill at whichever stop level actually triggered — the ATR stop or the
+                    // absolute cap, whichever is TIGHTER. Filling at hardStop when the cap fired
+                    // would report a loss the position never took.
+                    double stopPx = capPx < hardStop ? capPx : hardStop;
+                    if (lockArmed && lockPx < stopPx) stopPx = lockPx;
+                    double exitPx = hitStop   ? stopPx :
                                     hitTarget ? target   : m15Price;
                     double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: false);
                     double ret = ((entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl) * dcaSizeMult;

@@ -31,7 +31,12 @@ public class RipShortGenotype
     public double TakeProfitAtrMult         { get; set; }   // 2.0–15.0  fixed profit target below entry
     public double TrailingActivationAtrMult { get; set; }   // 1.5–5.0   arm trail after this profit
     public double TrailingStopAtrMult       { get; set; }   // 1.0–5.0   trail distance from trough
-    public int    MaxHoldCandles            { get; set; }   // 10–60     h1 bars before forced exit
+    // 10–160 h1 bars before forced exit. Widened from 10–60 on measured evidence: the trained
+    // value sat at 53 against a ceiling of 60, median realised hold was 48h, and trade anatomy
+    // showed hold time is IDENTICAL for the best and worst deciles (47h vs 48h) — i.e. nearly
+    // every trade was closing on the TIME limit rather than on stop or target. MaxHold was the
+    // dominant exit while being bounded below where the GA wanted it.
+    public int    MaxHoldCandles            { get; set; }   // 10–160    h1 bars before forced exit
     public double PositionSizePct           { get; set; }   // 0.01–0.05 fraction of capital per trade
 
     // ── Time-decay stop genes ────────────────────────────────────────────────────
@@ -80,7 +85,7 @@ public class RipShortGenotype
             TakeProfitAtrMult         = 2.0 + rng.NextDouble() * 13.0,
             TrailingActivationAtrMult = 1.5 + rng.NextDouble() * 3.5,
             TrailingStopAtrMult       = 1.0 + rng.NextDouble() * 4.0,
-            MaxHoldCandles            = rng.Next(10, 61),
+            MaxHoldCandles            = rng.Next(10, 161),
             PositionSizePct           = 0.01 + rng.NextDouble() * 0.04,
             TimeStopBars              = rng.Next(5, 51),
             TimeStopLossPct           = 0.02 + rng.NextDouble() * 0.23,
@@ -133,7 +138,7 @@ public class RipShortGenotype
             TakeProfitAtrMult         = Nudge(TakeProfitAtrMult,         2.0, 15.0, 2.0),
             TrailingActivationAtrMult = Nudge(TrailingActivationAtrMult, 1.5,  5.0, 0.5),
             TrailingStopAtrMult       = Nudge(TrailingStopAtrMult,       1.0,  5.0, 0.5),
-            MaxHoldCandles            = NudgeInt(MaxHoldCandles, 10, 60, 5),
+            MaxHoldCandles            = NudgeInt(MaxHoldCandles, 10, 160, 10),
             PositionSizePct           = Nudge(PositionSizePct,   0.01, 0.05, 0.005),
             TimeStopBars              = NudgeInt(TimeStopBars,    5, 50, 5),
             TimeStopLossPct           = Nudge(TimeStopLossPct,   0.02, 0.25, 0.03),
@@ -151,8 +156,15 @@ public class RipShortGenotype
         StopLossAtrMult           = Math.Clamp(StopLossAtrMult,           0.5,  2.0),
         TakeProfitAtrMult         = Math.Clamp(TakeProfitAtrMult,         2.0, 15.0),
         TrailingActivationAtrMult = Math.Clamp(TrailingActivationAtrMult, 1.5,  5.0),
-        TrailingStopAtrMult       = Math.Clamp(TrailingStopAtrMult,       1.0,  5.0),
-        MaxHoldCandles            = Math.Clamp(MaxHoldCandles,            10,   60),
+        // The trail must stay BELOW its own activation distance, else arming it still permits a
+        // LOSS: measured live at activation 2.13A / trail 3.20A, so a trade could move 2.13A in
+        // favour, arm the trail, and still stop out 1.07A down. The other four strategies satisfy
+        // this by accident of their trained values; RipShort — which carries the worst tail — did
+        // not. Enforced here rather than left to the GA, because it is a geometric invariant, not
+        // a preference: TrailingActivationAtrMult is clamped first, so this reads the clamped value.
+        TrailingStopAtrMult       = Math.Min(Math.Clamp(TrailingStopAtrMult, 1.0, 5.0),
+                                             Math.Clamp(TrailingActivationAtrMult, 1.5, 5.0) * 0.9),
+        MaxHoldCandles            = Math.Clamp(MaxHoldCandles,            10,  160),
         PositionSizePct           = Math.Clamp(PositionSizePct,           0.01, 0.05),
         TimeStopBars              = Math.Clamp(TimeStopBars,               5,   50),
         TimeStopLossPct           = Math.Clamp(TimeStopLossPct,           0.02, 0.25),
@@ -173,7 +185,7 @@ public class RipShortGenotype
         { 2.0, 15.0 }, // TakeProfitAtrMult
         { 1.5,  5.0 }, // TrailingActivationAtrMult
         { 1.0,  5.0 }, // TrailingStopAtrMult
-        {  10,   60 }, // MaxHoldCandles
+        {  10,  160 }, // MaxHoldCandles — widened, see the field comment
         { 0.01,0.05 }, // PositionSizePct
         {   5,   50 }, // TimeStopBars
         { 0.02,0.25 }, // TimeStopLossPct
@@ -319,7 +331,7 @@ public class RipShortGenotype
         TakeProfitAtrMult         = Math.Clamp(v[6],   2.0, 15.0),
         TrailingActivationAtrMult = Math.Clamp(v[7],   1.5,  5.0),
         TrailingStopAtrMult       = Math.Clamp(v[8],   1.0,  5.0),
-        MaxHoldCandles            = Math.Clamp((int)Math.Round(v[9]),   10,  60),
+        MaxHoldCandles            = Math.Clamp((int)Math.Round(v[9]),   10, 160),
         PositionSizePct           = Math.Clamp(v[10], 0.01, 0.05),
         TimeStopBars              = Math.Clamp((int)Math.Round(v[11]),   5,  50),
         TimeStopLossPct           = Math.Clamp(v[12], 0.02, 0.25),

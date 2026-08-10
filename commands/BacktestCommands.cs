@@ -105,11 +105,11 @@ static class BacktestCommands
                 var vRet = vt.Select(t => t.Return).ToList();
                 fsVCC += h1Val.Length * 12;
                 // Unscreened: include all coins in the aggregate for an unbiased lower bound
-                foreach (var (t, r, _) in vt) fsUnscreenedRet.Add(r);
+                foreach (var (t, r, _, _, _) in vt) fsUnscreenedRet.Add(r);
                 if (fsExp > 0 && fsPF >= 1.2 && fsSort >= 0.3)
                 {
                     double conf = Simulator.ComputeConfidence(fsTr);
-                    foreach (var (t, r, _) in vt) fsTrades.Add((sym, t, r, conf));
+                    foreach (var (t, r, _, _, _) in vt) fsTrades.Add((sym, t, r, conf));
                     double wr = vRet.Count > 0 ? (double)vRet.Count(r => r > 0) / vRet.Count : 0;
                     if (vRet.Count > 0) fsCoinRows.Add((sym, vRet.Count, wr, Simulator.ProfitFactor(vRet), vRet.Count > 0 ? vRet.Average() : 0, conf));
                 }
@@ -127,7 +127,7 @@ static class BacktestCommands
                     var    gVt   = GridSimulator.GetGridReturns(gridG, h1Val);
                     var    gVRet = gVt.Select(t => t.Return).ToList();
                     gridVCC += h1Val.Length * 12;
-                    foreach (var (t, r, _) in gVt) gridTrades.Add((sym, t, r, gConf));
+                    foreach (var (t, r, _, _, _) in gVt) gridTrades.Add((sym, t, r, gConf));
                     double gWr = gVRet.Count > 0 ? (double)gVRet.Count(r => r > 0) / gVRet.Count : 0;
                     if (gVRet.Count > 0) gridCoinRows.Add((sym, gVRet.Count, gWr, Simulator.ProfitFactor(gVRet), gVRet.Count > 0 ? gVRet.Average() : 0, gConf));
                 }
@@ -417,7 +417,7 @@ static class BacktestCommands
 
             coinDiag.Add((sym, fullTrades.Count, worstLoss, riskCap, Math.Min(conf * 2.0, riskCap)));
 
-            foreach (var (t, ret, _) in fullTrades)
+            foreach (var (t, ret, _, _, _) in fullTrades)
                 allTrades.Add((t, ret, conf, riskCap));
 
             if (gridG != null)
@@ -432,7 +432,7 @@ static class BacktestCommands
                         ? gLoss[Math.Min(gLoss.Count - 1, (int)(gLoss.Count * 0.99))] : 0.05;
                     gWorstLoss = Math.Max(gWorstLoss, 0.005);
                     double gRiskCap = RiskBudget / gWorstLoss;
-                    foreach (var (t, ret, _) in GridSimulator.GetGridReturns(gridG, h1))
+                    foreach (var (t, ret, _, _, _) in GridSimulator.GetGridReturns(gridG, h1))
                         gridTrades.Add((t, ret, gConf, gRiskCap));
                 }
             }
@@ -618,7 +618,7 @@ static class BacktestCommands
                     var (_, hk)    = StrategyStats.KellyFraction(fsTr);
                     double fsHk    = Math.Min(hk, 0.05);
                     swingRet.AddRange(yearTrades.Select(t => t.Return));
-                    foreach (var (t, ret, _) in yearTrades)
+                    foreach (var (t, ret, _, _, _) in yearTrades)
                         crashTrades.Add((t - TimeSpan.FromHours(sg.MaxHoldCandles), t, ret, fsHk, "FadeShort"));
                 }
             }
@@ -634,7 +634,7 @@ static class BacktestCommands
                     var (_, hk)    = StrategyStats.KellyFraction(gTr);
                     double gHk     = Math.Min(hk, 0.05);
                     gridRet.AddRange(yearTrades.Select(t => t.Return));
-                    foreach (var (t, ret, _) in yearTrades)
+                    foreach (var (t, ret, _, _, _) in yearTrades)
                         crashTrades.Add((t - TimeSpan.FromHours(gg.MaxHoldCandles), t, ret, gHk, "Grid"));
                 }
             }

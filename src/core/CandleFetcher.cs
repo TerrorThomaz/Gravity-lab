@@ -170,7 +170,9 @@ static class CandleFetcher
         // Exclude in-progress bar from returned list (cached for overwrite on next fetch).
         DateTime nowFinal = DateTime.UtcNow;
         DateTime currentBarStart = new DateTime(nowFinal.Ticks - nowFinal.Ticks % TimeSpan.FromMinutes(15).Ticks, DateTimeKind.Utc);
-        return cached.Where(kv => kv.Key < currentBarStart).Select(kv => kv.Value).ToList();
+        var series = cached.Where(kv => kv.Key < currentBarStart).Select(kv => kv.Value).ToList();
+        VerifyCacheIntegrity(symbol, series);
+        return series;
     }
 
     // Coin filter: median ATR% and USD volume over the candle window.
@@ -585,4 +587,56 @@ static class CandleFetcher
         double avg  = r.Average();
         Console.WriteLine($"  {label,-12} Sh={sh:F2}  Sort={sort:F2}  PF={pf:F2}  WR={wr:P0}  Tr={r.Count}  Avg={avg:+0.00;-0.00}%");
     }
+
+    // Cache integrity check.
+    //
+    // candle_cache/{SYMBOL}_15m.csv is built INCREMENTALLY — each run appends only bars newer
+    // than the last write. If the exchange ever restates a historical bar, the cache silently
+    // keeps the stale value, so two backtests run weeks apart can disagree while both look
+    // correct and neither reports anything. Backtest reproducibility rests on historical bars
+    // being immutable, and nothing was checking that.
+    //
+    // Diagnostic only: never throws and never alters control flow. A corrupted cache should be
+    // visible, not fatal — the caller decides whether to delete and refetch.
+    // Timeframe-agnostic: spacing is derived from the data, so this works on 15m, 1h or 1m.
+    public static void VerifyCacheIntegrity(string symbol, IReadOnlyList<Candle> candles)
+    {
+        if (candles.Count < 3) return;
+
+        var gaps = new List<long>(candles.Count - 1);
+        int nonMonotonic = 0, duplicates = 0;
+        DateTime firstBadTime = default, firstDupTime = default;
+
+        for (int i = 1; i < candles.Count; i++)
+        {
+            long d = candles[i].Time.Ticks - candles[i - 1].Time.Ticks;
+            if (d == 0)     { if (duplicates++   == 0) firstDupTime = candles[i].Time; }
+            else if (d < 0) { if (nonMonotonic++ == 0) firstBadTime = candles[i].Time; }
+            else gaps.Add(d);
+        }
+
+        if (gaps.Count == 0) return;
+        var sorted = gaps.ToArray();
+        Array.Sort(sorted);
+        long median = sorted[sorted.Length / 2];
+
+        int bigGaps = 0; DateTime firstGapTime = default;
+        if (median > 0)
+            for (int i = 1; i < candles.Count; i++)
+            {
+                long d = candles[i].Time.Ticks - candles[i - 1].Time.Ticks;
+                if (d > 2 * median) { if (bigGaps++ == 0) firstGapTime = candles[i].Time; }
+            }
+
+        if (nonMonotonic == 0 && duplicates == 0 && bigGaps == 0) return;
+
+        if (nonMonotonic > 0)
+            Console.WriteLine($"  [cache] {symbol}: {nonMonotonic} NON-MONOTONIC timestamp(s), first at {firstBadTime:yyyy-MM-dd HH:mm}");
+        if (duplicates > 0)
+            Console.WriteLine($"  [cache] {symbol}: {duplicates} DUPLICATE timestamp(s), first at {firstDupTime:yyyy-MM-dd HH:mm}");
+        if (bigGaps > 0)
+            Console.WriteLine($"  [cache] {symbol}: {bigGaps} gap(s) > 2x median spacing " +
+                              $"({TimeSpan.FromTicks(median).TotalMinutes:F0}m), first at {firstGapTime:yyyy-MM-dd HH:mm}");
+    }
+
 }

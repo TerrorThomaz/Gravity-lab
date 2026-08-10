@@ -199,6 +199,66 @@ public static class MonteCarloTest
         return new(actualStat, meanNull, stdNull, pValue, pValue <= 0.05, permutations);
     }
 
+    // Moving-block bootstrap. Identical to Run() in statistic, mean-centring, resample count
+    // and p-value estimator — the ONLY difference is that it draws contiguous BLOCKS instead of
+    // independent observations, so the pair is directly comparable and the gap between them is
+    // attributable to dependence alone.
+    //
+    // Why it is needed: Run() resamples individual trades independently, which assumes trades are
+    // independent. They are not. This system trades ~100 correlated crypto perps and gates entry
+    // by market regime, so trades cluster hard in time — many simultaneous positions in one Bull
+    // leg are close to ONE observation, not many. Independent resampling therefore understates the
+    // null's spread and returns p-values that are too optimistic.
+    //
+    // blockSize = 1 degenerates to exactly Run()'s iid bootstrap, which is the intended way to
+    // read this: compare blockSize 1 against a realistic block length and watch the p-value move.
+    // When trades cluster, the BLOCK p-value is the honest one.
+    public static MonteCarloResult RunBlockBootstrap(
+        List<double> returns,
+        int blockSize,
+        int permutations = 1000,
+        Random? rng = null)
+    {
+        rng ??= new Random(42);
+
+        if (returns.Count < 10 || permutations < 1)
+            return new(0, 0, 0, 1.0, false, 0);
+
+        double actualStat = PerTradeSharpe(returns);
+        int n = returns.Count;
+        blockSize = Math.Clamp(blockSize, 1, n);
+
+        double mean = returns.Average();
+        var centred = new double[n];
+        for (int i = 0; i < n; i++) centred[i] = returns[i] - mean;
+
+        int countAtOrAbove = 0;
+        var nullStats = new double[permutations];
+        var resample = new double[n];
+
+        for (int p = 0; p < permutations; p++)
+        {
+            int idx = 0;
+            while (idx < n)
+            {
+                // Circular wrap: every start index is equally likely, so no observation is
+                // under-sampled at the series edges the way a truncating block draw would.
+                int start = rng.Next(n);
+                int len = Math.Min(blockSize, n - idx);
+                for (int i = 0; i < len; i++) resample[idx++] = centred[(start + i) % n];
+            }
+            double stat = PerTradeSharpe(resample);
+            nullStats[p] = stat;
+            if (stat >= actualStat) countAtOrAbove++;
+        }
+
+        double pValue = (countAtOrAbove + 1.0) / (permutations + 1.0);
+        double meanNull = nullStats.Average();
+        double stdNull = Math.Sqrt(nullStats.Select(s => (s - meanNull) * (s - meanNull)).Average());
+
+        return new(actualStat, meanNull, stdNull, pValue, pValue <= 0.05, permutations);
+    }
+
     public static void PrintReport(MonteCarloResult result, string strategyName)
     {
         Console.WriteLine($"\n── Monte Carlo Bootstrap Test: {strategyName} ──");

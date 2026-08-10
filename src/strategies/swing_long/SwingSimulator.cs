@@ -28,7 +28,9 @@ public static class FadeShortSimulator
     // 0.62% — the volatility scaling is in TradeCosts, not here.
     private const double StopGapAtrK = 0.030;  // stop gap premium = k × atrPct — fast-stop fill risk
 
-    public static List<(DateTime Time, double Return, string Kind)> GetFadeShortReturns(
+    // EntryTime/EntryPrice: `Time` is the EXIT bar. Appended as NAMED fields so existing
+    // t.Time / t.Return consumers compile unchanged.
+    public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetFadeShortReturns(
         FadeShortGenotype g, ReadOnlySpan<Candle> candles)
     {
         var (trades, _) = RunSwing(g, candles);
@@ -51,7 +53,7 @@ public static class FadeShortSimulator
         return state;
     }
 
-    private static (List<(DateTime, double, string)> Trades, FadeShortTradeState FinalState)
+    private static (List<(DateTime, double, string, DateTime, double)> Trades, FadeShortTradeState FinalState)
         RunSwing(FadeShortGenotype g, ReadOnlySpan<Candle> candles)
     {
         int warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
@@ -74,7 +76,7 @@ public static class FadeShortSimulator
     // Entry point for the GA fitness loop — uses pre-computed fixed-period indicators and a
     // caller-rented EMA buffer, simulating only over [rangeStart, rangeEnd).
     // This avoids per-individual allocations of rsi/adx/atr arrays and Candle→double LINQ copies.
-    internal static List<(DateTime Time, double Return, string Kind)> GetFadeShortReturnsPrecomputed(
+    internal static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetFadeShortReturnsPrecomputed(
         FadeShortGenotype g,
         ReadOnlySpan<Candle>  candles,
         double[]  closes, double[] highs, double[] lows,
@@ -92,7 +94,7 @@ public static class FadeShortSimulator
 
     // Core simulation loop shared by RunSwing and GetFadeShortReturnsPrecomputed.
     // iStart/iEnd are absolute indices into the full arrays; caller ensures iStart ≥ warmup.
-    private static (List<(DateTime, double, string)> Trades, FadeShortTradeState FinalState)
+    private static (List<(DateTime, double, string, DateTime, double)> Trades, FadeShortTradeState FinalState)
         SimulateCore(
             FadeShortGenotype g,
             ReadOnlySpan<Candle>  candles,
@@ -100,15 +102,16 @@ public static class FadeShortSimulator
             double[]  rsi,    double[] adx,   double[] atr, double[] ema,
             int       iStart, int      iEnd)
     {
-        var result = new List<(DateTime, double, string)>();
+        var result = new List<(DateTime, double, string, DateTime, double)>();
 
         var bearBos        = Signals.BearishBoS(closes, lows);
         var bearDiv        = Signals.BearishDivergence(rsi, closes, g.LookbackCandles, g.RsiOverbought, g.RsiDivThreshold);
         var bigRallyArr    = Signals.MinMoveFilter(closes, lows, atr, g.LookbackCandles, g.MinRallyAtrMult);
         var strongTrendArr = Signals.AdxTrend(adx, closes, ema, g.AdxThreshold);
 
-        bool   inTrade    = false;
-        double entry      = 0;
+        bool     inTrade   = false;
+        double   entry     = 0;
+        DateTime entryTime = default;   // h1-only path: exposed so callers get the ENTRY, not the exit
         double hardStop   = 0;
         double maeStop    = 0;
         double target     = 0;
@@ -148,6 +151,7 @@ public static class FadeShortSimulator
                 // ── Enter short ───────────────────────────────────────────────────
                 inTrade    = true;
                 entry      = price;
+                entryTime  = candles[i].Time;   // h1-only path: the entry bar IS candles[i]
                 atrEntry   = atrNow;
                 // Stop above the swing high: if price exceeds that level the fade thesis is wrong.
                 hardStop   = swingHigh + g.StopLossAtrMult * atrEntry;
@@ -179,7 +183,7 @@ public static class FadeShortSimulator
                                     hitMae      ? maeStop  :
                                     hitTarget   ? target   : price;
                     double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry);
-                    result.Add((candles[i].Time, ret, "fade_short"));
+                    result.Add((candles[i].Time, ret, "fade_short", entryTime, entry));
                     inTrade = false;
                 }
             }
@@ -190,7 +194,7 @@ public static class FadeShortSimulator
         {
             double finalPx = closes[iEnd - 1];
             double ret = (entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry);
-            result.Add((candles[iEnd - 1].Time, ret, "fade_short"));
+            result.Add((candles[iEnd - 1].Time, ret, "fade_short", entryTime, entry));
         }
 
         var finalState = new FadeShortTradeState(inTrade, entry, hardStop, maeStop, target,
@@ -223,7 +227,9 @@ public static class FadeShortSimulator
         return result.ToArray();
     }
 
-    public static List<(DateTime Time, double Return, string Kind)> GetFadeShortReturns(
+    // EntryTime/EntryPrice: `Time` is the EXIT bar. Appended as NAMED fields so existing
+    // t.Time / t.Return consumers compile unchanged.
+    public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetFadeShortReturns(
         FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
         FundingRateSession? funding = null)
     {
@@ -246,7 +252,7 @@ public static class FadeShortSimulator
         return scored;
     }
 
-    private static (List<(DateTime, double, string)> Trades, FadeShortTradeState FinalState)
+    private static (List<(DateTime, double, string, DateTime, double)> Trades, FadeShortTradeState FinalState)
         RunSwingMultiTF(FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
                         string? coin = null, List<ScoredTrade>? scoredOut = null,
                         FundingRateSession? funding = null)
@@ -276,7 +282,7 @@ public static class FadeShortSimulator
         var m15Closes = CandleExt.Closes(m15);
         var m15Lows   = CandleExt.Lows(m15);
 
-        var result = new List<(DateTime, double, string)>();
+        var result = new List<(DateTime, double, string, DateTime, double)>();
 
         bool   inTrade    = false;
         double entry      = 0;
@@ -399,7 +405,7 @@ public static class FadeShortSimulator
                                     hitTarget   ? target   : m15Price;
                     double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: false);
                     double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl;
-                    result.Add((m15[im15].Time, ret, "fade_short"));
+                    result.Add((m15[im15].Time, ret, "fade_short", entryTime, entry));
                     scoredOut?.Add(new ScoredTrade(coin!, "swing", entryTime, m15[im15].Time, ret, entryScore));
                     inTrade = false;
                 }
@@ -411,7 +417,7 @@ public static class FadeShortSimulator
             double finalPx = m15Closes[^1];
             double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[^1].Time, funding, isLong: false);
             double ret = (entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry) + fundingPnl;
-            result.Add((m15[^1].Time, ret, "fade_short"));
+            result.Add((m15[^1].Time, ret, "fade_short", entryTime, entry));
             scoredOut?.Add(new ScoredTrade(coin!, "swing", entryTime, m15[^1].Time, ret, entryScore));
         }
 
@@ -456,7 +462,9 @@ public static class SwingLongSimulator
         double TrailHigh,   // highest price seen since entry (trail reference for long)
         int    HoldCount);
 
-    public static List<(DateTime Time, double Return, string Kind)> GetSwingLongReturns(
+    // EntryTime/EntryPrice: `Time` is the EXIT bar. Appended as NAMED fields so existing
+    // t.Time / t.Return consumers compile unchanged.
+    public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetSwingLongReturns(
         SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
         FundingRateSession? funding = null)
     {
@@ -479,7 +487,7 @@ public static class SwingLongSimulator
         return state;
     }
 
-    private static (List<(DateTime, double, string)> Trades, SwingLongTradeState FinalState)
+    private static (List<(DateTime, double, string, DateTime, double)> Trades, SwingLongTradeState FinalState)
         RunSwingLongMultiTF(SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
                             FundingRateSession? funding = null)
     {
@@ -507,7 +515,7 @@ public static class SwingLongSimulator
         var m15Closes = CandleExt.Closes(m15);
         var m15Highs  = CandleExt.Highs(m15);
 
-        var result = new List<(DateTime, double, string)>();
+        var result = new List<(DateTime, double, string, DateTime, double)>();
 
         bool   inTrade    = false;
         double entry      = 0;
@@ -627,7 +635,7 @@ public static class SwingLongSimulator
                     double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: true);
                     double ret      = (exitPx - entry) / entry * 100.0
                                     - TradeCost(hitStop, atrEntry, entry) + fundingPnl;
-                    result.Add((m15[im15].Time, ret, "swing_long"));
+                    result.Add((m15[im15].Time, ret, "swing_long", entryTime, entry));
                     inTrade = false;
                 }
             }
@@ -639,7 +647,7 @@ public static class SwingLongSimulator
             double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[^1].Time, funding, isLong: true);
             double ret     = (finalPx - entry) / entry * 100.0
                            - TradeCost(isStop: false, atrEntry, entry) + fundingPnl;
-            result.Add((m15[^1].Time, ret, "swing_long"));
+            result.Add((m15[^1].Time, ret, "swing_long", entryTime, entry));
         }
 
         int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;

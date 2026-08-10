@@ -31,11 +31,15 @@ public class VolatilityWeightedRotatorGA
         _eliteCount = eliteCount;
     }
 
+    // Signature mirrors DynamicGuardGA.Run: the rotator and the guard now optimise against the
+    // same object — the portfolio's trade list — instead of the rotator scoring a private toy.
     public VolatilityWeightedRotatorGenotype Run(
-        Dictionary<string, (Candle[] h1, Candle[] m15)> coinData,
+        Candle[] btcH1,
+        RegimeBar[] btcSeries,
         DynamicGuardGenotype guardGeno,
-        string[] coins)
+        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> trades)
     {
+        var gs = new DynamicGuardSession(btcH1, guardGeno);
         Console.WriteLine($"Training VolatilityWeightedRotator | pop={_populationSize} gen={_generations}\n");
 
         var population = new List<VolatilityWeightedRotatorGenotype>();
@@ -51,7 +55,7 @@ public class VolatilityWeightedRotatorGA
 
             foreach (var geno in population)
             {
-                double fitness = Evaluate(geno, guardGeno, coinData, coins);
+                double fitness = Evaluate(geno, gs, btcSeries, trades);
                 scored.Add((geno, fitness));
             }
 
@@ -84,63 +88,60 @@ public class VolatilityWeightedRotatorGA
         return best!;
     }
 
+    // Score the object the rotator is actually DEPLOYED against: the portfolio's own trade
+    // list, sized through the rotator, run through the same exposure simulator the backtest
+    // uses. Paired with the guard, whose session supplies two of the three input signals.
+    //
+    // The previous objective simulated BUY-AND-HOLD BETA on synthetic proxies —
+    //     altRet = (close[i] - close[i-4]) / close[i-4];  btcRet = altRet * 0.6;
+    // — so "rotating to safety" only ever meant "scale the same coin's move by 0.6". It
+    // measured market direction, not rotation skill, and it is why two independent runs drove
+    // GuardWeight and AtrWeight to exactly 0: the beta term drowned both signals. It was also
+    // direction-blind, which cost -35.7pp until ComputeSafetyScore learned about isLong.
     private double Evaluate(
         VolatilityWeightedRotatorGenotype geno,
-        DynamicGuardGenotype guardGeno,
-        Dictionary<string, (Candle[] h1, Candle[] m15)> coinData,
-        string[] coins)
+        DynamicGuardSession gs,
+        RegimeBar[] btcSeries,
+        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> trades)
     {
+        if (trades.Count < 50) return -1000;
         var rotator = new VolatilityWeightedRotator(geno);
-        var returns = new List<double>();
 
-        foreach (var coin in coins)
+        var times   = trades.Select(t => t.Time).ToList();
+        var regimes = RegimeBarLookup.TagRegimes(btcSeries, times);
+
+        var sized = new List<(DateTime, double, double, TimeSpan, string)>(trades.Count);
+        // Rotation is not free: shifting capital between alts and BTC/ETH sells one and buys the
+        // other, a round trip on the fraction moved. Without this the GA sees churn as costless,
+        // which is why RotationSpeed sits pinned at its 1.0 maximum — bang-bang rebalancing —
+        // in direct contradiction of the class comment promising "gradual ... to avoid whipsaw
+        // and reduce slippage". Charging the move is what gives that gene a reason to be < 1.
+        double prevAlt = 1.0;      // start fully in alts
+        double rotationCostPct = 0.0;
+        for (int i = 0; i < trades.Count; i++)
         {
-            if (!coinData.TryGetValue(coin, out var data)) continue;
-            if (data.h1.Length < 500) continue;
-
-            var guardSession = new DynamicGuardSession(data.h1, guardGeno);
-            var regimeSeries = RegimeClassifier.ClassifySeriesWithDuration(data.h1);
-
-            double altWeight = 1.0, btcWeight = 0.0, ethWeight = 0.0;
-            double equity = 1.0;
-
-            for (int i = 200; i < data.h1.Length; i += 4)  // sample every 4h
-            {
-                var time = data.h1[i].Time;
-                double guardMult = guardSession.GetMult(time);
-                double atrRatio = guardSession.GetAtrRatio(time);
-                var regime = regimeSeries[i].Regime;
-
-                double safety = rotator.ComputeSafetyScore(guardMult, atrRatio, regime);
-                var (targetAlt, targetBtc, targetEth) = rotator.ComputeAllocation(safety);
-                var (newAlt, newBtc, newEth) = rotator.Rebalance(
-                    altWeight, btcWeight, ethWeight, targetAlt, targetBtc, targetEth);
-
-                altWeight = newAlt;
-                btcWeight = newBtc;
-                ethWeight = newEth;
-
-                // Simulate returns: alts have higher vol, BTC/ETH lower vol
-                double altRet = (data.h1[i].Close - data.h1[i - 4].Close) / data.h1[i - 4].Close;
-                double btcRet = altRet * 0.6;  // BTC moves ~60% of alt
-                double ethRet = altRet * 0.75; // ETH moves ~75% of alt
-
-                double portfolioRet = altWeight * altRet + btcWeight * btcRet + ethWeight * ethRet;
-                equity *= (1.0 + portfolioRet);
-                returns.Add(portfolioRet);
-            }
+            var t = trades[i];
+            // Unknown label => treat as long, matching PortfolioReplay's conservative convention.
+            bool isLong = PortfolioReplay.IsLong(t.Strategy) ?? true;
+            double safety = rotator.ComputeSafetyScore(gs.GetMult(t.Time), gs.GetAtrRatio(t.Time),
+                                                       regimes[i], isLong);
+            var (altShare, _, _) = rotator.ComputeAllocation(safety);
+            rotationCostPct += Math.Abs(altShare - prevAlt) * TradeCosts.FeeRoundTripPct;
+            prevAlt = altShare;
+            sized.Add((t.Time, t.Return, t.Conf * altShare, t.Hold, t.Strategy));
         }
 
-        if (returns.Count < 50) return -1000;
-
-        double mean = returns.Average();
-        double std = Math.Sqrt(returns.Select(r => (r - mean) * (r - mean)).Average());
-        double sharpe = std > 1e-9 ? mean / std * Math.Sqrt(252 * 6) : 0;  // annualized (4h bars)
-
-        double maxDd = ComputeMaxDrawdown(returns);
-        double ddPenalty = Math.Max(0.1, 1.0 - maxDd);
-
-        return sharpe * ddPenalty;
+        var p = Simulator.SimulatePortfolioExposureCapped(sized, Config.MaxTotalExposurePct,
+                                                          maxPositionFrac: 0.05);
+        // Charged against the portfolio, not per trade: the rotation moves the whole book's
+        // allocation, so its cost scales with capital shifted rather than with any one position.
+        double ret = (p.EndBalance - p.StartBalance) / p.StartBalance - rotationCostPct / 100.0;
+        // Same shape as the guard's objective: return scaled by a drawdown penalty, so a
+        // rotator that buys return with drawdown cannot win. Capital rotated out is modelled
+        // as FLAT here, exactly as in the combinedbacktest comparison — a de-risk-to-cash
+        // lower bound, consistent between training and reporting rather than differing.
+        double ddPenalty = Math.Max(0.1, 1.0 - p.MaxDrawdownPct / 100.0);
+        return ret * ddPenalty;
     }
 
     private double ComputeMaxDrawdown(List<double> returns)
@@ -205,7 +206,7 @@ public class VolatilityWeightedRotatorGA
     public static void Train()
     {
         using var client = new BybitRestClient();
-        var coins = Config.BacktestCoins.Take(20).ToArray();  // subset for speed
+        var coins = Config.BacktestCoins.Take(20).Concat(new[] { "BTCUSDT" }).Distinct().ToArray();  // BTC needed for guard/regime
 
         Console.WriteLine($"Fetching data for {coins.Length} coins...\n");
 
@@ -231,8 +232,50 @@ public class VolatilityWeightedRotatorGA
             return;
         }
 
+        // Build the portfolio trade list the rotator is deployed against. Previously Train()
+        // handed the GA raw candles and the GA scored buy-and-hold beta on them; the rotator
+        // never sizes a coin, it sizes STRATEGY TRADES, so that is what it must be scored on.
+        var swingG = File.Exists(Config.FadeShortGenoFile)
+            ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype() : null;
+        var gridG  = File.Exists(Config.GridGenoFile)
+            ? JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(Config.GridGenoFile))!.ToGenotype() : null;
+        var dlG    = File.Exists(Config.DipLongGenoFile)
+            ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(Config.DipLongGenoFile))!.ToGenotype() : null;
+        var slG    = File.Exists(Config.SwingLongGenoFile)
+            ? JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(Config.SwingLongGenoFile))!.ToGenotype() : null;
+        if (swingG == null && gridG == null && dlG == null && slG == null)
+        {
+            Console.WriteLine("No strategy genotypes found — nothing for the rotator to size. Train strategies first.");
+            return;
+        }
+
+        var trades = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>();
+        foreach (var (sym, (h1, m15)) in coinData)
+        {
+            if (h1.Length < 300) continue;
+            if (swingG != null)
+                foreach (var t in FadeShortSimulator.GetFadeShortReturns(swingG, h1, m15))
+                    trades.Add((t.Time, t.Return, swingG.PositionSizePct, TimeSpan.FromHours(swingG.MaxHoldCandles), "fade_short"));
+            if (gridG != null)
+                foreach (var t in GridSimulator.GetGridSessionReturns(gridG, h1))
+                    // GridGenotype has no position-size gene; GridGA scores at a fixed 0.03 (FitPosFrac).
+                    trades.Add((t.Time, t.Return, 0.03, TimeSpan.FromHours(gridG.MaxHoldCandles), "grid"));
+            if (dlG != null)
+                foreach (var t in DipLongSimulator.GetDipLongReturns(dlG, h1, m15))
+                    trades.Add((t.Time, t.Return, dlG.PositionSizePct, TimeSpan.FromHours(dlG.MaxHoldCandles), "diplong"));
+            if (slG != null)
+                foreach (var t in SwingLongSimulator.GetSwingLongReturns(slG, h1, m15))
+                    trades.Add((t.Time, t.Return, slG.PositionSizePct, TimeSpan.FromHours(slG.MaxHoldCandles), "swing_long"));
+        }
+        trades.Sort((a, b) => a.Time.CompareTo(b.Time));
+        Console.WriteLine($"  Rotator objective: {trades.Count} portfolio trades");
+
+        if (!coinData.TryGetValue("BTCUSDT", out var btcEntry) || btcEntry.h1.Length < 300)
+        { Console.WriteLine("BTCUSDT required for the guard/regime signals."); return; }
+        var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcEntry.h1);
+
         var ga = new VolatilityWeightedRotatorGA();
-        var best = ga.Run(coinData, guardGeno, coins);
+        var best = ga.Run(btcEntry.h1, btcSeries, guardGeno, trades);
 
         var dto = new VolatilityWeightedRotatorGenotypeDto
         {

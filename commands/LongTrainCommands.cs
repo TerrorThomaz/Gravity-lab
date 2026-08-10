@@ -42,6 +42,15 @@ static class LongTrainCommands
     public static async Task RunCoevolve(BybitRestClient client, string[]? args = null)
     {
         string variant = TrainCommands.ResolveVariant(args);
+        // --no-seed: start every genotype from scratch.
+        //
+        // Required for any honest --embargo experiment. The seeds live in genotypes/*.json and
+        // encode everything learned in every previous run, INCLUDING the trailing slice --embargo
+        // withholds — and since the seeded-init fix ~45% of the population is anchored on that
+        // incumbent, so the seed's knowledge of the withheld window survives the run. An embargoed
+        // run that still seeds is not a forward test; it is the old genotypes lightly refined.
+        bool noSeed = args != null && Array.IndexOf(args, "--no-seed") >= 0;
+        if (noSeed) Console.WriteLine("  [NO-SEED] all genotypes from scratch — starting population has seen no data");
         int?   rngSeed = GaSearch.ResolveSeed(args);
         var    cfg     = FitnessConfig.Load();
         Console.WriteLine("=== Gravity-gen2 | COEVOLVETRAIN (FadeLong + DipLong + SwingLong + RipShort + Router + DynamicGuard, 4 cycles) ===");
@@ -61,17 +70,17 @@ static class LongTrainCommands
         string rrPath = TrainCommands.VariantGenoPath("regime_router", variant, Config.RouterGenoFile);
         string dgPath = TrainCommands.VariantGenoPath("dynamic_guard", variant, Config.DynamicGuardGenoFile);
 
-        FadeShortGenotype? fsSeed = File.Exists(Config.FadeShortGenoFile)
+        FadeShortGenotype? fsSeed = noSeed ? null : (File.Exists(Config.FadeShortGenoFile)
             ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype()
-            : null;
+            : null);
         if (fsSeed == null)
             Console.WriteLine("  No FadeShort genotype — FadeShort trade list will be empty this run.");
         else
             Console.WriteLine($"  FadeShort seed  : {fsSeed}");
 
-        FadeLongGenotype? flSeed = File.Exists(flPath)
+        FadeLongGenotype? flSeed = noSeed ? null : (File.Exists(flPath)
             ? JsonSerializer.Deserialize<FadeLongGenotypeDto>(File.ReadAllText(flPath))!.ToGenotype()
-            : null;
+            : null);
         // A non-positive fitness here is the UNGATED score — precisely the misalignment coevolve
         // exists to repair. Nulling the seed removed the strategy from the run entirely (observed:
         // DipLong/SwingLong/RipShort/FadeLong all contributed 0 trades), so the gated re-adaptation
@@ -80,9 +89,9 @@ static class LongTrainCommands
             + (flSeed.Fitness <= 0 ? "   [ungated fitness <= 0 — will be re-adapted under the router gate]" : ""));
         else Console.WriteLine("  FadeLong seed   : none (file missing — training from scratch)");
 
-        DipLongGenotype? dlSeed = File.Exists(dlPath)
+        DipLongGenotype? dlSeed = noSeed ? null : (File.Exists(dlPath)
             ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(dlPath))!.ToGenotype()
-            : null;
+            : null);
         // A non-positive fitness here is the UNGATED score — precisely the misalignment coevolve
         // exists to repair. Nulling the seed removed the strategy from the run entirely (observed:
         // DipLong/SwingLong/RipShort/FadeLong all contributed 0 trades), so the gated re-adaptation
@@ -91,9 +100,9 @@ static class LongTrainCommands
             + (dlSeed.Fitness <= 0 ? "   [ungated fitness <= 0 — will be re-adapted under the router gate]" : ""));
         else Console.WriteLine("  DipLong seed    : none (file missing — training from scratch)");
 
-        SwingLongGenotype? slSeed = File.Exists(slPath)
+        SwingLongGenotype? slSeed = noSeed ? null : (File.Exists(slPath)
             ? JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(slPath))!.ToGenotype()
-            : null;
+            : null);
         // A non-positive fitness here is the UNGATED score — precisely the misalignment coevolve
         // exists to repair. Nulling the seed removed the strategy from the run entirely (observed:
         // DipLong/SwingLong/RipShort/FadeLong all contributed 0 trades), so the gated re-adaptation
@@ -102,9 +111,9 @@ static class LongTrainCommands
             + (slSeed.Fitness <= 0 ? "   [ungated fitness <= 0 — will be re-adapted under the router gate]" : ""));
         else Console.WriteLine("  SwingLong seed  : none (file missing — training from scratch)");
 
-        RipShortGenotype? rsSeed = File.Exists(rsPath)
+        RipShortGenotype? rsSeed = noSeed ? null : (File.Exists(rsPath)
             ? JsonSerializer.Deserialize<RipShortGenotypeDto>(File.ReadAllText(rsPath))!.ToGenotype()
-            : null;
+            : null);
         // A non-positive fitness here is the UNGATED score — precisely the misalignment coevolve
         // exists to repair. Nulling the seed removed the strategy from the run entirely (observed:
         // DipLong/SwingLong/RipShort/FadeLong all contributed 0 trades), so the gated re-adaptation
@@ -113,27 +122,27 @@ static class LongTrainCommands
             + (rsSeed.Fitness <= 0 ? "   [ungated fitness <= 0 — will be re-adapted under the router gate]" : ""));
         else Console.WriteLine("  RipShort seed   : none (file missing — training from scratch)");
 
-        GridGenotype? gsSeed = File.Exists(gsPath)
+        GridGenotype? gsSeed = noSeed ? null : (File.Exists(gsPath)
             ? JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(gsPath))!.ToGenotype()
-            : null;
+            : null);
         if (gsSeed is { Fitness: > 0 }) Console.WriteLine($"  GridShort seed  : {gsSeed}");
         else { gsSeed = null; Console.WriteLine("  GridShort seed  : none (training from scratch)"); }
 
-        RegimeRouterGenotype? routerSeed = File.Exists(rrPath)
+        RegimeRouterGenotype? routerSeed = noSeed ? null : (File.Exists(rrPath)
             ? JsonSerializer.Deserialize<RegimeRouterGenotypeDto>(File.ReadAllText(rrPath))!.ToGenotype()
-            : null;
+            : null);
         if (routerSeed is { Fitness: > 0 }) Console.WriteLine($"  Router seed     : {routerSeed}");
         else { routerSeed = null; Console.WriteLine("  Router seed     : none (training from scratch)"); }
 
-        DynamicGuardGenotype? dgSeed = File.Exists(dgPath)
+        DynamicGuardGenotype? dgSeed = noSeed ? null : (File.Exists(dgPath)
             ? JsonSerializer.Deserialize<DynamicGuardGenotypeDto>(File.ReadAllText(dgPath))!.ToGenotype()
-            : null;
+            : null);
         if (dgSeed != null) Console.WriteLine($"  DynamicGuard seed: {dgSeed}");
         else                Console.WriteLine("  DynamicGuard seed: none (training from scratch)");
 
-        GridGenotype? gridSeed = File.Exists(Config.GridGenoFile)
+        GridGenotype? gridSeed = noSeed ? null : (File.Exists(Config.GridGenoFile)
             ? JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(Config.GridGenoFile))!.ToGenotype()
-            : null;
+            : null);
         if (gridSeed != null) Console.WriteLine($"  Grid seed       : {gridSeed}");
         else                  Console.WriteLine("  Grid seed       : not found — Grid excluded from router training");
 
@@ -161,6 +170,42 @@ static class LongTrainCommands
             coPassed.Add((sym, h1, m15));
         }
         Console.WriteLine($"  {coPassed.Count} coins pass volume filter\n");
+
+        // ── Time embargo (`--embargo <frac>`) ────────────────────────────────────────
+        // Truncating HERE is the point: every downstream consumer — the four regime-gated
+        // strategies, FadeShort, Grid, the router's trade lists (data.AllCoins) and the guard's
+        // — is built from coPassed, so one cut hides the trailing slice from all of them.
+        //
+        // Without it the router and guard train on data.AllCoins = FULL history, including the
+        // val window combinedbacktest then scores. That makes the headline in-sample for the
+        // component doing the work, which is exactly why an OOS PF of 2.11 on unseen COINS is
+        // only symbol-generalization: same calendar window, and crypto's cross-sectional
+        // correlation lets a regime-timing overfit travel across correlated symbols. Held-out
+        // coins cannot falsify a timing overfit; a held-out FUTURE can.
+        double embargoFrac = 0.0;
+        int embIdx = Array.IndexOf(args ?? Array.Empty<string>(), "--embargo");
+        if (embIdx >= 0 && args != null && embIdx + 1 < args.Length
+            && double.TryParse(args[embIdx + 1], System.Globalization.NumberStyles.Float,
+                               System.Globalization.CultureInfo.InvariantCulture, out double ef)
+            && ef > 0 && ef < 0.9)
+            embargoFrac = ef;
+
+        if (embargoFrac > 0)
+        {
+            DateTime? cutoff = null;
+            for (int i = 0; i < coPassed.Count; i++)
+            {
+                var (sym, h1, m15) = coPassed[i];
+                int keepH1  = (int)(h1.Length  * (1.0 - embargoFrac));
+                int keepM15 = (int)(m15.Length * (1.0 - embargoFrac));
+                if (keepH1 < 200) continue;
+                if (sym == "BTCUSDT") cutoff = h1[keepH1 - 1].Time;
+                coPassed[i] = (sym, h1[..keepH1], m15[..keepM15]);
+            }
+            Console.WriteLine($"  [EMBARGO] trailing {embargoFrac:P0} of every coin's history withheld from ALL training");
+            if (cutoff is DateTime c)
+                Console.WriteLine($"  [EMBARGO] BTC training now ends {c:yyyy-MM-dd} — score after this date for a genuine forward test\n");
+        }
 
         var btcEntry = coPassed.FirstOrDefault(x => x.Sym == "BTCUSDT");
         if (btcEntry.H1 is not { Length: > 200 })
@@ -250,7 +295,21 @@ static class LongTrainCommands
 
         var allCoins = coPassed.Select(x => (x.H1, x.M15)).ToList<(Candle[] H1, Candle[] M15)>();
 
-        var data   = new CoevolveGA.AllData(flCoins, dlCoins, slCoins, rsCoins, allCoins, btcSeries, ethSeries, btcEntry.H1, gridSeed, gsSeed);
+        // FadeShort and Grid now co-adapt too — both are router-gated in production and so had
+        // the same train-then-gate misalignment as the four regime-gated strategies. Same 80/20
+        // split the other coevolve strategies use; both are h1-only.
+        var fsCoins   = new List<FadeShortGA.CoinData>();
+        var gridCoins = new List<GridGeneticAlgorithm.CoinData>();
+        foreach (var (sym, h1, _) in coPassed)
+        {
+            if (sym == "BTCUSDT" || h1.Length < 500) continue;
+            int split = (int)(h1.Length * 0.80);
+            fsCoins.Add(new FadeShortGA.CoinData(h1[..split], h1[split..]));
+            gridCoins.Add(new GridGeneticAlgorithm.CoinData(h1[..split], h1[split..]));
+        }
+        Console.WriteLine($"  FadeShort/Grid: {fsCoins.Count} coins (full 3yr, 80/20 split)\n");
+
+        var data   = new CoevolveGA.AllData(flCoins, dlCoins, slCoins, rsCoins, allCoins, fsCoins, gridCoins, btcSeries, ethSeries, btcEntry.H1, gridSeed, gsSeed);
         var result = new CoevolveGA().Run(data, fsSeed, flSeed, dlSeed, slSeed, rsSeed, routerSeed, dgSeed);
 
         // CoevolveGA FREEZES the four strategies and returns the seeds it was handed, so a null
@@ -278,6 +337,13 @@ static class LongTrainCommands
         SaveIfEvolved(dlPath, result.DipLong,   g => DipLongGenotypeDto.From(g, cfg),   "DipLong");
         SaveIfEvolved(slPath, result.SwingLong, g => SwingLongGenotypeDto.From(g, cfg), "SwingLong");
         SaveIfEvolved(rsPath, result.RipShort,  g => RipShortGenotypeDto.From(g, cfg),  "RipShort");
+        // FadeShort and Grid co-adapt now too. Writing them back is the whole point — computing
+        // an evolved genotype and dropping it on the floor is the pattern this codebase keeps
+        // producing, and adding another instance of it would be worse than not evolving them.
+        SaveIfEvolved(TrainCommands.VariantGenoPath("fade_short", variant, Config.FadeShortGenoFile),
+                      result.FadeShort, g => FadeShortGenotypeDto.From(g, cfg), "FadeShort");
+        SaveIfEvolved(TrainCommands.VariantGenoPath("grid_best", variant, Config.GridGenoFile),
+                      result.Grid,      g => GridGenotypeDto.From(g, cfg),      "Grid");
 
         File.WriteAllText(rrPath,
             JsonSerializer.Serialize(RegimeRouterGenotypeDto.From(result.Router),

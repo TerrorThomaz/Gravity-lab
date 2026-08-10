@@ -60,7 +60,10 @@ public static class GridSimulator
     // funding: optional real rate series. Passing null does NOT mean "no funding" — the
     // fallback branch of FundingRateSession.PnlPct still charges the interest-rate floor
     // (-0.01pp per 8h settlement crossed), same as every other strategy.
-    public static List<(DateTime Time, double Return, string Kind)> GetGridReturns(
+    // EntryTime/EntryPrice: `Time` is the EXIT bar. For a session-level row the entry is the
+    // session's start and the mean of its filled levels — a grid has no single entry.
+    // Appended as NAMED fields so existing consumers compile unchanged.
+    public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetGridReturns(
         GridGenotype g, ReadOnlySpan<Candle> h1, FundingRateSession? funding = null)
     {
         var (trades, _) = RunGrid(g, h1, sessionLevel: false, funding: funding);
@@ -69,7 +72,10 @@ public static class GridSimulator
 
     // Per-session returns — one record per grid activation, return = mean of all level fills.
     // Used by GridGA fitness to avoid inflating trade count and win-rate.
-    public static List<(DateTime Time, double Return, string Kind)> GetGridSessionReturns(
+    // EntryTime/EntryPrice: `Time` is the EXIT bar. For a session-level row the entry is the
+    // session's start and the mean of its filled levels — a grid has no single entry.
+    // Appended as NAMED fields so existing consumers compile unchanged.
+    public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetGridSessionReturns(
         GridGenotype g, ReadOnlySpan<Candle> h1, FundingRateSession? funding = null)
     {
         var (trades, _) = RunGrid(g, h1, sessionLevel: true, funding: funding);
@@ -99,7 +105,7 @@ public static class GridSimulator
         return state;
     }
 
-    private static (List<(DateTime, double, string)> Trades, GridTradeState FinalState)
+    private static (List<(DateTime, double, string, DateTime, double)> Trades, GridTradeState FinalState)
         RunGrid(GridGenotype g, ReadOnlySpan<Candle> candles, bool sessionLevel,
                 string? coin = null, List<ScoredTrade>? scoredOut = null,
                 FundingRateSession? funding = null)
@@ -118,7 +124,7 @@ public static class GridSimulator
         var atr     = Volatility.Atr(highs, lows, closes, AtrPeriod);
         var bbWidth = Volatility.BbWidth(closes, g.BbPeriod);
 
-        var result       = new List<(DateTime, double, string)>();
+        var result       = new List<(DateTime, double, string, DateTime, double)>();
         var sessionFills = new List<double>();
 
         bool     gridActive        = false;
@@ -132,17 +138,24 @@ public static class GridSimulator
         double   sessionScore      = 0;    // signal quality at grid activation
         DateTime sessionEntryTime  = default;
 
-        void AddReturn(int i, double ret, string kind)
+        void AddReturn(int i, double ret, string kind, double entryPx)
         {
             if (sessionLevel) sessionFills.Add(ret);
-            else              result.Add((times[i], ret, kind));
+            else              result.Add((times[i], ret, kind, sessionEntryTime, entryPx));
+        }
+
+        static double MeanFilled(double[] px, bool[] fl)
+        {
+            double sum = 0; int n = 0;
+            for (int k = 0; k < px.Length; k++) if (fl[k] && px[k] > 0) { sum += px[k]; n++; }
+            return n > 0 ? sum / n : 0.0;
         }
 
         void FlushSession(int i)
         {
             if (!sessionLevel || sessionFills.Count == 0) return;
             double avg = sessionFills.Average();
-            result.Add((times[i], avg, "grid_session"));
+            result.Add((times[i], avg, "grid_session", sessionEntryTime, MeanFilled(entryPrice, filled)));
             scoredOut?.Add(new ScoredTrade(coin!, "grid", sessionEntryTime, times[i], avg, sessionScore));
             sessionFills.Clear();
         }
@@ -158,7 +171,7 @@ public static class GridSimulator
                 double ret = (exitPx - entryPrice[n]) / entryPrice[n] * 100.0
                            - TradeCost(atrAtStart, entryPrice[n], isStop)
                            + fundingPnl;
-                AddReturn(i, ret, "grid_long");
+                AddReturn(i, ret, "grid_long", entryPrice[n]);
                 filled[n] = false;
             }
         }
@@ -230,7 +243,7 @@ public static class GridSimulator
                         double ret = (tp - entryPrice[n]) / entryPrice[n] * 100.0
                                    - TradeCost(atrAtStart, entryPrice[n], isStop: false, isTp: true)
                                    + fundingPnl;
-                        AddReturn(i, ret, "grid_long");
+                        AddReturn(i, ret, "grid_long", entryPrice[n]);
                         filled[n] = false;
                     }
                 }
@@ -309,7 +322,7 @@ public static class GridSimulator
                 double ret = (finalPx - entryPrice[n]) / entryPrice[n] * 100.0
                            - TradeCost(atrAtStart, entryPrice[n], isStop: false)
                            + fundingPnl;
-                AddReturn(candles.Length - 1, ret, "grid_long");
+                AddReturn(candles.Length - 1, ret, "grid_long", entryPrice[n]);
             }
             FlushSession(candles.Length - 1);
         }

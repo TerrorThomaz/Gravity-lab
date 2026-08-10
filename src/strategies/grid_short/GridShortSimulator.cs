@@ -33,14 +33,20 @@ public static class GridShortSimulator
     internal static double TradeCost(double atrAtStart, double entryPx, bool isStop, bool isTp = false)
         => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrAtStart, entryPx), isStop, StopGapAtrK);
 
-    public static List<(DateTime Time, double Return, string Kind)> GetGridShortReturns(
+    // EntryTime/EntryPrice: `Time` is the EXIT bar. For a session-level row the entry is the
+    // session's start and the mean of its filled levels — a grid has no single entry.
+    // Appended as NAMED fields so existing consumers compile unchanged.
+    public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetGridShortReturns(
         GridGenotype g, ReadOnlySpan<Candle> h1, FundingRateSession? funding = null)
     {
         var (trades, _) = RunGridShort(g, h1, sessionLevel: false, funding: funding);
         return trades;
     }
 
-    public static List<(DateTime Time, double Return, string Kind)> GetGridShortSessionReturns(
+    // EntryTime/EntryPrice: `Time` is the EXIT bar. For a session-level row the entry is the
+    // session's start and the mean of its filled levels — a grid has no single entry.
+    // Appended as NAMED fields so existing consumers compile unchanged.
+    public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetGridShortSessionReturns(
         GridGenotype g, ReadOnlySpan<Candle> h1, FundingRateSession? funding = null)
     {
         var (trades, _) = RunGridShort(g, h1, sessionLevel: true, funding: funding);
@@ -60,7 +66,7 @@ public static class GridShortSimulator
         return state;
     }
 
-    private static (List<(DateTime, double, string)> Trades, GridShortTradeState FinalState)
+    private static (List<(DateTime, double, string, DateTime, double)> Trades, GridShortTradeState FinalState)
         RunGridShort(GridGenotype g, ReadOnlySpan<Candle> candles, bool sessionLevel,
                      FundingRateSession? funding = null)
     {
@@ -78,7 +84,7 @@ public static class GridShortSimulator
         var atr     = Volatility.Atr(highs, lows, closes, AtrPeriod);
         var bbWidth = Volatility.BbWidth(closes, g.BbPeriod);
 
-        var result       = new List<(DateTime, double, string)>();
+        var result       = new List<(DateTime, double, string, DateTime, double)>();
         var sessionFills = new List<double>();
 
         bool     gridActive   = false;
@@ -91,16 +97,23 @@ public static class GridShortSimulator
         var      filled       = new bool[MaxLevels];
         var      entryPrice   = new double[MaxLevels];
 
-        void AddReturn(int i, double ret, string kind)
+        void AddReturn(int i, double ret, string kind, double entryPx)
         {
             if (sessionLevel) sessionFills.Add(ret);
-            else              result.Add((times[i], ret, kind));
+            else              result.Add((times[i], ret, kind, gridStartTime, entryPx));
+        }
+
+        static double MeanFilled(double[] px, bool[] fl)
+        {
+            double sum = 0; int n = 0;
+            for (int k = 0; k < px.Length; k++) if (fl[k] && px[k] > 0) { sum += px[k]; n++; }
+            return n > 0 ? sum / n : 0.0;
         }
 
         void FlushSession(int i)
         {
             if (!sessionLevel || sessionFills.Count == 0) return;
-            result.Add((times[i], sessionFills.Average(), "grid_short_session"));
+            result.Add((times[i], sessionFills.Average(), "grid_short_session", gridStartTime, MeanFilled(entryPrice, filled)));
             sessionFills.Clear();
         }
 
@@ -114,7 +127,7 @@ public static class GridShortSimulator
                 double ret = (entryPrice[n] - exitPx) / entryPrice[n] * 100.0
                            - TradeCost(atrAtStart, entryPrice[n], isStop)
                            + fundingPnl;
-                AddReturn(i, ret, "grid_short");
+                AddReturn(i, ret, "grid_short", entryPrice[n]);
                 filled[n] = false;
             }
         }
@@ -184,7 +197,7 @@ public static class GridShortSimulator
                         double ret = (entryPrice[n] - tp) / entryPrice[n] * 100.0
                                    - TradeCost(atrAtStart, entryPrice[n], isStop: false, isTp: true)
                                    + fundingPnl;
-                        AddReturn(i, ret, "grid_short");
+                        AddReturn(i, ret, "grid_short", entryPrice[n]);
                         filled[n] = false;
                     }
                 }
@@ -251,7 +264,7 @@ public static class GridShortSimulator
                 double ret = (entryPrice[n] - finalPx) / entryPrice[n] * 100.0
                            - TradeCost(atrAtStart, entryPrice[n], isStop: false)
                            + fundingPnl;
-                AddReturn(candles.Length - 1, ret, "grid_short");
+                AddReturn(candles.Length - 1, ret, "grid_short", entryPrice[n]);
             }
             FlushSession(candles.Length - 1);
         }

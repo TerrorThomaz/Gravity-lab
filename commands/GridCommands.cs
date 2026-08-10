@@ -258,7 +258,7 @@ static class GridCommands
             double wr   = vRet.Count > 0 ? (double)vRet.Count(r => r > 0) / vRet.Count : 0;
             double avg  = vRet.Count > 0 ? vRet.Average() : 0;
 
-            foreach (var (t, ret, _) in vTrades)
+            foreach (var (t, ret, _, _, _) in vTrades)
                 allTrades.Add((sym, t, ret, coinConf));
 
             Console.WriteLine($"  {sym,-16} {coinConf,6:P1}  {sh,7:F2}  {sort,7:F2}  {pf,5:F2}  {vRet.Count,6}  {wr,5:P0}  {avg,+7:F2}%");

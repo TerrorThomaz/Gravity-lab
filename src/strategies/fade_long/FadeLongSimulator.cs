@@ -31,7 +31,10 @@ public static class FadeLongSimulator
     // (magnitude from Config.SlippageBps alone) + this gap premium on stop exits only.
     private const double StopGapAtrK = 0.015;
 
-    public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive)> GetFadeLongReturns(
+    // EntryTime/EntryPrice: `Time` is the EXIT bar on every simulator here. Appended as NAMED
+    // fields so existing t.Time / t.Return consumers compile unchanged. See DipLongSimulator
+    // for the four consumers that need the entry rather than the exit.
+    public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)> GetFadeLongReturns(
         FadeLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
         FundingRateSession? funding = null)
     {
@@ -62,7 +65,7 @@ public static class FadeLongSimulator
         return state;
     }
 
-    private static (List<(DateTime, double, string, int)> Trades, FadeLongTradeState FinalState)
+    private static (List<(DateTime, double, string, int, DateTime, double)> Trades, FadeLongTradeState FinalState)
         RunFadeLongMultiTF(FadeLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
                            FundingRateSession? funding = null)
     {
@@ -107,7 +110,7 @@ public static class FadeLongSimulator
             bearRegimeBarsAtBar[i] = bearRunning;
         }
 
-        var result = new List<(DateTime, double, string, int)>();
+        var result = new List<(DateTime, double, string, int, DateTime, double)>();
 
         bool   inTrade         = false;
         double entry           = 0;
@@ -225,7 +228,7 @@ public static class FadeLongSimulator
                                     hitTarget   ? target   : m15Price;
                     double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: true);
                     double ret = (exitPx - entry) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl;
-                    result.Add((m15[im15].Time, ret, "fade_long", entryRegimeBars));
+                    result.Add((m15[im15].Time, ret, "fade_long", entryRegimeBars, entryTime, entry));
                     inTrade = false;
                 }
             }
@@ -236,7 +239,7 @@ public static class FadeLongSimulator
             double finalPx = m15Closes[^1];
             double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[^1].Time, funding, isLong: true);
             double ret = (finalPx - entry) / entry * 100.0 - TradeCost(false, atrEntry, entry) + fundingPnl;
-            result.Add((m15[^1].Time, ret, "fade_long", entryRegimeBars));
+            result.Add((m15[^1].Time, ret, "fade_long", entryRegimeBars, entryTime, entry));
         }
 
         int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;

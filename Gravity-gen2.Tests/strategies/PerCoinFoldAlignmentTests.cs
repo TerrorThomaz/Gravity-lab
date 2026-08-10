@@ -180,8 +180,10 @@ public class MixedLengthFoldSmokeTests
             caches.Add(build.Invoke(null, [(ReadOnlyMemory<Candle>)arr, 1.0])!);
 
         var fitnessMethod = gaType.GetMethod("FitnessFromCache", BindingFlags.NonPublic | BindingFlags.Static)!;
+        // null gate = ungated, the behaviour this test has always exercised. The gate parameter
+        // exists so CoevolveGA can make FadeShort adapt to the router that gates it.
         double fitness = (double)fitnessMethod.Invoke(
-            null, [FadeShortGenotype.Random(new Random(7)), caches, true, new FitnessConfig(), 5])!;
+            null, [FadeShortGenotype.Random(new Random(7)), caches, true, new FitnessConfig(), null, 5])!;
 
         Assert.True(double.IsFinite(fitness), $"FadeShort fold fitness was not finite ({fitness})");
     }

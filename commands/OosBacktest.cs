@@ -347,6 +347,25 @@ static class OosBacktest
         Console.WriteLine(new string('-', 96));
 
         int fsCoins = 0, fsFallbacks = 0, fsSizingTrades = 0, fsScoredTrades = 0;
+        // ── Accumulator acquisition quality on NEVER-TRAINED coins (diagnostic only) ──
+        // The accumulator is deliberately excluded from every portfolio ("capital accumulator,
+        // not a profit strategy"), so profit factor was the only number it ever got — and PF is
+        // the wrong yardstick for it. Its real objective is acquiring inventory BELOW the
+        // market's own average over the period. It scores +2.54% below VWAP on the val window;
+        // this measures the same thing on coins it has never seen, which is the test that
+        // decides whether that is an edge or a fit.
+        GravityGen2.Strategies.AccumulationGrid.AccumulationGridGenotype? oosAgBull = null;
+        GravityGen2.Strategies.AccumulationGrid.AccumulationGridGenotype? oosAgBear = null;
+        if (File.Exists("genotypes/accumulation_grid_genotype.json"))
+        {
+            var agJson = JsonSerializer.Deserialize<JsonElement>(File.ReadAllText("genotypes/accumulation_grid_genotype.json"));
+            oosAgBull = JsonSerializer.Deserialize<GravityGen2.Strategies.AccumulationGrid.AccumulationGridGenotype>(agJson.GetProperty("Bull").GetRawText());
+            oosAgBear = JsonSerializer.Deserialize<GravityGen2.Strategies.AccumulationGrid.AccumulationGridGenotype>(agJson.GetProperty("Bear").GetRawText());
+        }
+        var oosAcqDiscount = new List<double>();
+        var oosAcqDiscountEma = new List<double>();
+        int oosAcqFills = 0;
+
         foreach (var (sym, m15, h1) in oosFetched)
         {
             if (h1.Length < 300) { Console.WriteLine($"  {sym,-16}  skip (only {h1.Length} h1 bars)"); continue; }
@@ -354,6 +373,25 @@ static class OosBacktest
             var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
             double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
             if (medVol < oosMinVol) { Console.WriteLine($"  {sym,-16}  skip (vol=${medVol:F2}M/h)"); continue; }
+
+            if (oosAgBull != null && oosAgBear != null && h1.Length >= 300)
+            {
+                var agRaw = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator
+                        .GetAccumulationReturns(oosAgBull, h1, MarketRegime.Bull, funding.For(sym))
+                    .Concat(GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator
+                        .GetAccumulationReturns(oosAgBear, h1, MarketRegime.Bear, funding.For(sym)))
+                    .ToList();
+                if (agRaw.Count > 0)
+                {
+                    var pxL = agRaw.Select(t => t.EntryPrice).ToList(); var tmL = agRaw.Select(t => t.Time).ToList();
+                    double d  = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator
+                        .AcquisitionDiscountPct(h1, pxL, tmL);
+                    double de = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator
+                        .AcquisitionDiscountEmaPct(h1, pxL, tmL);
+                    if (!double.IsNaN(de)) oosAcqDiscountEma.Add(de);
+                    if (!double.IsNaN(d)) { oosAcqDiscount.Add(d); oosAcqFills += agRaw.Count; }
+                }
+            }
 
             var (coinFsG, fsVarLabel) = SelectVariantLabeled(fsVariants, m15);
             coinFsG ??= swingG;
@@ -380,7 +418,7 @@ static class OosBacktest
             fsCoins++; fsSizingTrades += split.SizingCount; fsScoredTrades += vRet.Count;
             if (split.UsedFallback) fsFallbacks++;
             swingCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
-            foreach (var (t, ret, _) in scored)
+            foreach (var (t, ret, _, _, _) in scored)
             {
                 swingTrades.Add((t, ret, conf));
                 allTrades.Add((t, ret, conf, "swing"));
@@ -389,6 +427,20 @@ static class OosBacktest
             RecordAppliedConf(fsVarLabel, sym, conf);
         }
         PrintSizingFooter(fsCoins, fsFallbacks, fsSizingTrades, fsScoredTrades);
+
+        if (oosAcqDiscount.Count > 0)
+        {
+            double mean = oosAcqDiscount.Average();
+            int better  = oosAcqDiscount.Count(d => d > 0);
+            Console.WriteLine($"\n── Accumulator acquisition quality · OOS (never-trained coins) ──");
+            Console.WriteLine($"  Avg entry vs period VWAP: {mean:+0.00;-0.00}%  " +
+                              $"({(mean > 0 ? "below VWAP — accumulating well" : "ABOVE VWAP — paying up")})");
+            Console.WriteLine($"  Coins below VWAP: {better}/{oosAcqDiscount.Count} ({(double)better / oosAcqDiscount.Count:P0})  ·  {oosAcqFills} fills");
+            if (oosAcqDiscountEma.Count > 0)
+                Console.WriteLine($"  vs trailing EMA (CAUSAL — no future bars): {oosAcqDiscountEma.Average():+0.00;-0.00}%  " +
+                                  $"({oosAcqDiscountEma.Count(d => d > 0)}/{oosAcqDiscountEma.Count} coins)");
+            Console.WriteLine($"  Diagnostic only — the accumulator contributes no trades to any portfolio here.");
+        }
 
         // ── GRID ──────────────────────────────────────────────────────────────────
         Console.WriteLine($"\n══ GRID (full OOS history, router-gated) ════════════════════════════════════");
@@ -1133,7 +1185,7 @@ static class OosBacktest
                         var    vRet  = FadeShortSimulator.GetFadeShortReturns(coinFsGAC, h1Val, m15Val, funding.For(sym));
                         btSwing++; btSwingT += vRet.Count;
                         if (vRet.Count > 0) NoteScoredSpan(h1, h1Val[0].Time);
-                        foreach (var (t, ret, _) in vRet) allTrades.Add((t, ret, conf, "swing"));
+                        foreach (var (t, ret, _, _, _) in vRet) allTrades.Add((t, ret, conf, "swing"));
                     }
                 }
             }
@@ -1149,7 +1201,7 @@ static class OosBacktest
                     int    kept = vRet.Count(t => session == null || session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time));
                     btGrid++; btGridT += kept;
                     if (kept > 0) NoteScoredSpan(h1, h1Val[0].Time);
-                    foreach (var (t, ret, _) in vRet)
+                    foreach (var (t, ret, _, _, _) in vRet)
                     {
                         if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.Grid, t)) continue;
                         allTrades.Add((t, ret, conf, "grid"));
@@ -1246,7 +1298,7 @@ static class OosBacktest
                     oSwing++; oSwingT += split.Scored.Count; oSwingS += split.SizingCount;
                     if (split.UsedFallback) oSwingFb++;
                     NoteScoredSpan(h1, split.Scored[0].Time);
-                    foreach (var (t, ret, _) in split.Scored) allTrades.Add((t, ret, split.Conf, "swing"));
+                    foreach (var (t, ret, _, _, _) in split.Scored) allTrades.Add((t, ret, split.Conf, "swing"));
                 }
             }
 

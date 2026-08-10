@@ -71,6 +71,11 @@ public class FadeShortGA
     private readonly Random       _rng;
     private readonly FitnessConfig _cfg;
 
+    // Router gating weight, mirroring the hook the four regime-gated GAs already had.
+    // null = ungated. Weights by t.Time (the EXIT bar), matching CombinedBacktest's gate so
+    // train and serve agree. Set by CoevolveGA so FadeShort adapts to the router that gates it.
+    private readonly Func<DateTime, double>? _tradeGate;
+
     private const int MinTradesPerFold = 30;
     private const int D                = 13;   // genotype parameter count (excl. Fitness) — see FadeShortGenotype.Bounds
 
@@ -87,6 +92,7 @@ public class FadeShortGA
         int           migrationInterval = 10,
         bool          verbose           = true,
         FitnessConfig? cfg              = null,
+        Func<DateTime, double>? tradeGate = null,
         int           tournamentK           = GaSearch.DefaultTournamentK,
         int           eliteCarryOver        = GaSearch.DefaultEliteCarryOver,
         int           cataclysmStagnantGens = GaSearch.DefaultCataclysmStagnantGens,
@@ -98,6 +104,7 @@ public class FadeShortGA
         _migrationInterval = migrationInterval;
         _verbose           = verbose;
         _cfg               = cfg ?? new FitnessConfig();
+        _tradeGate         = tradeGate;
         _tournamentK           = tournamentK;
         _eliteCarryOver        = eliteCarryOver;
         _cataclysmStagnantGens = cataclysmStagnantGens;
@@ -121,6 +128,7 @@ public class FadeShortGA
         IReadOnlyList<CoinCache> caches,
         bool                     useFolds,
         FitnessConfig            cfg,
+        Func<DateTime, double>?  gate,
         int                      folds = 5)
     {
         if (caches.Count == 0) return 0;
@@ -142,7 +150,7 @@ public class FadeShortGA
                     foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputed(
                         ind, cache.Candles, cache.Closes, cache.Highs, cache.Lows,
                         cache.Rsi, cache.Adx, cache.Atr, emaBuffer, 0, cache.Candles.Length))
-                        all.Add(t.Return);
+                        { double w = gate?.Invoke(t.Time) ?? 1.0; if (w >= 0.05) all.Add(t.Return * w); }
                 }
                 double volWeight = AverageVolCoverageFull(caches, cfg);
                 return FoldScore(all, posFrac, cfg, volWeight);
@@ -181,7 +189,7 @@ public class FadeShortGA
                     foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputed(
                         ind, cache.Candles, cache.Closes, cache.Highs, cache.Lows,
                         cache.Rsi, cache.Adx, cache.Atr, emaBuffer, 0, cache.Candles.Length))
-                        all.Add(t.Return);
+                        { double w = gate?.Invoke(t.Time) ?? 1.0; if (w >= 0.05) all.Add(t.Return * w); }
                 }
                 double volWeight = AverageVolCoverageFull(caches, cfg);
                 return FoldScore(all, posFrac, cfg, volWeight);
@@ -206,7 +214,7 @@ public class FadeShortGA
                     foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputed(
                         ind, cache.Candles, cache.Closes, cache.Highs, cache.Lows,
                         cache.Rsi, cache.Adx, cache.Atr, emaBuffer, fStart, fEnd))
-                        foldReturns.Add(t.Return);
+                        { double w = gate?.Invoke(t.Time) ?? 1.0; if (w >= 0.05) foldReturns.Add(t.Return * w); }
                 }
 
                 // Only folds that actually reached MinTradesPerFold trades take part in the
@@ -328,7 +336,7 @@ public class FadeShortGA
             // a single _rng draw added here would silently corrupt its internal state (and
             // destroy reproducibility) with no exception to point at it.
             Parallel.ForEach(population, ind =>
-                ind.Fitness = FitnessFromCache(ind, trainCaches, useFolds: true, _cfg));
+                ind.Fitness = FitnessFromCache(ind, trainCaches, useFolds: true, _cfg, _tradeGate));
 
             population  = population.OrderByDescending(g => g.Fitness).ToList();
             eliteIsland = population.Take(_eliteCount).ToList();
@@ -406,14 +414,14 @@ public class FadeShortGA
             seedObs:    boSeed,
             bounds:     FadeShortGenotype.Bounds,
             evaluate:   v => { var g = FadeShortGenotype.FromVector(v);
-                               g.Fitness = FitnessFromCache(g, trainCaches, useFolds: true, _cfg);
+                               g.Fitness = FitnessFromCache(g, trainCaches, useFolds: true, _cfg, _tradeGate);
                                return g.Fitness; },
             iterations: 60,
             rng:        _rng);
 
         var boChampion = boHistory.OrderByDescending(h => h.Fitness).First();
         var boGeno     = FadeShortGenotype.FromVector(boChampion.Params);
-        boGeno.Fitness = FitnessFromCache(boGeno, trainCaches, useFolds: true, _cfg);
+        boGeno.Fitness = FitnessFromCache(boGeno, trainCaches, useFolds: true, _cfg, _tradeGate);
 
         if (boGeno.Fitness > eliteIsland.Last().Fitness)
         {
@@ -431,7 +439,7 @@ public class FadeShortGA
         double trainFit = best.Fitness;
 
         // Compute validation score for the winner only
-        best.Fitness = FitnessFromCache(best, valCaches, useFolds: false, _cfg);
+        best.Fitness = FitnessFromCache(best, valCaches, useFolds: false, _cfg, _tradeGate);
 
         if (_verbose) Console.WriteLine($"Best (selected on train): train={trainFit:F3}  val={best.Fitness:F3}");
         if (_verbose) Console.WriteLine($"  {best}");
@@ -487,7 +495,7 @@ public class FadeShortGA
 
             // WARNING: this parallel body must stay RNG-FREE — System.Random is not thread-safe.
             Parallel.ForEach(population, ind =>
-                ind.Fitness = FitnessFromCache(ind, trainCaches, useFolds: true, _cfg));
+                ind.Fitness = FitnessFromCache(ind, trainCaches, useFolds: true, _cfg, _tradeGate));
 
             population  = population.OrderByDescending(g => g.Fitness).ToList();
             eliteIsland = population.Take(_eliteCount).ToList();
@@ -559,14 +567,14 @@ public class FadeShortGA
             seedObs:    boSeedLv,
             bounds:     FadeShortGenotype.BoundsLowVol,
             evaluate:   v => { var g = FadeShortGenotype.FromVectorLowVol(v);
-                               g.Fitness = FitnessFromCache(g, trainCaches, useFolds: true, _cfg);
+                               g.Fitness = FitnessFromCache(g, trainCaches, useFolds: true, _cfg, _tradeGate);
                                return g.Fitness; },
             iterations: 60,
             rng:        _rng);
 
         var boChampionLv = boHistoryLv.OrderByDescending(h => h.Fitness).First();
         var boGenoLv     = FadeShortGenotype.FromVectorLowVol(boChampionLv.Params);
-        boGenoLv.Fitness = FitnessFromCache(boGenoLv, trainCaches, useFolds: true, _cfg);
+        boGenoLv.Fitness = FitnessFromCache(boGenoLv, trainCaches, useFolds: true, _cfg, _tradeGate);
 
         if (boGenoLv.Fitness > eliteIsland.Last().Fitness)
         {
@@ -581,7 +589,7 @@ public class FadeShortGA
         var best = eliteIsland.First();
         double trainFit = best.Fitness;
 
-        best.Fitness = FitnessFromCache(best, valCaches, useFolds: false, _cfg);
+        best.Fitness = FitnessFromCache(best, valCaches, useFolds: false, _cfg, _tradeGate);
 
         if (_verbose) Console.WriteLine($"Best (selected on train): train={trainFit:F3}  val={best.Fitness:F3}");
         if (_verbose) Console.WriteLine($"  {best}");

@@ -24,6 +24,8 @@ public class CoevolveGA
         IReadOnlyList<SwingLongGA.CoinData>        SlCoins,
         IReadOnlyList<RipShortGA.CoinData>         RsCoins,
         IReadOnlyList<(Candle[] H1, Candle[] M15)> AllCoins,
+        IReadOnlyList<FadeShortGA.CoinData>        FsCoins,
+        IReadOnlyList<GridGeneticAlgorithm.CoinData> GridCoins,
         RegimeBar[]                                BtcSeries,
         RegimeBar[]?                               EthSeries,
         Candle[]                                   BtcH1,
@@ -31,6 +33,8 @@ public class CoevolveGA
         GridGenotype?                              GridShortGeno);
 
     public record CoevolveResult(
+        FadeShortGenotype?    FadeShort,      // re-adapted each round against Router[t]
+        GridGenotype?         Grid,           // re-adapted each round against Router[t]
         FadeLongGenotype      FadeLong,       // re-adapted each round against Router[t]
         DipLongGenotype       DipLong,        // re-adapted each round against Router[t]
         SwingLongGenotype     SwingLong,      // re-adapted each round against Router[t]
@@ -159,8 +163,22 @@ public class CoevolveGA
                     tradeGate: gateFor(RegimeRouterGA.StrategyKind.FadeLong),
                     btcSeries: data.BtcSeries).Run(data.FlCoins, flSeed);
 
+            // FadeShort and Grid were left out of the loop and are the two the OOS run says do
+            // not earn their place: Grid PF 0.97 (losing) and FadeShort PF 1.12 on 5,263 trades
+            // — the largest trade count in the book for almost no edge, and at ~48% of gross
+            // going to costs the most cost-fragile thing in it. Both are gated by the router in
+            // production, so both had the same train-then-gate misalignment as the other four
+            // and no chance to adapt to it.
+            if (fsSeed != null && data.FsCoins.Count > 0)
+                fsSeed = new FadeShortGA(generations: stratGens, verbose: false,
+                    tradeGate: gateFor(RegimeRouterGA.StrategyKind.FadeShort)).Run(data.FsCoins, fsSeed);
+            if (data.GridGeno != null && data.GridCoins.Count > 0)
+                data = data with { GridGeno = new GridGeneticAlgorithm(generations: stratGens, verbose: false,
+                    tradeGate: gateFor(RegimeRouterGA.StrategyKind.Grid)).Run(data.GridCoins, data.GridGeno) };
+
             Console.WriteLine($"  [ADAPT] DipLong F={dlSeed?.Fitness:F3}  SwingLong F={slSeed?.Fitness:F3}  " +
-                              $"RipShort F={rsSeed?.Fitness:F3}  FadeLong F={flSeed?.Fitness:F3}");
+                              $"RipShort F={rsSeed?.Fitness:F3}  FadeLong F={flSeed?.Fitness:F3}  " +
+                              $"FadeShort F={fsSeed?.Fitness:F3}  Grid F={data.GridGeno?.Fitness:F3}");
 
             // The router must now compete against the strategies it just reshaped.
             rawTrades = BuildTradeLists(fsSeed, dlSeed, slSeed, rsSeed, data.GridGeno, data.GridShortGeno, data);
@@ -174,7 +192,7 @@ public class CoevolveGA
             }
         }
 
-        return new CoevolveResult(flSeed!, dlSeed!, slSeed!, rsSeed!, routerElite, guardBest!);
+        return new CoevolveResult(fsSeed, data.GridGeno, flSeed!, dlSeed!, slSeed!, rsSeed!, routerElite, guardBest!);
     }
 
     // ── Trade list builders (parallelised over coins) ─────────────────────────

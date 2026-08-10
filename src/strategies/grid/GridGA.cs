@@ -37,6 +37,10 @@ public class GridGeneticAlgorithm
     private readonly Random        _rng;
     private readonly FitnessConfig _cfg;
 
+    // Router gating weight; null = ungated. Weights by t.Time (the EXIT bar), matching the
+    // field CombinedBacktest gates on, so train and serve agree. Set by CoevolveGA.
+    private readonly Func<DateTime, double>? _tradeGate;
+
     private const int    MinTradesPerFold = 10;
     private const double FitPosFrac       = 0.03;
     private const int    D                = 10;   // genotype parameter count (excl. Fitness) — see GridGenotype.Bounds
@@ -52,6 +56,7 @@ public class GridGeneticAlgorithm
         int            migrationInterval = 10,
         bool           verbose           = true,
         FitnessConfig? cfg               = null,
+        Func<DateTime, double>? tradeGate = null,
         int            tournamentK           = GaSearch.DefaultTournamentK,
         int            eliteCarryOver        = GaSearch.DefaultEliteCarryOver,
         int            cataclysmStagnantGens = GaSearch.DefaultCataclysmStagnantGens,
@@ -63,6 +68,7 @@ public class GridGeneticAlgorithm
         _migrationInterval = migrationInterval;
         _verbose           = verbose;
         _cfg               = cfg ?? new FitnessConfig();
+        _tradeGate         = tradeGate;
         _tournamentK           = tournamentK;
         _eliteCarryOver        = eliteCarryOver;
         _cataclysmStagnantGens = cataclysmStagnantGens;
@@ -98,7 +104,9 @@ public class GridGeneticAlgorithm
         if (useValidation || folds <= 1)
         {
             var all = validCoins
-                .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr.Span).Select(t => t.Return))
+                .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr.Span)
+                    .Select(t => (t.Return, w: _tradeGate?.Invoke(t.Time) ?? 1.0))
+                    .Where(t => t.w >= 0.05).Select(t => t.Return * t.w))
                 .ToList();
             return FoldScore(all, _cfg);
         }
@@ -129,7 +137,9 @@ public class GridGeneticAlgorithm
         if (k < 2)
         {
             var all = validCoins
-                .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr.Span).Select(t => t.Return))
+                .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr.Span)
+                    .Select(t => (t.Return, w: _tradeGate?.Invoke(t.Time) ?? 1.0))
+                    .Where(t => t.w >= 0.05).Select(t => t.Return * t.w))
                 .ToList();
             return FoldScore(all, _cfg);
         }
@@ -150,7 +160,9 @@ public class GridGeneticAlgorithm
                 var (start, end) = FoldScoreHelper.PerCoinFoldRange(arr.Length, k, f, _cfg.EmbargoPct);
                 if (end - start < 40) continue;
                 foldReturns.AddRange(
-                    GridSimulator.GetGridSessionReturns(ind, arr.Slice(start, end - start).Span).Select(t => t.Return));
+                    GridSimulator.GetGridSessionReturns(ind, arr.Slice(start, end - start).Span)
+                        .Select(t => (t.Return, w: _tradeGate?.Invoke(t.Time) ?? 1.0))
+                        .Where(t => t.w >= 0.05).Select(t => t.Return * t.w));
             }
 
             // Only folds that actually reached MinTradesPerFold sessions take part in the

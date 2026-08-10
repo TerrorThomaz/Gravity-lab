@@ -267,7 +267,7 @@ static class FullTest
                     double conf = Simulator.ComputeConfidence(fsTr);
                     var (_, hk) = StrategyStats.KellyFraction(fsTr);
                     double fsHk = Math.Min(hk, 0.05);
-                    foreach (var (t, ret, _) in FadeShortSimulator.GetFadeShortReturns(coinFsG, h1Val, m15Val))
+                    foreach (var (t, ret, _, _, _) in FadeShortSimulator.GetFadeShortReturns(coinFsG, h1Val, m15Val))
                     {
                         if (fundingSession?.IsCrowdedShort(t) == true) continue;
                         valSwingRets.Add(ret);
@@ -476,7 +476,7 @@ static class FullTest
                     {
                         double conf = Simulator.ComputeConfidence(vRet);
                         oosSwingRets.AddRange(vRet);
-                        foreach (var (t, ret, _) in trades)
+                        foreach (var (t, ret, _, _, _) in trades)
                         {
                             oosAll.Add((t, ret, conf, "swing"));
                             oosRawForEnrich.Add((t, ret, conf, "swing", sym, TimeSpan.FromHours(coinFsGOos.MaxHoldCandles)));

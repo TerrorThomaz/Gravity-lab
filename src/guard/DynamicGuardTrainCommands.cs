@@ -88,7 +88,7 @@ static class DynamicGuardTrainCommands
                     && Simulator.SortinoRatio(fsTr, screenH1.Length * 12) >= 0.5)
                 {
                     double conf = Simulator.ComputeConfidence(fsTr);
-                    foreach (var (t, ret, _) in FadeShortSimulator.GetFadeShortReturns(swingG, h1Val, m15Val))
+                    foreach (var (t, ret, _, _, _) in FadeShortSimulator.GetFadeShortReturns(swingG, h1Val, m15Val))
                         valTrades.Add((t, ret, conf, TimeSpan.FromHours(swingG.MaxHoldCandles), "swing"));
                 }
             }
@@ -150,7 +150,7 @@ static class DynamicGuardTrainCommands
                     if (trades.Count >= 5)
                     {
                         double conf = Simulator.ComputeConfidence(trades.Select(t => t.Return).ToList());
-                        foreach (var (t, ret, _) in trades)
+                        foreach (var (t, ret, _, _, _) in trades)
                             oosTrades.Add((t, ret, conf, TimeSpan.FromHours(swingG.MaxHoldCandles), "swing"));
                     }
                 }

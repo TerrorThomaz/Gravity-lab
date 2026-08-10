@@ -1,14 +1,14 @@
 {
-  "AdxThreshold": 20,
+  "AdxThreshold": 17.759605587176424,
   "BbPeriod": 10,
-  "BbWidthMaxPct": 2.453828080302956,
+  "BbWidthMaxPct": 2.451797359858684,
   "EmaPeriod": 10,
-  "GridStepAtrMult": 0.6867607766865985,
+  "GridStepAtrMult": 0.6615847350860048,
   "GridLevels": 3,
-  "TakeProfitAtrMult": 1.6610942112566407,
-  "HardStopAtrMult": 3,
-  "MaxHoldCandles": 131,
-  "Fitness": 31.9607342132648,
+  "TakeProfitAtrMult": 1.4509005529585264,
+  "HardStopAtrMult": 2.9942736699219203,
+  "MaxHoldCandles": 134,
+  "Fitness": 2.07983617313742,
   "AtrLow": 0,
   "AtrHigh": 9999
 }

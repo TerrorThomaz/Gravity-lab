@@ -103,6 +103,84 @@ static class CombinedBacktest
         _                       => null,
     };
 
+
+    // ── GATED-EXPOSURE BASELINE ("no-signal" strategy) ────────────────────────────────
+    // Motivated directly by the random-entry control: random entries inside the router gate
+    // BEAT every strategy's real entry signal on return per trade, while losing on profit
+    // factor because they carry no stop. Conclusion: the entries were not adding return, the
+    // EXITS were adding risk shaping. This tests the obvious consequence — keep the gate and
+    // the exit ladder, throw the entry signal away entirely.
+    //
+    // Enter at the next bar's open whenever flat and the gate is on; exit on hard stop, take
+    // profit, trailing stop or max hold. Direction comes from the gate alone (DipLong's gate =>
+    // long, RipShort's gate => short). There is no RSI, no divergence, no BoS, no ADX.
+    //
+    // The whole grid is printed, never a best cell. Picking the winner after seeing results is
+    // how a 4-parameter baseline becomes as overfit as the 14-gene strategies it is auditing.
+    static void GatedExposureBaseline(
+        List<(string Sym, Candle[] H1Val)> series, RegimeRouterSession session)
+    {
+        Console.WriteLine($"\n── Gated-exposure baseline: router gate + ATR exits, NO entry signal ──");
+        Console.WriteLine($"  {"SL",5} {"TP",5} {"Trail",6} {"MaxH",5}  {"Dir",5} {"PF",6} {"WR",6} {"Avg%",7} {"N",6}");
+        Console.WriteLine($"  {new string('-', 62)}");
+
+        foreach (var (sl, tp, tr, mh) in new[] {
+            (1.0, 4.0, 2.0, 48), (1.5, 5.0, 2.5, 60), (2.0, 6.0, 3.0, 72), (1.5, 8.0, 2.0, 96) })
+        foreach (var (kind, isLong, label) in new[] {
+            (RegimeRouterGA.StrategyKind.DipLong,  true,  "long"),
+            (RegimeRouterGA.StrategyKind.RipShort, false, "short") })
+        {
+            var rets = new List<double>(4096);
+            foreach (var (sym, h1) in series)
+            {
+                if (h1.Length < 260) continue;
+                var closes = h1.Select(c => c.Close).ToArray();
+                var highs  = h1.Select(c => c.High).ToArray();
+                var lows   = h1.Select(c => c.Low).ToArray();
+                var atr    = Volatility.Atr(highs, lows, closes, 14);
+
+                int i = 220;
+                while (i < h1.Length - 2)
+                {
+                    if (!session.IsActive(kind, h1[i].Time) || atr[i] <= 1e-9) { i++; continue; }
+                    double entry = h1[i + 1].Open, a = atr[i];
+                    double stop  = isLong ? entry - sl * a : entry + sl * a;
+                    double targ  = isLong ? entry + tp * a : entry - tp * a;
+                    double peak  = entry;
+                    double ret   = double.NaN;
+                    int j = i + 1;
+                    for (; j < Math.Min(h1.Length, i + 1 + mh); j++)
+                    {
+                        double hi = h1[j].High, lo = h1[j].Low;
+                        if (isLong  && lo <= stop) { ret = (stop - entry) / entry * 100.0; break; }
+                        if (!isLong && hi >= stop) { ret = (entry - stop) / entry * 100.0; break; }
+                        if (isLong  && hi >= targ) { ret = (targ - entry) / entry * 100.0; break; }
+                        if (!isLong && lo <= targ) { ret = (entry - targ) / entry * 100.0; break; }
+                        // Trailing stop, armed once price has moved tr x ATR in favour.
+                        if (isLong)  { if (hi > peak) peak = hi;
+                                       if (peak - entry >= tr * a) stop = Math.Max(stop, peak - tr * a); }
+                        else         { if (lo < peak || peak == entry) peak = lo;
+                                       if (entry - peak >= tr * a) stop = Math.Min(stop, peak + tr * a); }
+                    }
+                    if (double.IsNaN(ret))
+                    {
+                        int k = Math.Min(j, h1.Length - 1);
+                        ret = isLong ? (closes[k] - entry) / entry * 100.0
+                                     : (entry - closes[k]) / entry * 100.0;
+                    }
+                    rets.Add(ret - TradeCosts.FeeRoundTripPct);
+                    i = Math.Min(j + 1, h1.Length - 1);   // flat again only after the exit
+                }
+            }
+            if (rets.Count < 30) continue;
+            Console.WriteLine($"  {sl,5:F1} {tp,5:F1} {tr,6:F1} {mh,5}  {label,5} " +
+                              $"{Simulator.ProfitFactor(rets),6:F2} " +
+                              $"{(double)rets.Count(r => r > 0) / rets.Count,6:P0} " +
+                              $"{rets.Average(),+6:F2}% {rets.Count,6}");
+        }
+        Console.WriteLine("  Same router gate and same fee as the live strategies. No entry signal at all.");
+    }
+
     static TG? SelectVariant<TG>(VariantSpec<TG>[] variants, Candle[] m15)
         where TG : class
     {
@@ -295,7 +373,12 @@ static class CombinedBacktest
         var slTrades          = new List<(DateTime Time, double Return, double Conf)>();
         var rsTrades          = new List<(DateTime Time, double Return, double Conf)>();
         var agTrades          = new List<(DateTime Time, double Return, double Conf)>();
+        var agAcqDiscount     = new List<double>();   // per-coin % below VWAP (negative = paid above)
+        var agAcqDiscountEma  = new List<double>();   // causal: vs trailing EMA at fill time
+        var agAcqFills        = new List<int>();
         var allTrades         = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
+        // Val-window price series per coin, collected once for the random-entry control below.
+        var controlSeries     = new List<(string Sym, Candle[] H1Val)>();
         var allTradesNoRouter = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
 
         var swingCoinStats = new List<(string Coin, double Sharpe, double Sortino, double PF, int Trades, double WR, double AvgRet, double Kelly)>();
@@ -410,7 +493,8 @@ static class CombinedBacktest
             swingCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
             swingCoinRet.Add((sym, vRet));
             swingFullCoins.Add((sym, h1, m15, conf));
-            foreach (var (t, ret, _) in vSwing)
+            controlSeries.Add((sym, h1Val.ToArray()));
+            foreach (var (t, ret, _, _, _) in vSwing)
             {
                 swingTrades.Add((t, ret, conf));
                 allTrades.Add((t, ret, conf, "swing"));
@@ -473,7 +557,7 @@ static class CombinedBacktest
             gridCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
             gridFullCoins.Add((sym, h1, conf));
             var gridGated = new List<double>();
-            foreach (var (t, ret, _) in vGrid)
+            foreach (var (t, ret, _, _, _) in vGrid)
             {
                 allTradesNoRouter.Add((t, ret, conf, "grid"));
                 if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.Grid, t)) continue;
@@ -755,6 +839,22 @@ static class CombinedBacktest
                     : raw;
                 var vRet = gated.Select(t => t.Return).ToList();
 
+                // ── Acquisition quality: what an accumulator is actually FOR ──────────────
+                // Profit factor scores a trading edge; an accumulator's job is to acquire
+                // inventory below the market's own average over the same window. Reported as
+                // discount vs the period VWAP — negative means it paid ABOVE the average and
+                // is accumulating badly no matter what its PF says.
+                if (gated.Count > 0)
+                {
+                    var pxL = gated.Select(t => t.EntryPrice).ToList(); var tmL = gated.Select(t => t.Time).ToList();
+                    double d  = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator
+                        .AcquisitionDiscountPct(h1Val, pxL, tmL);
+                    double de = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator
+                        .AcquisitionDiscountEmaPct(h1Val, pxL, tmL);
+                    if (!double.IsNaN(de)) agAcqDiscountEma.Add(de);
+                    if (!double.IsNaN(d)) { agAcqDiscount.Add(d); agAcqFills.Add(gated.Count); }
+                }
+
                 int gatedOut = raw.Count - gated.Count;
                 if (vRet.Count == 0)
                 {
@@ -954,6 +1054,19 @@ static class CombinedBacktest
             Console.WriteLine($"  Sharpe:       {Simulator.SharpeRatio(agRet, agTotalVCC):F2}");
             Console.WriteLine($"  Sortino:      {Simulator.SortinoRatio(agRet, agTotalVCC):F2}");
             Console.WriteLine($"  Profit factor:{Simulator.ProfitFactor(agRet):F2}");
+            if (agAcqDiscount.Count > 0)
+            {
+                double mean = agAcqDiscount.Average();
+                int better  = agAcqDiscount.Count(d => d > 0);
+                Console.WriteLine($"  ── Acquisition quality (the accumulator's real objective) ──");
+                Console.WriteLine($"  Avg entry vs period VWAP: {mean:+0.00;-0.00}%  " +
+                                  $"({(mean > 0 ? "below VWAP — accumulating well" : "ABOVE VWAP — paying up")})");
+                Console.WriteLine($"  Coins acquiring below VWAP: {better}/{agAcqDiscount.Count}  " +
+                                  $"({(double)better / agAcqDiscount.Count:P0})  ·  {agAcqFills.Sum()} fills");
+                if (agAcqDiscountEma.Count > 0)
+                    Console.WriteLine($"  vs trailing EMA (CAUSAL — no future bars): {agAcqDiscountEma.Average():+0.00;-0.00}%  " +
+                                      $"({agAcqDiscountEma.Count(d => d > 0)}/{agAcqDiscountEma.Count} coins)");
+            }
             var agPort = Simulator.SimulatePortfolio(agTrades.Select(t => (t.Return, t.Conf)).ToList());
             Console.WriteLine($"  Portfolio:    €{agPort.EndBalance:F2}  ({(agPort.EndBalance - 100) / 100 * 100:+0.0;-0.0}%)  DD={agPort.MaxDrawdownPct:F1}%");
             Console.WriteLine();
@@ -1154,6 +1267,69 @@ static class CombinedBacktest
             "Combined portfolio (val window, router-gated)",
             allTradesGuardInput, guardCtx, Config.MaxTotalExposurePct);
 
+
+        // ── RANDOM-ENTRY CONTROL ──────────────────────────────────────────────────────
+        // The load-bearing test of this whole system. Measured earlier: DipLong's ungated
+        // held-out PF is 0.64 while its router-gated val PF is 2.44, and the router discards
+        // 54-57% of every strategy's trades. That means the edge demonstrably lives in the
+        // GATING, not obviously in the entry signals — so the question is whether the entry
+        // signals contribute anything at all beyond "be long in Bull, short in Bear".
+        //
+        // Control: replace each strategy's entry SIGNAL with a random entry, holding rate,
+        // direction, hold length and router gate all fixed to the real values. Returns are the
+        // coin's ACTUAL subsequent price move over that hold, minus the same round-trip cost.
+        //
+        // Read it like this: if the random-entry column lands near the real one, the entry
+        // signals are decorative and this is a regime-timing model wearing six strategy hats.
+        // A real edge should beat its own random control by a wide margin.
+        if (session != null && controlSeries.Count > 0 && allTrades.Count > 0)
+        {
+            var rng = new Random(20260810);   // fixed: this repo requires reproducible runs
+            Console.WriteLine($"\n── Random-entry control (same rate · same hold · same router gate) ──");
+            Console.WriteLine($"  {"Strategy",-12}  {"Real PF",8}  {"Random PF",10}  {"Real avg%",10}  {"Rand avg%",10}  {"N",6}");
+            Console.WriteLine($"  {new string('-', 64)}");
+
+            foreach (var grp in allTrades.GroupBy(t => t.Strategy).OrderBy(g => g.Key))
+            {
+                var kind = StrategyKindOf(grp.Key);
+                if (kind is null) continue;
+                bool isLong  = PortfolioReplay.IsLong(grp.Key) ?? true;
+                int  nReal   = grp.Count();
+                int  holdBars = Math.Max(1, (int)StrategyHold(grp.Key, swingG, gridG, flG, dlG, slG, rsG, agBullG).TotalHours);
+
+                var randRet = new List<double>(nReal);
+                // Spread the same number of entries across the same coins, so breadth matches too.
+                int perCoin = Math.Max(1, nReal / Math.Max(1, controlSeries.Count));
+                foreach (var (sym, series) in controlSeries)
+                {
+                    if (series.Length <= holdBars + 2) continue;
+                    for (int k = 0; k < perCoin; k++)
+                    {
+                        int i = rng.Next(0, series.Length - holdBars - 1);
+                        // Same router gate, evaluated at the EXIT bar — the field CombinedBacktest
+                        // gates the real trades on, so the comparison is like-for-like.
+                        var exitTime = series[i + holdBars].Time;
+                        if (!session.IsActive(kind.Value, exitTime)) continue;
+                        double px0 = series[i].Close, px1 = series[i + holdBars].Close;
+                        if (px0 <= 1e-9) continue;
+                        double gross = (px1 - px0) / px0 * 100.0;
+                        if (!isLong) gross = -gross;
+                        randRet.Add(gross - TradeCosts.FeeRoundTripPct);
+                    }
+                }
+
+                if (randRet.Count < 20) continue;
+                var realRet = grp.Select(t => t.Return).ToList();
+                Console.WriteLine($"  {grp.Key,-12}  {Simulator.ProfitFactor(realRet),8:F2}  " +
+                                  $"{Simulator.ProfitFactor(randRet),10:F2}  {realRet.Average(),+9:F2}%  " +
+                                  $"{randRet.Average(),+9:F2}%  {randRet.Count,6}");
+            }
+            Console.WriteLine($"  Random entries are priced on real subsequent price moves and charged the same");
+            Console.WriteLine($"  round-trip fee; they carry NO stop, target or trailing logic.");
+
+            GatedExposureBaseline(controlSeries, session);
+        }
+
         // ── Graded router sizing vs the boolean gate ──────────────────────────────────
         // Headline stays boolean. This measures whether scaling size by regime confidence beats
         // the on/off gate before anything depends on it — the same discipline applied to the
@@ -1209,6 +1385,9 @@ static class CombinedBacktest
 
             var scores  = new double[rTimes.Count];
             var rotated = new List<(DateTime, double, double, TimeSpan, string)>(rTimes.Count);
+            // Same rotation cost the GA is now charged (a round trip on the fraction moved), so
+            // training and reporting price churn identically instead of one seeing it free.
+            double prevAlt = 1.0, rotationCostPct = 0.0;
             for (int i = 0; i < allTradesGuardInput.Count; i++)
             {
                 var t = allTradesGuardInput[i];
@@ -1218,6 +1397,8 @@ static class CombinedBacktest
                 double s = rot.ComputeSafetyScore(gs.GetMult(t.Time), gs.GetAtrRatio(t.Time), rRegimes[i], isLong);
                 scores[i] = s;
                 var (altShare, _, _) = rot.ComputeAllocation(s);
+                rotationCostPct += Math.Abs(altShare - prevAlt) * TradeCosts.FeeRoundTripPct;
+                prevAlt = altShare;
                 rotated.Add((t.Time, t.Return, t.Conf * altShare, t.Hold, t.Strategy));
             }
 
@@ -1231,11 +1412,16 @@ static class CombinedBacktest
             double wTot = rotGeno.GuardWeight + rotGeno.AtrWeight + rotGeno.RegimeWeight;
             if (wTot > 1e-9)
                 Console.WriteLine($"  Signal mix: guard={rotGeno.GuardWeight / wTot:P4}  atr={rotGeno.AtrWeight / wTot:P4}  regime={rotGeno.RegimeWeight / wTot:P4}");
+            int mults0 = 0;
+            for (int i = 1; i < scores.Length; i++) if (Math.Abs(scores[i] - scores[i - 1]) > 1e-9) mults0++;
             Console.WriteLine($"  Safety score: min={scores.Min():F3}  mean={scores.Average():F3}  max={scores.Max():F3}   " +
                               $"→ mean alt share retained {1.0 - scores.Average():P1}");
-            Console.WriteLine($"  {"Sizing",-18}  {"Rot off",10}  {"Rot on",10}  {"Δ",9}  {"DD off",7}  {"DD on",7}");
-            Console.WriteLine($"  {"5% per position",-18}  {rp5.EndBalance - 100,+9:F1}%  {rp5r.EndBalance - 100,+9:F1}%  " +
-                              $"{rp5r.EndBalance - rp5.EndBalance,+8:F1}pp  {rp5.MaxDrawdownPct,6:F1}%  {rp5r.MaxDrawdownPct,6:F1}%");
+            double rotNet = rp5r.EndBalance - 100 - rotationCostPct;
+            Console.WriteLine($"  Rotation cost: {rotationCostPct:F2}pp over {mults0} allocation changes " +
+                              $"(round trip on the fraction moved, at {TradeCosts.FeeRoundTripPct:F2}% each)");
+            Console.WriteLine($"  {"Sizing",-18}  {"Rot off",10}  {"Rot on",10}  {"Δ net",9}  {"DD off",7}  {"DD on",7}");
+            Console.WriteLine($"  {"5% per position",-18}  {rp5.EndBalance - 100,+9:F1}%  {rotNet,+9:F1}%  " +
+                              $"{rotNet - (rp5.EndBalance - 100),+8:F1}pp  {rp5.MaxDrawdownPct,6:F1}%  {rp5r.MaxDrawdownPct,6:F1}%");
             Console.WriteLine($"  NOTE: rotated-out capital is modelled as FLAT (de-risk-to-cash lower bound),");
             Console.WriteLine($"        not as BTC/ETH exposure — a true rotation test needs benchmark returns.");
         }
@@ -1414,7 +1600,7 @@ static class CombinedBacktest
         {
             var coinFsGFull = SelectVariant(fsVariants, m15f) ?? swingG;
             var coinRet = new List<double>();
-            foreach (var (t, ret, _) in FadeShortSimulator.GetFadeShortReturns(coinFsGFull, h1f, m15f, funding.For(sym)))
+            foreach (var (t, ret, _, _, _) in FadeShortSimulator.GetFadeShortReturns(coinFsGFull, h1f, m15f, funding.For(sym)))
             {
                 fullHistTrades.Add((t, ret, conf, TimeSpan.FromHours(coinFsGFull.MaxHoldCandles)));
                 coinRet.Add(ret);
@@ -1426,7 +1612,7 @@ static class CombinedBacktest
         {
             // gridFullCoins doesn't store m15 — use the representative gridG for hold-time
             var coinRet = new List<double>();
-            foreach (var (t, ret, _) in GridSimulator.GetGridReturns(gridG, h1f, funding.For(sym)))
+            foreach (var (t, ret, _, _, _) in GridSimulator.GetGridReturns(gridG, h1f, funding.For(sym)))
             {
                 if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.Grid, t)) continue;
                 fullHistTrades.Add((t, ret, conf, TimeSpan.FromHours(gridG.MaxHoldCandles)));

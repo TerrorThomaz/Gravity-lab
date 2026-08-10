@@ -33,7 +33,11 @@ public static class AccumulationGridSimulator
     // funding: optional real rate series. Passing null does NOT mean "no funding" — the
     // fallback branch of FundingRateSession.PnlPct still charges the interest-rate floor
     // (-0.01pp per 8h settlement crossed), same as every other strategy.
-    public static List<(DateTime Time, double Return, string Kind)> GetAccumulationReturns(
+    // EntryPrice is returned because an accumulator's success is an EXECUTION question — what did
+    // it pay relative to the market over the same period — not a profit-factor question. Without
+    // it the only available score was PF, which is a trading-edge yardstick and let this drift
+    // from PF 1.32 to 1.03 unnoticed while nothing measured what it is actually for.
+    public static List<(DateTime Time, double Return, string Kind, double EntryPrice)> GetAccumulationReturns(
         AccumulationGridGenotype g, ReadOnlySpan<Candle> h1, MarketRegime targetRegime,
         FundingRateSession? funding = null)
     {
@@ -55,7 +59,7 @@ public static class AccumulationGridSimulator
         return state;
     }
 
-    private static (List<(DateTime, double, string)> Trades, AccumulationTradeState FinalState)
+    private static (List<(DateTime, double, string, double)> Trades, AccumulationTradeState FinalState)
         RunAccumulation(AccumulationGridGenotype g, ReadOnlySpan<Candle> candles, MarketRegime targetRegime,
                         FundingRateSession? funding = null)
     {
@@ -72,7 +76,7 @@ public static class AccumulationGridSimulator
         var atr = Volatility.Atr(highs, lows, closes, AtrPeriod);
         var regimeSeries = RegimeClassifier.ClassifySeriesWithDuration(candles.ToArray());
 
-        var result = new List<(DateTime, double, string)>();
+        var result = new List<(DateTime, double, string, double)>();
 
         bool active = false;
         int filledLevels = 0;
@@ -94,7 +98,7 @@ public static class AccumulationGridSimulator
                 double ret = (exitPx - entryPrices[n]) / entryPrices[n] * 100.0
                            - TradeCost(atr[i], entryPrices[n], isStop)
                            + fundingPnl;
-                result.Add((times[i], ret, "accumulation_long"));
+                result.Add((times[i], ret, "accumulation_long", entryPrices[n]));
             }
             filledLevels = 0;
             active = false;
@@ -142,7 +146,7 @@ public static class AccumulationGridSimulator
                         double ret = (tp - entryPrices[n]) / entryPrices[n] * 100.0
                                    - TradeCost(atrNow, entryPrices[n], isStop: false, isTp: true)
                                    + fundingPnl;
-                        result.Add((times[i], ret, "accumulation_long"));
+                        result.Add((times[i], ret, "accumulation_long", entryPrices[n]));
                         for (int m = n; m < filledLevels - 1; m++)
                             entryPrices[m] = entryPrices[m + 1];
                         filledLevels--;
@@ -194,4 +198,90 @@ public static class AccumulationGridSimulator
 
         return (result, finalState);
     }
+
+    // Acquisition quality vs a LOCAL VWAP window centred on each fill.
+    //
+    // A whole-series VWAP is not a valid execution benchmark over long spans: on a coin that
+    // trended up for three years the full-period VWAP sits far below any recent price, so every
+    // late fill scores "above VWAP" no matter how well it was executed. Measured for real —
+    // the same accumulator scored +2.54% on a 20% val window and -26.86% on full history, and
+    // that gap is the artifact, not the strategy. Comparing each fill to the market average
+    // AROUND it answers the question actually being asked: did we buy below the local average?
+    //
+    // Returns mean % below local VWAP (positive = bought cheaper than the local market).
+    public static double AcquisitionDiscountPct(
+        IReadOnlyList<Candle> h1, IReadOnlyList<double> entryPrices, IReadOnlyList<DateTime> entryTimes,
+        int halfWindowBars = 360)
+    {
+        if (h1.Count == 0 || entryPrices.Count == 0) return double.NaN;
+        var times = new DateTime[h1.Count];
+        for (int i = 0; i < h1.Count; i++) times[i] = h1[i].Time;
+
+        double sum = 0; int n = 0;
+        for (int k = 0; k < entryPrices.Count; k++)
+        {
+            double px = entryPrices[k];
+            if (px <= 1e-9) continue;
+            int idx = Array.BinarySearch(times, entryTimes[k]);
+            if (idx < 0) idx = ~idx;
+            int lo = Math.Max(0, idx - halfWindowBars);
+            int hi = Math.Min(h1.Count - 1, idx + halfWindowBars);
+            double pv = 0, vol = 0;
+            for (int i = lo; i <= hi; i++)
+            {
+                double tp = (h1[i].High + h1[i].Low + h1[i].Close) / 3.0;
+                pv += tp * h1[i].Volume; vol += h1[i].Volume;
+            }
+            if (vol <= 1e-9) continue;
+            double vwap = pv / vol;
+            if (vwap <= 1e-9) continue;
+            sum += (vwap - px) / vwap * 100.0; n++;
+        }
+        return n > 0 ? sum / n : double.NaN;
+    }
+
+
+    // Causal variant: benchmark each fill against a TRAILING EMA of typical price.
+    //
+    // AcquisitionDiscountPct centres its VWAP window on the fill, so it includes bars AFTER the
+    // trade. That is normal in post-hoc transaction-cost analysis ("did we get a good basis vs
+    // where it subsequently traded"), but it is not causal — nothing at the fill could have known
+    // those bars. The EMA version only ever looks backwards, so it answers the stricter question:
+    // at the moment of the fill, was this below the market's own running average?
+    //
+    // Any gap between the two is informative rather than a discrepancy: EMA-only measures timing
+    // skill available in real time; the centred window measures realised basis.
+    public static double AcquisitionDiscountEmaPct(
+        IReadOnlyList<Candle> h1, IReadOnlyList<double> entryPrices, IReadOnlyList<DateTime> entryTimes,
+        int emaPeriod = 360)
+    {
+        if (h1.Count < emaPeriod + 2 || entryPrices.Count == 0) return double.NaN;
+
+        var typical = new double[h1.Count];
+        var times   = new DateTime[h1.Count];
+        for (int i = 0; i < h1.Count; i++)
+        {
+            typical[i] = (h1[i].High + h1[i].Low + h1[i].Close) / 3.0;
+            times[i]   = h1[i].Time;
+        }
+        var ema = new double[h1.Count];
+        Trend.EmaInto(typical, emaPeriod, ema);
+
+        double sum = 0; int n = 0;
+        for (int k = 0; k < entryPrices.Count; k++)
+        {
+            double px = entryPrices[k];
+            if (px <= 1e-9) continue;
+            int idx = Array.BinarySearch(times, entryTimes[k]);
+            if (idx < 0) idx = ~idx;
+            // Step back one bar: the fill cannot use its own bar's completed average.
+            idx = Math.Clamp(idx - 1, 0, h1.Count - 1);
+            if (idx < emaPeriod) continue;          // EMA not warmed up yet
+            double avg = ema[idx];
+            if (avg <= 1e-9) continue;
+            sum += (avg - px) / avg * 100.0; n++;
+        }
+        return n > 0 ? sum / n : double.NaN;
+    }
+
 }

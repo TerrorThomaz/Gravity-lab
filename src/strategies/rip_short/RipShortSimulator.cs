@@ -120,17 +120,20 @@ public static class RipShortSimulator
         int    MaxExtraHoldCandles = 60,
         double MaxSizeMult         = 2.0);
 
-    public static List<(DateTime Time, double Return, string Kind)> GetRipShortReturns(
+    // EntryTime/EntryPrice: `Time` is the EXIT bar. EntryPrice is the BLENDED entry when a DCA
+    // add has fired (see BlendedEntry), which is the economically correct basis. Appended as
+    // NAMED fields so existing consumers compile unchanged.
+    public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetRipShortReturns(
         RipShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, FundingRateSession? funding = null,
         ExitOverrideConfig? overrideCfg = null)
     {
         var (trades, _) = RunRipShortMultiTF(g, h1, m15, funding, overrideCfg);
-        return trades.Select(t => (t.Item1, t.Item2, t.Item3)).ToList();
+        return trades.Select(t => (t.Item1, t.Item2, t.Item3, t.Item5, t.Item6)).ToList();
     }
 
     // 4-tuple variant carrying RegimeBarsActive — consumed by RipShortGA for
     // regime-conditional FoldScore filtering.
-    internal static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive)> GetRipShortReturnsWithRegime(
+    internal static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)> GetRipShortReturnsWithRegime(
         RipShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, FundingRateSession? funding = null,
         ExitOverrideConfig? overrideCfg = null)
     {
@@ -154,7 +157,7 @@ public static class RipShortSimulator
         return state;
     }
 
-    private static (List<(DateTime, double, string, int)> Trades, RipShortTradeState FinalState)
+    private static (List<(DateTime, double, string, int, DateTime, double)> Trades, RipShortTradeState FinalState)
         RunRipShortMultiTF(RipShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, FundingRateSession? funding,
         ExitOverrideConfig? overrideCfg = null)
     {
@@ -217,7 +220,7 @@ public static class RipShortSimulator
             bearRegimeBarsAtBar[i] = bearRunning;
         }
 
-        var result = new List<(DateTime, double, string, int)>();
+        var result = new List<(DateTime, double, string, int, DateTime, double)>();
 
         bool     inTrade         = false;
         double   entry           = 0;
@@ -393,7 +396,7 @@ public static class RipShortSimulator
                     double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: false);
                     double ret = ((entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl) * dcaSizeMult;
                     string kind = dcaDone ? "ripshort_dca" : everWaited ? "ripshort_wait" : "ripshort";
-                    result.Add((m15[im15].Time, ret, kind, entryRegimeBars));
+                    result.Add((m15[im15].Time, ret, kind, entryRegimeBars, entryTime, entry));
                     inTrade = false;
                 }
             }
@@ -405,7 +408,7 @@ public static class RipShortSimulator
             double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[^1].Time, funding, isLong: false);
             double ret = ((entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry) + fundingPnl) * dcaSizeMult;
             string kind = dcaDone ? "ripshort_dca" : everWaited ? "ripshort_wait" : "ripshort";
-            result.Add((m15[^1].Time, ret, kind, entryRegimeBars));
+            result.Add((m15[^1].Time, ret, kind, entryRegimeBars, entryTime, entry));
         }
 
         int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;

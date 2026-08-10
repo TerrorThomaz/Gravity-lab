@@ -38,7 +38,12 @@ public static class DipLongSimulator
     // half the swing family's — that is a stop-placement difference, not a slippage knob.
     private const double StopGapAtrK = 0.015;
 
-    public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive)> GetDipLongReturns(
+    // EntryTime/EntryPrice are exposed because `Time` is the EXIT bar on every simulator in this
+    // repo, and four separate things need the ENTRY instead: variant selection by entry ATR,
+    // leading-slice OOS sizing (aba8c1b documents the seam), accumulator acquisition quality,
+    // and 1m execution. Appended as NAMED fields so existing t.Time / t.Return consumers are
+    // untouched — the same low-risk shape already proven on AccumulationGridSimulator.
+    public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)> GetDipLongReturns(
         DipLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
         FundingRateSession? funding = null)
     {
@@ -68,7 +73,7 @@ public static class DipLongSimulator
         return state;
     }
 
-    private static (List<(DateTime, double, string, int)> Trades, DipLongTradeState FinalState)
+    private static (List<(DateTime, double, string, int, DateTime, double)> Trades, DipLongTradeState FinalState)
         RunDipLongMultiTF(DipLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
                           FundingRateSession? funding = null)
     {
@@ -112,7 +117,7 @@ public static class DipLongSimulator
             bullRegimeBarsAtBar[i] = bullRunning;
         }
 
-        var result = new List<(DateTime, double, string, int)>();
+        var result = new List<(DateTime, double, string, int, DateTime, double)>();
 
         bool   inTrade       = false;
         double entry         = 0;
@@ -230,7 +235,7 @@ public static class DipLongSimulator
                                     hitTarget ? target   : m15Price;
                     double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: true);
                     double ret = (exitPx - entry) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl;
-                    result.Add((m15[im15].Time, ret, "dip_long", entryRegimeBars));
+                    result.Add((m15[im15].Time, ret, "dip_long", entryRegimeBars, entryTime, entry));
                     inTrade = false;
                 }
             }
@@ -241,7 +246,7 @@ public static class DipLongSimulator
             double finalPx = m15Closes[^1];
             double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[^1].Time, funding, isLong: true);
             double ret = (finalPx - entry) / entry * 100.0 - TradeCost(false, atrEntry, entry) + fundingPnl;
-            result.Add((m15[^1].Time, ret, "dip_long", entryRegimeBars));
+            result.Add((m15[^1].Time, ret, "dip_long", entryRegimeBars, entryTime, entry));
         }
 
         int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;

@@ -379,6 +379,19 @@ static class OosBacktest
             oosAgBull = JsonSerializer.Deserialize<GravityGen2.Strategies.AccumulationGrid.AccumulationGridGenotype>(agJson.GetProperty("Bull").GetRawText());
             oosAgBear = JsonSerializer.Deserialize<GravityGen2.Strategies.AccumulationGrid.AccumulationGridGenotype>(agJson.GetProperty("Bear").GetRawText());
         }
+        // Same GRAVITY_RATCHET toggle as combinedbacktest. Without this the two commands run
+        // DIFFERENT mechanism sets, so any val-vs-OOS gap partly measures configuration drift
+        // rather than generalisation — which is exactly what we are trying to isolate here.
+        double oosLockMult = double.TryParse(Environment.GetEnvironmentVariable("GRAVITY_RATCHET"),
+                                 System.Globalization.NumberStyles.Float,
+                                 System.Globalization.CultureInfo.InvariantCulture, out var olm) ? olm : 0.0;
+        var oosRatchet = oosLockMult > 0.0
+            ? new RatchetConfig(TriggerPct: 8.0, LockPct: 3.0, TriggerAtrMult: 1.5, LockAtrMult: oosLockMult,
+                                FloorsTrailOnly: Environment.GetEnvironmentVariable("GRAVITY_TRAILFLOOR") == "1")
+            : default;
+        if (oosRatchet.Enabled)
+            Console.WriteLine($"  [RATCHET] active on OOS path (lock {oosLockMult}xATR, trailFloor={oosRatchet.FloorsTrailOnly})");
+
         var oosAcqDiscount = new List<double>();
         var oosAcqDiscountEma = new List<double>();
         int oosAcqFills = 0;
@@ -412,7 +425,7 @@ static class OosBacktest
 
             var (coinFsG, fsVarLabel) = SelectVariantLabeled(fsVariants, m15);
             coinFsG ??= swingG;
-            var trades = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1, m15, funding.For(sym));
+            var trades = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1, m15, funding.For(sym), oosRatchet);
             var split  = SizeThenScore(trades, t => t.Time, t => t.Return);
             var scored = split.Scored;
             var vRet   = scored.Select(t => t.Return).ToList();
@@ -528,7 +541,7 @@ static class OosBacktest
 
                 var (coinFlG, flVarLabel) = SelectVariantLabeled(flVariants, m15);
                 coinFlG ??= flG;
-                var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1, m15, funding.For(sym));
+                var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1, m15, funding.For(sym), oosRatchet);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList()
                     : raw;
@@ -584,7 +597,7 @@ static class OosBacktest
 
                 var (coinDlG, dlVarLabel) = SelectVariantLabeled(dlVariants, m15);
                 coinDlG ??= dlG;
-                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1, m15, funding.For(sym));
+                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1, m15, funding.For(sym), oosRatchet);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
@@ -640,7 +653,7 @@ static class OosBacktest
 
                 var (coinSlG, slVarLabel) = SelectVariantLabeled(slVariants, m15);
                 coinSlG ??= slG;
-                var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1, m15, funding.For(sym));
+                var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1, m15, funding.For(sym), oosRatchet);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;

@@ -240,15 +240,25 @@ public static class DipLongSimulator
 
                 // Minimum-profit ratchet: once armed the stop only moves UP, so this leg can no
                 // longer come back through breakeven — which is also the precondition for adding.
-                if (ratchet.Enabled && !leg.LockArmed
+                // FloorsTrailOnly: the ratchet may only arm once the TRAIL has armed, and it
+                // floors the trail's exit level rather than the hard stop — so the gene-tuned trail
+                // still decides when to exit and the ratchet only stops it giving back past
+                // breakeven. Otherwise (legacy) it floors the hard stop and pre-empts the trail.
+                bool mayArm = ratchet.FloorsTrailOnly ? leg.TrailArmed : true;
+                if (ratchet.Enabled && mayArm && !leg.LockArmed
                     && ExitRatchet.ShouldArm(true, leg.Entry, leg.AtrEntry, leg.TrailHigh, ratchet))
                     leg.LockArmed = true;
+
+                double trailLevel = leg.TrailHigh - g.TrailingStopAtrMult * leg.AtrEntry;
                 if (leg.LockArmed && ExitRatchet.LockPrice(true, leg.Entry, leg.AtrEntry, leg.TrailHigh, ratchet) is double lkPx)
-                    leg.HardStop = ExitRatchet.Tighten(true, leg.HardStop, lkPx);
+                {
+                    if (ratchet.FloorsTrailOnly) trailLevel = Math.Max(trailLevel, lkPx);
+                    else                         leg.HardStop = ExitRatchet.Tighten(true, leg.HardStop, lkPx);
+                }
 
                 bool hitStop   = m15Price <= leg.HardStop;
                 bool hitTarget = m15Price >= leg.Target;
-                bool hitTrail  = leg.TrailArmed && m15Price < leg.TrailHigh - g.TrailingStopAtrMult * leg.AtrEntry;
+                bool hitTrail  = leg.TrailArmed && m15Price < trailLevel;
                 bool timedOut  = holdH1 >= g.MaxHoldCandles;
 
                 bool hitTimeStop = false;

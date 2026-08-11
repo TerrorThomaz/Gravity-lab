@@ -38,7 +38,13 @@ public class RegimeRouterGA
 
     // Recency-weighted fold scoring: later folds (more recent market regime) count more.
     // Weights are applied in time order (index 0 = oldest fold, last = most recent).
-    private static readonly double[] FoldWeights = [1.0, 1.0, 1.0, 1.5, 2.0];
+    // Free parameters in RegimeRouterGenotype — feeds AggregateFoldScores' VC-proportional
+    // lambda, which leans harder on the WORST fold as the sample thins relative to model size.
+    private const int RouterGeneCount = 12;
+
+    // RETIRED: FoldWeights = [1.0, 1.0, 1.0, 1.5, 2.0] weighted the two most recent folds 2x and
+    // 1.5x. On a 12-parameter regime model fitted over a window with only a handful of long
+    // regime episodes, that is recency overfitting with no justification. Folds are flat now.
 
     // eliteCount sizes the reporting slice / BO seed set / final-winner pool ONLY.
     // eliteCarryOver is the real elitism knob — this GA carried a hardcoded literal 3 (of 50),
@@ -254,28 +260,45 @@ public class RegimeRouterGA
             return ScorePortfolio(active);
         }
 
-        // 5-fold time-sequential CV on training window
-        // Sort by time, then split into folds
+        // Time-sequential CV with an embargo, aggregated by the SAME monotone blend every
+        // strategy GA uses.
+        //
+        // Three defects fixed here, all of which this file kept after the rest of the repo moved on:
+        //
+        // 1. AGGREGATOR. This returned `weightedMean - 0.75 * weightedStd`. FoldScoreHelper spends
+        //    ~90 lines proving that form is NON-MONOTONE — raising a good fold's score can LOWER
+        //    fitness (measured: folds (10,10,30) -> 1.817, (10,10,40) -> -2.274). Every strategy GA
+        //    was migrated to AggregateFoldScores; the router never was, and the router is the
+        //    component doing the heavy lifting (DipLong ungated PF 0.64 vs router-gated 2.44).
+        //
+        // 2. RECENCY WEIGHTS. FoldWeights = [1,1,1,1.5,2] gave the two most recent folds 2x and
+        //    1.5x weight on a 12-parameter regime model. That is explicit recency overfitting on a
+        //    window containing only a handful of long regime episodes. Now flat.
+        //
+        // 3. NO EMBARGO. Folds were equal-COUNT slices of a time-sorted trade list, so a boundary
+        //    routinely fell inside a regime episode and the same episode appeared in two folds —
+        //    while every strategy GA embargoes (FitnessConfig.EmbargoPct). Trades are label-bearing
+        //    over their hold, so an equal-count split leaks across the seam.
         var sorted    = windowTrades.OrderBy(t => t.Time).ToList();
         int foldSize  = sorted.Count / folds;
         if (foldSize < MinTrades) return ScorePortfolio(FilterActive(router, sorted, btcSeries, ethSeries, btcTimeIndex));
 
-        double[] scores = new double[folds];
+        int embargo = Math.Max(0, (int)(foldSize * new FitnessConfig().EmbargoPct));
+        var foldScores = new List<double>(folds);
+        var foldCounts = new List<int>(folds);
         for (int f = 0; f < folds; f++)
         {
-            int start = f * foldSize;
-            int end   = f == folds - 1 ? sorted.Count : start + foldSize;
+            int start = f * foldSize + (f > 0 ? embargo : 0);   // drop the leading slice after fold 0
+            int end   = f == folds - 1 ? sorted.Count : (f + 1) * foldSize;
+            if (end - start < MinTrades) continue;              // thin fold: excluded, still attempted
             var fold  = sorted[start..end];
             var active = FilterActive(router, fold, btcSeries, ethSeries, btcTimeIndex);
-            scores[f] = ScorePortfolio(active);
+            foldScores.Add(ScorePortfolio(active));
+            foldCounts.Add(active.Count);
         }
+        if (foldScores.Count == 0) return FoldScoreHelper.DeadFoldFitness;
 
-        var    weights      = FoldWeights.Take(folds).ToArray();
-        double totalW       = weights.Sum();
-        double weightedMean = scores.Select((s, i) => s * weights[i]).Sum() / totalW;
-        double weightedVar  = scores.Select((s, i) => weights[i] * Math.Pow(s - weightedMean, 2)).Sum() / totalW;
-        double weightedStd  = Math.Sqrt(weightedVar);
-        return weightedMean - 0.75 * weightedStd;
+        return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, RouterGeneCount, folds);
     }
 
     // Keep only trades where the router would have activated that strategy at trade time.

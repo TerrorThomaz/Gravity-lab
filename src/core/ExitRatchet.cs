@@ -22,11 +22,24 @@ public readonly record struct RatchetConfig(
     double LockPct        = 0.0,   // profit % locked once armed
     double TriggerAtrMult = 0.0,   // if > 0, trigger = this x ATR%, capped by TriggerPct
     double LockAtrMult    = 0.0,    // if > 0, lock    = this x ATR%, capped by LockPct
-    double TrailAtrMult   = 0.0)   // if > 0, the floor FOLLOWS price at this x ATR once armed
+    double TrailAtrMult   = 0.0,    // if > 0, the floor FOLLOWS price at this x ATR once armed
+    bool   FloorsTrailOnly = false) // true = floor the TRAILING STOP instead of the hard stop
 {
     public bool Enabled => TriggerPct > 0.0 || TriggerAtrMult > 0.0;
 }
 
+// FloorsTrailOnly exists because the two mechanisms were COMPETING, not composing.
+//
+// Applied to the hard stop, the ratchet arms at ~1.5 x ATR while the strategy's own trail arms at
+// its gene value (4.89 x ATR on the trained DipLong). The floor therefore binds long before the
+// trail ever activates, the trail becomes dead weight, and the GA — having no gradient left on it —
+// lets it drift: retraining under the ratchet moved TrailingActivation 4.89 -> 2.42 and
+// TrailingStop 1.00 -> 4.99, i.e. it abandoned the trail and delegated exits to the floor. That
+// genotype was worth 5.4pp/yr LESS than the baseline under identical settings.
+//
+// With FloorsTrailOnly the trail governs WHEN to exit on a reversal (gene-tuned, as designed) and
+// the ratchet only guarantees the exit level never sits below breakeven+lock. It takes effect only
+// once the trail is armed, so it cannot pre-empt it. One mechanism with a floor, not two racing.
 public static class ExitRatchet
 {
     // Has the position moved far enough in favour to arm the floor?

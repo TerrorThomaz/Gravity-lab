@@ -424,7 +424,8 @@ static class CombinedBacktest
                               System.Globalization.NumberStyles.Float,
                               System.Globalization.CultureInfo.InvariantCulture, out var lm) ? lm : 0.0;
         var globalRatchet = lockMult > 0.0
-            ? new RatchetConfig(TriggerPct: 8.0, LockPct: 3.0, TriggerAtrMult: 1.5, LockAtrMult: lockMult)
+            ? new RatchetConfig(TriggerPct: 8.0, LockPct: 3.0, TriggerAtrMult: 1.5, LockAtrMult: lockMult,
+                                FloorsTrailOnly: Environment.GetEnvironmentVariable("GRAVITY_TRAILFLOOR") == "1")
             : default;
         // GRAVITY_MAXLEGS: extra DipLong legs, only added once EVERY open leg is locked in
         // profit. Requires the ratchet — without it no leg ever arms, so nothing is ever added.

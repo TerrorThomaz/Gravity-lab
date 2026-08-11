@@ -27,6 +27,15 @@ namespace TradingGA;
 // FoldScore filtering).
 public static class DipLongSimulator
 {
+    // One open position. Multi-leg state must live at class scope — C# has no local structs.
+    private struct Leg
+    {
+        public double   Entry, HardStop, Target, TrailHigh, AtrEntry;
+        public bool     TrailArmed, LockArmed;
+        public int      EntryIH1, EntryRegimeBars;
+        public DateTime EntryTime;
+    }
+
     private const int AtrPeriod        = 14;
     private const int RsiPeriod        = 7;
     private const int AdxPeriod        = 7;
@@ -47,9 +56,9 @@ public static class DipLongSimulator
     // so production behaviour is bit-identical unless a caller asks for it.
     public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)> GetDipLongReturns(
         DipLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
-        FundingRateSession? funding = null, RatchetConfig ratchet = default)
+        FundingRateSession? funding = null, RatchetConfig ratchet = default, int maxLegs = 1)
     {
-        var (trades, _) = RunDipLongMultiTF(g, h1, m15, funding, ratchet);
+        var (trades, _) = RunDipLongMultiTF(g, h1, m15, funding, ratchet, maxLegs);
         return trades;
     }
 
@@ -77,7 +86,7 @@ public static class DipLongSimulator
 
     private static (List<(DateTime, double, string, int, DateTime, double)> Trades, DipLongTradeState FinalState)
         RunDipLongMultiTF(DipLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
-                          FundingRateSession? funding = null, RatchetConfig ratchet = default)
+                          FundingRateSession? funding = null, RatchetConfig ratchet = default, int maxLegs = 1)
     {
         int h1Warmup = Math.Max(
                            Math.Max(g.RegimeLongEmaPeriod, Math.Max(g.EmaPeriod, RsiPeriod + 2)),
@@ -121,18 +130,20 @@ public static class DipLongSimulator
 
         var result = new List<(DateTime, double, string, int, DateTime, double)>();
 
-        bool   inTrade       = false;
-        double entry         = 0;
-        double hardStop      = 0;
-        double target        = 0;
-        double trailHigh     = 0;
-        double atrEntry      = 0;
-        bool   trailArmed    = false;
-        bool   lockArmed     = false;
-        int    entryIH1      = 0;
-        int    entryRegimeBars = 0;
-        DateTime entryTime   = default;
-
+        // ── Multi-leg position state ──────────────────────────────────────────────
+        // maxLegs == 1 reproduces the previous single-position behaviour EXACTLY; that is the
+        // regression check for this refactor, since the unit suite does not cover strategy P&L.
+        //
+        // A new leg is only permitted once EVERY open leg has armed its profit ratchet, i.e. is
+        // already locked above breakeven and can no longer lose. That is what makes adding
+        // near-risk-free: the incremental risk is the new leg's own stop, not compounded exposure
+        // on an underwater position. This is pyramiding AFTER de-risking, the opposite of
+        // averaging down, and is why it is safe on a long where DcaAndWait was not on a short.
+        //
+        // Legs are emitted as SEPARATE trades so PortfolioReplay counts each one against the
+        // per-strategy, per-symbol and directional caps. A single trade secretly worth N legs is
+        // the exact accounting hole that keeps RipShort's DcaAndWait disabled.
+        var legs = new List<Leg>(Math.Max(1, maxLegs));
         int    cachedH1Ref    = -1;
         bool   cachedSetupMet = false;
         double cachedSwingLow = 0;
@@ -151,7 +162,12 @@ public static class DipLongSimulator
 
             double m15Price = m15Closes[im15];
 
-            if (!inTrade)
+            // Entry is permitted when flat, or when every open leg is already locked in profit
+            // and the leg budget allows another. Evaluated BEFORE exits above have run this bar's
+            // removals, so a leg closing and a new one opening on the same bar are independent.
+            bool canAdd = legs.Count < Math.Max(1, maxLegs)
+                          && (legs.Count == 0 || legs.TrueForAll(l => l.LockArmed));
+            if (canAdd)
             {
                 if (h1Ref != cachedH1Ref)
                 {
@@ -196,74 +212,83 @@ public static class DipLongSimulator
                 {
                     int nextBar = im15 + 1;
                     if (nextBar >= Math.Min(m15.Length, m15Limit)) continue;
-                    inTrade        = true;
-                    entry          = m15[nextBar].Open;
-                    atrEntry       = cachedAtrH4;
-                    hardStop       = cachedSwingLow - g.StopLossAtrMult * atrEntry;
-                    target         = entry + g.TakeProfitAtrMult * atrEntry;
-                    trailHigh      = entry;
-                    trailArmed     = false;
-                    lockArmed      = false;
-                    entryIH1       = nextBar / 4;
-                    entryRegimeBars = cachedRegimeBars;
-                    entryTime      = m15[nextBar].Time;
+                    double eN = m15[nextBar].Open;
+                    legs.Add(new Leg
+                    {
+                        Entry           = eN,
+                        AtrEntry        = cachedAtrH4,
+                        HardStop        = cachedSwingLow - g.StopLossAtrMult * cachedAtrH4,
+                        Target          = eN + g.TakeProfitAtrMult * cachedAtrH4,
+                        TrailHigh       = eN,
+                        TrailArmed      = false,
+                        LockArmed       = false,
+                        EntryIH1        = nextBar / 4,
+                        EntryRegimeBars = cachedRegimeBars,
+                        EntryTime       = m15[nextBar].Time,
+                    });
                 }
             }
-            else
+            // ── Exits: every open leg is evaluated independently ──────────────────────
+            for (int li = legs.Count - 1; li >= 0; li--)
             {
-                if (m15Price > trailHigh) trailHigh = m15Price;
-                if (!trailArmed && trailHigh - entry >= g.TrailingActivationAtrMult * atrEntry)
-                    trailArmed = true;
+                var leg = legs[li];
+                if (m15Price > leg.TrailHigh) leg.TrailHigh = m15Price;
+                if (!leg.TrailArmed && leg.TrailHigh - leg.Entry >= g.TrailingActivationAtrMult * leg.AtrEntry)
+                    leg.TrailArmed = true;
 
-                int holdH1 = ih1 - entryIH1;
+                int holdH1 = ih1 - leg.EntryIH1;
 
-                // Minimum-profit ratchet: once armed, the stop can only move UP for a long, so the
-                // trade can no longer come back through breakeven. trailHigh is already the running
-                // favourable excursion, so nothing extra needs tracking.
-                if (ratchet.Enabled && !lockArmed
-                    && ExitRatchet.ShouldArm(true, entry, atrEntry, trailHigh, ratchet))
-                    lockArmed = true;
-                if (lockArmed && ExitRatchet.LockPrice(true, entry, atrEntry, ratchet) is double lkPx)
-                    hardStop = ExitRatchet.Tighten(true, hardStop, lkPx);
+                // Minimum-profit ratchet: once armed the stop only moves UP, so this leg can no
+                // longer come back through breakeven — which is also the precondition for adding.
+                if (ratchet.Enabled && !leg.LockArmed
+                    && ExitRatchet.ShouldArm(true, leg.Entry, leg.AtrEntry, leg.TrailHigh, ratchet))
+                    leg.LockArmed = true;
+                if (leg.LockArmed && ExitRatchet.LockPrice(true, leg.Entry, leg.AtrEntry, leg.TrailHigh, ratchet) is double lkPx)
+                    leg.HardStop = ExitRatchet.Tighten(true, leg.HardStop, lkPx);
 
-                bool hitStop   = m15Price <= hardStop;
-                bool hitTarget = m15Price >= target;
-                bool hitTrail  = trailArmed && m15Price < trailHigh - g.TrailingStopAtrMult * atrEntry;
+                bool hitStop   = m15Price <= leg.HardStop;
+                bool hitTarget = m15Price >= leg.Target;
+                bool hitTrail  = leg.TrailArmed && m15Price < leg.TrailHigh - g.TrailingStopAtrMult * leg.AtrEntry;
                 bool timedOut  = holdH1 >= g.MaxHoldCandles;
 
-                // Time-decay stop: after TimeStopBars bars, tolerated loss narrows linearly
-                // from TimeStopLossPct down to 0% at MaxHoldCandles.
                 bool hitTimeStop = false;
                 if (!hitStop && !hitTarget && !hitTrail && !timedOut
                     && holdH1 >= g.TimeStopBars && g.MaxHoldCandles > g.TimeStopBars)
                 {
                     double progress     = (double)(holdH1 - g.TimeStopBars) / (g.MaxHoldCandles - g.TimeStopBars);
                     double maxLossRatio = g.TimeStopLossPct * (1.0 - progress);
-                    hitTimeStop = (m15Price - entry) / entry < -maxLossRatio;
+                    hitTimeStop = (m15Price - leg.Entry) / leg.Entry < -maxLossRatio;
                 }
 
                 if (hitStop || hitTarget || hitTrail || timedOut || hitTimeStop)
                 {
-                    double exitPx = hitStop   ? hardStop :
-                                    hitTarget ? target   : m15Price;
-                    double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: true);
-                    double ret = (exitPx - entry) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl;
-                    result.Add((m15[im15].Time, ret, "dip_long", entryRegimeBars, entryTime, entry));
-                    inTrade = false;
+                    double exitPx = hitStop   ? leg.HardStop :
+                                    hitTarget ? leg.Target   : m15Price;
+                    double fundingPnl = FundingRateSession.PnlPct(leg.EntryTime, m15[im15].Time, funding, isLong: true);
+                    double ret = (exitPx - leg.Entry) / leg.Entry * 100.0
+                               - TradeCost(hitStop, leg.AtrEntry, leg.Entry) + fundingPnl;
+                    result.Add((m15[im15].Time, ret, "dip_long", leg.EntryRegimeBars, leg.EntryTime, leg.Entry));
+                    legs.RemoveAt(li);
                 }
+                else legs[li] = leg;   // struct: write mutations back
             }
         }
 
-        if (inTrade)
+        foreach (var leg in legs)
         {
             double finalPx = m15Closes[^1];
-            double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[^1].Time, funding, isLong: true);
-            double ret = (finalPx - entry) / entry * 100.0 - TradeCost(false, atrEntry, entry) + fundingPnl;
-            result.Add((m15[^1].Time, ret, "dip_long", entryRegimeBars, entryTime, entry));
+            double fundingPnl = FundingRateSession.PnlPct(leg.EntryTime, m15[^1].Time, funding, isLong: true);
+            double ret = (finalPx - leg.Entry) / leg.Entry * 100.0
+                       - TradeCost(false, leg.AtrEntry, leg.Entry) + fundingPnl;
+            result.Add((m15[^1].Time, ret, "dip_long", leg.EntryRegimeBars, leg.EntryTime, leg.Entry));
         }
 
-        int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;
-        return (result, new DipLongTradeState(inTrade, entry, hardStop, target, trailArmed, trailHigh, finalHold));
+        // Live state reports the OLDEST open leg, which is the one papertrade would be managing
+        // first; with maxLegs == 1 this is identical to the previous single-position state.
+        var st = legs.Count > 0 ? legs[0] : default;
+        int finalHold = legs.Count > 0 ? h1.Length - 1 - st.EntryIH1 : 0;
+        return (result, new DipLongTradeState(legs.Count > 0, st.Entry, st.HardStop, st.Target,
+                                              st.TrailArmed, st.TrailHigh, finalHold));
     }
 
     internal static double TradeCost(bool isStop, double atrEntry, double entryPx)

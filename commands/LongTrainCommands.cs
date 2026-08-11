@@ -1001,6 +1001,16 @@ static class LongTrainCommands
         Console.WriteLine($"\nNext: dotnet run -- backtest");
     }
 
+    // GRAVITY_RATCHET=<lockAtrMult> during training makes the GA select exits UNDER the profit
+    // floor it will actually run with. Genes chosen without it are tuned for exits that no longer
+    // happen once the floor is active — the same train-then-deploy gap the router gating exposed.
+    static RatchetConfig TrainRatchet() =>
+        double.TryParse(Environment.GetEnvironmentVariable("GRAVITY_RATCHET"),
+                        System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var lm) && lm > 0
+            ? new RatchetConfig(TriggerPct: 8.0, LockPct: 3.0, TriggerAtrMult: 1.5, LockAtrMult: lm)
+            : default;
+
     public static async Task RunDipLongTrain(BybitRestClient client, string[]? args = null)
     {
         const int TrainWindowH1 = 12_960;
@@ -1120,7 +1130,8 @@ static class LongTrainCommands
         var dlBtcSeries = btcDlEntry.H1Full is { Length: > 220 }
             ? RegimeClassifier.ClassifySeriesWithDuration(btcDlEntry.H1Full)
             : null;
-        var dlBest = new DipLongGA(80, 150, verbose: true, cfg: cfg, btcSeries: dlBtcSeries, seed: rngSeed).Run(dlCoins, dlSeed);
+        var dlBest = new DipLongGA(80, 150, verbose: true, cfg: cfg, btcSeries: dlBtcSeries, seed: rngSeed,
+                          ratchet: TrainRatchet()).Run(dlCoins, dlSeed);
 
         // Post-GA TPE pass removed — see the "Post-GA refinement" note at the top of
         // commands/TrainCommands.cs. DipLongGA already runs 60 TPE iterations internally

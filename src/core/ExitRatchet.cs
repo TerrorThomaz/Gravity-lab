@@ -21,7 +21,8 @@ public readonly record struct RatchetConfig(
     double TriggerPct     = 0.0,   // profit % that arms the floor (0 = disabled)
     double LockPct        = 0.0,   // profit % locked once armed
     double TriggerAtrMult = 0.0,   // if > 0, trigger = this x ATR%, capped by TriggerPct
-    double LockAtrMult    = 0.0)   // if > 0, lock    = this x ATR%, capped by LockPct
+    double LockAtrMult    = 0.0,    // if > 0, lock    = this x ATR%, capped by LockPct
+    double TrailAtrMult   = 0.0)   // if > 0, the floor FOLLOWS price at this x ATR once armed
 {
     public bool Enabled => TriggerPct > 0.0 || TriggerAtrMult > 0.0;
 }
@@ -51,9 +52,18 @@ public static class ExitRatchet
         return excursionPct >= trig;
     }
 
-    // The stop price once armed. A long locks BELOW entry-plus-profit (stop rises); a short locks
-    // ABOVE entry-minus-profit (stop falls). Returns null when disabled.
-    public static double? LockPrice(bool isLong, double entry, double atrEntry, RatchetConfig cfg)
+    // The stop price once armed.
+    //
+    // With TrailAtrMult > 0 the floor FOLLOWS the favourable excursion at a fixed ATR distance
+    // instead of sitting still. This matters because a static floor truncates exactly the trades
+    // worth holding: crypto majors drift upward over long horizons, so locking +0.5% and stopping
+    // there gives up the rest of a 20% run. Measured symptom of the static version — average
+    // return per trade fell while win rate rose, i.e. many small wins replacing a few large ones.
+    //
+    // The floor is the BETTER of the fixed minimum and the trailing level, and callers apply it
+    // through Tighten(), which never loosens a stop — so it is monotone by construction and can
+    // only ever move in the risk-reducing direction.
+    public static double? LockPrice(bool isLong, double entry, double atrEntry, double bestPrice, RatchetConfig cfg)
     {
         if (!cfg.Enabled || entry <= 1e-9) return null;
         double lockPct = cfg.LockPct;
@@ -64,8 +74,16 @@ public static class ExitRatchet
             lockPct = Math.Min(cfg.LockAtrMult * atrPct, ceil);
         }
         if (lockPct <= 0.0) return null;
-        return isLong ? entry * (1.0 + lockPct / 100.0)
-                      : entry * (1.0 - lockPct / 100.0);
+        double fixedFloor = isLong ? entry * (1.0 + lockPct / 100.0)
+                                   : entry * (1.0 - lockPct / 100.0);
+        if (cfg.TrailAtrMult <= 0.0 || atrEntry <= 0.0) return fixedFloor;
+
+        double trailFloor = isLong ? bestPrice - cfg.TrailAtrMult * atrEntry
+                                   : bestPrice + cfg.TrailAtrMult * atrEntry;
+        // Never worse than the guaranteed minimum: early in the move the trail sits below the
+        // fixed floor, and the whole point of the ratchet is that it cannot come back through it.
+        return isLong ? Math.Max(fixedFloor, trailFloor)
+                      : Math.Min(fixedFloor, trailFloor);
     }
 
     // Tighter of the existing stop and the armed floor, in the direction that reduces risk.

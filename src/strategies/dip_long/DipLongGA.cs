@@ -26,7 +26,13 @@ public class DipLongGA
     private readonly int                   _eliteCount;
     private readonly int                   _migrationInterval;
     private readonly bool                  _verbose;
-    private readonly Func<DateTime, double>? _tradeGate;  // null = no gating; returns weight 0..1 (set by CoevolveGA)
+    private readonly Func<DateTime, double>? _tradeGate;
+
+    // Exit ratchet applied INSIDE fitness. Without this the GA selects TP / trail / MaxHold in a
+    // world where no profit floor exists, and the floor is then bolted on at run time — the same
+    // train-then-deploy mismatch that made the router's gating worth 54-57% of trades the strategy
+    // GA never saw. If the ratchet is going to change exits, the genes have to be chosen under it.
+    private readonly RatchetConfig _ratchet;  // null = no gating; returns weight 0..1 (set by CoevolveGA)
     private readonly RegimeBar[]?          _btcSeries;    // optional: for regime diversity bonus
     private readonly int                   _tournamentK;
     private readonly int                   _eliteCarryOver;
@@ -55,6 +61,7 @@ public class DipLongGA
         int  migrationInterval = 10,
         bool verbose           = true,
         Func<DateTime, double>? tradeGate = null,
+        RatchetConfig ratchet = default,
         FitnessConfig? cfg = null,
         RegimeBar[]? btcSeries = null,
         int  tournamentK           = GaSearch.DefaultTournamentK,
@@ -68,6 +75,7 @@ public class DipLongGA
         _migrationInterval = migrationInterval;
         _verbose           = verbose;
         _tradeGate         = tradeGate;
+        _ratchet           = ratchet;
         _cfg               = cfg ?? new FitnessConfig();
         _btcSeries         = btcSeries;
         _tournamentK           = tournamentK;
@@ -120,7 +128,7 @@ public class DipLongGA
             if (_btcSeries != null && _cfg.RegimeDiversityW > 0)
             {
                 var allRegime = validCoins
-                    .SelectMany(x => DipLongSimulator.GetDipLongReturns(ind, x.h1.Span, x.m15.Span)
+                    .SelectMany(x => DipLongSimulator.GetDipLongReturns(ind, x.h1.Span, x.m15.Span, null, _ratchet)
                         .Select(t => { double w = _tradeGate?.Invoke(t.Time) ?? 1.0; return (Return: t.Return * w, RegimeBars: t.RegimeBarsActive, Time: t.Time, w); })
                         .Where(t => t.w >= 0.05))
                     .ToList();
@@ -131,7 +139,7 @@ public class DipLongGA
             else
             {
                 var all = validCoins
-                    .SelectMany(x => DipLongSimulator.GetDipLongReturns(ind, x.h1.Span, x.m15.Span)
+                    .SelectMany(x => DipLongSimulator.GetDipLongReturns(ind, x.h1.Span, x.m15.Span, null, _ratchet)
                         .Select(t => { double w = _tradeGate?.Invoke(t.Time) ?? 1.0; return (Return: t.Return * w, RegimeBars: t.RegimeBarsActive, w); })
                         .Where(t => t.w >= 0.05)
                         .Select(t => (t.Return, t.RegimeBars)))
@@ -189,7 +197,7 @@ public class DipLongGA
                 if (endH1  - startH1  < 40) continue;
                 if (endM15 - startM15 < 40) continue;
                 foldRet.AddRange(
-                    DipLongSimulator.GetDipLongReturns(ind, h1.Slice(startH1, endH1 - startH1).Span, m15.Slice(startM15, endM15 - startM15).Span)
+                    DipLongSimulator.GetDipLongReturns(ind, h1.Slice(startH1, endH1 - startH1).Span, m15.Slice(startM15, endM15 - startM15).Span, null, _ratchet)
                                     .Select(t => { double w = _tradeGate?.Invoke(t.Time) ?? 1.0; return (Return: t.Return * w, RegimeBars: t.RegimeBarsActive, w); })
                                     .Where(t => t.w >= 0.05)
                                     .Select(t => (t.Return, t.RegimeBars)));

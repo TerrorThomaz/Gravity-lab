@@ -398,7 +398,7 @@ public static class FadeShortSimulator
                 if (ratchet.Enabled && !lockArmed
                     && ExitRatchet.ShouldArm(false, entry, atrEntry, trailLow, ratchet))
                     lockArmed = true;
-                if (lockArmed && ExitRatchet.LockPrice(false, entry, atrEntry, ratchet) is double lkPxS)
+                if (lockArmed && ExitRatchet.LockPrice(false, entry, atrEntry, trailLow, ratchet) is double lkPxS)
                     hardStop = ExitRatchet.Tighten(false, hardStop, lkPxS);
 
                 bool hitHardStop = m15Price >= hardStop;

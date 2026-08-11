@@ -219,7 +219,7 @@ public static class FadeLongSimulator
                 if (ratchet.Enabled && !lockArmed
                     && ExitRatchet.ShouldArm(true, entry, atrEntry, trailHigh, ratchet))
                     lockArmed = true;
-                if (lockArmed && ExitRatchet.LockPrice(true, entry, atrEntry, ratchet) is double lkPx)
+                if (lockArmed && ExitRatchet.LockPrice(true, entry, atrEntry, trailHigh, ratchet) is double lkPx)
                     hardStop = ExitRatchet.Tighten(true, hardStop, lkPx);
 
                 bool hitHardStop = m15Price <= hardStop;

@@ -5,6 +5,20 @@ namespace TradingGA;
 
 static class OosBacktest
 {
+
+    // GRAVITY_ATRCAP=1 puts the ATR-scaled loss cap on RipShort's PRODUCTION path.
+    //
+    // clamp(2.5 x ATR%, 3%, 10%): scales with the coin's own volatility so it sits outside the
+    // noise (a flat 6% cap raised trade count 48% and halved return by being brushed), but a
+    // short's downside is unbounded so it still meets an absolute ceiling.
+    // Measured on RipShort in isolation: worst -15.30% -> -10.69% for ~0.15pp/trade of return.
+    // Note CVaR5 moves the OTHER way (-7.61% -> -9.67%): it truncates the catastrophic trade
+    // while letting the average bad trade run further. That is the deliberate trade.
+    static RipShortSimulator.ExitOverrideConfig? ProdRipCap() =>
+        Environment.GetEnvironmentVariable("GRAVITY_ATRCAP") == "1"
+            ? new RipShortSimulator.ExitOverrideConfig(RipShortSimulator.ExitOverrideMode.None,
+                  MaxLossPct: 10.0, MaxLossAtrMult: 2.5, MaxLossPctFloor: 3.0)
+            : null;
     // ── Variant loading helpers (mirrors CombinedBacktest) ────────────────────
     static VariantSpec<TG>[] LoadVariants<TDto, TG>(
         string strategyKey,
@@ -682,7 +696,7 @@ static class OosBacktest
 
                 var (coinRsG, rsVarLabel) = SelectVariantLabeled(rsVariants, m15);
                 coinRsG ??= rsG;
-                var raw   = RipShortSimulator.GetRipShortReturns(coinRsG, h1, m15, funding.For(sym));
+                var raw   = RipShortSimulator.GetRipShortReturns(coinRsG, h1, m15, funding.For(sym), ProdRipCap());
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList()
                     : raw;
@@ -1245,7 +1259,7 @@ static class OosBacktest
             if (rsG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
                 var coinRsGAC = SelectVariant(rsVariantsAC, m15Train) ?? rsG;
-                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGAC, h1Val, m15Val, funding.For(sym));
+                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGAC, h1Val, m15Val, funding.For(sym), ProdRipCap());
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
                 if (split.Scored.Count > 0)
@@ -1352,7 +1366,7 @@ static class OosBacktest
             if (rsG != null && m15.Length >= 1200)
             {
                 var coinRsGOos = SelectVariant(rsVariantsAC, m15) ?? rsG;
-                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGOos, h1, m15, funding.For(sym));
+                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGOos, h1, m15, funding.For(sym), ProdRipCap());
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
                 if (split.Scored.Count > 0)

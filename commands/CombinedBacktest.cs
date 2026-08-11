@@ -91,6 +91,20 @@ static class CombinedBacktest
 
     // Portfolio trade labels → router StrategyKind. Null means the router does not gate this
     // label (accumgrid is routed by its own Bull/Bear sub-genotypes, not by a StrategyKind).
+
+    // GRAVITY_ATRCAP=1 puts the ATR-scaled loss cap on RipShort's PRODUCTION path.
+    //
+    // clamp(2.5 x ATR%, 3%, 10%): scales with the coin's own volatility so it sits outside the
+    // noise (a flat 6% cap raised trade count 48% and halved return by being brushed), but a
+    // short's downside is unbounded so it still meets an absolute ceiling.
+    // Measured on RipShort in isolation: worst -15.30% -> -10.69% for ~0.15pp/trade of return.
+    // Note CVaR5 moves the OTHER way (-7.61% -> -9.67%): it truncates the catastrophic trade
+    // while letting the average bad trade run further. That is the deliberate trade.
+    static RipShortSimulator.ExitOverrideConfig? ProdRipCap() =>
+        Environment.GetEnvironmentVariable("GRAVITY_ATRCAP") == "1"
+            ? new RipShortSimulator.ExitOverrideConfig(RipShortSimulator.ExitOverrideMode.None,
+                  MaxLossPct: 10.0, MaxLossAtrMult: 2.5, MaxLossPctFloor: 3.0)
+            : null;
     static RegimeRouterGA.StrategyKind? StrategyKindOf(string strategy) => strategy switch
     {
         "swing" or "fade_short" => RegimeRouterGA.StrategyKind.FadeShort,
@@ -412,6 +426,24 @@ static class CombinedBacktest
         var globalRatchet = lockMult > 0.0
             ? new RatchetConfig(TriggerPct: 8.0, LockPct: 3.0, TriggerAtrMult: 1.5, LockAtrMult: lockMult)
             : default;
+        // GRAVITY_MAXLEGS: extra DipLong legs, only added once EVERY open leg is locked in
+        // profit. Requires the ratchet — without it no leg ever arms, so nothing is ever added.
+        int maxLegs = int.TryParse(Environment.GetEnvironmentVariable("GRAVITY_MAXLEGS"), out var ml) && ml > 0 ? ml : 1;
+
+        // GRAVITY_CROWD=1 — funding-rate crowding gate. Funding is the one microstructure signal
+        // already in the data we fetch: a positive rate means longs are PAYING shorts, i.e. the
+        // long side is crowded, and vice versa. Entering with the crowd is entering into the
+        // positions most likely to be squeezed. Thresholds are calibrated constants, not genes
+        // (+0.08%/8h long, -0.05%/8h short), so this adds no overfit surface.
+        //
+        // Already implemented and used in FullTest ONLY — absent from combinedbacktest,
+        // oosbacktest and papertrade. Wiring it here so it can be measured on the main path.
+        bool crowdGate = Environment.GetEnvironmentVariable("GRAVITY_CROWD") == "1";
+        if (crowdGate) Console.WriteLine("  [CROWD] funding-crowding gate active (skip entries with the crowd)");
+        if (maxLegs > 1 && !globalRatchet.Enabled)
+            Console.WriteLine("  [MAXLEGS] ignored — legs are only added after a leg LOCKS, which needs GRAVITY_RATCHET");
+        else if (maxLegs > 1)
+            Console.WriteLine($"  [MAXLEGS] DipLong may hold up to {maxLegs} legs (added only when all open legs are locked)");
         if (globalRatchet.Enabled)
             Console.WriteLine($"  [RATCHET] floor active on all strategies (arm 1.5xATR cap 8%, lock {lockMult}xATR cap 3%)");
         // Val-window price series per coin, collected once for the random-entry control below.
@@ -635,6 +667,8 @@ static class CombinedBacktest
                 var gated  = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList()
                     : raw;
+                if (crowdGate && funding.For(sym) is FundingRateSession fsG_)
+                    gated = gated.Where(t => !fsG_.IsCrowdedLong(t.Time)).ToList();
                 var vRet   = gated.Select(t => t.Return).ToList();
 
                 int gatedOut = raw.Count - gated.Count;
@@ -691,10 +725,12 @@ static class CombinedBacktest
 
                 var (coinDlG, dlVarLabel) = SelectVariantLabeled(dlVariants, m15);
                 coinDlG ??= dlG;
-                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1Val, m15Val, funding.For(sym), globalRatchet);
+                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1Val, m15Val, funding.For(sym), globalRatchet, maxLegs);
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
+                if (crowdGate && funding.For(sym) is FundingRateSession fsG_)
+                    gated = gated.Where(t => !fsG_.IsCrowdedLong(t.Time)).ToList();
                 var vRet  = gated.Select(t => t.Return).ToList();
 
                 int gatedOut = raw.Count - gated.Count;
@@ -752,9 +788,14 @@ static class CombinedBacktest
                 var (coinSlG, slVarLabel) = SelectVariantLabeled(slVariants, m15);
                 coinSlG ??= slG;
                 var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1Val, m15Val, funding.For(sym), globalRatchet);
+                // NOTE: SwingLong is gated on StrategyKind.DipLong, not SwingLong. Both are
+                // bull-regime longs so it is defensible, but it means the router's SwingLong flag
+                // is never consulted here — flagged rather than changed.
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
+                if (crowdGate && funding.For(sym) is FundingRateSession fsSl_)
+                    gated = gated.Where(t => !fsSl_.IsCrowdedLong(t.Time)).ToList();
                 var vRet  = gated.Select(t => t.Return).ToList();
 
                 int gatedOut = raw.Count - gated.Count;
@@ -811,7 +852,7 @@ static class CombinedBacktest
 
                 var (coinRsG, rsVarLabel) = SelectVariantLabeled(rsVariants, m15);
                 coinRsG ??= rsG;
-                var raw    = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val, funding.For(sym));
+                var raw    = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val, funding.For(sym), ProdRipCap());
                 // WaitForBreakeven: suppress the MaxHoldCandles time exit while the position is
                 // underwater AND local vol is calm, capped at MaxExtraHoldCandles. Size stays 1x,
                 // so per-trade accounting stays honest — unlike DcaAndWait, which the simulator
@@ -932,6 +973,8 @@ static class CombinedBacktest
                 var gated  = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList()
                     : raw;
+                if (crowdGate && funding.For(sym) is FundingRateSession fsG_)
+                    gated = gated.Where(t => !fsG_.IsCrowdedShort(t.Time)).ToList();
                 var vRet   = gated.Select(t => t.Return).ToList();
 
                 int gatedOut = raw.Count - gated.Count;

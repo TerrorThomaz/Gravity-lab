@@ -447,6 +447,11 @@ static class CombinedBacktest
             Console.WriteLine($"  [MAXLEGS] DipLong may hold up to {maxLegs} legs (added only when all open legs are locked)");
         if (globalRatchet.Enabled)
             Console.WriteLine($"  [RATCHET] floor active on all strategies (arm 1.5xATR cap 8%, lock {lockMult}xATR cap 3%)");
+
+        // ONE context for the whole command. Every simulator call takes ctx.With(funding.For(sym)),
+        // so this command cannot run a different mechanism set from oosbacktest or papertrade by
+        // accident -- which it previously did (oosbacktest had no ratchet support at all).
+        var ctx = new ExecContext(Ratchet: globalRatchet, MaxLegs: maxLegs, CrowdingGate: crowdGate);
         // Val-window price series per coin, collected once for the random-entry control below.
         var controlSeries     = new List<(string Sym, Candle[] H1Val)>();
         var allTradesNoRouter = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
@@ -548,7 +553,7 @@ static class CombinedBacktest
             }
 
             double conf   = Simulator.ComputeConfidence(tRet);
-            var    vSwing = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1Val, m15Val, funding.For(sym), globalRatchet);
+            var    vSwing = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1Val, m15Val, ctx.With(funding.For(sym)));
             var    vRet   = vSwing.Select(t => t.Return).ToList();
             int    vCC    = h1Val.Length * 12;
             swingTotalVCC += vCC;
@@ -664,7 +669,7 @@ static class CombinedBacktest
 
                 var (coinFlG, flVarLabel) = SelectVariantLabeled(flVariants, m15);
                 coinFlG ??= flG;
-                var raw    = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1Val, m15Val, funding.For(sym), globalRatchet);
+                var raw    = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1Val, m15Val, ctx.With(funding.For(sym)));
                 var gated  = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList()
                     : raw;
@@ -726,7 +731,7 @@ static class CombinedBacktest
 
                 var (coinDlG, dlVarLabel) = SelectVariantLabeled(dlVariants, m15);
                 coinDlG ??= dlG;
-                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1Val, m15Val, funding.For(sym), globalRatchet, maxLegs);
+                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1Val, m15Val, ctx.With(funding.For(sym)));
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
@@ -788,7 +793,7 @@ static class CombinedBacktest
 
                 var (coinSlG, slVarLabel) = SelectVariantLabeled(slVariants, m15);
                 coinSlG ??= slG;
-                var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1Val, m15Val, funding.For(sym), globalRatchet);
+                var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1Val, m15Val, ctx.With(funding.For(sym)));
                 // NOTE: SwingLong is gated on StrategyKind.DipLong, not SwingLong. Both are
                 // bull-regime longs so it is defensible, but it means the router's SwingLong flag
                 // is never consulted here — flagged rather than changed.

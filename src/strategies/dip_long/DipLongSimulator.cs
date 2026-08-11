@@ -54,6 +54,11 @@ public static class DipLongSimulator
     // untouched — the same low-risk shape already proven on AccumulationGridSimulator.
     // ratchet: opt-in minimum-profit floor (see src/core/ExitRatchet.cs). Default is disabled,
     // so production behaviour is bit-identical unless a caller asks for it.
+    // ExecContext overload — the single point of contact. Delegates to the parameterised form
+    // so behaviour is identical by construction; `default` reproduces production exactly.
+    public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)> GetDipLongReturns(
+        DipLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, in ExecContext ctx)
+        => GetDipLongReturns(g, h1, m15, ctx.Funding, ctx.Ratchet, ctx.MaxLegs);
     public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)> GetDipLongReturns(
         DipLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
         FundingRateSession? funding = null, RatchetConfig ratchet = default, int maxLegs = 1)

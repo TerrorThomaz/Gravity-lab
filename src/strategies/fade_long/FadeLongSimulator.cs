@@ -34,6 +34,10 @@ public static class FadeLongSimulator
     // EntryTime/EntryPrice: `Time` is the EXIT bar on every simulator here. Appended as NAMED
     // fields so existing t.Time / t.Return consumers compile unchanged. See DipLongSimulator
     // for the four consumers that need the entry rather than the exit.
+    // ExecContext overload — see DipLongSimulator for the rationale.
+    public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)> GetFadeLongReturns(
+        FadeLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, in ExecContext ctx)
+        => GetFadeLongReturns(g, h1, m15, ctx.Funding, ctx.Ratchet);
     public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)> GetFadeLongReturns(
         FadeLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
         FundingRateSession? funding = null, RatchetConfig ratchet = default)

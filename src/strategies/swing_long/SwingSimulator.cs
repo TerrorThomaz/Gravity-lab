@@ -231,6 +231,11 @@ public static class FadeShortSimulator
 
     // EntryTime/EntryPrice: `Time` is the EXIT bar. Appended as NAMED fields so existing
     // t.Time / t.Return consumers compile unchanged.
+    // ExecContext overloads — the single point of contact for both strategies in this file.
+    public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetFadeShortReturns(
+        FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, in ExecContext ctx)
+        => GetFadeShortReturns(g, h1, m15, ctx.Funding, ctx.Ratchet);
+
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetFadeShortReturns(
         FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
         FundingRateSession? funding = null, RatchetConfig ratchet = default)
@@ -452,6 +457,11 @@ public static class FadeShortSimulator
 // h4  = exit sizing ATR (aggregated from h1; matches multi-day holding timeframe)
 public static class SwingLongSimulator
 {
+    // ExecContext overload — the single point of contact.
+    public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetSwingLongReturns(
+        SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, in ExecContext ctx)
+        => GetSwingLongReturns(g, h1, m15, ctx.Funding, ctx.Ratchet);
+
     internal const int AtrPeriod = 14;
     internal const int RsiPeriod =  7;
     internal const int AdxPeriod =  7;

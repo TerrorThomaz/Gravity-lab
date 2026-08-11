@@ -413,7 +413,11 @@ static class OosBacktest
                     .ToList();
                 if (agRaw.Count > 0)
                 {
-                    var pxL = agRaw.Select(t => t.EntryPrice).ToList(); var tmL = agRaw.Select(t => t.Time).ToList();
+                    var pxL = agRaw.Select(t => t.EntryPrice).ToList(); // EntryTime, not Time: an accumulator's execution quality is its FILL priced against
+                    // the market around that fill. Time is the EXIT bar, and a profitable grid exits
+                    // ABOVE its entries, so benchmarking against the exit window flatters every fill
+                    // by roughly the trade's own profit — measuring P&L, not execution.
+                    var tmL = agRaw.Select(t => t.EntryTime).ToList();
                     double d  = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator
                         .AcquisitionDiscountPct(h1, pxL, tmL);
                     double de = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator

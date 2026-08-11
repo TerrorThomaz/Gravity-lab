@@ -1044,7 +1044,11 @@ static class CombinedBacktest
                 // is accumulating badly no matter what its PF says.
                 if (gated.Count > 0)
                 {
-                    var pxL = gated.Select(t => t.EntryPrice).ToList(); var tmL = gated.Select(t => t.Time).ToList();
+                    var pxL = gated.Select(t => t.EntryPrice).ToList(); // EntryTime, not Time: an accumulator's execution quality is its FILL priced against
+                    // the market around that fill. Time is the EXIT bar, and a profitable grid exits
+                    // ABOVE its entries, so benchmarking against the exit window flatters every fill
+                    // by roughly the trade's own profit — measuring P&L, not execution.
+                    var tmL = gated.Select(t => t.EntryTime).ToList();
                     double d  = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator
                         .AcquisitionDiscountPct(h1Val, pxL, tmL);
                     double de = GravityGen2.Strategies.AccumulationGrid.AccumulationGridSimulator

@@ -37,7 +37,7 @@ public static class AccumulationGridSimulator
     // it pay relative to the market over the same period — not a profit-factor question. Without
     // it the only available score was PF, which is a trading-edge yardstick and let this drift
     // from PF 1.32 to 1.03 unnoticed while nothing measured what it is actually for.
-    public static List<(DateTime Time, double Return, string Kind, double EntryPrice)> GetAccumulationReturns(
+    public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetAccumulationReturns(
         AccumulationGridGenotype g, ReadOnlySpan<Candle> h1, MarketRegime targetRegime,
         FundingRateSession? funding = null)
     {
@@ -59,7 +59,7 @@ public static class AccumulationGridSimulator
         return state;
     }
 
-    private static (List<(DateTime, double, string, double)> Trades, AccumulationTradeState FinalState)
+    private static (List<(DateTime, double, string, DateTime, double)> Trades, AccumulationTradeState FinalState)
         RunAccumulation(AccumulationGridGenotype g, ReadOnlySpan<Candle> candles, MarketRegime targetRegime,
                         FundingRateSession? funding = null)
     {
@@ -76,11 +76,16 @@ public static class AccumulationGridSimulator
         var atr = Volatility.Atr(highs, lows, closes, AtrPeriod);
         var regimeSeries = RegimeClassifier.ClassifySeriesWithDuration(candles.ToArray());
 
-        var result = new List<(DateTime, double, string, double)>();
+        var result = new List<(DateTime, double, string, DateTime, double)>();
 
         bool active = false;
         int filledLevels = 0;
         double[] entryPrices = new double[g.MaxLevels];
+        // Per-LEVEL fill time. sessionStartTime is the funding reference for the whole session and
+        // is NOT the entry of levels 2..n — a grid fills progressively as price falls, so using it
+        // would misdate every added level. Needed for the unified trade shape and for any
+        // acquisition metric that benchmarks each fill against its own local market.
+        DateTime[] entryTimes = new DateTime[g.MaxLevels];
         double trailingStop = 0;
         double highestPrice = 0;
         int holdCount = 0;
@@ -98,7 +103,7 @@ public static class AccumulationGridSimulator
                 double ret = (exitPx - entryPrices[n]) / entryPrices[n] * 100.0
                            - TradeCost(atr[i], entryPrices[n], isStop)
                            + fundingPnl;
-                result.Add((times[i], ret, "accumulation_long", entryPrices[n]));
+                result.Add((times[i], ret, "accumulation_long", entryTimes[n], entryPrices[n]));
             }
             filledLevels = 0;
             active = false;
@@ -146,7 +151,7 @@ public static class AccumulationGridSimulator
                         double ret = (tp - entryPrices[n]) / entryPrices[n] * 100.0
                                    - TradeCost(atrNow, entryPrices[n], isStop: false, isTp: true)
                                    + fundingPnl;
-                        result.Add((times[i], ret, "accumulation_long", entryPrices[n]));
+                        result.Add((times[i], ret, "accumulation_long", entryTimes[n], entryPrices[n]));
                         for (int m = n; m < filledLevels - 1; m++)
                             entryPrices[m] = entryPrices[m + 1];
                         filledLevels--;
@@ -160,6 +165,7 @@ public static class AccumulationGridSimulator
                     if (lows[i] <= levelPrice)
                     {
                         entryPrices[filledLevels] = levelPrice;
+                        entryTimes[filledLevels]  = times[i];
                         filledLevels++;
                     }
                 }
@@ -185,6 +191,7 @@ public static class AccumulationGridSimulator
                     active = true;
                     filledLevels = 1;
                     entryPrices[0] = level1Price;
+                    entryTimes[0]  = times[i];
                     highestPrice = closes[i];
                     trailingStop = highestPrice - g.StopLossAtrMult * atrNow;
                     holdCount = 0;

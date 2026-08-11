@@ -53,11 +53,27 @@ static class CombinedBacktest
                 excluded.Add((name, $"{rets.Count} trades; the bootstrap needs ≥ {MinFamilyTrades} to form a null"));
                 continue;
             }
-            var mc = MonteCarloTest.Run(
+            // BLOCK bootstrap, not iid. MonteCarloTest.Run resamples individual trades
+            // independently, which assumes an independence these trades do not have: entries are
+            // regime-gated so they arrive in bursts, and an iid null understates the spread and
+            // returns p-values that are too optimistic. RunBlockBootstrap was written for exactly
+            // this and had ZERO callers until now — the ninth-and-tenth instance of a mechanism
+            // built and never connected.
+            //
+            // Block length 24 ~ one day of h1 bars, i.e. the timescale trades actually cluster on.
+            // blockSize=1 degenerates to Run(), so the pair is directly comparable.
+            var mcIid   = MonteCarloTest.Run(
                 rets,
                 permutations: MonteCarloTest.FamilyWiseResamples,
                 rng: new Random(MonteCarloTest.SeedForStrategy(name)));
-            family.Add((name, mc.PValue));
+            var mcBlock = MonteCarloTest.RunBlockBootstrap(
+                rets, blockSize: 24,
+                permutations: MonteCarloTest.FamilyWiseResamples,
+                rng: new Random(MonteCarloTest.SeedForStrategy(name)));
+            Console.WriteLine($"  {name,-12} bootstrap p: iid {mcIid.PValue:F4}  |  block(24) {mcBlock.PValue:F4}" +
+                              (mcBlock.PValue > mcIid.PValue ? "   ← dependence widens it" : ""));
+            // The FAMILY carries the block p-value: it is the honest one when trades cluster.
+            family.Add((name, mcBlock.PValue));
         }
         return (family, excluded);
     }
@@ -2104,11 +2120,22 @@ static class CombinedBacktest
             Console.WriteLine($"\n── Combined portfolio  ({allFullRet.Count} trades, full history) ──────────────────────");
             Console.WriteLine("  DSR  (H₀: true SR ≤ 0 after selection from T trials across all strategies)");
             Console.WriteLine($"  {"T (trials)",12}  {"SR̂",7}  {"E[maxSR]",9}  {"PSR₀",6}  {"DSR",6}  verdict");
+            // Effective sample size, not the raw trade count. Trades are regime-gated and arrive
+            // in bursts, so DSR's sqrt(n-1) against n=|trades| divides by an inflated sample and
+            // reads "significant" almost regardless. Both columns are printed: the naive one for
+            // continuity with previously recorded numbers, the effective one because it is the
+            // honest verdict.
+            int effN = StatisticalTests.EffectiveSampleSize(allTrades.Select(t => t.Entry).ToList());
+            Console.WriteLine($"  n = {allFullRet.Count:N0} trades, but only ~{effN:N0} independent " +
+                              $"blocks (>24h apart) — DSR below is shown on BOTH.");
             foreach (int T in new[] { 10_000, 50_000, 500_000 })
             {
                 var (dsr, psr0, eMaxSr, srHat) = StatisticalTests.DeflatedSharpeRatio(allFullRet, T);
-                string v = dsr >= 0.95 ? "✓ significant" : dsr >= 0.80 ? "⚠ borderline" : "✗ not significant";
+                var (dsrE, _, _, _)            = StatisticalTests.DeflatedSharpeRatio(allFullRet, T, effN);
+                string v  = dsr  >= 0.95 ? "✓ significant" : dsr  >= 0.80 ? "⚠ borderline" : "✗ not significant";
+                string vE = dsrE >= 0.95 ? "✓ significant" : dsrE >= 0.80 ? "⚠ borderline" : "✗ not significant";
                 Console.WriteLine($"  {T,12:N0}  {srHat,+7:F4}  {eMaxSr,+9:F4}  {psr0,6:F3}  {dsr,6:F3}  {v}");
+                Console.WriteLine($"  {"  └ effective",12}  {"",7}  {"",9}  {"",6}  {dsrE,6:F3}  {vE}");
             }
             var allCoinConfigs = swingFullCoinRet.Concat(gridFullCoinRet).Concat(flFullCoinRet)
                                                  .Concat(dlFullCoinRet).Concat(slFullCoinRet).Concat(rsFullCoinRet).ToList();

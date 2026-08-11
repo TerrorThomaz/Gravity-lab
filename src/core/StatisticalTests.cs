@@ -89,10 +89,21 @@ public static class StatisticalTests
     // numTrials: approximate independent candidate evaluations during optimisation
     // (e.g. GA population × generations).  GA trials are correlated, so treat this
     // as an upper bound — the true effective T is lower.
+    // effectiveN: the number of INDEPENDENT observations, which is not returns.Count here.
+    //
+    // This system trades ~100 correlated crypto perps gated by a shared BTC regime, so trades
+    // cluster hard: many simultaneous positions inside one regime episode are close to ONE
+    // observation. DSR's sqrt(n-1) term therefore divides by a wildly inflated sample and will
+    // read "significant" almost regardless of the data. Passing an effective count -- e.g. the
+    // number of contiguous regime blocks the trades fall into, or a bootstrap-derived figure --
+    // makes the verdict honest. Expect verdicts to flip from significant to not; that is the
+    // correct outcome, not a regression.
+    //
+    // Defaults to returns.Count so existing call sites are unchanged until they opt in.
     public static (double Dsr, double PsrVsZero, double EMaxSr, double SrHat)
-        DeflatedSharpeRatio(List<double> returns, int numTrials)
+        DeflatedSharpeRatio(List<double> returns, int numTrials, int? effectiveN = null)
     {
-        int n = returns.Count;
+        int n = effectiveN ?? returns.Count;
         if (n < 10) return (0, 0, 0, 0);
 
         var m = Moments(returns);
@@ -364,4 +375,25 @@ public static class StatisticalTests
             foreach (var rest in Combinations(items[(i + 1)..], k - 1))
                 yield return [items[i], .. rest];
     }
+
+    // Effective independent sample size for a clustered trade series.
+    //
+    // Counts CONTIGUOUS BLOCKS of trades separated by more than `gapHours` of inactivity, rather
+    // than counting trades. Rationale: entries are regime-gated, so trades arrive in bursts inside
+    // a regime episode and are anything but independent — 20 simultaneous alt longs in one Bull leg
+    // carry roughly the information of one bet, not twenty. Every t-statistic, DSR and iid
+    // bootstrap in this repo assumes independence it does not have.
+    //
+    // Deliberately crude: a block count is a defensible LOWER bound on independence and needs no
+    // model. A correlation-matrix eigenvalue approach would be sharper and is the natural upgrade.
+    public static int EffectiveSampleSize(IReadOnlyList<DateTime> entryTimes, double gapHours = 24.0)
+    {
+        if (entryTimes.Count == 0) return 0;
+        var sorted = entryTimes.OrderBy(t => t).ToList();
+        int blocks = 1;
+        for (int i = 1; i < sorted.Count; i++)
+            if ((sorted[i] - sorted[i - 1]).TotalHours > gapHours) blocks++;
+        return blocks;
+    }
+
 }

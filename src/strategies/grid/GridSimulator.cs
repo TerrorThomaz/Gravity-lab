@@ -144,6 +144,11 @@ public static class GridSimulator
             else              result.Add((times[i], ret, kind, sessionEntryTime, entryPx));
         }
 
+        // Running mean of the session's filled entries, captured AS levels fill. Computing it in
+        // FlushSession is too late: the exits that trigger the flush clear filled[] first, so the
+        // mean came back 0. Caught by the conformance test's positive-EntryPrice invariant.
+        double sessionEntrySum = 0; int sessionEntryN = 0;
+
         static double MeanFilled(double[] px, bool[] fl)
         {
             double sum = 0; int n = 0;
@@ -155,7 +160,8 @@ public static class GridSimulator
         {
             if (!sessionLevel || sessionFills.Count == 0) return;
             double avg = sessionFills.Average();
-            result.Add((times[i], avg, "grid_session", sessionEntryTime, MeanFilled(entryPrice, filled)));
+            result.Add((times[i], avg, "grid_session", sessionEntryTime,
+                        sessionEntryN > 0 ? sessionEntrySum / sessionEntryN : 0.0));
             scoredOut?.Add(new ScoredTrade(coin!, "grid", sessionEntryTime, times[i], avg, sessionScore));
             sessionFills.Clear();
         }
@@ -257,6 +263,7 @@ public static class GridSimulator
                     {
                         filled[n]     = true;
                         entryPrice[n] = lvlPrice;
+                        sessionEntrySum += lvlPrice; sessionEntryN++;
                     }
                 }
 
@@ -294,6 +301,7 @@ public static class GridSimulator
                 double bbMargin  = g.BbWidthMaxPct > 1e-10 ? (g.BbWidthMaxPct - bbWidth[i]) / g.BbWidthMaxPct : 0;
                 sessionScore     = Math.Max(0, adxMargin * bbMargin);
                 Array.Clear(filled);
+                sessionEntrySum = 0; sessionEntryN = 0;
                 sessionFills.Clear();
 
                 // Fill all levels touched on this entry candle
@@ -304,6 +312,7 @@ public static class GridSimulator
                     {
                         filled[n]     = true;
                         entryPrice[n] = lvlPrice;
+                        sessionEntrySum += lvlPrice; sessionEntryN++;
                     }
                 }
 

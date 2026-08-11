@@ -634,6 +634,17 @@ public static class SwingLongSimulator
 
                 int holdH1 = ih1 - entryIH1;
 
+                // Minimum-profit ratchet. THIS WAS MISSING: SwingLongSimulator declared lockArmed
+                // and reset it at entry but never called ExitRatchet, so the ratchet parameter was
+                // accepted and silently dropped. It was misread as "the trail geometry already
+                // guarantees profit so the floor never binds" — the field simply never arrived.
+                // Caught by ExecContextConformanceTests, which is what that test exists for.
+                if (ratchet.Enabled && !lockArmed
+                    && ExitRatchet.ShouldArm(true, entry, atrEntry, trailHigh, ratchet))
+                    lockArmed = true;
+                if (lockArmed && ExitRatchet.LockPrice(true, entry, atrEntry, trailHigh, ratchet) is double lkPxL)
+                    hardStop = ExitRatchet.Tighten(true, hardStop, lkPxL);
+
                 bool hitStop   = m15Price <= hardStop;
                 bool hitTarget = m15Price >= target;
                 bool hitTrail  = trailArmed && m15Price < trailHigh - g.TrailingStopAtrMult * atrEntry;

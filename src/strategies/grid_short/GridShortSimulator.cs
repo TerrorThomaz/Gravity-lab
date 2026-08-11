@@ -103,6 +103,11 @@ public static class GridShortSimulator
             else              result.Add((times[i], ret, kind, gridStartTime, entryPx));
         }
 
+        // Running mean of the session's filled entries, captured AS levels fill. Computing it in
+        // FlushSession is too late: the exits that trigger the flush clear filled[] first, so the
+        // mean came back 0. Caught by the conformance test's positive-EntryPrice invariant.
+        double sessionEntrySum = 0; int sessionEntryN = 0;
+
         static double MeanFilled(double[] px, bool[] fl)
         {
             double sum = 0; int n = 0;
@@ -113,7 +118,8 @@ public static class GridShortSimulator
         void FlushSession(int i)
         {
             if (!sessionLevel || sessionFills.Count == 0) return;
-            result.Add((times[i], sessionFills.Average(), "grid_short_session", gridStartTime, MeanFilled(entryPrice, filled)));
+            result.Add((times[i], sessionFills.Average(), "grid_short_session", gridStartTime,
+                        sessionEntryN > 0 ? sessionEntrySum / sessionEntryN : 0.0));
             sessionFills.Clear();
         }
 
@@ -211,6 +217,7 @@ public static class GridShortSimulator
                     {
                         filled[n]     = true;
                         entryPrice[n] = lvlPrice;
+                        sessionEntrySum += lvlPrice; sessionEntryN++;
                     }
                 }
 
@@ -238,6 +245,7 @@ public static class GridShortSimulator
                 holdCount    = 0;
                 gridStartTime = times[i];
                 Array.Clear(filled);
+                sessionEntrySum = 0; sessionEntryN = 0;
                 sessionFills.Clear();
 
                 for (int n = 0; n < levels; n++)
@@ -247,6 +255,7 @@ public static class GridShortSimulator
                     {
                         filled[n]     = true;
                         entryPrice[n] = lvlPrice;
+                        sessionEntrySum += lvlPrice; sessionEntryN++;
                     }
                 }
 

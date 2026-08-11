@@ -392,6 +392,10 @@ static class OosBacktest
         if (oosRatchet.Enabled)
             Console.WriteLine($"  [RATCHET] active on OOS path (lock {oosLockMult}xATR, trailFloor={oosRatchet.FloorsTrailOnly})");
 
+        // ONE context, same shape combinedbacktest builds. This is the whole point of step 2:
+        // the two commands can no longer run different mechanism sets by accident.
+        var ctx = new ExecContext(Ratchet: oosRatchet);
+
         var oosAcqDiscount = new List<double>();
         var oosAcqDiscountEma = new List<double>();
         int oosAcqFills = 0;
@@ -429,7 +433,7 @@ static class OosBacktest
 
             var (coinFsG, fsVarLabel) = SelectVariantLabeled(fsVariants, m15);
             coinFsG ??= swingG;
-            var trades = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1, m15, funding.For(sym), oosRatchet);
+            var trades = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1, m15, ctx.With(funding.For(sym)));
             var split  = SizeThenScore(trades, t => t.Time, t => t.Return);
             var scored = split.Scored;
             var vRet   = scored.Select(t => t.Return).ToList();
@@ -545,7 +549,7 @@ static class OosBacktest
 
                 var (coinFlG, flVarLabel) = SelectVariantLabeled(flVariants, m15);
                 coinFlG ??= flG;
-                var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1, m15, funding.For(sym), oosRatchet);
+                var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1, m15, ctx.With(funding.For(sym)));
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList()
                     : raw;
@@ -601,7 +605,7 @@ static class OosBacktest
 
                 var (coinDlG, dlVarLabel) = SelectVariantLabeled(dlVariants, m15);
                 coinDlG ??= dlG;
-                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1, m15, funding.For(sym), oosRatchet);
+                var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1, m15, ctx.With(funding.For(sym)));
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;
@@ -657,7 +661,7 @@ static class OosBacktest
 
                 var (coinSlG, slVarLabel) = SelectVariantLabeled(slVariants, m15);
                 coinSlG ??= slG;
-                var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1, m15, funding.For(sym), oosRatchet);
+                var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1, m15, ctx.With(funding.For(sym)));
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList()
                     : raw;

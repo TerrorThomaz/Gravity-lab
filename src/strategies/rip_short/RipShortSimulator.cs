@@ -196,9 +196,9 @@ public static class RipShortSimulator
     // NAMED fields so existing consumers compile unchanged.
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetRipShortReturns(
         RipShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, FundingRateSession? funding = null,
-        ExitOverrideConfig? overrideCfg = null)
+        ExitOverrideConfig? overrideCfg = null, RatchetConfig ratchet = default)
     {
-        var (trades, _) = RunRipShortMultiTF(g, h1, m15, funding, overrideCfg);
+        var (trades, _) = RunRipShortMultiTF(g, h1, m15, funding, overrideCfg, ratchet);
         return trades.Select(t => (t.Item1, t.Item2, t.Item3, t.Item5, t.Item6)).ToList();
     }
 
@@ -206,9 +206,9 @@ public static class RipShortSimulator
     // regime-conditional FoldScore filtering.
     internal static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)> GetRipShortReturnsWithRegime(
         RipShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, FundingRateSession? funding = null,
-        ExitOverrideConfig? overrideCfg = null)
+        ExitOverrideConfig? overrideCfg = null, RatchetConfig ratchet = default)
     {
-        var (trades, _) = RunRipShortMultiTF(g, h1, m15, funding, overrideCfg);
+        var (trades, _) = RunRipShortMultiTF(g, h1, m15, funding, overrideCfg, ratchet);
         return trades;
     }
 
@@ -230,7 +230,7 @@ public static class RipShortSimulator
 
     private static (List<(DateTime, double, string, int, DateTime, double)> Trades, RipShortTradeState FinalState)
         RunRipShortMultiTF(RipShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, FundingRateSession? funding,
-        ExitOverrideConfig? overrideCfg = null)
+        ExitOverrideConfig? overrideCfg = null, RatchetConfig ratchet = default)
     {
         int h1Warmup = Math.Max(
                            Math.Max(g.RegimeLongEmaPeriod, Math.Max(g.EmaPeriod, RsiPeriod + 2)),
@@ -409,22 +409,40 @@ public static class RipShortSimulator
 
                 // Minimum-profit ratchet: arm on favourable excursion, then floor the stop at a
                 // guaranteed profit. For a short the stop sits ABOVE entry, so "tighter" is lower.
-                double lockTrig = overrideCfg?.LockTriggerPct ?? 0.0;
-                double lockProf = overrideCfg?.LockProfitPct  ?? 0.0;
-                if ((overrideCfg?.LockTriggerAtrMult ?? 0.0) > 0.0 && entry > 1e-9)
+                // Production ratchet (ExecContext) takes precedence; the ExitOverrideConfig form
+                // below is the experiment path that the exit-override table sweeps.
+                //
+                // These were two separate implementations of the same rule — RipShort could only
+                // ever ratchet through overrideCfg, so on the PRODUCTION path it had no profit floor
+                // at all while every other signal strategy did. The shared ExitRatchet is the one
+                // the sign rule is tested against; a second copy is how a short ends up with a
+                // long's comparison operator.
+                double lockPx = double.MaxValue;
+                if (ratchet.Enabled)
                 {
-                    double atrPctE = atrEntry / entry * 100.0;
-                    double tCeil = lockTrig > 0 ? lockTrig : double.MaxValue;
-                    double pCeil = lockProf > 0 ? lockProf : double.MaxValue;
-                    lockTrig = Math.Min(overrideCfg!.LockTriggerAtrMult * atrPctE, tCeil);
-                    lockProf = Math.Min(overrideCfg.LockProfitAtrMult  * atrPctE, pCeil);
+                    if (!lockArmed && ExitRatchet.ShouldArm(false, entry, atrEntry, trailLow, ratchet))
+                        lockArmed = true;
+                    if (lockArmed && ExitRatchet.LockPrice(false, entry, atrEntry, trailLow, ratchet) is double rsLk)
+                        lockPx = rsLk;
                 }
-                if (lockTrig > 0.0 && !lockArmed && entry > 1e-9
-                    && (entry - trailLow) / entry * 100.0 >= lockTrig)
-                    lockArmed = true;
-                double lockPx = lockArmed && lockProf > 0.0
-                    ? entry * (1.0 - lockProf / 100.0)
-                    : double.MaxValue;
+                else
+                {
+                    double lockTrig = overrideCfg?.LockTriggerPct ?? 0.0;
+                    double lockProf = overrideCfg?.LockProfitPct  ?? 0.0;
+                    if ((overrideCfg?.LockTriggerAtrMult ?? 0.0) > 0.0 && entry > 1e-9)
+                    {
+                        double atrPctE = atrEntry / entry * 100.0;
+                        double tCeil = lockTrig > 0 ? lockTrig : double.MaxValue;
+                        double pCeil = lockProf > 0 ? lockProf : double.MaxValue;
+                        lockTrig = Math.Min(overrideCfg!.LockTriggerAtrMult * atrPctE, tCeil);
+                        lockProf = Math.Min(overrideCfg.LockProfitAtrMult  * atrPctE, pCeil);
+                    }
+                    if (lockTrig > 0.0 && !lockArmed && entry > 1e-9
+                        && (entry - trailLow) / entry * 100.0 >= lockTrig)
+                        lockArmed = true;
+                    if (lockArmed && lockProf > 0.0)
+                        lockPx = entry * (1.0 - lockProf / 100.0);
+                }
 
                 bool hitStop   = m15Highs[im15] >= hardStop || hitCap
                                  || (lockArmed && m15Highs[im15] >= lockPx);

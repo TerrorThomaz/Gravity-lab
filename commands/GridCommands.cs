@@ -45,7 +45,7 @@ static class GridCommands
 
         // Real per-symbol funding, matching what the backtests charge. Previously GridGA received
         // none, which silently applied the interest-rate FLOOR instead — a cheaper cost model than
-        // the one Grid is scored against, and the leading explanation for its held-out PF 1.34
+        // the one Grid is scored against, and the leading explanation for its held-out PF
         // reading ~0.9 in the portfolio.
         var gridFunding = await CandleFetcher.FetchFundingSessionsAsync(client, fetched.Select(f => f.sym));
 

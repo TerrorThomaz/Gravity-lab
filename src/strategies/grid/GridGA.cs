@@ -28,7 +28,7 @@ public class GridGeneticAlgorithm
     // real per-symbol rates, and a long in a bull regime routinely pays more than the floor. So
     // the GA optimised under a cheaper cost model than the one it is scored against: the same
     // train/serve mismatch as the invisible-slippage defect, and the leading explanation for
-    // Grid's held-out PF 1.34 reading ~0.9 in the portfolio.
+    // Grid's held-out PF reading lower in the portfolio than standalone.
     public record CoinData(ReadOnlyMemory<Candle> TrainCandles, ReadOnlyMemory<Candle> ValCandles,
                            double Weight = 1.0, FundingRateSession? Funding = null);
 

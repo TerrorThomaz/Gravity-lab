@@ -113,7 +113,7 @@ static class CombinedBacktest
     // clamp(2.5 x ATR%, 3%, 10%): scales with the coin's own volatility so it sits outside the
     // noise (a flat 6% cap raised trade count 48% and halved return by being brushed), but a
     // short's downside is unbounded so it still meets an absolute ceiling.
-    // Measured on RipShort in isolation: worst -15.30% -> -10.69% for ~0.15pp/trade of return.
+    // Trades tail risk for a little return; the exit-override table below prints the current numbers.
     // Note CVaR5 moves the OTHER way (-7.61% -> -9.67%): it truncates the catastrophic trade
     // while letting the average bad trade run further. That is the deliberate trade.
     static RipShortSimulator.ExitOverrideConfig? ProdRipCap() =>
@@ -300,8 +300,8 @@ static class CombinedBacktest
         // FadeLong was hardcoded off on the strength of a COMMENT ("PF=0.06 OOS, net drag"), not a
         // live measurement — and that figure predates the monotone fold aggregator, the inverted
         // funding sign on longs, trade-level slippage and the concurrency-accounting fix. On the
-        // OOS path, which never had this line, FadeLong currently reports PF 3.73 on never-trained
-        // coins at 12% of trades. GRAVITY_NOFADELONG=1 restores the old behaviour.
+        // OOS path, which never had this line, has always run it. Whether it is a drag is a question
+        // for the report this command prints, not for this comment. GRAVITY_NOFADELONG=1 disables it.
         FadeLongGenotype?     flG     = Environment.GetEnvironmentVariable("GRAVITY_NOFADELONG") == "1"
                                         ? null
                                         : (flVariants.Length > 0 ? flVariants[0].Genotype : null);
@@ -327,7 +327,8 @@ static class CombinedBacktest
 
         Console.WriteLine($"FadeShort: {swingG}  [{fsVariants.Length} variant(s)]");
         Console.WriteLine($"Grid:      {gridG}  [{gridVariants.Length} variant(s)]");
-        Console.WriteLine("FadeLong:  disabled (PF=0.06 OOS, net drag — see FullTest.cs)");
+        if (flG     != null) Console.WriteLine($"FadeLong:  {flG}  [{flVariants.Length} variant(s)]");
+        else                 Console.WriteLine("FadeLong:  disabled (GRAVITY_NOFADELONG=1)");
         if (dlG     != null) Console.WriteLine($"DipLong:   {dlG}  [{dlVariants.Length} variant(s)]");
         else                 Console.WriteLine("DipLong:   not found — skipping");
         if (slG     != null) Console.WriteLine($"SwingLong: {slG}  [{slVariants.Length} variant(s)]");
@@ -437,19 +438,21 @@ static class CombinedBacktest
         // the trade had closed. The caps are the portfolio's concentration control; they were
         // filtering on the wrong interval.
         var allTrades         = new List<(DateTime Time, double Return, double Conf, string Strategy, DateTime Entry, string Sym)>();
-        // GRAVITY_RATCHET=1 applies the minimum-profit floor to EVERY strategy. ATR-scaled with
-        // percentage ceilings, because a flat trigger arms on noise for volatile coins — measured
-        // on RipShort at 1.67pp/trade of truncated upside. Off by default: this changes exits.
-        // GRAVITY_RATCHET=<lockAtrMult>. The lock is ATR-scaled by design: entering at high ATR
-        // carries more risk but also has more profit worth protecting once breakeven is cleared,
-        // so a 4%-ATR coin locks 4x what a 1%-ATR coin does. Percentage values are ceilings.
-        double lockMult = double.TryParse(Environment.GetEnvironmentVariable("GRAVITY_RATCHET"),
-                              System.Globalization.NumberStyles.Float,
-                              System.Globalization.CultureInfo.InvariantCulture, out var lm) ? lm : 0.0;
-        var globalRatchet = lockMult > 0.0
-            ? new RatchetConfig(TriggerPct: 8.0, LockPct: 3.0, TriggerAtrMult: 1.5, LockAtrMult: lockMult,
-                                FloorsTrailOnly: Environment.GetEnvironmentVariable("GRAVITY_TRAILFLOOR") == "1")
-            : default;
+        // Minimum-profit floor, applied to EVERY strategy. ON by default; GRAVITY_RATCHET=0 turns
+        // it off, GRAVITY_RATCHET=<lockAtrMult> overrides the lock distance.
+        //
+        // The lock is ATR-scaled by design: entering at high ATR carries more risk but also has
+        // more profit worth protecting once breakeven is cleared, so a 4%-ATR coin locks 4x what a
+        // 1%-ATR coin does. Percentage values act as ceilings so a violent coin cannot push the arm
+        // point out indefinitely.
+        //
+        // It defaulted OFF because an earlier A/B had it losing to the baseline. That test is stale
+        // — it predates the router gate on FadeShort, the widened FadeShort box and the current
+        // genotypes. Re-run under those, it wins on return AND drawdown simultaneously, on both the
+        // 5%-cap and Kelly sizings. Any claim about which is better belongs in a report generated
+        // from a run, not in this comment: flip the toggle and compare.
+        var globalRatchet = ExitRatchet.FromEnvironment();
+        double lockMult = globalRatchet.LockAtrMult;
         // GRAVITY_MAXLEGS: extra DipLong legs, only added once EVERY open leg is locked in
         // profit. Requires the ratchet — without it no leg ever arms, so nothing is ever added.
         int maxLegs = int.TryParse(Environment.GetEnvironmentVariable("GRAVITY_MAXLEGS"), out var ml) && ml > 0 ? ml : 1;
@@ -594,11 +597,22 @@ static class CombinedBacktest
             swingCoinRet.Add((sym, vRet));
             swingFullCoins.Add((sym, h1, m15, conf));
             controlSeries.Add((sym, h1Val.ToArray()));
+            // FadeShort is router-gated like every other strategy. It previously was NOT: this loop
+            // pushed every trade into both allTrades and allTradesNoRouter unconditionally, so the
+            // router-impact table read "510 -> 510, no trades removed" while every other strategy
+            // showed heavy filtering. The gate existed (StrategyKind.FadeShort, mapped at the top of
+            // this file) and nothing on this path ever called it.
+            //
+            // It matters because FadeShort's edge is regime-split, not weak: on the embargoed
+            // held-out it is strongly profitable in Bear and strongly LOSS-making in Bull, and the
+            // blended near-1.0 PF is those two cancelling. Running it ungated means taking the Bull
+            // side deliberately.
             foreach (var (t, ret, _, et, _) in vSwing)
             {
+                allTradesNoRouter.Add((t, ret, conf, "swing"));
+                if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.FadeShort, t)) continue;
                 swingTrades.Add((t, ret, conf));
                 allTrades.Add((t, ret, conf, "swing", et, sym));
-                allTradesNoRouter.Add((t, ret, conf, "swing"));
                 RouteVolVariant(fsVarLabel, sym, t, ret, conf, "swing", vCC);
             }
         }
@@ -886,7 +900,8 @@ static class CombinedBacktest
 
                 var (coinRsG, rsVarLabel) = SelectVariantLabeled(rsVariants, m15);
                 coinRsG ??= rsG;
-                var raw    = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val, funding.For(sym), ProdRipCap());
+                var raw    = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val, funding.For(sym), ProdRipCap(),
+                                 ExitRatchet.ForStrategy("ripshort"));
                 // WaitForBreakeven: suppress the MaxHoldCandles time exit while the position is
                 // underwater AND local vol is calm, capped at MaxExtraHoldCandles. Size stays 1x,
                 // so per-trade accounting stays honest — unlike DcaAndWait, which the simulator
@@ -1869,6 +1884,7 @@ static class CombinedBacktest
             var nrPort5cap  = Simulator.SimulatePortfolioExposureCapped(nrExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
             var nrPortKelly = Simulator.SimulatePortfolioExposureCapped(nrExposure, Config.MaxTotalExposurePct);
 
+            int nrSwing     = allTradesNoRouter.Count(t => t.Strategy == "swing");
             int nrGrid      = allTradesNoRouter.Count(t => t.Strategy == "grid");
             int nrDipLong   = allTradesNoRouter.Count(t => t.Strategy == "diplong");
             int nrFadeLong  = allTradesNoRouter.Count(t => t.Strategy == "fadelong");
@@ -1883,7 +1899,7 @@ static class CombinedBacktest
             Console.WriteLine($"\n── Router impact: with vs without router (val window) ───────────────────────");
             Console.WriteLine($"  {"Strategy",-12}  {"With router",11}  {"No router",9}  {"Δ extra",7}");
             Console.WriteLine($"  {new string('-', 46)}");
-            Console.WriteLine($"  {"FadeShort",-12}  {swingRet.Count,11}  {swingRet.Count,9}  {"—",7}");
+            Console.WriteLine($"  {"FadeShort",-12}  {swingRet.Count,11}  {nrSwing,9}  {nrSwing - swingRet.Count,+7}");
             Console.WriteLine($"  {"Grid",-12}  {gridRet.Count,11}  {nrGrid,9}  {nrGrid - gridRet.Count,+7}");
             Console.WriteLine($"  {"DipLong",-12}  {dlRet.Count,11}  {nrDipLong,9}  {nrDipLong - dlRet.Count,+7}");
             Console.WriteLine($"  {"FadeLong",-12}  {flRet.Count,11}  {nrFadeLong,9}  {nrFadeLong - flRet.Count,+7}");

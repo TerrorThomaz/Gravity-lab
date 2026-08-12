@@ -21,18 +21,18 @@ public class FadeShortGenotype
 {
     // ── Regime genes ──────────────────────────────────────────────────────────────
     public int    EmaPeriod     { get; set; }   // 20–100   trend-direction EMA
-    public double AdxThreshold  { get; set; }   // 22–45    uptrend gate (22 = weakly trending minimum)
+    public double AdxThreshold  { get; set; }   // 10–45    uptrend gate (widened down from 22: the GA pinned at 22 for a full run)
 
     // ── Entry signal genes ────────────────────────────────────────────────────────
-    public int    LookbackCandles  { get; set; }   // 12–120  h1 bars to locate swing high (12=0.5d, 120=5d)
+    public int    LookbackCandles  { get; set; }   // 12–300  h1 bars to locate swing high (widened from 120; GA pinned at the old ceiling)
     public double RsiOverbought    { get; set; }   // 65–80   RSI floor the swing high must clear (65 = genuinely elevated, not just mid-range)
     public double RsiDivThreshold  { get; set; }   // 5–15    RSI must be this many pts below swing-high RSI (5 = real divergence, not noise)
-    public double MinRallyAtrMult  { get; set; }   // 5–12    min rally (h1 ATR units) from recent low to high (~3.75–9% at typical h1 ATR)
+    public double MinRallyAtrMult  { get; set; }   // 5–30    min rally (h1 ATR units) from recent low to high (widened from 12; GA pinned at the old ceiling)
 
     // ── Exit genes ────────────────────────────────────────────────────────────────
     public double StopLossAtrMult           { get; set; }   // 0.3–2.0   ATR buffer above the swing high (stop = swingHigh + mult×ATR; invalidates thesis if exceeded)
     public double MaeAtrMult                { get; set; }   // 1.5–4.0   max adverse excursion ceiling = entry + mult×ATR; caps slow-grind rally losses
-    public double TakeProfitAtrMult         { get; set; }   // 2.0–10.0  realistic target in an 8-day hold (~10–20% move)
+    public double TakeProfitAtrMult         { get; set; }   // 2.0–25.0  target (widened from 10; GA pinned at the old ceiling)
     public double TrailingActivationAtrMult { get; set; }   // 1.0–4.0   arm trail after this profit (was 1–8; 8A=15% almost never fired)
     public double TrailingStopAtrMult       { get; set; }   // 1.0–5.0   trail distance from peak (1.0A min to breathe)
     public int    MaxHoldCandles            { get; set; }   // 24–120    h1 bars: 24=1d, 48=2d, 120=5d
@@ -65,19 +65,19 @@ public class FadeShortGenotype
 
         return new()
         {
-            EmaPeriod        = rng.Next(20, 101),
-            AdxThreshold     = 22.0 + rng.NextDouble() * 23.0,
-            LookbackCandles  = rng.Next(12, 121),
-            RsiOverbought    = 65.0 + rng.NextDouble() * 15.0,
-            RsiDivThreshold  = 5.0  + rng.NextDouble() * 10.0,
-            MinRallyAtrMult  = 5.0  + rng.NextDouble() * 7.0,
-            StopLossAtrMult           = 0.3 + rng.NextDouble() * 1.7,
-            MaeAtrMult                = 1.5 + rng.NextDouble() * 2.5,
-            TakeProfitAtrMult         = 2.0 + rng.NextDouble() * 8.0,
-            TrailingActivationAtrMult = 1.0 + rng.NextDouble() * 3.0,
-            TrailingStopAtrMult       = 1.0 + rng.NextDouble() * 4.0,
-            MaxHoldCandles            = rng.Next(24, 121),
-            PositionSizePct           = 0.01 + rng.NextDouble() * 0.04,
+            EmaPeriod        = RandInt(rng, 0),
+            AdxThreshold     = Rand(rng, 1),
+            LookbackCandles  = RandInt(rng, 2),
+            RsiOverbought    = Rand(rng, 3),
+            RsiDivThreshold  = Rand(rng, 4),
+            MinRallyAtrMult  = Rand(rng, 5),
+            StopLossAtrMult           = Rand(rng, 6),
+            MaeAtrMult                = Rand(rng, 7),
+            TakeProfitAtrMult         = Rand(rng, 8),
+            TrailingActivationAtrMult = Rand(rng, 9),
+            TrailingStopAtrMult       = Rand(rng, 10),
+            MaxHoldCandles            = RandInt(rng, 11),
+            PositionSizePct           = Rand(rng, 12),
         };
     }
 
@@ -109,44 +109,44 @@ public class FadeShortGenotype
             if (rng.NextDouble() > rate) return val;
             return Math.Clamp(val + (rng.NextDouble() - 0.5) * scale, min, max);
         }
-        int NudgeInt(int val, int min, int max, int step = 3)
+        int NudgeInt(int val, double min, double max, int step = 3)
         {
             if (rng.NextDouble() > rate) return val;
-            return Math.Clamp(val + rng.Next(-step, step + 1), min, max);
+            return (int)Math.Clamp(val + rng.Next(-step, step + 1), min, max);
         }
         return new FadeShortGenotype
         {
-            EmaPeriod        = NudgeInt(EmaPeriod,       20, 100, 10),
-            AdxThreshold     = Nudge(AdxThreshold,      22.0, 45.0, 4.0),
-            LookbackCandles  = NudgeInt(LookbackCandles, 12, 120, 8),
-            RsiOverbought    = Nudge(RsiOverbought,     65.0, 80.0, 3.0),
-            RsiDivThreshold  = Nudge(RsiDivThreshold,   5.0, 15.0, 2.0),
-            MinRallyAtrMult  = Nudge(MinRallyAtrMult,   5.0, 12.0, 1.0),
-            StopLossAtrMult           = Nudge(StopLossAtrMult,           0.3,  2.0, 0.3),
-            MaeAtrMult                = Nudge(MaeAtrMult,                1.5,  4.0, 0.4),
-            TakeProfitAtrMult         = Nudge(TakeProfitAtrMult,         2.0, 10.0, 1.5),
-            TrailingActivationAtrMult = Nudge(TrailingActivationAtrMult, 1.0,  4.0, 0.5),
-            TrailingStopAtrMult       = Nudge(TrailingStopAtrMult,       1.0,  5.0, 0.5),
-            MaxHoldCandles            = NudgeInt(MaxHoldCandles, 24, 120, 12),
-            PositionSizePct           = Nudge(PositionSizePct, 0.01, 0.05, 0.005),
+            EmaPeriod        = NudgeInt(EmaPeriod,       Lo(0),  Hi(0),  10),
+            AdxThreshold     = Nudge(AdxThreshold,       Lo(1),  Hi(1),  4.0),
+            LookbackCandles  = NudgeInt(LookbackCandles, Lo(2),  Hi(2),  8),
+            RsiOverbought    = Nudge(RsiOverbought,      Lo(3),  Hi(3),  3.0),
+            RsiDivThreshold  = Nudge(RsiDivThreshold,    Lo(4),  Hi(4),  2.0),
+            MinRallyAtrMult  = Nudge(MinRallyAtrMult,    Lo(5),  Hi(5),  1.0),
+            StopLossAtrMult           = Nudge(StopLossAtrMult,           Lo(6),  Hi(6),  0.3),
+            MaeAtrMult                = Nudge(MaeAtrMult,                Lo(7),  Hi(7),  0.4),
+            TakeProfitAtrMult         = Nudge(TakeProfitAtrMult,         Lo(8),  Hi(8),  1.5),
+            TrailingActivationAtrMult = Nudge(TrailingActivationAtrMult, Lo(9),  Hi(9),  0.5),
+            TrailingStopAtrMult       = Nudge(TrailingStopAtrMult,       Lo(10), Hi(10), 0.5),
+            MaxHoldCandles            = NudgeInt(MaxHoldCandles,         Lo(11), Hi(11), 12),
+            PositionSizePct           = Nudge(PositionSizePct,           Lo(12), Hi(12), 0.005),
         };
     }
 
     public FadeShortGenotype ClampToBounds() => new()
     {
-        EmaPeriod        = Math.Clamp(EmaPeriod,      20,  100),
-        AdxThreshold     = Math.Clamp(AdxThreshold,  22.0, 45.0),
-        LookbackCandles  = Math.Clamp(LookbackCandles, 12, 120),
-        RsiOverbought    = Math.Clamp(RsiOverbought,  65.0, 80.0),
-        RsiDivThreshold  = Math.Clamp(RsiDivThreshold, 5.0, 15.0),
-        MinRallyAtrMult  = Math.Clamp(MinRallyAtrMult,  5.0, 12.0),
-        StopLossAtrMult           = Math.Clamp(StopLossAtrMult,           0.3,  2.0),
-        MaeAtrMult                = Math.Clamp(MaeAtrMult,                1.5,  4.0),
-        TakeProfitAtrMult         = Math.Clamp(TakeProfitAtrMult,         2.0, 10.0),
-        TrailingActivationAtrMult = Math.Clamp(TrailingActivationAtrMult, 1.0,  4.0),
-        TrailingStopAtrMult       = Math.Clamp(TrailingStopAtrMult,       1.0,  5.0),
-        MaxHoldCandles            = Math.Clamp(MaxHoldCandles,             24,  120),
-        PositionSizePct           = Math.Clamp(PositionSizePct,           0.01, 0.05),
+        EmaPeriod        = ClampInt(EmaPeriod,       0),
+        AdxThreshold     = Clamp(AdxThreshold,       1),
+        LookbackCandles  = ClampInt(LookbackCandles, 2),
+        RsiOverbought    = Clamp(RsiOverbought,      3),
+        RsiDivThreshold  = Clamp(RsiDivThreshold,    4),
+        MinRallyAtrMult  = Clamp(MinRallyAtrMult,    5),
+        StopLossAtrMult           = Clamp(StopLossAtrMult,            6),
+        MaeAtrMult                = Clamp(MaeAtrMult,                 7),
+        TakeProfitAtrMult         = Clamp(TakeProfitAtrMult,          8),
+        TrailingActivationAtrMult = Clamp(TrailingActivationAtrMult,  9),
+        TrailingStopAtrMult       = Clamp(TrailingStopAtrMult,       10),
+        MaxHoldCandles            = ClampInt(MaxHoldCandles,         11),
+        PositionSizePct           = Clamp(PositionSizePct,           12),
         Fitness = Fitness,
     };
 
@@ -155,19 +155,37 @@ public class FadeShortGenotype
     public static readonly double[,] Bounds =
     {
         {  20, 100  }, // EmaPeriod
-        {  22,  45  }, // AdxThreshold
-        {  12, 120  }, // LookbackCandles
+        {  10,  45  }, // AdxThreshold — was [22,45], pinned LOW: wants a weaker trend filter
+        {  12, 300  }, // LookbackCandles — was [12,120], pinned HIGH
         {  65,  80  }, // RsiOverbought
         { 5.0, 15.0 }, // RsiDivThreshold
-        { 5.0, 12.0 }, // MinRallyAtrMult
+        { 5.0, 30.0 }, // MinRallyAtrMult — was [5,12], pinned HIGH: wants far bigger rallies
         { 0.3,  2.0 }, // StopLossAtrMult
         { 1.5,  4.0 }, // MaeAtrMult
-        { 2.0, 10.0 }, // TakeProfitAtrMult
+        { 2.0, 25.0 }, // TakeProfitAtrMult — was [2,10], pinned HIGH
         { 1.0,  4.0 }, // TrailingActivationAtrMult
         { 1.0,  5.0 }, // TrailingStopAtrMult
         {  24, 120  }, // MaxHoldCandles
         {0.01, 0.05 }, // PositionSizePct
     };
+
+    // Bounds is the SINGLE source of truth for the base parameter box: Random, Mutate,
+    // ClampToBounds and FromVector all read it through these accessors rather than repeating
+    // literals. They used to repeat them, and it cost a whole training run — widening the box in
+    // Bounds/ClampToBounds while Mutate and FromVector kept the old numbers meant the GA could
+    // never PROPOSE a value outside the old box, so AdxThreshold sat at exactly 22.0 and
+    // TakeProfitAtrMult at exactly 10.0 for 120 generations while the log showed the new bounds.
+    // A partially-widened box is worse than an un-widened one: it looks like the search explored
+    // and declined the new range, when in fact it was never reachable.
+    //
+    // ponytail: base box only. The HighVol/LowVol boxes below are deliberately separate arrays
+    // (a different box IS the point of a variant), so they keep their own literals.
+    private static double Lo(int i) => Bounds[i, 0];
+    private static double Hi(int i) => Bounds[i, 1];
+    private static double Rand(System.Random rng, int i) => Lo(i) + rng.NextDouble() * (Hi(i) - Lo(i));
+    private static int RandInt(System.Random rng, int i) => rng.Next((int)Lo(i), (int)Hi(i) + 1);
+    private static double Clamp(double v, int i) => Math.Clamp(v, Lo(i), Hi(i));
+    private static int ClampInt(double v, int i) => (int)Math.Clamp(Math.Round(v), Lo(i), Hi(i));
 
     public static readonly double[,] BoundsHighVol =
     {
@@ -291,19 +309,19 @@ public class FadeShortGenotype
 
     public static FadeShortGenotype FromVector(double[] v) => new()
     {
-        EmaPeriod        = Math.Clamp((int)Math.Round(v[0]),  20, 100),
-        AdxThreshold     = Math.Clamp(v[1],  22.0, 45.0),
-        LookbackCandles  = Math.Clamp((int)Math.Round(v[2]),  12, 120),
-        RsiOverbought    = Math.Clamp(v[3],  65.0, 80.0),
-        RsiDivThreshold  = Math.Clamp(v[4],   5.0, 15.0),
-        MinRallyAtrMult  = Math.Clamp(v[5],   5.0, 12.0),
-        StopLossAtrMult           = Math.Clamp(v[6],  0.3,  2.0),
-        MaeAtrMult                = Math.Clamp(v[7],  1.5,  4.0),
-        TakeProfitAtrMult         = Math.Clamp(v[8],  2.0, 10.0),
-        TrailingActivationAtrMult = Math.Clamp(v[9],  1.0,  4.0),
-        TrailingStopAtrMult       = Math.Clamp(v[10], 1.0,  5.0),
-        MaxHoldCandles            = Math.Clamp((int)Math.Round(v[11]), 24, 120),
-        PositionSizePct           = Math.Clamp(v[12], 0.01, 0.05),
+        EmaPeriod        = ClampInt(v[0],  0),
+        AdxThreshold     = Clamp(v[1],     1),
+        LookbackCandles  = ClampInt(v[2],  2),
+        RsiOverbought    = Clamp(v[3],     3),
+        RsiDivThreshold  = Clamp(v[4],     4),
+        MinRallyAtrMult  = Clamp(v[5],     5),
+        StopLossAtrMult           = Clamp(v[6],   6),
+        MaeAtrMult                = Clamp(v[7],   7),
+        TakeProfitAtrMult         = Clamp(v[8],   8),
+        TrailingActivationAtrMult = Clamp(v[9],   9),
+        TrailingStopAtrMult       = Clamp(v[10], 10),
+        MaxHoldCandles            = ClampInt(v[11], 11),
+        PositionSizePct           = Clamp(v[12], 12),
     };
 
     public static FadeShortGenotype FromVectorLowVol(double[] v) => new()
@@ -353,10 +371,10 @@ public class FadeShortGenotype
     {
         EmaPeriod        = Math.Clamp(EmaPeriod,      20,  100),
         AdxThreshold     = Math.Clamp(AdxThreshold,  10.0, 30.0),
-        LookbackCandles  = Math.Clamp(LookbackCandles, 12, 120),
+        LookbackCandles  = Math.Clamp(LookbackCandles,     12,  120),
         RsiOverbought    = Math.Clamp(RsiOverbought,  65.0, 80.0),
         RsiDivThreshold  = Math.Clamp(RsiDivThreshold, 5.0, 15.0),
-        MinRallyAtrMult  = Math.Clamp(MinRallyAtrMult,  5.0, 12.0),
+        MinRallyAtrMult  = Math.Clamp(MinRallyAtrMult,    5.0, 12.0),
         StopLossAtrMult           = Math.Clamp(StopLossAtrMult,           0.3,  1.0),
         MaeAtrMult                = Math.Clamp(MaeAtrMult,                1.5,  3.0),
         TakeProfitAtrMult         = Math.Clamp(TakeProfitAtrMult,         2.0,  5.0),
@@ -374,10 +392,10 @@ public class FadeShortGenotype
             if (rng.NextDouble() > rate) return val;
             return Math.Clamp(val + (rng.NextDouble() - 0.5) * scale, min, max);
         }
-        int NudgeInt(int val, int min, int max, int step = 3)
+        int NudgeInt(int val, double min, double max, int step = 3)
         {
             if (rng.NextDouble() > rate) return val;
-            return Math.Clamp(val + rng.Next(-step, step + 1), min, max);
+            return (int)Math.Clamp(val + rng.Next(-step, step + 1), min, max);
         }
         return new FadeShortGenotype
         {

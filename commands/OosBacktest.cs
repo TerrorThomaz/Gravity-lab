@@ -11,7 +11,7 @@ static class OosBacktest
     // clamp(2.5 x ATR%, 3%, 10%): scales with the coin's own volatility so it sits outside the
     // noise (a flat 6% cap raised trade count 48% and halved return by being brushed), but a
     // short's downside is unbounded so it still meets an absolute ceiling.
-    // Measured on RipShort in isolation: worst -15.30% -> -10.69% for ~0.15pp/trade of return.
+    // Trades tail risk for a little return; the exit-override table prints the current numbers.
     // Note CVaR5 moves the OTHER way (-7.61% -> -9.67%): it truncates the catastrophic trade
     // while letting the average bad trade run further. That is the deliberate trade.
     static RipShortSimulator.ExitOverrideConfig? ProdRipCap() =>
@@ -382,13 +382,8 @@ static class OosBacktest
         // Same GRAVITY_RATCHET toggle as combinedbacktest. Without this the two commands run
         // DIFFERENT mechanism sets, so any val-vs-OOS gap partly measures configuration drift
         // rather than generalisation — which is exactly what we are trying to isolate here.
-        double oosLockMult = double.TryParse(Environment.GetEnvironmentVariable("GRAVITY_RATCHET"),
-                                 System.Globalization.NumberStyles.Float,
-                                 System.Globalization.CultureInfo.InvariantCulture, out var olm) ? olm : 0.0;
-        var oosRatchet = oosLockMult > 0.0
-            ? new RatchetConfig(TriggerPct: 8.0, LockPct: 3.0, TriggerAtrMult: 1.5, LockAtrMult: oosLockMult,
-                                FloorsTrailOnly: Environment.GetEnvironmentVariable("GRAVITY_TRAILFLOOR") == "1")
-            : default;
+        var oosRatchet = ExitRatchet.FromEnvironment();
+        double oosLockMult = oosRatchet.LockAtrMult;
         if (oosRatchet.Enabled)
             Console.WriteLine($"  [RATCHET] active on OOS path (lock {oosLockMult}xATR, trailFloor={oosRatchet.FloorsTrailOnly})");
 
@@ -728,7 +723,8 @@ static class OosBacktest
 
                 var (coinRsG, rsVarLabel) = SelectVariantLabeled(rsVariants, m15);
                 coinRsG ??= rsG;
-                var raw   = RipShortSimulator.GetRipShortReturns(coinRsG, h1, m15, funding.For(sym), ProdRipCap());
+                var raw   = RipShortSimulator.GetRipShortReturns(coinRsG, h1, m15, funding.For(sym), ProdRipCap(),
+                                ExitRatchet.ForStrategy("ripshort"));
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList()
                     : raw;
@@ -1297,7 +1293,8 @@ static class OosBacktest
             if (rsG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
                 var coinRsGAC = SelectVariant(rsVariantsAC, m15Train) ?? rsG;
-                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGAC, h1Val, m15Val, funding.For(sym), ProdRipCap());
+                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGAC, h1Val, m15Val, funding.For(sym), ProdRipCap(),
+                                ExitRatchet.ForStrategy("ripshort"));
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
                 if (split.Scored.Count > 0)

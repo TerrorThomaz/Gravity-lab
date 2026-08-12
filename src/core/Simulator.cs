@@ -368,6 +368,22 @@ public static class Simulator
     // confLossCapMin/Max: confidence-scaled P&L cap for long trades.
     //   effectiveCap = min + (max - min) * conf  →  loss floored at -cap.
     //   Low confidence → tight cap; high confidence → wider cap.  1.0 defaults = disabled.
+
+    // Strategy labels this portfolio layer treats specially.
+    //
+    // Hoisted out of the inline `strategy is "x" or "y"` expressions they used to live in. A
+    // mistyped literal inside such an expression is INVISIBLE: it matches nothing, the branch
+    // silently never fires, and no test or report distinguishes that from the strategy simply not
+    // qualifying. One really was mistyped — this tested "fade_long" while every backtest labels
+    // those trades "fadelong", so FadeLong escaped profit protection entirely.
+    //
+    // As named sets they can be asserted against PortfolioReplay's direction sets, which is the
+    // authoritative answer to "which labels exist and which way do they point".
+    public static readonly HashSet<string> DdGatedLongs = new(StringComparer.OrdinalIgnoreCase)
+        { "diplong", "swing_long" };
+    public static readonly HashSet<string> ProtectableLongs = new(StringComparer.OrdinalIgnoreCase)
+        { "diplong", "swing_long", "fadelong" };
+
     public static PortfolioResult SimulatePortfolioExposureCapped(
         List<(DateTime EntryTime, double Return, double CoinConf, TimeSpan HoldDuration, string Strategy)> trades,
         double maxTotalExposurePct      = 0.30,
@@ -398,13 +414,13 @@ public static class Simulator
             openPos.RemoveAll(p => p.Close <= entryTime);
 
             // Portfolio DD entry gate: block new DipLong/SwingLong when portfolio is in drawdown
-            bool isLong = strategy is "diplong" or "swing_long";
+            bool isLong = DdGatedLongs.Contains(strategy);
             double currentDd = peak > balance ? (peak - balance) / peak : 0.0;
             if (isLong && currentDd > ddLongEntryGatePct) continue;
 
             // Profit protection: reduce long position size when portfolio has made gains and is giving them back.
-            // Applies to all non-short longs (diplong, swing_long, fade_long).
-            bool isProtectable = strategy is "diplong" or "swing_long" or "fade_long";
+            // Applies to all non-short longs (diplong, swing_long, fadelong).
+            bool isProtectable = ProtectableLongs.Contains(strategy);
             double portGain = (balance - startBalance) / startBalance;
             bool inProtectMode = isProtectable
                 && profitProtectThreshold < 1.0

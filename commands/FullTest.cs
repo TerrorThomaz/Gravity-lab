@@ -72,7 +72,12 @@ static class FullTest
         // ── Genotypes ─────────────────────────────────────────────────────────────
         var swingG  = File.Exists(Config.FadeShortGenoFile)  ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype()   : (FadeShortGenotype?)null;
         var gridG   = File.Exists(Config.GridGenoFile)        ? JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(Config.GridGenoFile))!.ToGenotype()             : (GridGenotype?)null;
-        var flG     = (FadeLongGenotype?)null;  // disabled — PF=0.06 OOS, net drag
+        // Loaded like every other strategy. It was hardcoded to null behind a comment asserting a
+        // performance number; that number was never re-measured after the fold-aggregator, funding
+        // sign, slippage and concurrency fixes, and it kept FadeLong out of this report entirely.
+        // A claim in a comment is not a measurement — if FadeLong is a drag, this report is the
+        // thing that should say so, from data.
+        var flG     = File.Exists(Config.FadeLongGenoFile)    ? JsonSerializer.Deserialize<FadeLongGenotypeDto>(File.ReadAllText(Config.FadeLongGenoFile))!.ToGenotype()     : (FadeLongGenotype?)null;
         var dlG     = File.Exists(Config.DipLongGenoFile)     ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(Config.DipLongGenoFile))!.ToGenotype()       : (DipLongGenotype?)null;
         var slG     = File.Exists(Config.SwingLongGenoFile)   ? JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(Config.SwingLongGenoFile))!.ToGenotype()   : (SwingLongGenotype?)null;
         var rsG     = File.Exists(Config.RipShortGenoFile)    ? JsonSerializer.Deserialize<RipShortGenotypeDto>(File.ReadAllText(Config.RipShortGenoFile))!.ToGenotype()      : (RipShortGenotype?)null;

@@ -408,6 +408,9 @@ public static class Simulator
         // Does the gross-exposure cap actually BIND? A cap that never fires is decoration, and the
         // "liquidation cannot bind at 0.30x" argument would then rest on something inert.
         int capBoundCount = 0; double peakGrossFrac = 0;
+        // Sizes as ACTUALLY allocated (post-cap, post-ddScale), so the mark-to-market pass below
+        // reflects the exposure cap under test rather than a nominal size.
+        var mtmInput = new List<(DateTime, double, TimeSpan, double)>();
         var openPos = new List<(DateTime Close, double EurAllocated)>();
 
         for (int i = 0; i < sorted.Count; i++)
@@ -451,6 +454,7 @@ public static class Simulator
               if (balance > 1e-9 && gN / balance > peakGrossFrac) peakGrossFrac = gN / balance; }
 
             openPos.Add((entryTime + hold, posEur));
+            mtmInput.Add((entryTime, effectiveRet, hold, posEur));
             totalPosSizeEur += posEur;
             // No slippage term: `ret` already carries it (TradeCosts, charged once per trade).
             balance += effectiveRet / 100.0 * posEur;
@@ -464,9 +468,13 @@ public static class Simulator
         }
 
         if (Environment.GetEnvironmentVariable("GRAVITY_EXPOSURE") == "1")
-            Console.WriteLine($"  [EXPOSURE] cap bound on {capBoundCount}/{sorted.Count} entries "
-                            + $"({(double)capBoundCount / sorted.Count:P1}) · peak gross {peakGrossFrac:P1} of equity "
-                            + $"· cap {maxTotalExposurePct:P0}");
+        {
+            var mtm = MarkToMarket.Compute(mtmInput, startBalance, TimeSpan.FromHours(1));
+            Console.WriteLine($"  [EXPOSURE] cap {maxTotalExposurePct:P0} · bound on {capBoundCount}/{sorted.Count} "
+                            + $"({(double)capBoundCount / sorted.Count:P1}) · realized DD {maxDd:F2}% "
+                            + $"· MARK-TO-MARKET DD {mtm.MaxDrawdownPct:F2}% "
+                            + $"· gross peak {mtm.PeakGrossExposurePct:F1}% avg {mtm.AvgGrossExposurePct:F1}%");
+        }
         return new PortfolioResult(
             StartBalance:   startBalance,
             EndBalance:     balance,

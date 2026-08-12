@@ -33,26 +33,27 @@ static class Config
     // capital, not a distant safety margin. A constant that shapes returns on four trades in five
     // deserves evidence, and until this sweep there was none: 0.30 was chosen to keep the missing
     // liquidation model irrelevant, which is a different job from sizing the book correctly.
-    // SWEPT, then fixed. Raising it is not a tuning decision, it is a change to what the simulator
-    // is capable of representing:
+    // SWEPT, with mark-to-market drawdown (src/core/MarkToMarket.cs) so the risk side is measurable:
     //
-    //   cap    5%cap return   DD      Kelly return   DD      peak gross    cap binds on
-    //   0.30      133.0%     2.3%        172.8%     4.1%       30.1%          77.7%
-    //   0.50      235.5%     2.3%        380.8%     4.1%          —              —
-    //   0.80      388.0%     2.3%        775.5%     4.1%          —              —
-    //   1.00      496.3%     3.1%       1267.4%     4.1%      100.3%          37.8%
+    //   cap   binds on   realized DD   MtM DD   gross peak   gross avg   5%cap return
+    //   0.30    68.3%       1.77%       1.66%      30.9%       19.7%        133.0%
+    //   0.50    56.3%       1.77%       1.66%      52.7%       29.0%        235.5%
+    //   0.80    39.3%       1.77%       1.66%      83.8%       40.6%        388.0%
+    //   1.00    28.4%       1.80%       1.66%     104.4%       47.3%        496.3%
     //
-    // Return scales 3.7-7.3x while drawdown is FLAT. That is not diversification, it is the model
-    // paying for risk it cannot see: there is no liquidation, no margin call, no forced
-    // deleveraging, and MaxDrawdownPct is computed on realized equity at trade close, so N
-    // simultaneously underwater positions register as nothing until they exit. At 0.30x gross those
-    // omissions are arithmetically irrelevant (equity is 3.3x notional; liquidation cannot bind
-    // ahead of a stop). At 1.0x they are the dominant risk and the backtest is silent about it.
+    // The cap adds CONCURRENT POSITIONS, it does not resize them: maxPositionFrac caps each
+    // position independently, so raising the cap admits more 5% slots rather than bigger ones.
+    // (Average position in EUR appears to scale 4.8x across this sweep, but that is mostly the
+    // account growing — as a fraction of equity it moves only 0.91% -> 1.71%.)
     //
-    // So 0.30 is not "the optimal risk level" — it is the largest number for which this simulator
-    // is honest. Those are different claims and only the second one is evidenced. Raising it
-    // requires the liquidation/margin model first; the sweep above is what that model has to
-    // reproduce before any higher number is believable.
+    // Drawdown genuinely does not scale, and with MtM in place that is a finding rather than an
+    // artifact: twenty staggered 5% positions really are smoother than six. What the val window
+    // does NOT contain is a correlated crash, and at 104% gross a -20% correlated move is a -20%
+    // equity event. So the remaining unmodelled risk is the CORRELATED TAIL, not concurrency
+    // accounting and not liquidation (which still cannot bind at these levels).
+    //
+    // 0.30 stays until a correlated-shock stress test says what the book survives. The sweep says
+    // the upside of raising it is large; it does not say the risk is acceptable.
     public const double MaxTotalExposurePct = 0.30;
     public const int MaxDirectionalConcurrent = 20;
     public const double MinMedianVolUsdM    = 0.5;

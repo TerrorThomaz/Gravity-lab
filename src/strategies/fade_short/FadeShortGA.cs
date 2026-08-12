@@ -111,8 +111,20 @@ public class FadeShortGA
         (_rng, _seed, _seedSupplied) = GaSearch.CreateRng(seed);
     }
 
-    private static double FoldScore(List<double> returns, double posFrac, FitnessConfig cfg, double volWeight = 1.0)
-        => FoldScoreHelper.Canonical(returns, posFrac, MinTradesPerFold, cfg, volWeight, statBonusCeiling: 1.0);
+    // Regime-sustained fold score, same shape as RipShortGA.FoldScore.
+    //
+    // CanonicalRegime DISCARDS trades whose uptrend was younger than sustainedBars — it does not
+    // penalise them. That distinction is the whole point: `gain` accumulates linearly per trade and
+    // is the dominant fitness term, so a discarded trade cannot buy fitness at any volume, whereas
+    // a penalty merely shifts the break-even. Zeroing FreqW was the penalty approach and moved
+    // trade count by 0.7%.
+    //
+    // sustainedBars = 0 reproduces plain Canonical exactly (every trade has RegimeBars >= 0), so
+    // a genotype file predating this gene behaves identically.
+    private static double FoldScore(List<(double Return, int RegimeBars)> returns, double posFrac,
+                                    int sustainedBars, FitnessConfig cfg, double volWeight = 1.0)
+        => FoldScoreHelper.CanonicalRegime(returns, posFrac, sustainedBars, MinTradesPerFold, cfg,
+                                           volWeight, statBonusCeiling: 1.0);
 
     // Pool returns across ALL coins within each fold slot (fold f = the f-th equal slice of
     // each coin's OWN history, so the pooled slot is the same relative position for every
@@ -143,17 +155,17 @@ public class FadeShortGA
             if (!useFolds)
             {
                 // Full run on all caches (validation path)
-                var all = new List<double>(512);
+                var all = new List<(double Return, int RegimeBars)>(512);
                 foreach (var cache in caches)
                 {
                     Trend.EmaInto(cache.Closes, ind.EmaPeriod, emaBuffer);
-                    foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputed(
+                    foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputedWithRegime(
                         ind, cache.Candles, cache.Closes, cache.Highs, cache.Lows,
                         cache.Rsi, cache.Adx, cache.Atr, emaBuffer, 0, cache.Candles.Length))
-                        { double w = gate?.Invoke(t.Time) ?? 1.0; if (w >= 0.05) all.Add(t.Return * w); }
+                        { double w = gate?.Invoke(t.Time) ?? 1.0; if (w >= 0.05) all.Add((t.Return * w, t.RegimeBarsActive)); }
                 }
                 double volWeight = AverageVolCoverageFull(caches, cfg);
-                return FoldScore(all, posFrac, cfg, volWeight);
+                return FoldScore(all, posFrac, ind.RegimeSustainBars, cfg, volWeight);
             }
 
             // Walk-forward folds, k of them, cut PER COIN on that coin's OWN array.
@@ -182,17 +194,17 @@ public class FadeShortGA
 
             if (k < 2)
             {
-                var all = new List<double>(512);
+                var all = new List<(double Return, int RegimeBars)>(512);
                 foreach (var cache in caches)
                 {
                     Trend.EmaInto(cache.Closes, ind.EmaPeriod, emaBuffer);
-                    foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputed(
+                    foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputedWithRegime(
                         ind, cache.Candles, cache.Closes, cache.Highs, cache.Lows,
                         cache.Rsi, cache.Adx, cache.Atr, emaBuffer, 0, cache.Candles.Length))
-                        { double w = gate?.Invoke(t.Time) ?? 1.0; if (w >= 0.05) all.Add(t.Return * w); }
+                        { double w = gate?.Invoke(t.Time) ?? 1.0; if (w >= 0.05) all.Add((t.Return * w, t.RegimeBarsActive)); }
                 }
                 double volWeight = AverageVolCoverageFull(caches, cfg);
-                return FoldScore(all, posFrac, cfg, volWeight);
+                return FoldScore(all, posFrac, ind.RegimeSustainBars, cfg, volWeight);
             }
 
             var foldScores = new List<double>(k);
@@ -204,17 +216,17 @@ public class FadeShortGA
             for (int f = 0; f < k; f++)
             {
                 attemptedFolds++;
-                var foldReturns = new List<double>(512);
+                var foldReturns = new List<(double Return, int RegimeBars)>(512);
                 foreach (var cache in caches)
                 {
                     var (fStart, fEnd) = FoldScoreHelper.PerCoinFoldRange(
                         cache.Candles.Length, k, f, cfg.EmbargoPct);
                     if (fEnd - fStart < 40) continue;
                     Trend.EmaInto(cache.Closes, ind.EmaPeriod, emaBuffer);
-                    foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputed(
+                    foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputedWithRegime(
                         ind, cache.Candles, cache.Closes, cache.Highs, cache.Lows,
                         cache.Rsi, cache.Adx, cache.Atr, emaBuffer, fStart, fEnd))
-                        { double w = gate?.Invoke(t.Time) ?? 1.0; if (w >= 0.05) foldReturns.Add(t.Return * w); }
+                        { double w = gate?.Invoke(t.Time) ?? 1.0; if (w >= 0.05) foldReturns.Add((t.Return * w, t.RegimeBarsActive)); }
                 }
 
                 // Only folds that actually reached MinTradesPerFold trades take part in the
@@ -225,7 +237,7 @@ public class FadeShortGA
                 if (foldReturns.Count < MinTradesPerFold) continue;
 
                 double volWeight = AverageVolCoverageFold(caches, k, f, cfg);
-                foldScores.Add(FoldScore(foldReturns, posFrac, cfg, volWeight));
+                foldScores.Add(FoldScore(foldReturns, posFrac, ind.RegimeSustainBars, cfg, volWeight));
                 foldCounts.Add(foldReturns.Count);
             }
 

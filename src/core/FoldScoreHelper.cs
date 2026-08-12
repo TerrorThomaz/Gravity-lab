@@ -100,6 +100,25 @@ public static class FoldScoreHelper
         // FreqW scales the log trade-count bonus. The Math.Max(1.0, ...) inside the log
         // keeps it strictly one-sided — a fold that barely clears minTradesPerFold gets
         // no bonus, never a penalty (thin folds are already handled by the gate above).
+        //
+        // ── FREQUENCY IS PAID FOR TWICE. READ THIS BEFORE RAISING FreqW. ─────────────────
+        // `gain` ALREADY scales with trade count: 100 trades at +0.6% produce more fold gain
+        // than 10 trades at +0.6%. So the product below pays for frequency once through gain
+        // and again through this term.
+        //
+        // The second payment is not small. At FreqW = 1.0, trading 100x minTradesPerFold is
+        // worth 1.691x — the same fitness as lifting win rate from 40% to 63%. Loosening an
+        // entry filter is far cheaper than finding 23 points of win rate, so the GA takes the
+        // frequency every time.
+        //
+        // Measured consequence on FadeShort, which ran at FreqW = 1.0: 2519 OOS trades at 47%
+        // WR and +0.60%/trade — the largest weak-edge trade generator in the suite. Its GA had
+        // simultaneously pinned MinRally, TakeProfit and Lookback at their UPPER bounds, i.e.
+        // straining toward selectivity while this term paid it to do the opposite.
+        //
+        // Set FreqW = 0 for any strategy whose problem is too many marginal trades rather than
+        // too few. It is exactly 1.0 (a no-op) at FreqW = 0, and `gain` still rewards genuine
+        // volume — you are removing the DOUBLE payment, not the incentive to trade.
         double freqBonus = 1.0 + 0.15 * freqW * Math.Log(Math.Max(1.0, returns.Count / (double)minTradesPerFold));
 
         // RetentionW scales retention's deviation from 1.0, same lerp form as quality.
@@ -798,6 +817,38 @@ public static class FoldScoreHelper
         FreqW     = 0.0,
         QualityW  = 0.0,
         DdPenalty = cfg.DdPenalty * 2.0,
+    };
+
+    // ── FadeShort fitness shape ──────────────────────────────────────────────────
+    // Same pattern as GridShape: a documented SHAPE DELTA, not a second formula and not a
+    // `cfg with { ... }` inlined at a call site. It lived in TrainCommands for one session and
+    // that is exactly the scattered-constant problem the rest of this file exists to avoid — a
+    // fitness weight set in a command file is invisible to anyone reading the objective.
+    //
+    //  · FreqW = 0 — FadeShort was the suite's weak-edge volume generator (2519 OOS trades at
+    //                47% WR, +0.60%/trade). freqBonus paid for that volume a SECOND time on top
+    //                of `gain`, which already accumulates linearly per trade.
+    //
+    //                MEASURED EFFECT: essentially none. Trade count moved 2014 -> 2000 (0.7%)
+    //                and held-out PF 1.34 -> 1.40. The GA kept its entry genes almost exactly
+    //                (MinRally 16.1A -> 16.2A, Lookback 237 -> 237) and rewrote the EXITS
+    //                instead. Both runs were --no-seed, so this is independent rediscovery, not
+    //                a basin artifact.
+    //
+    //                WHY IT BARELY MOVED: zeroing FreqW makes freqBonus exactly 1.0 — NEUTRAL,
+    //                not punitive. `gain` is a running sum over trades and still pays linearly,
+    //                which is the dominant term; freqBonus only ever paid logarithmically. So
+    //                this removes the weaker of two frequency rewards and leaves the stronger.
+    //                Kept because it is a small genuine improvement and the double payment is
+    //                indefensible, but it is NOT a selectivity mechanism. See RegimeSustain.
+    //
+    //  · WrW x2    — accuracy is what the GA can buy once volume is no longer rewarded twice.
+    //                Note it did not buy accuracy: it bought payoff asymmetry (SL 2.00A -> 0.32A,
+    //                TP 18.85A -> 22.94A). Win rate was unchanged at 35%.
+    public static FitnessConfig FadeShortShape(FitnessConfig cfg) => cfg with
+    {
+        FreqW = 0.0,
+        WrW   = cfg.WrW * 2.0,
     };
 
     public static double CanonicalRegime(

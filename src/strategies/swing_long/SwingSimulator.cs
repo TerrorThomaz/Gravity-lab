@@ -34,7 +34,7 @@ public static class FadeShortSimulator
         FadeShortGenotype g, ReadOnlySpan<Candle> candles)
     {
         var (trades, _) = RunSwing(g, candles);
-        return trades;
+        return trades.Select(t => (t.Item1, t.Item2, t.Item3, t.Item5, t.Item6)).ToList();
     }
 
     public record FadeShortTradeState(
@@ -53,7 +53,7 @@ public static class FadeShortSimulator
         return state;
     }
 
-    private static (List<(DateTime, double, string, DateTime, double)> Trades, FadeShortTradeState FinalState)
+    private static (List<(DateTime, double, string, int, DateTime, double)> Trades, FadeShortTradeState FinalState)
         RunSwing(FadeShortGenotype g, ReadOnlySpan<Candle> candles)
     {
         int warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
@@ -89,12 +89,31 @@ public static class FadeShortSimulator
         int iStart = Math.Max(rangeStart, warmup);
         if (iStart >= rangeEnd || rangeEnd > candles.Length) return [];
         var (trades, _) = SimulateCore(g, candles, closes, highs, lows, rsi, adx, atr, ema, iStart, rangeEnd);
+        return trades.Select(t => (t.Item1, t.Item2, t.Item3, t.Item5, t.Item6)).ToList();
+    }
+
+    // Regime-carrying twin of the above — the GA fitness path. Same core, same cost, but keeps
+    // RegimeBarsActive so FadeShortGA can filter through FoldScoreHelper.CanonicalRegime.
+    internal static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)>
+        GetFadeShortReturnsPrecomputedWithRegime(
+            FadeShortGenotype g,
+            ReadOnlySpan<Candle>  candles,
+            double[]  closes, double[] highs, double[] lows,
+            double[]  rsi,    double[] adx,   double[] atr,
+            double[]  ema,
+            int       rangeStart, int rangeEnd)
+    {
+        int warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
+                   + g.LookbackCandles;
+        int iStart = Math.Max(rangeStart, warmup);
+        if (iStart >= rangeEnd || rangeEnd > candles.Length) return [];
+        var (trades, _) = SimulateCore(g, candles, closes, highs, lows, rsi, adx, atr, ema, iStart, rangeEnd);
         return trades;
     }
 
     // Core simulation loop shared by RunSwing and GetFadeShortReturnsPrecomputed.
     // iStart/iEnd are absolute indices into the full arrays; caller ensures iStart ≥ warmup.
-    private static (List<(DateTime, double, string, DateTime, double)> Trades, FadeShortTradeState FinalState)
+    private static (List<(DateTime, double, string, int, DateTime, double)> Trades, FadeShortTradeState FinalState)
         SimulateCore(
             FadeShortGenotype g,
             ReadOnlySpan<Candle>  candles,
@@ -102,7 +121,13 @@ public static class FadeShortSimulator
             double[]  rsi,    double[] adx,   double[] atr, double[] ema,
             int       iStart, int      iEnd)
     {
-        var result = new List<(DateTime, double, string, DateTime, double)>();
+        var result = new List<(DateTime, double, string, int, DateTime, double)>();
+
+        // Consecutive bars the coin's UPTREND has held — the regime FadeShort fades. Same shape as
+        // RipShortSimulator's bearRegimeBarsAtBar, mirrored in direction. Computed inline rather
+        // than precomputed by the caller because it depends only on arrays the caller already
+        // passes, and adding a parameter would touch every call site for no benefit.
+        var upSlope = Signals.EmaSlope(ema, 5);
 
         var bearBos        = Signals.BearishBoS(closes, lows);
         var bearDiv        = Signals.BearishDivergence(rsi, closes, g.LookbackCandles, g.RsiOverbought, g.RsiDivThreshold);
@@ -110,6 +135,8 @@ public static class FadeShortSimulator
         var strongTrendArr = Signals.AdxTrend(adx, closes, ema, g.AdxThreshold);
 
         bool     inTrade   = false;
+        int      entryRegimeBars = 0;
+        int      upBars    = 0;         // running uptrend-bar counter, reset when the regime breaks
         double   entry     = 0;
         DateTime entryTime = default;   // h1-only path: exposed so callers get the ENTRY, not the exit
         double hardStop   = 0;
@@ -125,6 +152,10 @@ public static class FadeShortSimulator
         {
             double price  = closes[i];
             double atrNow = atr[i] > 1e-10 ? atr[i] : price * 0.04;
+
+            // Advance the uptrend counter EVERY bar, in or out of a trade, so the count reflects
+            // the regime's real age rather than restarting when a position closes.
+            upBars = (price > ema[i] && upSlope[i] > 0) ? upBars + 1 : 0;
 
             if (!inTrade)
             {
@@ -153,6 +184,7 @@ public static class FadeShortSimulator
                 inTrade    = true;
                 entry      = price;
                 entryTime  = candles[i].Time;   // h1-only path: the entry bar IS candles[i]
+                entryRegimeBars = upBars;       // consecutive bars the faded uptrend has held
                 atrEntry   = atrNow;
                 // Stop above the swing high: if price exceeds that level the fade thesis is wrong.
                 hardStop   = swingHigh + g.StopLossAtrMult * atrEntry;
@@ -185,7 +217,7 @@ public static class FadeShortSimulator
                                     hitMae      ? maeStop  :
                                     hitTarget   ? target   : price;
                     double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry);
-                    result.Add((candles[i].Time, ret, "fade_short", entryTime, entry));
+                    result.Add((candles[i].Time, ret, "fade_short", entryRegimeBars, entryTime, entry));
                     inTrade = false;
                 }
             }
@@ -196,7 +228,7 @@ public static class FadeShortSimulator
         {
             double finalPx = closes[iEnd - 1];
             double ret = (entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry);
-            result.Add((candles[iEnd - 1].Time, ret, "fade_short", entryTime, entry));
+            result.Add((candles[iEnd - 1].Time, ret, "fade_short", entryRegimeBars, entryTime, entry));
         }
 
         var finalState = new FadeShortTradeState(inTrade, entry, hardStop, maeStop, target,
@@ -241,6 +273,19 @@ public static class FadeShortSimulator
         FundingRateSession? funding = null, RatchetConfig ratchet = default)
     {
         var (trades, _) = RunSwingMultiTF(g, h1, m15, funding: funding, ratchet: ratchet);
+        return trades.Select(t => (t.Item1, t.Item2, t.Item3, t.Item5, t.Item6)).ToList();
+    }
+
+    // 6-tuple variant carrying RegimeBarsActive — consumed by FadeShortGA for regime-sustained
+    // fold scoring, exactly as RipShortSimulator.GetRipShortReturnsWithRegime is by RipShortGA.
+    // Kept as a SEPARATE entry point rather than widening the existing one so the ~40 call sites
+    // that do not care about the regime field stay untouched.
+    internal static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)>
+        GetFadeShortReturnsWithRegime(
+            FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
+            FundingRateSession? funding = null, RatchetConfig ratchet = default)
+    {
+        var (trades, _) = RunSwingMultiTF(g, h1, m15, funding: funding, ratchet: ratchet);
         return trades;
     }
 
@@ -259,7 +304,7 @@ public static class FadeShortSimulator
         return scored;
     }
 
-    private static (List<(DateTime, double, string, DateTime, double)> Trades, FadeShortTradeState FinalState)
+    private static (List<(DateTime, double, string, int, DateTime, double)> Trades, FadeShortTradeState FinalState)
         RunSwingMultiTF(FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
                         string? coin = null, List<ScoredTrade>? scoredOut = null,
                         FundingRateSession? funding = null, RatchetConfig ratchet = default)
@@ -289,9 +334,31 @@ public static class FadeShortSimulator
         var m15Closes = CandleExt.Closes(m15);
         var m15Lows   = CandleExt.Lows(m15);
 
-        var result = new List<(DateTime, double, string, DateTime, double)>();
+        // Consecutive h1 bars the coin's own UPTREND has been established — the regime FadeShort
+        // fades. Mirrors RipShortSimulator's bearRegimeBarsAtBar exactly (close vs regime EMA plus
+        // EMA slope sign, counter resets the moment the condition breaks); the only difference is
+        // the direction, because FadeShort fades an uptrend where RipShort rides a downtrend.
+        //
+        // Emitted per trade and consumed by FoldScoreHelper.CanonicalRegime, which DISCARDS trades
+        // below the genotype's RegimeSustainBars rather than penalising them — so they never reach
+        // `gain`, which is the only term strong enough to matter (it accumulates linearly per trade
+        // while freqBonus only paid logarithmically).
+        int[] upRegimeBarsAtBar = new int[h1.Length];
+        {
+            var emaSlope = Signals.EmaSlope(h1Ema, 5);
+            int running = 0;
+            for (int i = 0; i < h1.Length; i++)
+            {
+                bool regimeBar = h1Closes[i] > h1Ema[i] && emaSlope[i] > 0;
+                running = regimeBar ? running + 1 : 0;
+                upRegimeBarsAtBar[i] = running;
+            }
+        }
+
+        var result = new List<(DateTime, double, string, int, DateTime, double)>();
 
         bool   inTrade    = false;
+        int    entryRegimeBars = 0;
         double entry      = 0;
         double hardStop   = 0;
         double maeStop    = 0;
@@ -390,6 +457,7 @@ public static class FadeShortSimulator
                     entryIH1   = nextBar / 4;
                     entryScore = cachedScore;
                     entryTime  = m15[nextBar].Time;
+                    entryRegimeBars = entryIH1 < upRegimeBarsAtBar.Length ? upRegimeBarsAtBar[entryIH1] : 0;
                 }
             }
             else
@@ -420,7 +488,7 @@ public static class FadeShortSimulator
                                     hitTarget   ? target   : m15Price;
                     double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: false);
                     double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl;
-                    result.Add((m15[im15].Time, ret, "fade_short", entryTime, entry));
+                    result.Add((m15[im15].Time, ret, "fade_short", entryRegimeBars, entryTime, entry));
                     scoredOut?.Add(new ScoredTrade(coin!, "swing", entryTime, m15[im15].Time, ret, entryScore));
                     inTrade = false;
                 }
@@ -432,7 +500,7 @@ public static class FadeShortSimulator
             double finalPx = m15Closes[^1];
             double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[^1].Time, funding, isLong: false);
             double ret = (entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry) + fundingPnl;
-            result.Add((m15[^1].Time, ret, "fade_short", entryTime, entry));
+            result.Add((m15[^1].Time, ret, "fade_short", entryRegimeBars, entryTime, entry));
             scoredOut?.Add(new ScoredTrade(coin!, "swing", entryTime, m15[^1].Time, ret, entryScore));
         }
 

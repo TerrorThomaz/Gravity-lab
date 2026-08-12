@@ -38,6 +38,22 @@ public class FadeShortGenotype
     public int    MaxHoldCandles            { get; set; }   // 24–120    h1 bars: 24=1d, 48=2d, 120=5d
     public double PositionSizePct           { get; set; }   // 0.01–0.05 fraction of capital per trade in fitness sim
 
+    // ── Selectivity gene ──────────────────────────────────────────────────────────
+    // Consecutive h1 bars the coin's own uptrend must have been established before a fade is
+    // eligible. Trades entered before this are DISCARDED by FoldScoreHelper.CanonicalRegime —
+    // not penalised, discarded, so they never reach `gain` at all.
+    //
+    // This is the mechanism the four best strategies already have and the two worst lack:
+    //   FadeLong RegSust=10 (OOS PF 7.35) · RipShort 10 (4.50) · DipLong 10 (2.64) · AccumGrid (2.76)
+    //   FadeShort NONE (1.25) · GridShort NONE (1.37)
+    // That is the entire ranking with no exceptions, which is why this is worth copying rather
+    // than inventing a new fitness penalty.
+    //
+    // 0 = disabled, preserving the historical behaviour exactly. The SIGN of the effect is not
+    // assumed: a longer-established uptrend could mean more exhaustion (better fade) or a
+    // stronger trend (worse fade). The GA searches it rather than the author guessing.
+    public int    RegimeSustainBars         { get; set; }   // 0–120 h1 bars
+
     public double Fitness { get; set; } = double.MinValue;
 
     // ── Seeded initialisation ────────────────────────────────────────────────────
@@ -78,6 +94,7 @@ public class FadeShortGenotype
             TrailingStopAtrMult       = Rand(rng, 10),
             MaxHoldCandles            = RandInt(rng, 11),
             PositionSizePct           = Rand(rng, 12),
+            RegimeSustainBars         = RandInt(rng, 13),
         };
     }
 
@@ -99,6 +116,7 @@ public class FadeShortGenotype
             TrailingStopAtrMult       = Pick(a.TrailingStopAtrMult,       b.TrailingStopAtrMult),
             MaxHoldCandles            = Pick(a.MaxHoldCandles,            b.MaxHoldCandles),
             PositionSizePct           = Pick(a.PositionSizePct,           b.PositionSizePct),
+            RegimeSustainBars         = Pick(a.RegimeSustainBars,         b.RegimeSustainBars),
         };
     }
 
@@ -129,6 +147,7 @@ public class FadeShortGenotype
             TrailingStopAtrMult       = Nudge(TrailingStopAtrMult,       Lo(10), Hi(10), 0.5),
             MaxHoldCandles            = NudgeInt(MaxHoldCandles,         Lo(11), Hi(11), 12),
             PositionSizePct           = Nudge(PositionSizePct,           Lo(12), Hi(12), 0.005),
+            RegimeSustainBars         = NudgeInt(RegimeSustainBars,       Lo(13), Hi(13), 8),
         };
     }
 
@@ -147,6 +166,7 @@ public class FadeShortGenotype
         TrailingStopAtrMult       = Clamp(TrailingStopAtrMult,       10),
         MaxHoldCandles            = ClampInt(MaxHoldCandles,         11),
         PositionSizePct           = Clamp(PositionSizePct,           12),
+        RegimeSustainBars         = ClampInt(RegimeSustainBars,       13),
         Fitness = Fitness,
     };
 
@@ -167,6 +187,7 @@ public class FadeShortGenotype
         { 1.0,  5.0 }, // TrailingStopAtrMult
         {  24, 120  }, // MaxHoldCandles
         {0.01, 0.05 }, // PositionSizePct
+        {   0, 120  }, // RegimeSustainBars — 0 = disabled (historical behaviour)
     };
 
     // Bounds is the SINGLE source of truth for the base parameter box: Random, Mutate,
@@ -202,6 +223,7 @@ public class FadeShortGenotype
         { 2.5,  6.0 }, // TrailingStopAtrMult
         {  24,  72  }, // MaxHoldCandles
         {0.03, 0.07 }, // PositionSizePct
+        {   0, 120  }, // RegimeSustainBars — row must exist: Bounds* are indexed positionally
     };
 
     public static readonly string[] ParameterNames =
@@ -296,6 +318,7 @@ public class FadeShortGenotype
         { 1.0,  3.0 }, // TrailingStopAtrMult (tighter for low-vol)
         {  72, 200  }, // MaxHoldCandles (longer for low-vol)
         {0.01, 0.03 }, // PositionSizePct (smaller for low-vol)
+        {   0, 120  }, // RegimeSustainBars — row must exist: Bounds* are indexed positionally
     };
 
     public double[] ToVector() =>
@@ -304,7 +327,7 @@ public class FadeShortGenotype
         RsiOverbought, RsiDivThreshold, MinRallyAtrMult,
         StopLossAtrMult, MaeAtrMult, TakeProfitAtrMult,
         TrailingActivationAtrMult, TrailingStopAtrMult,
-        MaxHoldCandles, PositionSizePct,
+        MaxHoldCandles, PositionSizePct, RegimeSustainBars,
     ];
 
     public static FadeShortGenotype FromVector(double[] v) => new()
@@ -322,6 +345,7 @@ public class FadeShortGenotype
         TrailingStopAtrMult       = Clamp(v[10], 10),
         MaxHoldCandles            = ClampInt(v[11], 11),
         PositionSizePct           = Clamp(v[12], 12),
+        RegimeSustainBars         = ClampInt(v[13], 13),
     };
 
     public static FadeShortGenotype FromVectorLowVol(double[] v) => new()
@@ -339,6 +363,7 @@ public class FadeShortGenotype
         TrailingStopAtrMult       = Math.Clamp(v[10], 1.0,  3.0),
         MaxHoldCandles            = Math.Clamp((int)Math.Round(v[11]), 72, 200),
         PositionSizePct           = Math.Clamp(v[12], 0.01, 0.03),
+        RegimeSustainBars         = (int)Math.Clamp(Math.Round(v[13]), 0, 120),
     };
 
     // Same seeded-init contract as Random (see SeedMutantProbability), but the
@@ -382,6 +407,7 @@ public class FadeShortGenotype
         TrailingStopAtrMult       = Math.Clamp(TrailingStopAtrMult,       1.0,  3.0),
         MaxHoldCandles            = Math.Clamp(MaxHoldCandles,             72,  200),
         PositionSizePct           = Math.Clamp(PositionSizePct,           0.01, 0.03),
+        RegimeSustainBars         = Math.Clamp(RegimeSustainBars,            0,  120),
         Fitness = Fitness,
     };
 
@@ -412,6 +438,7 @@ public class FadeShortGenotype
             TrailingStopAtrMult       = Nudge(TrailingStopAtrMult,       1.0,  3.0, 0.4),
             MaxHoldCandles            = NudgeInt(MaxHoldCandles, 72, 200, 12),
             PositionSizePct           = Nudge(PositionSizePct, 0.01, 0.03, 0.004),
+            RegimeSustainBars         = NudgeInt(RegimeSustainBars, 0, 120, 8),
         };
     }
 

@@ -50,6 +50,14 @@ static class TrainCommands
         string variant  = ResolveVariant(args);
         int?   rngSeed  = GaSearch.ResolveSeed(args);
         var    cfg      = FitnessConfig.Load();
+
+        // Shape delta lives in FoldScoreHelper.FadeShortShape alongside GridShape — see there for
+        // the rationale and the measured effect. GRAVITY_FSFREQ=1 restores the unshaped config.
+        if (Environment.GetEnvironmentVariable("GRAVITY_FSFREQ") != "1")
+        {
+            cfg = FoldScoreHelper.FadeShortShape(cfg);
+            Console.WriteLine($"  [SHAPE] FadeShortShape applied: FreqW={cfg.FreqW} WrW={cfg.WrW}");
+        }
         string genoPath = VariantGenoPath("fade_short", variant, Config.FadeShortGenoFile);
         string modeLabel = invertScreen ? "RETRAIN (generalisation pass — unknown coins)" : "TRAIN (1h setup + 15m entry/exit, 40 coins, ~3yr)";
         Console.WriteLine($"=== Gravity-gen2 | {modeLabel} ===");

@@ -196,7 +196,18 @@ public static class GridShortSimulator
                 for (int n = 0; n < levels; n++)
                 {
                     if (!filled[n]) continue;
-                    double tp = entryPrice[n] - g.TakeProfitAtrMult * atrAtStart;
+                    // Rung-to-rung cover, mirroring GridSimulator. GridShort SHARES GridGenotype,
+                    // so RungSellFrac was already in its genome and already being searched — it
+                    // just was not read here, which is why it trained to 0.00: a gene with no
+                    // effect on the objective drifts wherever mutation leaves it.
+                    //
+                    // The legacy target (entry - TakeProfitAtrMult x ATR) sits further away than
+                    // the whole ladder is deep, so a fill needs a sustained downtrend to cover —
+                    // while the Ranging gate exists to select trends OUT. Same defect that held
+                    // Grid at PF 0.94 before the rung mechanic took it to 2.16 OOS.
+                    double tp = g.RungSellFrac > 0
+                        ? entryPrice[n] - g.RungSellFrac * g.GridStepAtrMult * atrAtStart
+                        : entryPrice[n] - g.TakeProfitAtrMult * atrAtStart;
                     if (lows[i] <= tp)
                     {
                         double fundingPnl = FundingRateSession.PnlPct(gridStartTime, times[i], funding, isLong: false);

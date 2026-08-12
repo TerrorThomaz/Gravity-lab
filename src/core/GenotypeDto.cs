@@ -17,6 +17,11 @@ class FadeShortGenotypeDto
     public double TrailingStopAtrMult       { get; set; }
     public int    MaxHoldCandles            { get; set; }
     public double PositionSizePct           { get; set; }
+    // Nullable: a file written before this gene existed must restore 0 (disabled), and a plain
+    // int cannot tell "absent" from an explicit 0. Same trap BailOutAtrMult fell into — it was
+    // dropped on save and reloaded as 0, so every GridShort genotype written before that fix
+    // carried a disabled bail-out its GA had optimised to use.
+    public int?   RegimeSustainBars         { get; set; }
     public double Fitness                   { get; set; }
     public double AtrLow                    { get; init; } = 0.0;
     public double AtrHigh                   { get; init; } = 9999.0;
@@ -38,6 +43,7 @@ class FadeShortGenotypeDto
         TrailingStopAtrMult       = g.TrailingStopAtrMult,
         MaxHoldCandles            = g.MaxHoldCandles,
         PositionSizePct           = g.PositionSizePct,
+        RegimeSustainBars         = g.RegimeSustainBars,
         Fitness                   = g.Fitness,
         AtrLow                    = cfg?.AtrLow  ?? 0.0,
         AtrHigh                   = cfg?.AtrHigh ?? 9999.0,
@@ -58,6 +64,7 @@ class FadeShortGenotypeDto
         TrailingStopAtrMult       = TrailingStopAtrMult       > 0 ? TrailingStopAtrMult       : 1.5,
         MaxHoldCandles            = MaxHoldCandles            > 0 ? MaxHoldCandles            : 42,
         PositionSizePct           = PositionSizePct           > 0 ? PositionSizePct           : 0.03,
+        RegimeSustainBars         = RegimeSustainBars ?? 0,
         Fitness                   = Fitness,
     }.ClampToBounds();
 }

@@ -205,7 +205,8 @@ public static class Simulator
         double startBalance        = 100.0,
         double drawdownBrakeAt     = 0.15,
         double kellyMultiplier     = 1.0,
-        double maxPositionFrac     = 0.15)  // hard cap per position (e.g. 0.05 = 5% max each)
+        double maxPositionFrac     = 0.15,  // hard cap per position (e.g. 0.05 = 5% max each)
+        Func<DateTime, double>? dynamicCap = null)
     {
         GuardExposureCap(maxTotalExposurePct);
 
@@ -225,7 +226,9 @@ public static class Simulator
             openPos.RemoveAll(p => p.Close <= entryTime);
 
             double currentEurDeployed = openPos.Sum(p => p.EurAllocated);
-            double maxEurDeployable   = maxTotalExposurePct * balance;
+            double maxEurDeployable   = (dynamicCap != null
+                                            ? Math.Min(dynamicCap(entryTime), MaxSupportableExposurePct)
+                                            : maxTotalExposurePct) * balance;
             double headroomEur        = Math.Max(0, maxEurDeployable - currentEurDeployed);
 
             double currentDd = peak > balance ? (peak - balance) / peak : 0.0;
@@ -276,7 +279,8 @@ public static class Simulator
             double startBalance        = 100.0,
             double drawdownBrakeAt     = 0.15,
             double kellyMultiplier     = 1.0,
-            double maxPositionFrac     = 0.15)
+            double maxPositionFrac     = 0.15,
+            Func<DateTime, double>? dynamicCap = null)
     {
         GuardExposureCap(maxTotalExposurePct);
 
@@ -303,7 +307,9 @@ public static class Simulator
 
             openPos.RemoveAll(p => p.Close <= entryTime);
             double currentEurDeployed = openPos.Sum(p => p.EurAllocated);
-            double maxEurDeployable   = maxTotalExposurePct * balance;
+            double maxEurDeployable   = (dynamicCap != null
+                                            ? Math.Min(dynamicCap(entryTime), MaxSupportableExposurePct)
+                                            : maxTotalExposurePct) * balance;
             double headroomEur        = Math.Max(0, maxEurDeployable - currentEurDeployed);
 
             double currentDd = peak > balance ? (peak - balance) / peak : 0.0;
@@ -396,6 +402,10 @@ public static class Simulator
         double confLossCapMax           = 1.0,
         double profitProtectThreshold   = 1.0,   // portfolio gain fraction that arms protection; 1.0 = disabled
         double profitProtectDrawback    = 0.10,  // drawback from peak that triggers protection
+        // Optional risk-budgeted cap: when supplied it REPLACES maxTotalExposurePct per-instant.
+        // The scalar remains the ceiling, so a dynamic cap can only ever be as loose as the
+        // statically-guarded bound — it cannot smuggle the book past what GuardExposureCap allows.
+        Func<DateTime, double>? dynamicCap = null,
         double profitProtectFactor      = 1.0)   // size multiplier in protection mode; 1.0 = no reduction
     {
         GuardExposureCap(maxTotalExposurePct);
@@ -442,7 +452,14 @@ public static class Simulator
                 effectiveRet = Math.Max(ret, -cap * 100.0);
             }
 
-            double maxEurDeployable = maxTotalExposurePct * balance;
+            // The dynamic cap REPLACES the scalar rather than being bounded by it — bounding it at
+            // maxTotalExposurePct would let it tighten but never loosen, which is half the point.
+            // Its own [capMin, capMax] bounds it instead, and MaxSupportableExposurePct still
+            // backstops the whole thing.
+            double capNow = dynamicCap != null
+                ? Math.Min(dynamicCap(entryTime), MaxSupportableExposurePct)
+                : maxTotalExposurePct;
+            double maxEurDeployable = capNow * balance;
             double headroomEur      = Math.Max(0, maxEurDeployable - openPos.Sum(p => p.EurAllocated));
             double ddScale          = Math.Max(0.20, 1.0 - currentDd / drawdownBrakeAt);
 

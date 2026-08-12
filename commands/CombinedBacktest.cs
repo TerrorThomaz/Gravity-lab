@@ -1471,8 +1471,22 @@ static class CombinedBacktest
                 StrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG, agBullG), t.Strategy))
             .ToList();
 
-        var port5cap   = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-        var portKelly  = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct);
+        // GRAVITY_DYNCAP=1 sizes the book from a risk BUDGET instead of a constant: the cap is
+        // solved from "a correlated shock may cost at most N% of equity", with the planned shock
+        // scaled by BTC's current ATR ratio. Tightens into stress, releases in calm — a constant
+        // does neither, and is loosest exactly when the tail is fattest.
+        Func<DateTime, double>? dynCap = null;
+        if (Environment.GetEnvironmentVariable("GRAVITY_DYNCAP") == "1" && btcH1ForGuard is { Length: > 0 })
+        {
+            var dec = new DynamicExposureCap(btcH1ForGuard);
+            dynCap = dec.CapAt;
+            Console.WriteLine($"\n  [DYNCAP] risk-budgeted exposure cap active "
+                            + $"(calm {dec.CapForRatio(0.7):P0} · normal {dec.CapForRatio(1.0):P0} "
+                            + $"· elevated {dec.CapForRatio(1.3):P0} · stressed {dec.CapForRatio(2.0):P0})");
+        }
+
+        var port5cap   = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, dynamicCap: dynCap);
+        var portKelly  = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, dynamicCap: dynCap);
 
         string Pct(List<double> r) => r.Count > 0 ? $"WR={(double)r.Count(x => x > 0)/r.Count:P0}  Avg={r.Average():+0.00}%" : "no trades";
         Console.WriteLine($"\n{new string('═', 70)}");

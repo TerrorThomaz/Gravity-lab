@@ -405,6 +405,9 @@ public static class Simulator
         var sorted = trades.OrderBy(t => t.EntryTime).ToList();
         double balance = startBalance, peak = startBalance, maxDd = 0, totalPosSizeEur = 0;
         int tradesToTenPct = -1;
+        // Does the gross-exposure cap actually BIND? A cap that never fires is decoration, and the
+        // "liquidation cannot bind at 0.30x" argument would then rest on something inert.
+        int capBoundCount = 0; double peakGrossFrac = 0;
         var openPos = new List<(DateTime Close, double EurAllocated)>();
 
         for (int i = 0; i < sorted.Count; i++)
@@ -443,6 +446,9 @@ public static class Simulator
             double desiredEur  = desiredFrac * balance * ddScale;
             if (inProtectMode) desiredEur *= profitProtectFactor;
             double posEur      = Math.Min(desiredEur, headroomEur);
+            if (posEur < desiredEur - 1e-9) capBoundCount++;
+            { double gN = openPos.Sum(q => q.EurAllocated) + posEur;
+              if (balance > 1e-9 && gN / balance > peakGrossFrac) peakGrossFrac = gN / balance; }
 
             openPos.Add((entryTime + hold, posEur));
             totalPosSizeEur += posEur;
@@ -457,6 +463,10 @@ public static class Simulator
             if (dd > maxDd) maxDd = dd;
         }
 
+        if (Environment.GetEnvironmentVariable("GRAVITY_EXPOSURE") == "1")
+            Console.WriteLine($"  [EXPOSURE] cap bound on {capBoundCount}/{sorted.Count} entries "
+                            + $"({(double)capBoundCount / sorted.Count:P1}) · peak gross {peakGrossFrac:P1} of equity "
+                            + $"· cap {maxTotalExposurePct:P0}");
         return new PortfolioResult(
             StartBalance:   startBalance,
             EndBalance:     balance,

@@ -27,6 +27,32 @@ static class Config
     // │ it was raised to chase. Simulator.SimulatePortfolioExposureCapped now throws      │
     // │ above 1.0 rather than let that happen. Add a liquidation model first.             │
     // └──────────────────────────────────────────────────────────────────────────────────┘
+    // NOT const: GRAVITY_MAXEXP sweeps it so the number can be VALIDATED rather than asserted.
+    // Measured, this cap binds on 70-90% of entries with peak gross sitting flush against it — it
+    // is the most active risk control in the system and the primary determinant of deployed
+    // capital, not a distant safety margin. A constant that shapes returns on four trades in five
+    // deserves evidence, and until this sweep there was none: 0.30 was chosen to keep the missing
+    // liquidation model irrelevant, which is a different job from sizing the book correctly.
+    // SWEPT, then fixed. Raising it is not a tuning decision, it is a change to what the simulator
+    // is capable of representing:
+    //
+    //   cap    5%cap return   DD      Kelly return   DD      peak gross    cap binds on
+    //   0.30      133.0%     2.3%        172.8%     4.1%       30.1%          77.7%
+    //   0.50      235.5%     2.3%        380.8%     4.1%          —              —
+    //   0.80      388.0%     2.3%        775.5%     4.1%          —              —
+    //   1.00      496.3%     3.1%       1267.4%     4.1%      100.3%          37.8%
+    //
+    // Return scales 3.7-7.3x while drawdown is FLAT. That is not diversification, it is the model
+    // paying for risk it cannot see: there is no liquidation, no margin call, no forced
+    // deleveraging, and MaxDrawdownPct is computed on realized equity at trade close, so N
+    // simultaneously underwater positions register as nothing until they exit. At 0.30x gross those
+    // omissions are arithmetically irrelevant (equity is 3.3x notional; liquidation cannot bind
+    // ahead of a stop). At 1.0x they are the dominant risk and the backtest is silent about it.
+    //
+    // So 0.30 is not "the optimal risk level" — it is the largest number for which this simulator
+    // is honest. Those are different claims and only the second one is evidenced. Raising it
+    // requires the liquidation/margin model first; the sweep above is what that model has to
+    // reproduce before any higher number is believable.
     public const double MaxTotalExposurePct = 0.30;
     public const int MaxDirectionalConcurrent = 20;
     public const double MinMedianVolUsdM    = 0.5;

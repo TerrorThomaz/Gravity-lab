@@ -1476,9 +1476,9 @@ static class CombinedBacktest
         // scaled by BTC's current ATR ratio. Tightens into stress, releases in calm — a constant
         // does neither, and is loosest exactly when the tail is fattest.
         Func<DateTime, double>? dynCap = null;
-        if (Environment.GetEnvironmentVariable("GRAVITY_DYNCAP") == "1" && btcH1ForGuard is { Length: > 0 })
+        if (Environment.GetEnvironmentVariable("GRAVITY_DYNCAP") == "1" && guardCtx?.Session != null)
         {
-            var dec = new DynamicExposureCap(btcH1ForGuard);
+            var dec = DynamicExposureCap.FromGuard(guardCtx.Session);
             dynCap = dec.CapAt;
             Console.WriteLine($"\n  [DYNCAP] risk-budgeted exposure cap active "
                             + $"(calm {dec.CapForRatio(0.7):P0} · normal {dec.CapForRatio(1.0):P0} "

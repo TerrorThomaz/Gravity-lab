@@ -34,9 +34,13 @@ namespace TradingGA;
 // CorrelatedShock draws: damage is computable, likelihood is not.
 public sealed class DynamicExposureCap
 {
-    private readonly DateTime[] _times;
-    private readonly double[]   _atrRatio;
-    private readonly double     _budget, _shockCalm, _shockStressed, _min, _max;
+    // Volatility source. Injected rather than computed here, because DynamicGuardSession already
+    // owns a TRAINED one (GetAtrRatio, 4H, with the guard genotype's own periods) and a second
+    // hand-rolled ATR ratio is exactly the duplication that has bitten this repo repeatedly — two
+    // numbers for one fact, with nothing forcing them to agree. The guard is the safety gene; the
+    // cap should be reading the same volatility the guard reacts to, not a private approximation.
+    private readonly Func<DateTime, double> _atrRatioAt;
+    private readonly double _budget, _shockCalm, _shockStressed, _min, _max;
 
     // Defaults chosen to be conservative against the measured table rather than optimistic:
     // at the floor this reproduces roughly today's constant, so the change can only add exposure
@@ -52,47 +56,34 @@ public sealed class DynamicExposureCap
     public const double DefaultCapMax        = 0.40;
 
     public DynamicExposureCap(
-        IReadOnlyList<Candle> btcH1,
-        int atrPeriod = 14,
-        int ratioLookback = 168,
+        Func<DateTime, double> atrRatioAt,
         double riskBudgetPct  = DefaultRiskBudgetPct,
         double shockCalm      = DefaultShockCalm,
         double shockStressed  = DefaultShockStressed,
         double capMin         = DefaultCapMin,
         double capMax         = DefaultCapMax)
     {
+        _atrRatioAt = atrRatioAt;
         _budget = riskBudgetPct; _shockCalm = shockCalm; _shockStressed = shockStressed;
         _min = capMin; _max = capMax;
-
-        int n = btcH1.Count;
-        _times = new DateTime[n];
-        _atrRatio = new double[n];
-        for (int i = 0; i < n; i++) _times[i] = btcH1[i].Time;
-
-        var highs = new double[n]; var lows = new double[n]; var closes = new double[n];
-        for (int i = 0; i < n; i++) { highs[i] = btcH1[i].High; lows[i] = btcH1[i].Low; closes[i] = btcH1[i].Close; }
-        var atr = Volatility.Atr(highs, lows, closes, atrPeriod);
-
-        double sum = 0;
-        for (int i = 0; i < n; i++)
-        {
-            sum += atr[i];
-            if (i >= ratioLookback) sum -= atr[i - ratioLookback];
-            double avg = sum / Math.Min(i + 1, ratioLookback);
-            _atrRatio[i] = avg > 1e-12 ? atr[i] / avg : 1.0;
-        }
     }
 
-    // Cap at a point in time. Binary search on the BTC clock; before the series starts we return
-    // the FLOOR rather than the default, because "no data" must not read as "calm".
+    // Preferred construction: read volatility from the trained guard, so cap and guard cannot
+    // disagree about how dangerous the current tape is.
+    public static DynamicExposureCap FromGuard(DynamicGuardSession guard,
+        double riskBudgetPct = DefaultRiskBudgetPct,
+        double shockCalm     = DefaultShockCalm,
+        double shockStressed = DefaultShockStressed,
+        double capMin        = DefaultCapMin,
+        double capMax        = DefaultCapMax)
+        => new(guard.GetAtrRatio, riskBudgetPct, shockCalm, shockStressed, capMin, capMax);
+
+    // Cap at a point in time. A non-finite or non-positive ratio reads as the FLOOR, never as calm:
+    // missing volatility data must not be rewarded with more exposure.
     public double CapAt(DateTime t)
     {
-        if (_times.Length == 0) return _min;
-        int i = Array.BinarySearch(_times, t);
-        if (i < 0) i = ~i - 1;
-        if (i < 0) return _min;
-        if (i >= _atrRatio.Length) i = _atrRatio.Length - 1;
-        return CapForRatio(_atrRatio[i]);
+        double r = _atrRatioAt(t);
+        return double.IsFinite(r) && r > 0 ? CapForRatio(r) : _min;
     }
 
     // ratio 1.0 = volatility at its own trailing average. Interpolate the planning shock between

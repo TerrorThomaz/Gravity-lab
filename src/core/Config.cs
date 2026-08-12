@@ -54,6 +54,22 @@ static class Config
     //
     // 0.30 stays until a correlated-shock stress test says what the book survives. The sweep says
     // the upside of raising it is large; it does not say the risk is acceptable.
+    // 0.30 is now justified on TAIL LOSS, which is the risk that actually ends accounts — not on
+    // drawdown (which does not scale with this cap) and not on liquidation (which cannot bind here).
+    // From CorrelatedShock.Run, every open position taking the same adverse move at once:
+    //
+    //   shock    cap 0.30      cap 1.00      uncapped (peak demand 285% of equity)
+    //    10%       3.1%         10.4%          28.5%
+    //    20%       6.2%         20.9%          57.0%   unrecoverable
+    //    30%       9.3%         31.3%          85.5%   near-total
+    //    40%      12.4%         41.7%         114.0%   ACCOUNT GONE
+    //
+    // UNCAPPED THE BOOK WANTS 285% GROSS. The cap is holding back ~8x its own size, so it is not a
+    // safety margin — it is the binding control, active on 78% of entries.
+    //
+    // This also does not relax as the system grows: more strategies or a shorter bar interval raise
+    // signal arrival rate and therefore concurrent-position demand, while equity does not grow with
+    // them. Higher frequency puts MORE load on this constant, not less.
     public const double MaxTotalExposurePct = 0.30;
     public const int MaxDirectionalConcurrent = 20;
     public const double MinMedianVolUsdM    = 0.5;

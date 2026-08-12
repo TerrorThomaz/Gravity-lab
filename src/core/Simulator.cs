@@ -407,7 +407,8 @@ public static class Simulator
         int tradesToTenPct = -1;
         // Does the gross-exposure cap actually BIND? A cap that never fires is decoration, and the
         // "liquidation cannot bind at 0.30x" argument would then rest on something inert.
-        int capBoundCount = 0; double peakGrossFrac = 0;
+        int capBoundCount = 0; double peakGrossFrac = 0, peakDesiredFrac = 0;
+        var openDesired = new List<(DateTime Close, double Eur)>();
         // Sizes as ACTUALLY allocated (post-cap, post-ddScale), so the mark-to-market pass below
         // reflects the exposure cap under test rather than a nominal size.
         var mtmInput = new List<(DateTime, double, TimeSpan, double)>();
@@ -450,6 +451,13 @@ public static class Simulator
             if (inProtectMode) desiredEur *= profitProtectFactor;
             double posEur      = Math.Min(desiredEur, headroomEur);
             if (posEur < desiredEur - 1e-9) capBoundCount++;
+            // What the book WOULD carry with no cap: desired size, untruncated. This is the number
+            // the cap is actually holding back, and it is what grows when strategies are added or
+            // the bar interval shortens.
+            openDesired.RemoveAll(d => d.Close <= entryTime);
+            openDesired.Add((entryTime + hold, desiredEur));
+            { double dG = openDesired.Sum(d => d.Eur);
+              if (balance > 1e-9 && dG / balance > peakDesiredFrac) peakDesiredFrac = dG / balance; }
             { double gN = openPos.Sum(q => q.EurAllocated) + posEur;
               if (balance > 1e-9 && gN / balance > peakGrossFrac) peakGrossFrac = gN / balance; }
 
@@ -473,7 +481,11 @@ public static class Simulator
             Console.WriteLine($"  [EXPOSURE] cap {maxTotalExposurePct:P0} · bound on {capBoundCount}/{sorted.Count} "
                             + $"({(double)capBoundCount / sorted.Count:P1}) · realized DD {maxDd:F2}% "
                             + $"· MARK-TO-MARKET DD {mtm.MaxDrawdownPct:F2}% "
-                            + $"· gross peak {mtm.PeakGrossExposurePct:F1}% avg {mtm.AvgGrossExposurePct:F1}%");
+                            + $"· gross peak {mtm.PeakGrossExposurePct:F1}% avg {mtm.AvgGrossExposurePct:F1}%"
+                            + $"· UNCAPPED demand would peak {peakDesiredFrac:P0}");
+            CorrelatedShock.Print(
+                CorrelatedShock.Run(mtmInput, startBalance, new[] { 10.0, 20.0, 30.0, 40.0 }, TimeSpan.FromHours(1)),
+                maxTotalExposurePct);
         }
         return new PortfolioResult(
             StartBalance:   startBalance,

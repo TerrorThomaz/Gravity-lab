@@ -396,6 +396,17 @@ static class OosBacktest
         // the two commands can no longer run different mechanism sets by accident.
         var ctx = new ExecContext(Ratchet: oosRatchet);
 
+        // GRAVITY_DROP=fadeshort,grid — exclude named strategies from the PORTFOLIO (their own
+        // sections still print). Not a feature: a measurement. 50% of OOS trades come from the two
+        // strategies whose OOS profit factor is below 1.3 (FadeShort 39% @ 1.11, Grid 11% @ 0.94),
+        // so the portfolio's 1.77 may be dead weight diluting four strategies that each generalise
+        // at 2.79-4.09. This isolates that.
+        var dropped = (Environment.GetEnvironmentVariable("GRAVITY_DROP") ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (dropped.Count > 0)
+            Console.WriteLine($"  [DROP] excluded from portfolio: {string.Join(", ", dropped)}");
+
         var oosAcqDiscount = new List<double>();
         var oosAcqDiscountEma = new List<double>();
         int oosAcqFills = 0;
@@ -768,6 +779,12 @@ static class OosBacktest
         // Per-strategy concurrent cap
         if (allTrades.Count > 0)
         {
+            if (dropped.Count > 0)
+            {
+                int before = allTrades.Count;
+                allTrades = allTrades.Where(t => !dropped.Contains(t.Strategy)).ToList();
+                Console.WriteLine($"  [DROP] {before - allTrades.Count} trades removed from the portfolio");
+            }
             var capInput = allTrades.Select(t => new PortfolioReplay.Trade(
                 t.Strategy,
                 t.Entry == default ? t.Time : t.Entry,

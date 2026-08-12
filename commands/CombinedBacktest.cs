@@ -297,7 +297,14 @@ static class CombinedBacktest
         if (swingG == null) { Console.WriteLine("Missing FadeShort genotype — run 'train' first."); return; }
         if (gridG  == null) { Console.WriteLine("Missing grid genotype — run 'gridtrain' first.");  return; }
 
-        FadeLongGenotype?     flG     = null;
+        // FadeLong was hardcoded off on the strength of a COMMENT ("PF=0.06 OOS, net drag"), not a
+        // live measurement — and that figure predates the monotone fold aggregator, the inverted
+        // funding sign on longs, trade-level slippage and the concurrency-accounting fix. On the
+        // OOS path, which never had this line, FadeLong currently reports PF 3.73 on never-trained
+        // coins at 12% of trades. GRAVITY_NOFADELONG=1 restores the old behaviour.
+        FadeLongGenotype?     flG     = Environment.GetEnvironmentVariable("GRAVITY_NOFADELONG") == "1"
+                                        ? null
+                                        : (flVariants.Length > 0 ? flVariants[0].Genotype : null);
         DipLongGenotype?      dlG     = dlVariants.Length > 0  ? dlVariants[0].Genotype  : null;
         SwingLongGenotype?    slG     = slVariants.Length > 0  ? slVariants[0].Genotype  : null;
         RipShortGenotype?     rsG     = rsVariants.Length > 0  ? rsVariants[0].Genotype  : null;
@@ -468,6 +475,8 @@ static class CombinedBacktest
         // so this command cannot run a different mechanism set from oosbacktest or papertrade by
         // accident -- which it previously did (oosbacktest had no ratchet support at all).
         var ctx = new ExecContext(Ratchet: globalRatchet, MaxLegs: maxLegs, CrowdingGate: crowdGate);
+        bool gridUngated = Environment.GetEnvironmentVariable("GRAVITY_GRIDUNGATED") == "1";
+        if (gridUngated) Console.WriteLine("  [GRID] router gate bypassed for Grid");
         // Val-window price series per coin, collected once for the random-entry control below.
         var controlSeries     = new List<(string Sym, Candle[] H1Val)>();
         var allTradesNoRouter = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
@@ -651,7 +660,10 @@ static class CombinedBacktest
             foreach (var (t, ret, _, et, _) in vGrid)
             {
                 allTradesNoRouter.Add((t, ret, conf, "grid"));
-                if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.Grid, t)) continue;
+                // GRAVITY_GRIDUNGATED=1 — the router removes 84% of Grid's trades, and the Ranging
+                // gate admits ~508 windows averaging 5.5 bars. A grid ladder cannot fill and unwind
+                // in five hours, so what survives may be fragments that pay fees and never complete.
+                if (!gridUngated && session != null && !session.IsActive(RegimeRouterGA.StrategyKind.Grid, t)) continue;
                 gridTrades.Add((t, ret, conf));
                 allTrades.Add((t, ret, conf, "grid", et, sym));
                 gridGated.Add(ret);

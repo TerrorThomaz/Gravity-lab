@@ -43,12 +43,18 @@ static class GridCommands
         });
         var fetched = await Task.WhenAll(fetchTasks);
 
+        // Real per-symbol funding, matching what the backtests charge. Previously GridGA received
+        // none, which silently applied the interest-rate FLOOR instead — a cheaper cost model than
+        // the one Grid is scored against, and the leading explanation for its held-out PF 1.34
+        // reading ~0.9 in the portfolio.
+        var gridFunding = await CandleFetcher.FetchFundingSessionsAsync(client, fetched.Select(f => f.sym));
+
         var coinData = new List<GridGeneticAlgorithm.CoinData>();
         foreach (var (sym, weight, h1) in fetched)
         {
             if (h1.Length < 150) { Console.WriteLine($"  {sym}: skip (insufficient data)"); continue; }
             int split = (int)(h1.Length * 0.8);
-            coinData.Add(new GridGeneticAlgorithm.CoinData(h1[..split], h1[split..], weight));
+            coinData.Add(new GridGeneticAlgorithm.CoinData(h1[..split], h1[split..], weight, gridFunding.For(sym)));
         }
         if (coinData.Count == 0) { Console.WriteLine("No data."); return; }
 
@@ -60,12 +66,19 @@ static class GridCommands
             Console.WriteLine($"  Swing AdxThreshold={swingGeno.AdxThreshold:F0} → grid ceiling={adxCeiling:F0} (clean partition)");
         }
 
+        // --no-seed: train from scratch. Grid has NEVER had a fair search — the genotype was
+        // created 2026-06-22 and every retrain since has warm-started from the incumbent, which
+        // until the seeded-init fix collapsed ~79% of the population to exact clones. So the
+        // current genotype is a creep-walk from a June ancestor selected under the non-monotone
+        // fold aggregator, invisible slippage and the inverted funding sign.
+        bool noSeed = args != null && Array.IndexOf(args, "--no-seed") >= 0;
         GridGenotype? seed = null;
         if (File.Exists(genoPath))
         {
             var candidate = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(genoPath))!.ToGenotype();
             var clamped = candidate.ClampToBounds(adxCeiling);
-            if (clamped.Fitness > 0) { seed = clamped; Console.WriteLine($"  Seeding from {genoPath}: {seed}"); }
+            if (noSeed) Console.WriteLine("  [NO-SEED] training from scratch — no incumbent");
+            else if (clamped.Fitness > 0) { seed = clamped; Console.WriteLine($"  Seeding from {genoPath}: {seed}"); }
             else Console.WriteLine("  Skipping seed (fitness ≤ 0)");
         }
 
@@ -163,12 +176,19 @@ static class GridCommands
             Console.WriteLine($"  Swing AdxThreshold={swingGeno.AdxThreshold:F0} → grid ceiling={adxCeiling:F0} (clean partition)");
         }
 
+        // --no-seed: train from scratch. Grid has NEVER had a fair search — the genotype was
+        // created 2026-06-22 and every retrain since has warm-started from the incumbent, which
+        // until the seeded-init fix collapsed ~79% of the population to exact clones. So the
+        // current genotype is a creep-walk from a June ancestor selected under the non-monotone
+        // fold aggregator, invisible slippage and the inverted funding sign.
+        bool noSeed = args != null && Array.IndexOf(args, "--no-seed") >= 0;
         GridGenotype? seed = null;
         if (File.Exists(genoPath))
         {
             var candidate = JsonSerializer.Deserialize<GridGenotypeDto>(File.ReadAllText(genoPath))!.ToGenotype();
             var clamped = candidate.ClampToBounds(adxCeiling);
-            if (clamped.Fitness > 0) { seed = clamped; Console.WriteLine($"  Seeding from {genoPath}: {seed}"); }
+            if (noSeed) Console.WriteLine("  [NO-SEED] training from scratch — no incumbent");
+            else if (clamped.Fitness > 0) { seed = clamped; Console.WriteLine($"  Seeding from {genoPath}: {seed}"); }
             else Console.WriteLine("  Skipping seed (fitness ≤ 0)");
         }
 

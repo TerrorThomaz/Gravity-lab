@@ -22,7 +22,15 @@ namespace TradingGA;
 // Folds are cut PER COIN on that coin's own array — see Fitness().
 public class GridGeneticAlgorithm
 {
-    public record CoinData(ReadOnlyMemory<Candle> TrainCandles, ReadOnlyMemory<Candle> ValCandles, double Weight = 1.0);
+    // Funding rides on CoinData because it is per-SYMBOL, and this GA only ever sees candle
+    // arrays. Without it GridGA called GetGridSessionReturns with no funding argument, which does
+    // NOT mean "no funding" — it charges the pessimistic interest-rate FLOOR. The backtests pass
+    // real per-symbol rates, and a long in a bull regime routinely pays more than the floor. So
+    // the GA optimised under a cheaper cost model than the one it is scored against: the same
+    // train/serve mismatch as the invisible-slippage defect, and the leading explanation for
+    // Grid's held-out PF 1.34 reading ~0.9 in the portfolio.
+    public record CoinData(ReadOnlyMemory<Candle> TrainCandles, ReadOnlyMemory<Candle> ValCandles,
+                           double Weight = 1.0, FundingRateSession? Funding = null);
 
     private readonly int           _populationSize;
     private readonly int           _generations;
@@ -104,7 +112,7 @@ public class GridGeneticAlgorithm
         if (useValidation || folds <= 1)
         {
             var all = validCoins
-                .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr.Span)
+                .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr.Span, x.c.Funding)
                     .Select(t => (t.Return, w: _tradeGate?.Invoke(t.Time) ?? 1.0))
                     .Where(t => t.w >= 0.05).Select(t => t.Return * t.w))
                 .ToList();
@@ -137,7 +145,7 @@ public class GridGeneticAlgorithm
         if (k < 2)
         {
             var all = validCoins
-                .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr.Span)
+                .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr.Span, x.c.Funding)
                     .Select(t => (t.Return, w: _tradeGate?.Invoke(t.Time) ?? 1.0))
                     .Where(t => t.w >= 0.05).Select(t => t.Return * t.w))
                 .ToList();
@@ -160,7 +168,7 @@ public class GridGeneticAlgorithm
                 var (start, end) = FoldScoreHelper.PerCoinFoldRange(arr.Length, k, f, _cfg.EmbargoPct);
                 if (end - start < 40) continue;
                 foldReturns.AddRange(
-                    GridSimulator.GetGridSessionReturns(ind, arr.Slice(start, end - start).Span)
+                    GridSimulator.GetGridSessionReturns(ind, arr.Slice(start, end - start).Span, coin.Funding)
                         .Select(t => (t.Return, w: _tradeGate?.Invoke(t.Time) ?? 1.0))
                         .Where(t => t.w >= 0.05).Select(t => t.Return * t.w));
             }

@@ -189,6 +189,18 @@ public static class GridSimulator
 
             if (gridActive)
             {
+                // Re-anchoring (ReanchorAlpha > 0): let the anchor follow the live EMA while the
+                // session is open, as AccumulationGridSimulator already does. A STATIC ladder is
+                // stranded when price trends away from it, which is the structural difference
+                // between Grid and the accumulator — and the accumulator is the piece that
+                // validated OOS at -3.47% vs the trailing EMA on 27/27 unseen coins.
+                // Unfilled rungs reprice with the anchor; already-filled levels keep their own
+                // entry, so this never rewrites a fill that already happened.
+                if (g.ReanchorAlpha > 0 && ema[i] > 1e-10)
+                {
+                    anchor   = anchor + g.ReanchorAlpha * (ema[i] - anchor);
+                    hardStop = anchor - g.HardStopAtrMult * atrAtStart;
+                }
                 holdCount++;
 
                 // Hard stop: range broke to the downside — close all
@@ -242,7 +254,15 @@ public static class GridSimulator
                 for (int n = 0; n < levels; n++)
                 {
                     if (!filled[n]) continue;
-                    double tp = entryPrice[n] + g.TakeProfitAtrMult * atrAtStart;
+                    // Rung-to-rung sell when RungSellFrac > 0: sell one (or RungSellFrac) rung above
+                    // the fill, which is what a grid bot actually does — capture the spacing you
+                    // bought below. The legacy target is entry + TakeProfitAtrMult x ATR, which on
+                    // the trained genotype was 2.43x the rung spacing, i.e. further than the whole
+                    // ladder is deep, so a fill needed a sustained trend to exit while the Ranging
+                    // gate exists to select trends OUT.
+                    double tp = g.RungSellFrac > 0
+                        ? entryPrice[n] + g.RungSellFrac * g.GridStepAtrMult * atrAtStart
+                        : entryPrice[n] + g.TakeProfitAtrMult * atrAtStart;
                     if (highs[i] >= tp)
                     {
                         double fundingPnl = FundingRateSession.PnlPct(sessionEntryTime, times[i], funding, isLong: true);
@@ -278,10 +298,13 @@ public static class GridSimulator
             {
                 if (adxNow >= g.AdxThreshold || bbWidth[i] >= g.BbWidthMaxPct) continue;
 
-                int slopeLookback = 20;
+                // Direction bias is now searchable. Both numbers were hardcoded (-0.005 over 20
+                // bars), so the GA could not tune how directional the grid should be — only
+                // whether those two constants happened to suit the data.
+                int slopeLookback = g.SlopeLookback > 0 ? g.SlopeLookback : 20;
                 int slopeRef = Math.Max(0, i - slopeLookback);
                 double emaSlope = ema[slopeRef] > 1e-10 ? (ema[i] - ema[slopeRef]) / ema[slopeRef] : 0;
-                if (emaSlope < -0.005) continue;
+                if (emaSlope < g.SlopeThreshold) continue;
 
                 double proposedAnchor = ema[i];
                 double proposedAtr    = atrNow;

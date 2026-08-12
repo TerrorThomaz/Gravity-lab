@@ -188,8 +188,16 @@ static class TrainCommands
 
         if (namedCoins.Count == 0) { Console.WriteLine("No coins passed volume filter."); return; }
 
+        // --no-seed: train from scratch. FadeShort has NEVER had a fair search — the genotype was
+        // created 2026-06-22 and every retrain since warm-started from the incumbent, which until
+        // the seeded-init fix collapsed ~79% of the population to exact clones. Grid, the other
+        // strategy in that position, went from portfolio PF 1.11 to 1.36 once retrained from
+        // scratch against the correct cost model.
+        bool noSeed = args != null && Array.IndexOf(args, "--no-seed") >= 0;
+        if (noSeed) Console.WriteLine("  [NO-SEED] training from scratch — no incumbent");
+
         FadeShortGenotype? seed = null;
-        if (File.Exists(genoPath))
+        if (!noSeed && File.Exists(genoPath))
         {
             var candidate = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(genoPath))!.ToGenotype();
             if (candidate.Fitness > 0)

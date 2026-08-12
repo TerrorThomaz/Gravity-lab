@@ -45,6 +45,34 @@ public class GridGenotype
     public double BailOutAtrMult   { get; set; }  // 1.0–4.0 close all when price drops this far below lowest filled level
     public int    MaxHoldCandles   { get; set; }  // 24–200  h1 bars before force-close
 
+    // ── Grid-bot mechanics, added 2026-08 ────────────────────────────────────────────────────
+    // RungSellFrac: sell target as a FRACTION OF THE RUNG SPACING rather than a free ATR target.
+    // 1.0 = a true grid bot — buy a rung, sell at the rung above, capture exactly one step.
+    // 0 = disabled, keep the legacy TakeProfitAtrMult behaviour.
+    //
+    // Why this exists: the legacy exit sells at entry + TakeProfitAtrMult x ATR, which on the
+    // trained genotype is 2.43x the rung spacing — FURTHER than the entire 3-level ladder is deep
+    // (2.04 ATR). So a fill had to ride a sustained directional move to exit, while the Ranging
+    // gate exists precisely to select against sustained moves. The entry regime and the exit
+    // target were pulling in opposite directions.
+    public double RungSellFrac   { get; set; }  // 0 = legacy TP · 0.5–2.0 = multiples of a rung
+
+    // ReanchorAlpha: EMA-following rate for the anchor while a session is open. 0 = the legacy
+    // static anchor fixed at activation; higher values track the moving EMA, as
+    // AccumulationGridSimulator already does. A static ladder is stranded when price trends away
+    // from it, which is the structural difference between Grid and the accumulator — and the
+    // accumulator is the component that validated OOS (-3.47% vs trailing EMA on 27/27 coins).
+    public double ReanchorAlpha  { get; set; }  // 0–0.2 per-bar pull toward the live EMA
+
+    // The direction bias was a HARDCODED veto: `if (emaSlope < -0.005) continue`, with a fixed
+    // 20-bar lookback. Neither number was searchable, so the GA could not tune how directional
+    // the grid should be — only whether the constants happened to suit.
+    // Bounded at or below ZERO. A positive threshold would demand a RISING market to open, turning
+    // a Ranging-gated grid into a trend follower and contradicting its own entry regime. The gene
+    // tunes how much decline to tolerate, not whether to require an advance.
+    public double SlopeThreshold { get; set; } = -0.005;  // -0.03–0.0 min EMA slope to open
+    public int    SlopeLookback  { get; set; }  // 5–60 bars
+
     public double Fitness { get; set; } = double.MinValue;
 
     // ── Seeded initialisation ────────────────────────────────────────────────────
@@ -88,6 +116,10 @@ public class GridGenotype
             HardStopAtrMult  = 1.5  + rng.NextDouble() * 1.5,
             BailOutAtrMult   = 1.0  + rng.NextDouble() * 3.0,
             MaxHoldCandles   = rng.Next(24, 201),
+            RungSellFrac     = rng.NextDouble() < 0.5 ? 0.0 : 0.5 + rng.NextDouble() * 1.5,
+            ReanchorAlpha    = rng.NextDouble() < 0.5 ? 0.0 : rng.NextDouble() * 0.2,
+            SlopeThreshold   = -0.03 + rng.NextDouble() * 0.03,
+            SlopeLookback    = rng.Next(5, 61),
         };
     }
 
@@ -106,6 +138,10 @@ public class GridGenotype
             HardStopAtrMult  = Pick(a.HardStopAtrMult,   b.HardStopAtrMult),
             BailOutAtrMult   = Pick(a.BailOutAtrMult,    b.BailOutAtrMult),
             MaxHoldCandles   = Pick(a.MaxHoldCandles,    b.MaxHoldCandles),
+            RungSellFrac     = Pick(a.RungSellFrac,      b.RungSellFrac),
+            ReanchorAlpha    = Pick(a.ReanchorAlpha,     b.ReanchorAlpha),
+            SlopeThreshold   = Pick(a.SlopeThreshold,    b.SlopeThreshold),
+            SlopeLookback    = Pick(a.SlopeLookback,     b.SlopeLookback),
         };
     }
 
@@ -133,6 +169,10 @@ public class GridGenotype
             HardStopAtrMult  = Nudge(HardStopAtrMult,    1.5,  3.0, 0.4),
             BailOutAtrMult   = Nudge(BailOutAtrMult,     1.0,  4.0, 0.5),
             MaxHoldCandles   = NudgeInt(MaxHoldCandles,  24,  200,  12),
+            RungSellFrac     = Nudge(RungSellFrac,       0.0,  2.0, 0.3),
+            ReanchorAlpha    = Nudge(ReanchorAlpha,      0.0,  0.2, 0.04),
+            SlopeThreshold   = Nudge(SlopeThreshold,   -0.03,  0.0, 0.008),
+            SlopeLookback    = NudgeInt(SlopeLookback,     5,   60,   8),
         };
     }
 
@@ -148,6 +188,10 @@ public class GridGenotype
         HardStopAtrMult  = Math.Clamp(HardStopAtrMult,   1.5,  3.0),
         BailOutAtrMult   = Math.Clamp(BailOutAtrMult,    1.0,  4.0),
         MaxHoldCandles   = Math.Clamp(MaxHoldCandles,    24,  200),
+        RungSellFrac     = Math.Clamp(RungSellFrac,      0.0,  2.0),
+        ReanchorAlpha    = Math.Clamp(ReanchorAlpha,     0.0,  0.2),
+        SlopeThreshold   = Math.Clamp(SlopeThreshold,  -0.03,  0.0),
+        SlopeLookback    = Math.Clamp(SlopeLookback,       5,   60),
         Fitness = Fitness,
     };
 
@@ -165,6 +209,10 @@ public class GridGenotype
         {  1.5,  3.0 }, // HardStopAtrMult
         {  1.0,  4.0 }, // BailOutAtrMult
         {   24,  200 }, // MaxHoldCandles
+        {  0.0,  2.0 }, // RungSellFrac   — 0 disables, else multiples of the rung spacing
+        {  0.0,  0.2 }, // ReanchorAlpha  — 0 = static anchor (legacy)
+        {-0.03,  0.0 }, // SlopeThreshold — was hardcoded -0.005; never POSITIVE (see below)
+        {    5,   60 }, // SlopeLookback  — was hardcoded 20
     };
 
     public static readonly string[] ParameterNames =
@@ -179,6 +227,7 @@ public class GridGenotype
         AdxThreshold, BbPeriod, BbWidthMaxPct, EmaPeriod,
         GridStepAtrMult, GridLevels, TakeProfitAtrMult,
         HardStopAtrMult, BailOutAtrMult, MaxHoldCandles,
+        RungSellFrac, ReanchorAlpha, SlopeThreshold, SlopeLookback,
     ];
 
     public static GridGenotype FromVector(double[] v, double adxCeiling = 20.0) => new()
@@ -193,10 +242,15 @@ public class GridGenotype
         HardStopAtrMult   = Math.Clamp(v[7],  1.5,  3.0),
         BailOutAtrMult    = Math.Clamp(v[8],  1.0,  4.0),
         MaxHoldCandles    = Math.Clamp((int)Math.Round(v[9]),  24, 200),
+        RungSellFrac      = Math.Clamp(v[10], 0.0,  2.0),
+        ReanchorAlpha     = Math.Clamp(v[11], 0.0,  0.2),
+        SlopeThreshold    = Math.Clamp(v[12], -0.03,  0.0),
+        SlopeLookback     = Math.Clamp((int)Math.Round(v[13]), 5, 60),
     };
 
     public override string ToString() =>
         $"ADX(14,{AdxThreshold:F0}) BB({BbPeriod},{BbWidthMaxPct:F1}%) EMA{EmaPeriod} " +
         $"Step={GridStepAtrMult:F2}A Lvl={GridLevels} TP={TakeProfitAtrMult:F2}A " +
-        $"Stop={HardStopAtrMult:F1}A Bail={BailOutAtrMult:F1}A MaxH={MaxHoldCandles}h F={Fitness:F4}";
+        $"Stop={HardStopAtrMult:F1}A Bail={BailOutAtrMult:F1}A MaxH={MaxHoldCandles}h " +
+        $"Rung={RungSellFrac:F2} Reanchor={ReanchorAlpha:F3} Slope({SlopeLookback}b,{SlopeThreshold:P1}) F={Fitness:F4}";
 }

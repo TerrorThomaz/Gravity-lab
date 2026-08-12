@@ -321,6 +321,18 @@ class GridGenotypeDto
     public double TakeProfitAtrMult { get; set; }
     public double HardStopAtrMult   { get; set; }
     public int    MaxHoldCandles    { get; set; }
+    // BailOutAtrMult was MISSING from this DTO while being searched by the GA and consumed by the
+    // simulator, so it was discarded on every save and reloaded as 0 — a gene the GA optimised and
+    // the saved genotype never carried. Eleventh instance of the built-but-not-connected pattern.
+    public double BailOutAtrMult    { get; set; }
+    public double RungSellFrac      { get; set; }
+    public double ReanchorAlpha     { get; set; }
+    // Nullable on purpose: a missing JSON key must restore the LEGACY hardcoded -0.005, and a
+    // plain double cannot tell "absent" from an explicit 0.0. Defaulting to 0 silently made every
+    // pre-existing genotype STRICTER than it was (0 rejects any flat/falling bar, -0.005 tolerates
+    // a 0.5% decline), which changed Grid's behaviour on load and broke a funding test.
+    public double? SlopeThreshold   { get; set; }
+    public int    SlopeLookback     { get; set; }
     public double Fitness           { get; set; }
     public double AtrLow            { get; init; } = 0.0;
     public double AtrHigh           { get; init; } = 9999.0;
@@ -336,6 +348,11 @@ class GridGenotypeDto
         TakeProfitAtrMult = g.TakeProfitAtrMult,
         HardStopAtrMult   = g.HardStopAtrMult,
         MaxHoldCandles    = g.MaxHoldCandles,
+        BailOutAtrMult    = g.BailOutAtrMult,
+        RungSellFrac      = g.RungSellFrac,
+        ReanchorAlpha     = g.ReanchorAlpha,
+        SlopeThreshold    = g.SlopeThreshold,
+        SlopeLookback     = g.SlopeLookback,
         Fitness           = g.Fitness,
         AtrLow            = cfg?.AtrLow  ?? 0.0,
         AtrHigh           = cfg?.AtrHigh ?? 9999.0,
@@ -352,6 +369,13 @@ class GridGenotypeDto
         TakeProfitAtrMult = TakeProfitAtrMult > 0 ? TakeProfitAtrMult : 1.5,
         HardStopAtrMult   = HardStopAtrMult   > 0 ? HardStopAtrMult   : 2.2,
         MaxHoldCandles    = MaxHoldCandles    > 0 ? MaxHoldCandles    : 96,
+        // 2.0 mirrors the old default for genotypes saved before BailOutAtrMult was persisted.
+        BailOutAtrMult    = BailOutAtrMult    > 0 ? BailOutAtrMult    : 2.0,
+        // 0 = legacy behaviour for all three new mechanics, so old files load unchanged.
+        RungSellFrac      = RungSellFrac,
+        ReanchorAlpha     = ReanchorAlpha,
+        SlopeThreshold    = SlopeThreshold ?? -0.005,
+        SlopeLookback     = SlopeLookback     > 0 ? SlopeLookback     : 20,
         Fitness           = Fitness,
     }.ClampToBounds();
 }

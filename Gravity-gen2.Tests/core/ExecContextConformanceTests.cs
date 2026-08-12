@@ -67,7 +67,22 @@ public class ExecContextConformanceTests
             SwingLongGenotype.Random(new Random(12)),
             DipLongGenotype.Random(new Random(13)),
             FadeLongGenotype.Random(new Random(14)),
-            GridGenotype.Random(new Random(15)));
+            // Grid's genotype is pinned rather than random: adding genes changes what a given seed
+            // draws, and a restrictive SlopeThreshold silently starves the fixture. The conformance
+            // tests are about WIRING, so the genotype must reliably trade, not be hostage to a draw.
+            PermissiveGrid());
+
+    // Grid's genotype is pinned rather than random: adding genes changes what a given seed draws,
+    // and a restrictive SlopeThreshold silently starves the fixture. These tests are about WIRING,
+    // so the genotype must reliably trade rather than be hostage to a draw.
+    private static GridGenotype PermissiveGrid()
+    {
+        var g = GridGenotype.Random(new Random(15));
+        g.SlopeThreshold = -0.03;   // most permissive: tolerate any decline
+        g.RungSellFrac   = 0.0;     // legacy TP path
+        g.ReanchorAlpha  = 0.0;     // static anchor
+        return g;
+    }
 
     private static (Candle[] H1, Candle[] M15) Data() => (Synthetic(12000, 7), SyntheticM15(48000, 7));
 

@@ -22,6 +22,10 @@ class FadeShortGenotypeDto
     // dropped on save and reloaded as 0, so every GridShort genotype written before that fix
     // carried a disabled bail-out its GA had optimised to use.
     public int?   RegimeSustainBars         { get; set; }
+    // Nullable for the same reason: absent must restore the historical hardcoded values
+    // (regime ema = signal ema, slope window 5) rather than 0, which would be an invalid EMA.
+    public int?   RegimeEmaPeriod           { get; set; }
+    public int?   RegimeSlopeLookback       { get; set; }
     public double Fitness                   { get; set; }
     public double AtrLow                    { get; init; } = 0.0;
     public double AtrHigh                   { get; init; } = 9999.0;
@@ -44,6 +48,8 @@ class FadeShortGenotypeDto
         MaxHoldCandles            = g.MaxHoldCandles,
         PositionSizePct           = g.PositionSizePct,
         RegimeSustainBars         = g.RegimeSustainBars,
+        RegimeEmaPeriod           = g.RegimeEmaPeriod,
+        RegimeSlopeLookback       = g.RegimeSlopeLookback,
         Fitness                   = g.Fitness,
         AtrLow                    = cfg?.AtrLow  ?? 0.0,
         AtrHigh                   = cfg?.AtrHigh ?? 9999.0,
@@ -65,6 +71,8 @@ class FadeShortGenotypeDto
         MaxHoldCandles            = MaxHoldCandles            > 0 ? MaxHoldCandles            : 42,
         PositionSizePct           = PositionSizePct           > 0 ? PositionSizePct           : 0.03,
         RegimeSustainBars         = RegimeSustainBars ?? 0,
+        RegimeEmaPeriod           = RegimeEmaPeriod ?? 200,
+        RegimeSlopeLookback       = RegimeSlopeLookback ?? 20,
         Fitness                   = Fitness,
     }.ClampToBounds();
 }

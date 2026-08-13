@@ -54,6 +54,20 @@ public class FadeShortGenotype
     // stronger trend (worse fade). The GA searches it rather than the author guessing.
     public int    RegimeSustainBars         { get; set; }   // 0–120 h1 bars
 
+    // The regime must be DEFINABLE, not just waitable. The first attempt gave FadeShort only
+    // RegimeSustainBars and hardcoded the other two — reusing EmaPeriod (20–100, the SIGNAL ema)
+    // as the regime ema and fixing the slope window at 5. A 5-bar slope on a 20-period ema
+    // flickers, so the sustain counter reset constantly and could never accumulate. The GA
+    // answered RegSust=1, i.e. "waiting longer for this buys nothing" — correctly, because the
+    // signal it was handed was noise. That was an implementation gap, not a verdict on the
+    // mechanism, and it nearly became a wrong conclusion about the whole approach.
+    //
+    // Regime and signal are different questions at different timescales: "is this a bull market"
+    // wants a long ema, "is this coin trending now" wants a short one. RipShort separates them
+    // (RegimeLongEmaPeriod 100–500 vs EmaPeriod) and is one of the best strategies in the suite.
+    public int    RegimeEmaPeriod           { get; set; }   // 100–500 regime-defining EMA
+    public int    RegimeSlopeLookback       { get; set; }   // 10–60   bars to measure its slope
+
     public double Fitness { get; set; } = double.MinValue;
 
     // ── Seeded initialisation ────────────────────────────────────────────────────
@@ -95,6 +109,8 @@ public class FadeShortGenotype
             MaxHoldCandles            = RandInt(rng, 11),
             PositionSizePct           = Rand(rng, 12),
             RegimeSustainBars         = RandInt(rng, 13),
+            RegimeEmaPeriod           = RandInt(rng, 14),
+            RegimeSlopeLookback       = RandInt(rng, 15),
         };
     }
 
@@ -117,6 +133,8 @@ public class FadeShortGenotype
             MaxHoldCandles            = Pick(a.MaxHoldCandles,            b.MaxHoldCandles),
             PositionSizePct           = Pick(a.PositionSizePct,           b.PositionSizePct),
             RegimeSustainBars         = Pick(a.RegimeSustainBars,         b.RegimeSustainBars),
+            RegimeEmaPeriod           = Pick(a.RegimeEmaPeriod,           b.RegimeEmaPeriod),
+            RegimeSlopeLookback       = Pick(a.RegimeSlopeLookback,       b.RegimeSlopeLookback),
         };
     }
 
@@ -148,6 +166,8 @@ public class FadeShortGenotype
             MaxHoldCandles            = NudgeInt(MaxHoldCandles,         Lo(11), Hi(11), 12),
             PositionSizePct           = Nudge(PositionSizePct,           Lo(12), Hi(12), 0.005),
             RegimeSustainBars         = NudgeInt(RegimeSustainBars,       Lo(13), Hi(13), 8),
+            RegimeEmaPeriod           = NudgeInt(RegimeEmaPeriod,         Lo(14), Hi(14), 40),
+            RegimeSlopeLookback       = NudgeInt(RegimeSlopeLookback,     Lo(15), Hi(15), 6),
         };
     }
 
@@ -167,6 +187,8 @@ public class FadeShortGenotype
         MaxHoldCandles            = ClampInt(MaxHoldCandles,         11),
         PositionSizePct           = Clamp(PositionSizePct,           12),
         RegimeSustainBars         = ClampInt(RegimeSustainBars,       13),
+        RegimeEmaPeriod           = ClampInt(RegimeEmaPeriod,         14),
+        RegimeSlopeLookback       = ClampInt(RegimeSlopeLookback,     15),
         Fitness = Fitness,
     };
 
@@ -188,6 +210,8 @@ public class FadeShortGenotype
         {  24, 120  }, // MaxHoldCandles
         {0.01, 0.05 }, // PositionSizePct
         {   0, 120  }, // RegimeSustainBars — 0 = disabled (historical behaviour)
+        { 100, 500  }, // RegimeEmaPeriod
+        {  10,  60  }, // RegimeSlopeLookback
     };
 
     // Bounds is the SINGLE source of truth for the base parameter box: Random, Mutate,
@@ -224,6 +248,8 @@ public class FadeShortGenotype
         {  24,  72  }, // MaxHoldCandles
         {0.03, 0.07 }, // PositionSizePct
         {   0, 120  }, // RegimeSustainBars — row must exist: Bounds* are indexed positionally
+        { 100, 500  }, // RegimeEmaPeriod
+        {  10,  60  }, // RegimeSlopeLookback
     };
 
     public static readonly string[] ParameterNames =
@@ -259,6 +285,9 @@ public class FadeShortGenotype
             TrailingStopAtrMult       = 2.5 + rng.NextDouble() * 3.5,
             MaxHoldCandles            = rng.Next(24, 73),
             PositionSizePct           = 0.03 + rng.NextDouble() * 0.04,
+            RegimeSustainBars         = rng.Next(0, 121),
+            RegimeEmaPeriod           = rng.Next(100, 501),
+            RegimeSlopeLookback       = rng.Next(10, 61),
         };
     }
 
@@ -282,6 +311,9 @@ public class FadeShortGenotype
         TrailingStopAtrMult       = Math.Clamp(v[10], BoundsHighVol[10, 0], BoundsHighVol[10, 1]),
         MaxHoldCandles            = (int)Math.Clamp(Math.Round(v[11]), BoundsHighVol[11, 0], BoundsHighVol[11, 1]),
         PositionSizePct           = Math.Clamp(v[12], BoundsHighVol[12, 0], BoundsHighVol[12, 1]),
+        RegimeSustainBars         = (int)Math.Clamp(Math.Round(v[13]), BoundsHighVol[13, 0], BoundsHighVol[13, 1]),
+        RegimeEmaPeriod           = (int)Math.Clamp(Math.Round(v[14]), BoundsHighVol[14, 0], BoundsHighVol[14, 1]),
+        RegimeSlopeLookback       = (int)Math.Clamp(Math.Round(v[15]), BoundsHighVol[15, 0], BoundsHighVol[15, 1]),
     };
 
     public FadeShortGenotype ClampToBoundsHighVol()
@@ -319,6 +351,8 @@ public class FadeShortGenotype
         {  72, 200  }, // MaxHoldCandles (longer for low-vol)
         {0.01, 0.03 }, // PositionSizePct (smaller for low-vol)
         {   0, 120  }, // RegimeSustainBars — row must exist: Bounds* are indexed positionally
+        { 100, 500  }, // RegimeEmaPeriod
+        {  10,  60  }, // RegimeSlopeLookback
     };
 
     public double[] ToVector() =>
@@ -327,7 +361,7 @@ public class FadeShortGenotype
         RsiOverbought, RsiDivThreshold, MinRallyAtrMult,
         StopLossAtrMult, MaeAtrMult, TakeProfitAtrMult,
         TrailingActivationAtrMult, TrailingStopAtrMult,
-        MaxHoldCandles, PositionSizePct, RegimeSustainBars,
+        MaxHoldCandles, PositionSizePct, RegimeSustainBars, RegimeEmaPeriod, RegimeSlopeLookback,
     ];
 
     public static FadeShortGenotype FromVector(double[] v) => new()
@@ -346,6 +380,8 @@ public class FadeShortGenotype
         MaxHoldCandles            = ClampInt(v[11], 11),
         PositionSizePct           = Clamp(v[12], 12),
         RegimeSustainBars         = ClampInt(v[13], 13),
+        RegimeEmaPeriod           = ClampInt(v[14], 14),
+        RegimeSlopeLookback       = ClampInt(v[15], 15),
     };
 
     public static FadeShortGenotype FromVectorLowVol(double[] v) => new()
@@ -364,6 +400,8 @@ public class FadeShortGenotype
         MaxHoldCandles            = Math.Clamp((int)Math.Round(v[11]), 72, 200),
         PositionSizePct           = Math.Clamp(v[12], 0.01, 0.03),
         RegimeSustainBars         = (int)Math.Clamp(Math.Round(v[13]), 0, 120),
+        RegimeEmaPeriod           = (int)Math.Clamp(Math.Round(v[14]), 100, 500),
+        RegimeSlopeLookback       = (int)Math.Clamp(Math.Round(v[15]), 10, 60),
     };
 
     // Same seeded-init contract as Random (see SeedMutantProbability), but the
@@ -389,6 +427,9 @@ public class FadeShortGenotype
             TrailingStopAtrMult       = 1.0 + rng.NextDouble() * 2.0,
             MaxHoldCandles            = rng.Next(72, 201),
             PositionSizePct           = 0.01 + rng.NextDouble() * 0.02,
+            RegimeSustainBars         = rng.Next(0, 121),
+            RegimeEmaPeriod           = rng.Next(100, 501),
+            RegimeSlopeLookback       = rng.Next(10, 61),
         };
     }
 
@@ -408,6 +449,8 @@ public class FadeShortGenotype
         MaxHoldCandles            = Math.Clamp(MaxHoldCandles,             72,  200),
         PositionSizePct           = Math.Clamp(PositionSizePct,           0.01, 0.03),
         RegimeSustainBars         = Math.Clamp(RegimeSustainBars,            0,  120),
+        RegimeEmaPeriod           = Math.Clamp(RegimeEmaPeriod,            100,  500),
+        RegimeSlopeLookback       = Math.Clamp(RegimeSlopeLookback,         10,   60),
         Fitness = Fitness,
     };
 
@@ -439,6 +482,8 @@ public class FadeShortGenotype
             MaxHoldCandles            = NudgeInt(MaxHoldCandles, 72, 200, 12),
             PositionSizePct           = Nudge(PositionSizePct, 0.01, 0.03, 0.004),
             RegimeSustainBars         = NudgeInt(RegimeSustainBars, 0, 120, 8),
+            RegimeEmaPeriod           = NudgeInt(RegimeEmaPeriod, 100, 500, 40),
+            RegimeSlopeLookback       = NudgeInt(RegimeSlopeLookback, 10, 60, 6),
         };
     }
 
@@ -447,5 +492,5 @@ public class FadeShortGenotype
         $"ADX(7,{AdxThreshold:F0}) Look={LookbackCandles} Rally≥{MinRallyAtrMult:F1}A " +
         $"SL={StopLossAtrMult:F2}A MAE={MaeAtrMult:F2}A TP={TakeProfitAtrMult:F2}A " +
         $"Trail({TrailingActivationAtrMult:F2}A/{TrailingStopAtrMult:F2}A) " +
-        $"MaxH={MaxHoldCandles}bars Pos={PositionSizePct:P0} RegSust={RegimeSustainBars} F={Fitness:F4}";
+        $"MaxH={MaxHoldCandles}bars Pos={PositionSizePct:P0} RegSust={RegimeSustainBars} Regime(ema{RegimeEmaPeriod},sl{RegimeSlopeLookback}) F={Fitness:F4}";
 }

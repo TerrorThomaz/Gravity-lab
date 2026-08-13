@@ -127,7 +127,11 @@ public static class FadeShortSimulator
         // RipShortSimulator's bearRegimeBarsAtBar, mirrored in direction. Computed inline rather
         // than precomputed by the caller because it depends only on arrays the caller already
         // passes, and adding a parameter would touch every call site for no benefit.
-        var upSlope = Signals.EmaSlope(ema, 5);
+        // Regime ema is SEPARATE from the signal ema and much longer (100-500 vs 20-100), and the
+        // slope window is searchable. Reusing the signal ema with a fixed 5-bar slope made the
+        // regime flicker, so upBars reset constantly and RegimeSustainBars had nothing to gate.
+        var regimeEma   = Trend.Ema(closes, g.RegimeEmaPeriod);
+        var regimeSlope = Signals.EmaSlope(regimeEma, g.RegimeSlopeLookback);
 
         var bearBos        = Signals.BearishBoS(closes, lows);
         var bearDiv        = Signals.BearishDivergence(rsi, closes, g.LookbackCandles, g.RsiOverbought, g.RsiDivThreshold);
@@ -156,7 +160,7 @@ public static class FadeShortSimulator
 
             // Advance the uptrend counter EVERY bar, in or out of a trade, so the count reflects
             // the regime's real age rather than restarting when a position closes.
-            upBars = (price > ema[i] && upSlope[i] > 0) ? upBars + 1 : 0;
+            upBars = (price > regimeEma[i] && regimeSlope[i] > 0) ? upBars + 1 : 0;
 
             if (!inTrade)
             {
@@ -349,11 +353,12 @@ public static class FadeShortSimulator
         // while freqBonus only paid logarithmically).
         int[] upRegimeBarsAtBar = new int[h1.Length];
         {
-            var emaSlope = Signals.EmaSlope(h1Ema, 5);
+            var h1RegimeEma = Trend.Ema(h1Closes, g.RegimeEmaPeriod);
+            var emaSlope    = Signals.EmaSlope(h1RegimeEma, g.RegimeSlopeLookback);
             int running = 0;
             for (int i = 0; i < h1.Length; i++)
             {
-                bool regimeBar = h1Closes[i] > h1Ema[i] && emaSlope[i] > 0;
+                bool regimeBar = h1Closes[i] > h1RegimeEma[i] && emaSlope[i] > 0;
                 running = regimeBar ? running + 1 : 0;
                 upRegimeBarsAtBar[i] = running;
             }

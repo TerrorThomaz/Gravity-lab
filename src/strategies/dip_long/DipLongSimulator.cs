@@ -306,6 +306,8 @@ public static class DipLongSimulator
                                               st.TrailArmed, st.TrailHigh, finalHold));
     }
 
-    internal static double TradeCost(bool isStop, double atrEntry, double entryPx)
-        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrEntry, entryPx), isStop, StopGapAtrK);
+    internal static double TradeCost(bool isStop, double atrEntry, double entryPx,
+                                      double barNotional = 0.0, double posFrac = 0.0)
+        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrEntry, entryPx), isStop, StopGapAtrK,
+                                   barNotional, posFrac);
 }

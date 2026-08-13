@@ -27,8 +27,10 @@ public static class AccumulationGridSimulator
     // limit-fill discount is deliberately not modelled.
     private const double StopGapAtrK = 0.18;
 
-    internal static double TradeCost(double atrAtStart, double entryPx, bool isStop, bool isTp = false)
-        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrAtStart, entryPx), isStop, StopGapAtrK);
+    internal static double TradeCost(double atrAtStart, double entryPx, bool isStop, bool isTp = false,
+                                     double barNotional = 0.0, double posFrac = 0.0)
+        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrAtStart, entryPx), isStop, StopGapAtrK,
+                                   barNotional, posFrac);
 
     // funding: optional real rate series. Passing null does NOT mean "no funding" — the
     // fallback branch of FundingRateSession.PnlPct still charges the interest-rate floor

@@ -447,5 +447,5 @@ public class FadeShortGenotype
         $"ADX(7,{AdxThreshold:F0}) Look={LookbackCandles} Rally≥{MinRallyAtrMult:F1}A " +
         $"SL={StopLossAtrMult:F2}A MAE={MaeAtrMult:F2}A TP={TakeProfitAtrMult:F2}A " +
         $"Trail({TrailingActivationAtrMult:F2}A/{TrailingStopAtrMult:F2}A) " +
-        $"MaxH={MaxHoldCandles}bars Pos={PositionSizePct:P0} F={Fitness:F4}";
+        $"MaxH={MaxHoldCandles}bars Pos={PositionSizePct:P0} RegSust={RegimeSustainBars} F={Fitness:F4}";
 }

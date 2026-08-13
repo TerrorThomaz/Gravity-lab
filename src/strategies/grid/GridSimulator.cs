@@ -53,8 +53,10 @@ public static class GridSimulator
     // that fills in a fast move fills badly), and the direction of the error matters here —
     // grid is the family this change is removing cost advantages from, so the conservative
     // choice is to charge it the same round trip as everyone else.
-    internal static double TradeCost(double atrAtStart, double entryPx, bool isStop, bool isTp = false)
-        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrAtStart, entryPx), isStop, StopGapAtrK);
+    internal static double TradeCost(double atrAtStart, double entryPx, bool isStop, bool isTp = false,
+                                     double barNotional = 0.0, double posFrac = 0.0)
+        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrAtStart, entryPx), isStop, StopGapAtrK,
+                                   barNotional, posFrac);
 
     // Per-fill returns — used for backtest display (trade count, per-trade stats).
     // funding: optional real rate series. Passing null does NOT mean "no funding" — the

@@ -30,8 +30,10 @@ public static class GridShortSimulator
     // the cost: the per-exit-quality slip constants it used to select are gone, because they
     // were an independent slippage magnitude competing with Config.SlippageBps. See the note
     // in GridSimulator.TradeCost on why the limit-fill discount is deliberately not modelled.
-    internal static double TradeCost(double atrAtStart, double entryPx, bool isStop, bool isTp = false)
-        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrAtStart, entryPx), isStop, StopGapAtrK);
+    internal static double TradeCost(double atrAtStart, double entryPx, bool isStop, bool isTp = false,
+                                     double barNotional = 0.0, double posFrac = 0.0)
+        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrAtStart, entryPx), isStop, StopGapAtrK,
+                                   barNotional, posFrac);
 
     // EntryTime/EntryPrice: `Time` is the EXIT bar. For a session-level row the entry is the
     // session's start and the mean of its filled levels — a grid has no single entry.

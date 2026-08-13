@@ -71,10 +71,40 @@ public static class TradeCosts
     // Total round-trip cost of one trade, in PERCENTAGE POINTS — the same unit as a trade's
     // `ret`, so simulators subtract it directly. Every simulator's TradeCost is a one-line
     // delegation to this; that is what keeps the eight strategies mutually comparable.
-    public static double RoundTripPct(double atrPct, bool isStop, double stopGapAtrK)
-        => FeeRoundTripPct
-         + SlippageRoundTripPct(atrPct)
-         + (isStop ? StopGapPct(stopGapAtrK, atrPct) : 0.0);
+    //
+    // ── PARTICIPATION IMPACT (Layer 3) ───────────────────────────────────────────────
+    // barNotional is the entry bar's traded value (volume x close). When supplied AND
+    // Config.ChargeParticipationImpact is on, the cost gains a size-aware term:
+    //
+    //     impact = C * sigma * sqrt(orderNotional / barNotional)      [LiquidityModel]
+    //
+    // Everything above this line is size-INDEPENDENT: a tiny position and a huge one on the
+    // same coin pay identical basis points. That was harmless while positions were a fixed
+    // small fraction of a small book, and stops being harmless the moment position sizing
+    // becomes a free variable — which is exactly what DynamicExposureCap makes it. Without
+    // this term, "deploy more capital" is unpriced, so the exposure work would be scoring
+    // itself.
+    //
+    // orderNotional is derived from Config.ReferenceEquityUsd x posFrac rather than from real
+    // account size, because the simulators are size-agnostic by construction (they emit
+    // percentages). That makes this a CALIBRATION ANCHOR in the same sense as ReferenceAtrPct:
+    // it fixes where on the size axis the charge is quoted. It also closes a real loop — a
+    // genotype that raises its own PositionSizePct gene now pays more impact for it.
+    public static double RoundTripPct(double atrPct, bool isStop, double stopGapAtrK,
+                                      double barNotional = 0.0, double posFrac = 0.0)
+    {
+        double cost = FeeRoundTripPct
+                    + SlippageRoundTripPct(atrPct)
+                    + (isStop ? StopGapPct(stopGapAtrK, atrPct) : 0.0);
+
+        if (Config.ChargeParticipationImpact && barNotional > 0 && posFrac > 0)
+        {
+            double orderNotional = Config.ReferenceEquityUsd * posFrac;
+            // Charged on BOTH sides, like slippage: you pay impact getting in and getting out.
+            cost += 2.0 * LiquidityModel.ImpactPct(orderNotional, barNotional, atrPct);
+        }
+        return cost;
+    }
 
     // Convenience for the simulators, which hold ATR in price units and the entry price.
     public static double AtrPct(double atr, double entryPx)

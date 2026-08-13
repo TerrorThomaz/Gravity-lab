@@ -577,7 +577,9 @@ public static class RipShortSimulator
         return (entry + addPrice * addSize) / (1.0 + addSize);
     }
 
-    internal static double TradeCost(bool isStop, double atrEntry, double entryPx)
-        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrEntry, entryPx), isStop, StopGapAtrK);
+    internal static double TradeCost(bool isStop, double atrEntry, double entryPx,
+                                      double barNotional = 0.0, double posFrac = 0.0)
+        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrEntry, entryPx), isStop, StopGapAtrK,
+                                   barNotional, posFrac);
 
 }

@@ -136,6 +136,7 @@ public static class FadeShortSimulator
 
         bool     inTrade   = false;
         int      entryRegimeBars = 0;
+        int      entryIdx  = 0;         // h1 bar the position opened on — participation reference
         int      upBars    = 0;         // running uptrend-bar counter, reset when the regime breaks
         double   entry     = 0;
         DateTime entryTime = default;   // h1-only path: exposed so callers get the ENTRY, not the exit
@@ -185,6 +186,7 @@ public static class FadeShortSimulator
                 entry      = price;
                 entryTime  = candles[i].Time;   // h1-only path: the entry bar IS candles[i]
                 entryRegimeBars = upBars;       // consecutive bars the faded uptrend has held
+                entryIdx   = i;
                 atrEntry   = atrNow;
                 // Stop above the swing high: if price exceeds that level the fade thesis is wrong.
                 hardStop   = swingHigh + g.StopLossAtrMult * atrEntry;
@@ -216,7 +218,8 @@ public static class FadeShortSimulator
                     double exitPx = hitHardStop ? hardStop :
                                     hitMae      ? maeStop  :
                                     hitTarget   ? target   : price;
-                    double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry);
+                    double ret = (entry - exitPx) / entry * 100.0
+                               - TradeCost(hitStop, atrEntry, entry, EntryBarNotional(candles, entryIdx), g.PositionSizePct);
                     result.Add((candles[i].Time, ret, "fade_short", entryRegimeBars, entryTime, entry));
                     inTrade = false;
                 }
@@ -227,7 +230,8 @@ public static class FadeShortSimulator
         if (inTrade)
         {
             double finalPx = closes[iEnd - 1];
-            double ret = (entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry);
+            double ret = (entry - finalPx) / entry * 100.0
+                       - TradeCost(false, atrEntry, entry, EntryBarNotional(candles, entryIdx), g.PositionSizePct);
             result.Add((candles[iEnd - 1].Time, ret, "fade_short", entryRegimeBars, entryTime, entry));
         }
 
@@ -487,7 +491,9 @@ public static class FadeShortSimulator
                                     hitMae      ? maeStop  :
                                     hitTarget   ? target   : m15Price;
                     double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: false);
-                    double ret = (entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl;
+                    double ret = (entry - exitPx) / entry * 100.0
+                               - TradeCost(hitStop, atrEntry, entry, EntryBarNotional(h1, entryIH1), g.PositionSizePct)
+                               + fundingPnl;
                     result.Add((m15[im15].Time, ret, "fade_short", entryRegimeBars, entryTime, entry));
                     scoredOut?.Add(new ScoredTrade(coin!, "swing", entryTime, m15[im15].Time, ret, entryScore));
                     inTrade = false;
@@ -499,7 +505,9 @@ public static class FadeShortSimulator
         {
             double finalPx = m15Closes[^1];
             double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[^1].Time, funding, isLong: false);
-            double ret = (entry - finalPx) / entry * 100.0 - TradeCost(false, atrEntry, entry) + fundingPnl;
+            double ret = (entry - finalPx) / entry * 100.0
+                       - TradeCost(false, atrEntry, entry, EntryBarNotional(h1, entryIH1), g.PositionSizePct)
+                       + fundingPnl;
             result.Add((m15[^1].Time, ret, "fade_short", entryRegimeBars, entryTime, entry));
             scoredOut?.Add(new ScoredTrade(coin!, "swing", entryTime, m15[^1].Time, ret, entryScore));
         }
@@ -513,8 +521,16 @@ public static class FadeShortSimulator
     // strategy stays comparable with the other seven; the only strategy-specific input is the
     // stop gap shape. isStop=true adds the gap premium: price often blows through the stop
     // level in a volatile bar.
-    internal static double TradeCost(bool isStop, double atrEntry, double entryPx)
-        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrEntry, entryPx), isStop, StopGapAtrK);
+    // Traded value of the entry bar, in quote currency. Zero when volume is missing, which
+    // makes the impact term vanish rather than blow up — a data gap must not silently zero
+    // out a strategy, and the flat slippage still applies underneath.
+    internal static double EntryBarNotional(ReadOnlySpan<Candle> bars, int i)
+        => (uint)i < (uint)bars.Length ? bars[i].Volume * bars[i].Close : 0.0;
+
+    internal static double TradeCost(bool isStop, double atrEntry, double entryPx,
+                                      double barNotional = 0.0, double posFrac = 0.0)
+        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrEntry, entryPx), isStop, StopGapAtrK,
+                                   barNotional, posFrac);
 
 }
 
@@ -538,8 +554,10 @@ public static class SwingLongSimulator
     // this is its long-side mirror, so it must not price a round trip differently.
     private const double StopGapAtrK = 0.030;
 
-    internal static double TradeCost(bool isStop, double atrEntry, double entryPx)
-        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrEntry, entryPx), isStop, StopGapAtrK);
+    internal static double TradeCost(bool isStop, double atrEntry, double entryPx,
+                                      double barNotional = 0.0, double posFrac = 0.0)
+        => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrEntry, entryPx), isStop, StopGapAtrK,
+                                   barNotional, posFrac);
 
     public record SwingLongTradeState(
         bool   InTrade,

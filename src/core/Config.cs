@@ -92,6 +92,25 @@ static class Config
     // (simulator-only in training, simulator + portfolio in reporting).
     public const double SlippageBps = 10.0;
 
+    // ── Participation impact (Layer 3) ───────────────────────────────────────────────────
+    // OFF by default. Turning it on changes every trade's cost, therefore the GA's objective,
+    // therefore every genotype in genotypes/ — the same invalidation the slippage unification
+    // caused. It is a deliberate retrain, not a free improvement. GRAVITY_IMPACT=1 enables.
+    //
+    // Why it matters despite being small in bps: it is the ONLY size-aware cost in the model.
+    // Everything else (fees, slippage, stop-gap) is identical for a EUR2 and a EUR200 position,
+    // so without this term extra position size executes for free — and the exposure-cap work
+    // makes position size a free variable. An unpriced size axis means the backtest pays you
+    // for leverage it cannot cost.
+    public static readonly bool ChargeParticipationImpact =
+        Environment.GetEnvironmentVariable("GRAVITY_IMPACT") == "1";
+
+    // Account size the participation charge is quoted at. A CALIBRATION ANCHOR, not a second
+    // magnitude knob — it fixes where on the size axis LiquidityModel.ImpactCoefficient is
+    // measured, exactly as TradeCosts.ReferenceAtrPct does for volatility. Simulators emit
+    // percentages and never see a real balance, so participation needs a reference notional.
+    public const double ReferenceEquityUsd = 100_000.0;
+
     // Max concurrent positions per strategy PER COIN. 1 preserves today's behaviour exactly —
     // every signal simulator holds one position per coin via its `inTrade` flag, so this merely
     // makes that implicit property explicit and enforceable at the risk layer. Raise it only

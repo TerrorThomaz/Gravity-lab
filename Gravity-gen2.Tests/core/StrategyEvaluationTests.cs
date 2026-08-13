@@ -110,6 +110,86 @@ public class StrategyEvaluationTests
     }
 
     [Fact]
+    public void ConcurrentBookRespectsTheExposureCap()
+    {
+        // THE bug. The bootstrap compounded once per trade with no exposure cap, so a book of
+        // 9,583 overlapping trades across ~190 coins at 5% each ran at up to 950% notional and
+        // reported p05 = +5,948,753% — against +3,329% from the portfolio sim on the same trades.
+        //
+        // 100 coins entering together, every hour, for 200 hours. Wanted exposure is 100 × 5% =
+        // 500%; Config.MaxTotalExposurePct allows 30%. So each step earns at most 30% of the mean
+        // trade return, and the path must stay in a sane range instead of diverging.
+        var book = new List<StrategyEvaluation.Trade>();
+        for (int h = 0; h < 200; h++)
+            for (int c = 0; c < 100; c++)
+                book.Add(new(T0.AddHours(h), T0.AddHours(h + 1), 1.0, "s", $"C{c}", MarketRegime.Bull));
+
+        var r = StrategyEvaluation.Evaluate(book, posFrac: 0.05, seed: 3);
+
+        // Uncapped per-trade compounding gives (1 + 0.01·0.05)^20000 ≈ e^10 ≈ 22,000×.
+        // Capped: each step returns 1% × 30% = 0.3%, so (1.003)^200 ≈ 1.82× ≈ +82%.
+        Assert.InRange(r.MedianPathReturn, 50.0, 120.0);
+    }
+
+    [Fact]
+    public void ExposureCapBindsOnlyWhenTheBookIsCrowded()
+    {
+        // A book small enough to fit inside the cap must be unaffected by it — otherwise the cap
+        // is silently rescaling every result rather than bounding the crowded tail.
+        // 4 coins × 5% = 20% wanted, under the 30% limit.
+        var uncrowded = new List<StrategyEvaluation.Trade>();
+        for (int h = 0; h < 200; h++)
+            for (int c = 0; c < 4; c++)
+                uncrowded.Add(new(T0.AddHours(h), T0.AddHours(h + 1), 1.0, "s", $"C{c}", MarketRegime.Bull));
+
+        double got = StrategyEvaluation.Evaluate(uncrowded, posFrac: 0.05, seed: 3).MedianPathReturn;
+        // 4 × 1% × 5% = 0.2% per step, uncapped → (1.002)^200 − 1.
+        double expected = (Math.Pow(1.002, 200) - 1.0) * 100.0;
+        Assert.Equal(expected, got, 6);
+    }
+
+    [Fact]
+    public void OneStepCannotLoseMoreThanTheExposureCap()
+    {
+        // The bound the cap is supposed to give: however many positions are open at once, and
+        // however badly every one of them goes, a single turn of the book cannot cost more than
+        // MaxTotalExposurePct of equity. This is the assertion the uncapped bootstrap could not
+        // make — with 20 positions at 5% it would have lost 100%.
+        var wipeout = Enumerable.Range(0, 20)
+            .Select(c => new StrategyEvaluation.Trade(T0, T0.AddHours(1), -100.0, "s", $"C{c}", MarketRegime.Bear))
+            .ToList();
+
+        double got = StrategyEvaluation.Evaluate(wipeout, posFrac: 0.05, seed: 5).MedianPathReturn;
+        Assert.Equal(-Config.MaxTotalExposurePct * 100.0, got, 6);
+    }
+
+    [Fact]
+    public void ClusteringIsSurvivableBecauseTheCapBindsOnIt()
+    {
+        // Worth pinning because it is counter-intuitive and easy to "fix" in the wrong direction.
+        // Twenty simultaneous losers hurt LESS than the same twenty spread out: concurrency is
+        // capped at 30% total, while sequential exposure is not capped at all — 5% lost twenty
+        // times in a row compounds past what one capped step can cost.
+        //
+        // An earlier version of this test asserted the opposite and failed, correctly. The cap is
+        // precisely the mechanism that defuses correlated clustering; a bootstrap showing
+        // clustering as the worse case would mean the cap was not being applied.
+        var simultaneous = Enumerable.Range(0, 20)
+            .Select(c => new StrategyEvaluation.Trade(T0, T0.AddHours(1), -20.0, "s", $"C{c}", MarketRegime.Bear))
+            .ToList();
+        var spread = Enumerable.Range(0, 20)
+            .Select(c => new StrategyEvaluation.Trade(T0.AddHours(c), T0.AddHours(c + 1), -20.0, "s", $"C{c}", MarketRegime.Bear))
+            .ToList();
+
+        double clustered  = StrategyEvaluation.Evaluate(simultaneous, posFrac: 0.05, seed: 5).MedianPathReturn;
+        double sequential = StrategyEvaluation.Evaluate(spread,       posFrac: 0.05, seed: 5).MedianPathReturn;
+
+        Assert.True(clustered > sequential,
+            $"capped clustered losses {clustered:F1}% should be milder than uncapped sequential {sequential:F1}%");
+        Assert.True(clustered >= -Config.MaxTotalExposurePct * 100.0);
+    }
+
+    [Fact]
     public void ThinSample_IsGradedDown_EvenWithAGreatProfitFactor()
     {
         // 15 spectacular trades is not evidence. Sample size is a separate axis precisely so a

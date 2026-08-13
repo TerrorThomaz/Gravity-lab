@@ -117,19 +117,73 @@ public static class StrategyEvaluation
     {
         var rng = seed.HasValue ? new Random(seed.Value) : new Random(12345);
 
-        var byRegime = trades.GroupBy(t => t.Regime)
-                             .ToDictionary(g => g.Key, g => g.Select(t => t.ReturnPct).ToArray());
-        var regimes = byRegime.Keys.ToArray();
-        if (regimes.Length == 0) return (1.0, 0, 0, 0, 0);
+        // ── Trades → TIME STEPS ───────────────────────────────────────────────────────────
+        // This used to compound each trade sequentially: bal += ret * posFrac * bal, once per
+        // trade. For a book of 9,583 trades across ~190 coins at +2.25% mean and 5% per position
+        // that is (1.001125)^9583 ≈ 48,000× — it reported a p05 of +5,948,753%.
+        //
+        // The error is that the trades OVERLAP. A multi-coin book holds many positions at once, so
+        // its trade count is not its number of turns; compounding per trade invents a sequence of
+        // independent bets that the portfolio never took. (Identical shape to the benchmark-sleeve
+        // bug fixed earlier — summing a per-trade quantity over a concurrent book.)
+        //
+        // Bucketing by entry time into steps one median-hold wide fixes both ends: the horizon
+        // becomes the real elapsed span, and concurrency is preserved because a step holding
+        // twenty correlated losers loses twenty times as much — which is the tail the bootstrap
+        // exists to measure and the per-trade version could not represent at all.
+        var ordered = trades.OrderBy(t => t.Entry).ToArray();
+        var holds   = ordered.Select(t => (t.Exit - t.Entry).TotalHours).Where(h => h > 0).OrderBy(h => h).ToArray();
+        double stepHours = holds.Length > 0 ? Math.Max(1.0, holds[holds.Length / 2]) : 1.0;
 
-        // Observed mean run length per regime, from the actual ordering.
+        DateTime t0 = ordered[0].Entry;
+        var stepAgg = new SortedDictionary<long, (double Sum, int N, Dictionary<MarketRegime, int> Regs)>();
+        foreach (var t in ordered)
+        {
+            long k = (long)((t.Entry - t0).TotalHours / stepHours);
+            if (!stepAgg.TryGetValue(k, out var cell))
+                cell = (0.0, 0, new Dictionary<MarketRegime, int>());
+            cell.Sum += t.ReturnPct / 100.0;
+            cell.N++;
+            cell.Regs[t.Regime] = cell.Regs.GetValueOrDefault(t.Regime) + 1;
+            stepAgg[k] = cell;
+        }
+
+        // ── The exposure cap, which is the whole reason stepping was needed ────────────────
+        // n concurrent positions at posFrac each want n·posFrac of the account. The live book
+        // refuses: Config.MaxTotalExposurePct caps total exposure at 30%, and every portfolio sim
+        // in this repo enforces it. The bootstrap did not, so a step holding 190 positions ran at
+        // 950% notional — unlevered-impossible, and the source of the +5,948,753% p05.
+        //
+        // Note the stepping alone does NOT fix that magnitude: log(1+x) ≈ x for small x, so summing
+        // within a step and compounding across steps agrees with per-trade compounding to first
+        // order. Both give exp(Σ posFrac·ret). The cap is what actually bounds it — and the cap
+        // cannot be applied without first knowing which trades are concurrent, which is what the
+        // steps are for.
+        //
+        // Scaling down proportionally (rather than dropping trades) matches how the simulator
+        // handles an over-subscribed book: everyone gets a smaller slice, nobody is turned away.
+        var steps = stepAgg.Values
+            .Select(c =>
+            {
+                double wanted = c.N * posFrac;
+                double scale  = wanted > Config.MaxTotalExposurePct ? Config.MaxTotalExposurePct / wanted : 1.0;
+                return (Ret: c.Sum * posFrac * scale,
+                        Reg: c.Regs.OrderByDescending(kv => kv.Value).First().Key);
+            })
+            .ToArray();
+        if (steps.Length == 0) return (1.0, 0, 0, 0, 0);
+
+        var byRegime = steps.GroupBy(s => s.Reg).ToDictionary(g => g.Key, g => g.Select(s => s.Ret).ToArray());
+        var regimes  = byRegime.Keys.ToArray();
+
+        // Observed mean run length per regime, in STEPS — the unit the paths are built from.
         var runLen = new Dictionary<MarketRegime, double>();
         foreach (var reg in regimes)
         {
             int runs = 0, cur = 0;
-            foreach (var t in trades.OrderBy(t => t.Entry))
+            foreach (var s in steps)
             {
-                if (t.Regime == reg) cur++;
+                if (s.Reg == reg) cur++;
                 else if (cur > 0) { runs++; cur = 0; }
             }
             if (cur > 0) runs++;
@@ -146,7 +200,7 @@ public static class StrategyEvaluation
             int emitted = 0;
             bool isRuined = false;
 
-            while (emitted < trades.Count)
+            while (emitted < steps.Length)
             {
                 var reg = regimes[rng.Next(regimes.Length)];
                 var pool = byRegime[reg];
@@ -154,9 +208,12 @@ public static class StrategyEvaluation
                 // Geometric run length with the observed mean.
                 int len = Math.Max(1, (int)Math.Ceiling(Math.Log(1 - rng.NextDouble()) / Math.Log(1 - 1.0 / mean)));
 
-                for (int i = 0; i < len && emitted < trades.Count; i++, emitted++)
+                for (int i = 0; i < len && emitted < steps.Length; i++, emitted++)
                 {
-                    bal += pool[rng.Next(pool.Length)] / 100.0 * posFrac * bal;
+                    // Floored at −1: a step cannot lose more than the whole account. Without this
+                    // a single catastrophic step drives the balance negative and every subsequent
+                    // multiplication flips sign.
+                    bal *= 1.0 + Math.Max(-1.0, pool[rng.Next(pool.Length)]);
                     if (bal > peak) peak = bal;
                     double d = peak > 1e-9 ? (peak - bal) / peak : 0;
                     if (d > maxDd) maxDd = d;

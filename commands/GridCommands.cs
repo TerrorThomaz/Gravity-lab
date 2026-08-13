@@ -53,7 +53,7 @@ static class GridCommands
         foreach (var (sym, weight, h1) in fetched)
         {
             if (h1.Length < 150) { Console.WriteLine($"  {sym}: skip (insufficient data)"); continue; }
-            int split = (int)(h1.Length * 0.8);
+            int split = DataSplit.Split(h1).Train.Length;
             coinData.Add(new GridGeneticAlgorithm.CoinData(h1[..split], h1[split..], weight, gridFunding.For(sym)));
         }
         if (coinData.Count == 0) { Console.WriteLine("No data."); return; }
@@ -163,7 +163,7 @@ static class GridCommands
         foreach (var (sym, weight, h1) in fetched)
         {
             if (h1.Length < 150) { Console.WriteLine($"  {sym}: skip (insufficient data)"); continue; }
-            int split = (int)(h1.Length * 0.8);
+            int split = DataSplit.Split(h1).Train.Length;
             coinData.Add(new GridShortGA.CoinData(h1[..split], h1[split..], weight));
         }
         if (coinData.Count == 0) { Console.WriteLine("No data."); return; }
@@ -252,7 +252,7 @@ static class GridCommands
         {
             if (h1.Length < 300) { Console.WriteLine($"  {sym,-16}  skip (no data)"); continue; }
 
-            int split   = (int)(h1.Length * 0.8);
+            int split   = DataSplit.Split(h1).Train.Length;
             var h1Train = h1[..split];
             var h1Val   = h1[split..];
 
@@ -383,7 +383,7 @@ static class GridCommands
                 if (medVol < Config.MinMedianVolUsdM) continue;
             }
 
-            int h1Split  = (int)(h1.Length * 0.8);
+            int h1Split  = DataSplit.Split(h1).Train.Length;
             int m15Split = h1Split * 4;
             var h1Train  = h1[..h1Split];
             var h1Val    = h1[h1Split..];

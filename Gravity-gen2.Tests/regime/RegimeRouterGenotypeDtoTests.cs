@@ -120,3 +120,58 @@ public class RegimeRouterGenotypeDtoTests
         }
     }
 }
+
+// BTC-shock short override: shorts go live on a hard BTC move regardless of the regime LABEL.
+// The classifier needs sustained bars to flip to Bear, so a -5% day inside a Bull regime never
+// reaches it — which is precisely the window alts run their 1.463 down-beta.
+public class BtcShockOverrideTests
+{
+    private static RegimeRouterGenotype G() => RegimeRouterGenotype.Random(new System.Random(3));
+
+    [Fact]
+    public void ZeroStress_IsBitIdenticalToTheOldBehaviour()
+    {
+        // Default btcStress = 0 must change nothing, so every existing caller is unaffected.
+        var g = G();
+        var a = RegimeRouter.ComputeActivation(MarketRegime.Bull, 0.9, 500, MarketRegime.Bull, g, 1.0, 0.0);
+        var b = RegimeRouter.ComputeActivation(MarketRegime.Bull, 0.9, 500, MarketRegime.Bull, g, 1.0);
+        Assert.Equal(b, a);
+    }
+
+    [Fact]
+    public void HardBtcDrop_ActivatesShorts_EvenInAConfirmedBullRegime()
+    {
+        var g = G();
+        var calm  = RegimeRouter.ComputeActivation(MarketRegime.Bull, 0.9, 500, MarketRegime.Bull, g, 1.0, 0.0);
+        var shock = RegimeRouter.ComputeActivation(MarketRegime.Bull, 0.9, 500, MarketRegime.Bull, g, 1.0, 1.0);
+
+        Assert.True(shock.FadeShort && shock.RipShort && shock.GridShort,
+            "a hard BTC drop must switch the short book on regardless of the regime label");
+        Assert.False(calm.RipShort, "and it must NOT be on in a calm confirmed Bull");
+    }
+
+    [Fact]
+    public void Override_OnlyEverAdds_NeverDisables()
+    {
+        // It must not be able to switch a strategy OFF — that would make it a hidden second gate
+        // competing with the router's own logic rather than an addition to it.
+        var g = G();
+        foreach (var regime in new[] { MarketRegime.Bull, MarketRegime.Bear, MarketRegime.Ranging })
+        {
+            var off = RegimeRouter.ComputeActivation(regime, 0.9, 500, regime, g, 1.0, 0.0);
+            var on  = RegimeRouter.ComputeActivation(regime, 0.9, 500, regime, g, 1.0, 1.0);
+            Assert.True(!off.DipLong  || on.DipLong,  $"{regime}: override disabled DipLong");
+            Assert.True(!off.SwingLong|| on.SwingLong,$"{regime}: override disabled SwingLong");
+            Assert.True(!off.FadeLong || on.FadeLong, $"{regime}: override disabled FadeLong");
+        }
+    }
+
+    [Fact]
+    public void BtcStress_SaturatesAndIsZeroOnUpMoves()
+    {
+        Assert.Equal(0.0, VolatilityWeightedRotator.BtcStress(+2.0));
+        Assert.Equal(0.0, VolatilityWeightedRotator.BtcStress(0.0));
+        Assert.InRange(VolatilityWeightedRotator.BtcStress(-1.5), 0.45, 0.55);
+        Assert.Equal(1.0, VolatilityWeightedRotator.BtcStress(-9.0));
+    }
+}

@@ -160,13 +160,11 @@ static class TrainCommands
             }
             else
             {
-                int trainSplit = (int)(h1.Length * 0.75);
-                int valSplit   = (int)(h1.Length * 0.875);
-                namedCoins.Add((sym, new FadeShortGA.CoinData(
-                    h1[..trainSplit],
-                    h1[trainSplit..valSplit],
-                    weight)));
-                testBySymbol[sym] = h1[valSplit..];
+                // The 0.75/0.875 literals here were the de-facto standard the other trainers did
+                // NOT follow; DataSplit now owns them.
+                var sp = DataSplit.Split(h1);
+                namedCoins.Add((sym, new FadeShortGA.CoinData(sp.Train, sp.Val, weight)));
+                testBySymbol[sym] = sp.Test;
             }
         }
 
@@ -350,9 +348,10 @@ static class TrainCommands
         var btcForRegime = heldOutCoins.FirstOrDefault(c => c.Sym == "BTCUSDT").H1;
         if (btcForRegime != null && btcForRegime.Length > 220)
         {
-            int btcTrainEnd = (int)(btcForRegime.Length * 0.75);
+            int btcTrainEnd = DataSplit.Split(btcForRegime).Train.Length;
             int btcValStart = btcTrainEnd;
-            int btcValEnd = (int)(btcForRegime.Length * 0.875);
+            var btcSp = DataSplit.Split(btcForRegime);
+            int btcValEnd = btcSp.Train.Length + btcSp.Val.Length;
             if (btcValEnd > btcValStart && btcValEnd <= btcForRegime.Length)
             {
                 var btcTrain = btcForRegime[..btcTrainEnd];

@@ -335,7 +335,7 @@ public class CoevolveGA
         }
 
         var all   = bag.OrderBy(t => t.Item1).ToList();
-        int split = (int)(all.Count * 0.75);
+        int split = (int)(all.Count * DataSplit.TrainFraction);   // was a bare 0.75 literal
         return (all[..split], all[split..]);
     }
 

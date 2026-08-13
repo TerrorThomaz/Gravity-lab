@@ -55,7 +55,7 @@ public class VolatilityWeightedRotatorGA
 
             foreach (var geno in population)
             {
-                double fitness = Evaluate(geno, gs, btcSeries, trades);
+                double fitness = Evaluate(geno, gs, btcSeries, btcH1, trades);
                 scored.Add((geno, fitness));
             }
 
@@ -101,7 +101,8 @@ public class VolatilityWeightedRotatorGA
     private double Evaluate(
         VolatilityWeightedRotatorGenotype geno,
         DynamicGuardSession gs,
-        RegimeBar[] btcSeries,
+RegimeBar[] btcSeries,
+        Candle[] btcH1,   // raw candles: RegimeBar carries no price, and BtcStress is a price signal
         List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> trades)
     {
         if (trades.Count < 50) return -1000;
@@ -118,24 +119,86 @@ public class VolatilityWeightedRotatorGA
         // and reduce slippage". Charging the move is what gives that gene a reason to be < 1.
         double prevAlt = 1.0;      // start fully in alts
         double rotationCostPct = 0.0;
+        var safeShareAt = new List<(DateTime Time, double Share)>(trades.Count);
+        // BTC's trailing 24h move at each trade instant. The GA must see the SAME signal the
+        // backtest serves, or the weight it selects for BtcStressWeight is fitted to a different
+        // input than the one that runs — the train/serve split this repo keeps finding.
+        static double BtcMove(Candle[] bars, DateTime t, int lookbackBars = 24)
+        {
+            if (bars is not { Length: > 1 }) return 0.0;
+            int lo = 0, hi = bars.Length - 1;
+            if (t <= bars[0].Time) return 0.0;
+            if (t >= bars[^1].Time) hi = bars.Length - 1;
+            while (lo < hi) { int m = (lo + hi + 1) / 2; if (bars[m].Time <= t) lo = m; else hi = m - 1; }
+            int i0 = Math.Max(0, lo - lookbackBars);
+            double p0 = bars[i0].Close;
+            return p0 > 1e-12 ? (bars[lo].Close - p0) / p0 * 100.0 : 0.0;
+        }
+
         for (int i = 0; i < trades.Count; i++)
         {
             var t = trades[i];
             // Unknown label => treat as long, matching PortfolioReplay's conservative convention.
             bool isLong = PortfolioReplay.IsLong(t.Strategy) ?? true;
             double safety = rotator.ComputeSafetyScore(gs.GetMult(t.Time), gs.GetAtrRatio(t.Time),
-                                                       regimes[i], isLong);
-            var (altShare, _, _) = rotator.ComputeAllocation(safety);
-            rotationCostPct += Math.Abs(altShare - prevAlt) * TradeCosts.FeeRoundTripPct;
-            prevAlt = altShare;
+                                                       regimes[i], isLong,
+                                                       BtcMove(btcH1, t.Time));
+            var (altShare, btcShare, ethShare) = rotator.ComputeAllocation(safety);
+            // Deadband: hold the previous allocation unless the target has moved materially.
+            double stepped = rotator.StepAltShare(prevAlt, altShare);
+            rotationCostPct += Math.Abs(stepped - prevAlt) * TradeCosts.FeeRoundTripPct;
+            prevAlt = stepped; altShare = stepped;
+            btcShare = (1.0 - altShare) * rotator.BtcShareOfSafe;
+            ethShare = (1.0 - altShare) - btcShare;
             sized.Add((t.Time, t.Return, t.Conf * altShare, t.Hold, t.Strategy));
+            safeShareAt.Add((t.Time, btcShare + ethShare));
+        }
+
+        // ── Credit the destination ──────────────────────────────────────────────────────
+        // Without this the fitness charges rotation cost and shrinks alt exposure while never
+        // crediting what the rotated capital EARNS — so rotating is pure loss in the model and
+        // the GA correctly sets every rotation weight it can to zero. BtcStressWeight came back
+        // as exactly 0 on the first run for precisely this reason: the right answer to the wrong
+        // question.
+        //
+        // Time-weighted, not summed per trade: rotated-out capital is one continuously-held
+        // sleeve, and summing it across overlapping trades over-counts by the average concurrency.
+        double benchPct = 0.0;
+        if (btcH1 is { Length: > 1 } && safeShareAt.Count > 1)
+        {
+            safeShareAt.Sort((x, y) => x.Time.CompareTo(y.Time));
+            double sleeve = 1.0;
+            for (int i = 1; i < safeShareAt.Count; i++)
+            {
+                double share = safeShareAt[i - 1].Share;
+                if (share <= 1e-9) continue;
+                double seg = SegReturn(btcH1, safeShareAt[i - 1].Time, safeShareAt[i].Time);
+                sleeve *= 1.0 + share * seg / 100.0;
+            }
+            benchPct = (sleeve - 1.0) * 100.0;
+        }
+
+        static double SegReturn(Candle[] bars, DateTime a, DateTime b)
+        {
+            int ia = Idx(bars, a), ib = Idx(bars, b);
+            if (ib <= ia) return 0.0;
+            double p0 = bars[ia].Close;
+            return p0 > 1e-12 ? (bars[ib].Close - p0) / p0 * 100.0 : 0.0;
+        }
+        static int Idx(Candle[] bars, DateTime t)
+        {
+            int lo = 0, hi = bars.Length - 1;
+            if (t <= bars[0].Time) return 0;
+            if (t >= bars[^1].Time) return bars.Length - 1;
+            while (lo < hi) { int m = (lo + hi + 1) / 2; if (bars[m].Time <= t) lo = m; else hi = m - 1; }
+            return lo;
         }
 
         var p = Simulator.SimulatePortfolioExposureCapped(sized, Config.MaxTotalExposurePct,
                                                           maxPositionFrac: 0.05);
         // Charged against the portfolio, not per trade: the rotation moves the whole book's
         // allocation, so its cost scales with capital shifted rather than with any one position.
-        double ret = (p.EndBalance - p.StartBalance) / p.StartBalance - rotationCostPct / 100.0;
+        double ret = (p.EndBalance - p.StartBalance) / p.StartBalance - rotationCostPct / 100.0 + benchPct / 100.0;
         // Same shape as the guard's objective: return scaled by a drawdown penalty, so a
         // rotator that buys return with drawdown cannot win. Capital rotated out is modelled
         // as FLAT here, exactly as in the combinedbacktest comparison — a de-risk-to-cash
@@ -162,6 +225,10 @@ public class VolatilityWeightedRotatorGA
             GuardWeight: _rng.NextDouble() * (GuardWeightMax - GuardWeightMin) + GuardWeightMin,
             AtrWeight: _rng.NextDouble() * (AtrWeightMax - AtrWeightMin) + AtrWeightMin,
             RegimeWeight: _rng.NextDouble() * (RegimeWeightMax - RegimeWeightMin) + RegimeWeightMin,
+            BtcStressWeight: _rng.NextDouble() * (RegimeWeightMax - RegimeWeightMin) + RegimeWeightMin,
+            InvertRotation: _rng.NextDouble(),   // GA decides the DIRECTION of rotation
+            MinAltShare: _rng.NextDouble() * 0.6,          // [0, 0.6] alt capital always retained
+            RotationDeadband: _rng.NextDouble() * 0.3,     // [0, 0.3] target move needed to act
             BtcShare: _rng.NextDouble() * (BtcShareMax - BtcShareMin) + BtcShareMin,
             RotationSpeed: _rng.NextDouble() * (RotationSpeedMax - RotationSpeedMin) + RotationSpeedMin
         );
@@ -182,6 +249,10 @@ public class VolatilityWeightedRotatorGA
             GuardWeight: p1.GuardWeight * alpha + p2.GuardWeight * (1 - alpha),
             AtrWeight: p1.AtrWeight * alpha + p2.AtrWeight * (1 - alpha),
             RegimeWeight: p1.RegimeWeight * alpha + p2.RegimeWeight * (1 - alpha),
+            BtcStressWeight: p1.BtcStressWeight * alpha + p2.BtcStressWeight * (1 - alpha),
+            InvertRotation: _rng.NextDouble() < 0.5 ? p1.InvertRotation : p2.InvertRotation,
+            MinAltShare: p1.MinAltShare * alpha + p2.MinAltShare * (1 - alpha),
+            RotationDeadband: p1.RotationDeadband * alpha + p2.RotationDeadband * (1 - alpha),
             BtcShare: p1.BtcShare * alpha + p2.BtcShare * (1 - alpha),
             RotationSpeed: p1.RotationSpeed * alpha + p2.RotationSpeed * (1 - alpha)
         );
@@ -193,6 +264,14 @@ public class VolatilityWeightedRotatorGA
             child = child with { AtrWeight = Clamp(child.AtrWeight + (_rng.NextDouble() - 0.5) * 0.2, AtrWeightMin, AtrWeightMax) };
         if (_rng.NextDouble() < 0.1)
             child = child with { RegimeWeight = Clamp(child.RegimeWeight + (_rng.NextDouble() - 0.5) * 0.2, RegimeWeightMin, RegimeWeightMax) };
+        if (_rng.NextDouble() < 0.1)
+            child = child with { BtcStressWeight = Clamp(child.BtcStressWeight + (_rng.NextDouble() - 0.5) * 0.2, RegimeWeightMin, RegimeWeightMax) };
+        if (_rng.NextDouble() < 0.1)
+            child = child with { MinAltShare = Clamp(child.MinAltShare + (_rng.NextDouble() - 0.5) * 0.15, 0.0, 0.6) };
+        if (_rng.NextDouble() < 0.1)
+            child = child with { InvertRotation = _rng.NextDouble() };
+        if (_rng.NextDouble() < 0.1)
+            child = child with { RotationDeadband = Clamp(child.RotationDeadband + (_rng.NextDouble() - 0.5) * 0.1, 0.0, 0.3) };
         if (_rng.NextDouble() < 0.1)
             child = child with { BtcShare = Clamp(child.BtcShare + (_rng.NextDouble() - 0.5) * 0.1, BtcShareMin, BtcShareMax) };
         if (_rng.NextDouble() < 0.1)
@@ -250,8 +329,15 @@ public class VolatilityWeightedRotatorGA
         }
 
         var trades = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>();
-        foreach (var (sym, (h1, m15)) in coinData)
+        foreach (var (sym, (fullH1, fullM15)) in coinData)
         {
+            // TRAIN SLICE ONLY. This trainer previously fit on the full series — including the
+            // bars combinedbacktest reports as validation — so every rotator result was leakage by
+            // construction, and five rounds of tuning were scored on data the GA had already seen.
+            var h1s  = DataSplit.Split(fullH1);
+            var m15s = DataSplit.SplitAligned(fullM15, h1s);
+            if (!h1s.IsUsable) continue;
+            var h1 = h1s.Train; var m15 = m15s.Train;
             if (h1.Length < 300) continue;
             if (swingG != null)
                 foreach (var t in FadeShortSimulator.GetFadeShortReturns(swingG, h1, m15))
@@ -282,6 +368,10 @@ public class VolatilityWeightedRotatorGA
             GuardWeight = best.GuardWeight,
             AtrWeight = best.AtrWeight,
             RegimeWeight = best.RegimeWeight,
+            BtcStressWeight = best.BtcStressWeight,
+            InvertRotation = best.InvertRotation,
+            MinAltShare = best.MinAltShare,
+            RotationDeadband = best.RotationDeadband,
             BtcShare = best.BtcShare,
             RotationSpeed = best.RotationSpeed
         };

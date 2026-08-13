@@ -1211,7 +1211,7 @@ static class OosBacktest
             double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
             if (medVol < Config.MinMedianVolUsdM) continue;
 
-            int h1Split  = (int)(h1.Length * 0.8);
+            int h1Split  = DataSplit.Split(h1).Train.Length;
             int m15Split = h1Split * 4;
             var h1Train  = h1[..h1Split];
             var h1Val    = h1[h1Split..];

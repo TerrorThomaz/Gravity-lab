@@ -398,7 +398,7 @@ static class BacktestCommands
             var coinCluster = CoinClusterHelper.Classify(h1);
             var g = clusterGenos[coinCluster];
 
-            int trainEnd = (int)(h1.Length * 0.75);
+            int trainEnd = DataSplit.Split(h1).Train.Length;
             var trainRet = FadeShortSimulator.GetFadeShortReturns(g, h1[..trainEnd], m15[..(trainEnd * 4)])
                                .Select(t => t.Return).ToList();
             if (trainRet.Count < 10) continue;

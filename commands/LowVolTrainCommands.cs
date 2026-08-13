@@ -95,7 +95,7 @@ static class LowVolTrainCommands
             }
             else
             {
-                int split = (int)(h1.Length * 0.80);
+                int split = DataSplit.Split(h1).Train.Length;
                 int m15Split = Math.Min(split * 4, m15.Length);
                 gaCoins.Add(new FadeShortGA.CoinData(h1[..split], h1[split..]));
                 Console.WriteLine($"  {sym}: train/val split at {split}");
@@ -177,7 +177,7 @@ static class LowVolTrainCommands
             }
             else
             {
-                int split = (int)(h1.Length * 0.80);
+                int split = DataSplit.Split(h1).Train.Length;
                 int m15Split = Math.Min(split * 4, m15.Length);
                 gaCoins.Add(new DipLongGA.CoinData(h1[..split], h1[split..], m15[..m15Split], m15[m15Split..]));
             }
@@ -246,7 +246,7 @@ static class LowVolTrainCommands
             }
             else
             {
-                int split = (int)(h1.Length * 0.80);
+                int split = DataSplit.Split(h1).Train.Length;
                 int m15Split = Math.Min(split * 4, m15.Length);
                 gaCoins.Add(new SwingLongGA.CoinData(h1[..split], h1[split..], m15[..m15Split], m15[m15Split..]));
             }
@@ -315,7 +315,7 @@ static class LowVolTrainCommands
             }
             else
             {
-                int split = (int)(h1.Length * 0.80);
+                int split = DataSplit.Split(h1).Train.Length;
                 int m15Split = Math.Min(split * 4, m15.Length);
                 gaCoins.Add(new RipShortGA.CoinData(h1[..split], h1[split..], m15[..m15Split], m15[m15Split..]));
             }

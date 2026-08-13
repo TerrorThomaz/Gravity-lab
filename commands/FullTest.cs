@@ -250,7 +250,7 @@ static class FullTest
             var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
             if (volUsd.Count == 0 || volUsd[volUsd.Count / 2] < Config.MinMedianVolUsdM) continue;
 
-            int h1Split  = (int)(h1.Length * 0.8);
+            int h1Split  = DataSplit.Split(h1).Train.Length;
             int m15Split = h1Split * 4;
             var h1Train  = h1[..h1Split];
             var h1Val    = h1[h1Split..];
@@ -462,7 +462,7 @@ static class FullTest
 
             // FadeShort — screen on first 80% of OOS coin history
             {
-                int oosSplit   = (int)(h1.Length * 0.8);
+                int oosSplit   = DataSplit.Split(h1).Train.Length;
                 int oosM15Spl  = oosSplit * 4;
                 var h1Screen   = h1[..oosSplit];
                 var m15Screen  = m15[..Math.Min(oosM15Spl, m15.Length)];

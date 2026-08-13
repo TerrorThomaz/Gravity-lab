@@ -53,6 +53,12 @@ public record StrategyActivation(
 
 public static class RegimeRouter
 {
+    // BtcStress level at which short strategies are force-activated. 0.5 = BTC down ~1.5% over
+    // the lookback (BtcStress saturates at -3%). Deliberately a constant, not a gene: it gates
+    // ACTIVATION only, the strategies' own entry rules still have to fire, and adding a gene to
+    // the router's positionally-indexed vector is where this repo's bugs concentrate.
+    public const double ShortOverrideStress = 0.5;
+
     // Hard-coded defaults used when no trained router genotype is available.
     private const double DirectionalMinConf = 0.45;
     private const double DefaultBullMinBars = 200;
@@ -279,7 +285,8 @@ public static class RegimeRouter
     // (all backtests). Semantics match what was validated in backtesting; if the two paths ever
     // disagree again, this is the one place to fix it.
     internal static (bool FadeShort, bool Grid, bool GridShort, bool DipLong, bool FadeLong, bool RipShort, bool SwingLong, bool AccumulationGrid, bool FadeShortLowVol, bool DipLongLowVol, bool SwingLongLowVol, bool RipShortLowVol, bool FadeShortHighVol, bool DipLongHighVol, bool SwingLongHighVol, bool RipShortHighVol) ComputeActivation(
-        MarketRegime regime, double conf, int duration, MarketRegime prevRegime, RegimeRouterGenotype geno, double atrRatio = 1.0)
+        MarketRegime regime, double conf, int duration, MarketRegime prevRegime, RegimeRouterGenotype geno,
+        double atrRatio = 1.0, double btcStress = 0.0)
     {
         bool inBullTransition = regime == MarketRegime.Bull && duration < (int)geno.BullMinBars;
         bool inTransition      = inBullTransition
@@ -305,13 +312,29 @@ public static class RegimeRouter
         // "confirmed bear" must be, and FadeShortBearOnly is read as a >0 ON/OFF switch (the same
         // convention as the transition genes) so the legacy behaviour stays reachable and the GA
         // can reject this if it does not pay.
-        bool fadeShort = geno.FadeShortBearOnly > 0
+        // ── BTC-shock short override ────────────────────────────────────────────────────
+        // btcStress (0-1) is the rotator's BtcStress signal, supplied by callers that have BTC
+        // prices to hand. When BTC is falling hard, the SHORT strategies should be live on alts
+        // regardless of what the slower regime label currently says — that is the aftershock
+        // window, and it is exactly when alts run their 1.463 down-beta against BTC's 1.0.
+        //
+        // The regime classifier needs sustained bars to flip to Bear; a -5% BTC day inside a Bull
+        // regime never reaches it. This override is what lets the suite trade the move rather than
+        // the label. It only ever ADDS short activation — it can never disable a strategy, so a
+        // caller that passes 0 (the default) gets bit-identical behaviour.
+        bool btcShock = btcStress >= ShortOverrideStress;
+
+        // NOTE the parenthesisation. Written as `btcShock || cond ? A : B` this parses as
+        // `(btcShock || cond) ? A : B`, so a shock would SELECT the Bear-only branch rather than
+        // force activation — silently inverting the intent. The override must sit outside the
+        // conditional entirely.
+        bool fadeShort = btcShock || (geno.FadeShortBearOnly > 0
             ? (regime == MarketRegime.Bear
                && duration >= (int)geno.FadeShortBearMinBars
                && conf >= geno.FadeShortBearMinConf)
             : !(regime == MarketRegime.Bull
                 && duration >= (int)geno.BullMinBars
-                && conf >= geno.BullMinConf);
+                && conf >= geno.BullMinConf));
         bool grid      = regime == MarketRegime.Ranging
                         || conf < geno.GridMaxConf
                         || (inTransition && geno.TransitionSizeMult > 0);
@@ -319,7 +342,7 @@ public static class RegimeRouter
         // just the opposite execution direction. No evidence yet that a split gene is
         // warranted (unlike RipShort/FadeLong, which had one when a disabled FadeLong was
         // actively dragging the shared threshold) — don't split preemptively.
-        bool gridShort = grid;
+        bool gridShort = grid || btcShock;
         bool dipLong   = (regime == MarketRegime.Bull
                           && duration >= (int)geno.BullMinBars
                           && conf >= geno.BullMinConf)
@@ -334,9 +357,9 @@ public static class RegimeRouter
         // Uses its OWN confirmed-bear gate (not the shared BearMinBars/BearMinConf) — sharing a
         // single threshold with FadeLong let a since-disabled FadeLong (PF=0.06 OOS) pull the
         // gate away from RipShort's true optimum.
-        bool ripShort  = regime == MarketRegime.Bear
+        bool ripShort  = btcShock || (regime == MarketRegime.Bear
                          && duration >= (int)geno.RipShortBearMinBars
-                         && conf >= geno.RipShortBearMinConf;
+                         && conf >= geno.RipShortBearMinConf);
 
         // AccumulationGrid works in both bull and bear regimes (separate genotypes for each).
         // Active when in confirmed bull OR confirmed bear regime.
@@ -382,6 +405,10 @@ public static class RegimeRouter
 public class RegimeRouterSession
 {
     private readonly RegimeBar[]              _btc;
+    // Optional BTC candles. Supplied => IsActive can compute BtcStress and apply the short
+    // override; omitted => btcStress is 0 and behaviour is bit-identical to before.
+    private Candle[]?                         _btcBars;
+    private double                            _shockLookbackBars = 24;
     private readonly RegimeBar[]?             _eth;
     private readonly RegimeRouterGenotype     _geno;
     private readonly Dictionary<long, int>   _idx;
@@ -419,6 +446,29 @@ public class RegimeRouterSession
     // Is this strategy active at the given trade timestamp?
     // Delegates to RegimeRouter.ComputeActivation — the same shared gate logic used by the live
     // Route()/ActivateWithGeno path — so live and backtest activation can never drift again.
+    // GRAVITY_NOSHOCK=1 disables the BTC-shock short override at serve time, so its portfolio
+    // effect can be isolated from everything else in the same binary.
+    public RegimeRouterSession WithBtcBars(Candle[]? bars)
+    {
+        _btcBars = Environment.GetEnvironmentVariable("GRAVITY_NOSHOCK") == "1" ? null : bars;
+        return this;
+    }
+
+    private double StressAt(DateTime t)
+    {
+        if (_btcBars is not { Length: > 1 }) return 0.0;
+        var b = _btcBars;
+        int lo = 0, hi = b.Length - 1;
+        if (t <= b[0].Time) return 0.0;
+        if (t < b[^1].Time)
+            while (lo < hi) { int m = (lo + hi + 1) / 2; if (b[m].Time <= t) lo = m; else hi = m - 1; }
+        else lo = b.Length - 1;
+        int i0 = Math.Max(0, lo - (int)_shockLookbackBars);
+        double p0 = b[i0].Close;
+        double move = p0 > 1e-12 ? (b[lo].Close - p0) / p0 * 100.0 : 0.0;
+        return VolatilityWeightedRotator.BtcStress(move);
+    }
+
     public bool IsActive(RegimeRouterGA.StrategyKind kind, DateTime tradeTime, double atrRatio = 1.0)
     {
         int bar = Lookup(tradeTime);
@@ -437,7 +487,8 @@ public class RegimeRouterSession
         }
 
         var (fadeShort, grid, gridShort, dipLong, fadeLong, ripShort, swingLong, accumulationGrid, fadeShortLowVol, dipLongLowVol, swingLongLowVol, ripShortLowVol, fadeShortHighVol, dipLongHighVol, swingLongHighVol, ripShortHighVol) =
-            RegimeRouter.ComputeActivation(btc.Regime, conf, btc.Duration, prevRegime, _geno, atrRatio);
+            RegimeRouter.ComputeActivation(btc.Regime, conf, btc.Duration, prevRegime, _geno, atrRatio,
+                                           StressAt(tradeTime));
 
         return kind switch
         {

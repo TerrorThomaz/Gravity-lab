@@ -108,7 +108,7 @@ public class RegimeRouterGA
         }
 
         // Train / val split: last 20% of BTC series is held-out validation
-        int trainCutBar = (int)(btcSeries.Length * 0.80);
+        int trainCutBar = DataSplit.Bounds(btcSeries.Length).TrainEnd;
         int folds       = 5;
 
         // Initialise population

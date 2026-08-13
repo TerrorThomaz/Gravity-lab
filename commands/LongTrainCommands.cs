@@ -279,7 +279,7 @@ static class LongTrainCommands
         foreach (var (sym, h1, m15) in coPassed)
         {
             if (sym == "BTCUSDT" || h1.Length < 500) continue;
-            int split = (int)(h1.Length * 0.80);
+            int split = DataSplit.Split(h1).Train.Length;
             int m15sp = Math.Min(split * 4, m15.Length);
             dlCoins.Add(new DipLongGA.CoinData(
                 h1[..split],      h1[split..],
@@ -303,7 +303,7 @@ static class LongTrainCommands
         foreach (var (sym, h1, _) in coPassed)
         {
             if (sym == "BTCUSDT" || h1.Length < 500) continue;
-            int split = (int)(h1.Length * 0.80);
+            int split = DataSplit.Split(h1).Train.Length;
             fsCoins.Add(new FadeShortGA.CoinData(h1[..split], h1[split..]));
             gridCoins.Add(new GridGeneticAlgorithm.CoinData(h1[..split], h1[split..]));
         }
@@ -1071,7 +1071,7 @@ static class LongTrainCommands
                 if (sym == "BTCUSDT") continue;
                 if (h1Full.Length < 500) continue;
 
-                int split = (int)(h1Full.Length * 0.80);
+                int split = DataSplit.Split(h1Full).Train.Length;
                 int m15sp = Math.Min(split * 4, m15Full.Length);
 
                 dlCoins.Add(new DipLongGA.CoinData(
@@ -1232,7 +1232,7 @@ static class LongTrainCommands
             if (volUsd.Count > 0 && volUsd[volUsd.Count / 2] < Config.MinMedianVolUsdM) continue;
 
             // 20% val split from the end
-            int valStart = (int)(h1.Length * 0.80);
+            int valStart = DataSplit.Split(h1).Train.Length;
             int m15Val   = valStart * 4;
             coins.Add(new SwingLongGA.CoinData(
                 h1[..valStart],  h1[valStart..],
@@ -1299,7 +1299,7 @@ static class LongTrainCommands
         var btcSwing = fetched.FirstOrDefault(f => f.sym == "BTCUSDT");
         if (btcSwing.h1 != null && btcSwing.h1.Length > 220)
         {
-            int btcValStart = (int)(btcSwing.h1.Length * 0.80);
+            int btcValStart = DataSplit.Split(btcSwing.h1).Train.Length;
             var btcTrain = btcSwing.h1[..btcValStart];
             var btcVal = btcSwing.h1[btcValStart..];
             PrintRegimeContext(btcTrain, "Train window", "Long");
@@ -1351,7 +1351,7 @@ static class LongTrainCommands
             double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
             if (medVol < Config.MinMedianVolUsdM) { Console.WriteLine($"  {sym}: skip (vol=${medVol:F2}M/h)"); continue; }
 
-            int split = (int)(h1Full.Length * 0.80);
+            int split = DataSplit.Split(h1Full).Train.Length;
             coins.Add(new GravityGen2.Strategies.AccumulationGrid.AccumulationGridGA.CoinData(
                 h1Full[..split], h1Full[split..]));
         }

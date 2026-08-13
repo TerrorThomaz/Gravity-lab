@@ -71,12 +71,21 @@ static class DynamicGuardTrainCommands
             var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
             if (volUsd.Count == 0 || volUsd[volUsd.Count / 2] < Config.MinMedianVolUsdM) continue;
 
-            int h1Split  = (int)(h1.Length * 0.8);
-            int m15Split = Math.Min(h1Split * 4, m15.Length);
-            var h1Train  = h1[..h1Split];
-            var h1Val    = h1[h1Split..];
-            var m15Train = m15[..m15Split];
-            var m15Val   = m15[m15Split..];
+            // Routed through DataSplit rather than an ad-hoc 0.8. The old boundary differed from
+            // TrainCommands' 0.75/0.875 and GridCommands' 0.8, so "validation" meant a different
+            // window depending on which trainer you ran — and a genotype trained by one and
+            // reported by another could be scored on bars it had trained on.
+            //
+            // The m15 slice is aligned to the SAME INSTANT as the h1 boundary, not the same index
+            // fraction. The old `h1Split * 4` assumed a perfect 4:1 bar ratio; a single gap in
+            // either series breaks that and silently shifts the boundary.
+            var h1s      = DataSplit.Split(h1);
+            var m15s     = DataSplit.SplitAligned(m15, h1s);
+            if (!h1s.IsUsable) continue;
+            var h1Train  = h1s.Train;
+            var h1Val    = h1s.Val;
+            var m15Train = m15s.Train;
+            var m15Val   = m15s.Val;
 
             // FadeShort — exempt from guard; tighter screen matches FullTest
             {
@@ -139,7 +148,7 @@ static class DynamicGuardTrainCommands
 
             // FadeShort — exempt; OOS screen on first 80%
             {
-                int split   = (int)(h1.Length * 0.8);
+                int split   = DataSplit.Split(h1).Train.Length;
                 var scrRets = FadeShortSimulator.GetFadeShortReturns(swingG, h1[..split], m15[..Math.Min(split*4, m15.Length)])
                     .Select(t => t.Return).ToList();
                 if (scrRets.Count >= 5 && scrRets.Average() > 0

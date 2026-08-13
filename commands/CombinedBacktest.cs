@@ -398,7 +398,7 @@ static class CombinedBacktest
                 var ethEntry      = fetched.FirstOrDefault(f => f.sym == "ETHUSDT");
                 RegimeBar[]? ethSeries = ethEntry.h1 != null && ethEntry.h1.Length >= 200
                     ? RegimeClassifier.ClassifySeriesWithDuration(ethEntry.h1) : null;
-                session = new RegimeRouterSession(btcRegimeSeries, ethSeries, routerG);
+                session = new RegimeRouterSession(btcRegimeSeries, ethSeries, routerG).WithBtcBars(btcH1ForGuard);
                 Console.WriteLine($"  Router session: BTC {btcRegimeSeries.Length} bars  ETH {(ethSeries != null ? ethSeries.Length.ToString() : "none")} bars\n");
             }
             else Console.WriteLine("  ⚠ BTC data insufficient for regime session — router gate disabled\n");
@@ -559,7 +559,7 @@ static class CombinedBacktest
                 }
             }
 
-            int h1Split  = (int)(h1.Length * 0.8);
+            int h1Split  = DataSplit.Split(h1).Train.Length;
             int m15Split = h1Split * 4;
             var h1Train  = h1[..h1Split];
             var h1Val    = h1[h1Split..];
@@ -635,7 +635,7 @@ static class CombinedBacktest
                 }
             }
 
-            int split   = (int)(h1.Length * 0.8);
+            int split   = DataSplit.Split(h1).Train.Length;
             var h1Train = h1[..split];
             var h1Val   = h1[split..];
 
@@ -700,7 +700,7 @@ static class CombinedBacktest
                 double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
                 if (medVol < Config.MinMedianVolUsdM) continue;
 
-                int h1Split  = (int)(h1.Length * 0.8);
+                int h1Split  = DataSplit.Split(h1).Train.Length;
                 int m15Split = h1Split * 4;
                 var h1Val    = h1[h1Split..];
                 var m15Val   = m15[Math.Min(m15Split, m15.Length)..];
@@ -762,7 +762,7 @@ static class CombinedBacktest
                 double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
                 if (medVol < Config.MinMedianVolUsdM) continue;
 
-                int h1Split  = (int)(h1.Length * 0.8);
+                int h1Split  = DataSplit.Split(h1).Train.Length;
                 int m15Split = h1Split * 4;
                 var h1Val    = h1[h1Split..];
                 var m15Val   = m15[Math.Min(m15Split, m15.Length)..];
@@ -824,7 +824,7 @@ static class CombinedBacktest
                 double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
                 if (medVol < Config.MinMedianVolUsdM) continue;
 
-                int h1Split  = (int)(h1.Length * 0.8);
+                int h1Split  = DataSplit.Split(h1).Train.Length;
                 int m15Split = h1Split * 4;
                 var h1Val    = h1[h1Split..];
                 var m15Val   = m15[Math.Min(m15Split, m15.Length)..];
@@ -889,7 +889,7 @@ static class CombinedBacktest
                 double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
                 if (medVol < Config.MinMedianVolUsdM) continue;
 
-                int h1Split  = (int)(h1.Length * 0.8);
+                int h1Split  = DataSplit.Split(h1).Train.Length;
                 int m15Split = h1Split * 4;
                 var h1Val    = h1[h1Split..];
                 var m15Val   = m15[Math.Min(m15Split, m15.Length)..];
@@ -1069,7 +1069,7 @@ static class CombinedBacktest
                 double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
                 if (medVol < Config.MinMedianVolUsdM) continue;
 
-                int h1Split = (int)(h1.Length * 0.8);
+                int h1Split = DataSplit.Split(h1).Train.Length;
                 var h1Val = h1[h1Split..];
                 if (h1Val.Length < 100) continue;
 
@@ -1813,6 +1813,7 @@ static class CombinedBacktest
             var rotated = new List<(DateTime, double, double, TimeSpan, string)>(rTimes.Count);
             // Same rotation cost the GA is now charged (a round trip on the fraction moved), so
             // training and reporting price churn identically instead of one seeing it free.
+            var rotTrades = allTrades.Select(t => (t.Time, t.Return, t.Strategy)).ToList();
             double prevAlt = 1.0, rotationCostPct = 0.0;
             double rotBenchPct = 0.0;   // return earned by capital rotated into BTC/ETH
             var safeShareAt = new List<(DateTime Time, double SafeShare)>();
@@ -1822,11 +1823,17 @@ static class CombinedBacktest
                 // Unknown label ⇒ treat as long, matching PortfolioReplay's convention of taking
                 // the conservative reading rather than silently exempting it from the haircut.
                 bool isLong = PortfolioReplay.IsLong(t.Strategy) ?? true;
-                double s = rot.ComputeSafetyScore(gs.GetMult(t.Time), gs.GetAtrRatio(t.Time), rRegimes[i], isLong);
+                // Same 24h BTC move the GA fitness uses — train and serve must see one signal.
+                double s = rot.ComputeSafetyScore(gs.GetMult(t.Time), gs.GetAtrRatio(t.Time), rRegimes[i], isLong,
+                                                  BtcMovePct(btcH1ForGuard, t.Time));
                 scores[i] = s;
                 var (altShare, btcShare, ethShare) = rot.ComputeAllocation(s);
-                rotationCostPct += Math.Abs(altShare - prevAlt) * TradeCosts.FeeRoundTripPct;
-                prevAlt = altShare;
+                // Same deadband the GA fitness applies — train and serve must rotate identically.
+                double stepped = rot.StepAltShare(prevAlt, altShare);
+                rotationCostPct += Math.Abs(stepped - prevAlt) * TradeCosts.FeeRoundTripPct;
+                prevAlt = stepped; altShare = stepped;
+                btcShare = (1.0 - altShare) * rot.BtcShareOfSafe;
+                ethShare = (1.0 - altShare) - btcShare;
                 rotated.Add((t.Time, t.Return, t.Conf * altShare, t.Hold, t.Strategy));
 
                 // Record the target safe-share at this instant. The benchmark sleeve is computed
@@ -1863,10 +1870,24 @@ static class CombinedBacktest
             Console.WriteLine($"\n── Rotator (val window): alt exposure scaled by (1 − safety score) ──");
             Console.WriteLine($"  Genotype: guardW={rotGeno.GuardWeight:E2}  atrW={rotGeno.AtrWeight:E2}  " +
                               $"regimeW={rotGeno.RegimeWeight:F3}  btcShare={rotGeno.BtcShare:F2}  speed={rotGeno.RotationSpeed:F2}");
-            double wTot = rotGeno.GuardWeight + rotGeno.AtrWeight + rotGeno.RegimeWeight;
-            if (wTot > 1e-9)
-                Console.WriteLine($"  Signal mix: guard={rotGeno.GuardWeight / wTot:P4}  atr={rotGeno.AtrWeight / wTot:P4}  regime={rotGeno.RegimeWeight / wTot:P4}");
+            // Read the mix FROM the rotator rather than recomputing it here. The local version
+            // summed only guard+atr+regime and so reported regime=99.98% on a genotype whose
+            // dominant gene was BtcStressWeight — a display that silently omits a gene is how a
+            // stale report becomes a wrong conclusion.
+            var mix = rot.SignalMix();
+            Console.WriteLine($"  Signal mix: guard={mix.Guard:P2}  atr={mix.Atr:P2}  " +
+                              $"regime={mix.Regime:P2}  btcStress={mix.BtcStress:P2}");
+            Console.WriteLine($"  Rotation shape: minAlt={rotGeno.MinAltShare:P0}  " +
+                              $"deadband={rotGeno.RotationDeadband:F3}  speed={rotGeno.RotationSpeed:F2}");
             int mults0 = 0;
+            static double BtcMovePct(Candle[]? bars, DateTime t, int lookbackBars = 24)
+            {
+                if (bars is not { Length: > 1 }) return 0.0;
+                int i = IdxAt(bars, t);
+                int i0 = Math.Max(0, i - lookbackBars);
+                double p0 = bars[i0].Close;
+                return p0 > 1e-12 ? (bars[i].Close - p0) / p0 * 100.0 : 0.0;
+            }
             // Helper: benchmark return over a trade's holding window, on the BTC clock.
             static double BenchReturnPct(Candle[]? bars, DateTime t0, TimeSpan hold)
             {
@@ -1895,6 +1916,33 @@ static class CombinedBacktest
             Console.WriteLine($"  {"5% per position",-18}  {rp5.EndBalance - 100,+9:F1}%  {rotNet,+9:F1}%  " +
                               $"{rotNet - (rp5.EndBalance - 100),+8:F1}pp  {rp5.MaxDrawdownPct,6:F1}%  {rp5r.MaxDrawdownPct,6:F1}%");
             Console.WriteLine($"  Benchmark sleeve (rotated-out capital held in BTC/ETH): {rotBenchPct:+0.0;-0.0}pp");
+
+            // ── WHY does rotating cost? Two candidate explanations, and they imply opposite fixes:
+            //   (a) it moves BIG losses to SMALL ones  -> trades during stress are net NEGATIVE,
+            //       rotating is right, and the loss is timing/turnover.
+            //   (b) it just deploys LESS capital       -> trades during stress are net POSITIVE,
+            //       so shrinking them destroys value no matter how well timed.
+            // The rotator scales t.Conf * altShare, i.e. it shrinks WINNERS and LOSERS alike.
+            {
+                var byStress = new List<(double Stress, double Ret, bool IsLong)>();
+                for (int i = 0; i < rotTrades.Count; i++)
+                {
+                    var t = rotTrades[i];
+                    byStress.Add((VolatilityWeightedRotator.BtcStress(BtcMovePct(btcH1ForGuard, t.Time)),
+                                  t.Return, PortfolioReplay.IsLong(t.Strategy) ?? true));
+                }
+                foreach (var (lo, hi, label) in new[] { (0.0, 0.01, "calm      "), (0.01, 0.5, "mild      "),
+                                                        (0.5, 0.99, "stressed  "), (0.99, 9.9, "max stress") })
+                {
+                    var b = byStress.Where(x => x.Stress >= lo && x.Stress < hi).ToList();
+                    if (b.Count < 20) continue;
+                    var lng = b.Where(x => x.IsLong).ToList();
+                    var sht = b.Where(x => !x.IsLong).ToList();
+                    Console.WriteLine($"  [{label}] n={b.Count,5}  avg={b.Average(x => x.Ret),+6:F2}%   "
+                                    + $"long n={lng.Count,5} avg={(lng.Count > 0 ? lng.Average(x => x.Ret) : 0),+6:F2}%   "
+                                    + $"short n={sht.Count,4} avg={(sht.Count > 0 ? sht.Average(x => x.Ret) : 0),+6:F2}%");
+                }
+            }
             Console.WriteLine($"  Rationale: alts run 1.463 down-beta to BTC vs 1.202 up-beta (83 coins, 75/83");
             Console.WriteLine($"  positive); on BTC down days the median alt underperforms BTC by 0.864%/day.");
         }

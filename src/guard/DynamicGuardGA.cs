@@ -101,18 +101,64 @@ public class DynamicGuardGA
     //
     // Collapsing to a single parameter is deliberate: a caller that still has a val or OOS list to
     // hand now has to decide which one to pass instead of silently averaging both.
+    // Segments the train book into contiguous time slices and weights the WORST ones, instead of
+    // scoring one aggregate Calmar over the whole history.
+    //
+    // WHY THE AGGREGATE CALMAR PRODUCED AN INERT GUARD
+    // A single Calmar over the full train book is dominated by its numerator. Cutting exposure
+    // always costs return immediately, while the max-drawdown denominator only improves if the
+    // guard happens to fire during the one worst event in six years — and that event contributes
+    // the same single number whether the guard clipped it or not, because max-DD is a
+    // single-point statistic. So the GA learned to switch the guard off: the retrained genotype
+    // set atrGate=4.13 against a market that reached 1.535x, and was idle for 29/29 entries in the
+    // worst drawdown window.
+    //
+    // Scoring per segment and then taking a CVaR-weighted aggregate makes protection pay. A guard
+    // that sleeps through the worst slice now carries that slice's bad score into the tail term,
+    // where averaging previously hid it. This is the same aggregation FoldScoreHelper uses for the
+    // strategy GAs (lambda*CVaR + (1-lambda)*mean), for the same reason.
+    //
+    // lambda is higher here than for a strategy: a drawdown guard that only helps on average is
+    // not doing its job, so the bad segments carry most of the weight.
+    internal const int    FitnessSegments = 10;
+    internal const double FitnessLambda   = 0.6;
+    internal const double FitnessCVaRAlpha = 0.4;
+
     internal static double Evaluate(
         DynamicGuardGenotype g,
         Candle[] btcH1,
         List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> trainTrades)
     {
         var session = new DynamicGuardSession(btcH1, g);
-        var sim     = ApplyGuard(ApplyCap(trainTrades), session);
-        // ddLongEntryGatePct takes a DD fraction. g.DdEntryGatePct is the EFFECTIVE gate: either a
-        // live threshold in [0.02, 0.15] or DdGateDisabled (1.0) when the search turned the gate
-        // off. Both are already fraction units — do not rescale here.
-        var r = Simulator.SimulatePortfolioExposureCapped(sim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: g.DdEntryGatePct, confLossCapMin: g.ConfLossCapMin, confLossCapMax: g.ConfLossCapMax, profitProtectThreshold: g.ProfitProtectThreshold, profitProtectDrawback: g.ProfitProtectDrawback, profitProtectFactor: g.ProfitProtectFactor);
-        return (r.EndBalance - 100.0) / Math.Max(r.MaxDrawdownPct, 0.5);
+        var capped  = ApplyCap(trainTrades).OrderBy(t => t.EntryTime).ToList();
+        if (capped.Count == 0) return -1000.0;
+
+        int per = Math.Max(1, capped.Count / FitnessSegments);
+        var seg = new List<double>(FitnessSegments);
+
+        for (int start = 0; start < capped.Count; start += per)
+        {
+            var slice = capped.GetRange(start, Math.Min(per, capped.Count - start));
+            if (slice.Count < 10) continue;
+
+            // ddLongEntryGatePct takes a DD fraction. g.DdEntryGatePct is the EFFECTIVE gate:
+            // either a live threshold in [0.02, 0.15] or DdGateDisabled (1.0) when the search
+            // turned the gate off. Both are already fraction units — do not rescale here.
+            var r = Simulator.SimulatePortfolioExposureCapped(
+                ApplyGuard(slice, session), Config.MaxTotalExposurePct, maxPositionFrac: 0.05,
+                ddLongEntryGatePct: g.DdEntryGatePct, confLossCapMin: g.ConfLossCapMin,
+                confLossCapMax: g.ConfLossCapMax, profitProtectThreshold: g.ProfitProtectThreshold,
+                profitProtectDrawback: g.ProfitProtectDrawback, profitProtectFactor: g.ProfitProtectFactor);
+
+            seg.Add((r.EndBalance - 100.0) / Math.Max(r.MaxDrawdownPct, 0.5));
+        }
+
+        if (seg.Count == 0) return -1000.0;
+
+        seg.Sort();
+        int tail = Math.Max(1, (int)Math.Ceiling(FitnessCVaRAlpha * seg.Count));
+        double cvar = seg.Take(tail).Average();
+        return FitnessLambda * cvar + (1.0 - FitnessLambda) * seg.Average();
     }
 
     // Apply concurrent position cap — identical to fulltest ApplyCap, so GA sees same trade set.

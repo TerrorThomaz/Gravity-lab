@@ -736,3 +736,60 @@ public class GuardObjectiveIsTrainOnlyTests
         Assert.Equal(3, m!.GetParameters().Length);   // genotype, btcH1, trainTrades
     }
 }
+
+// The aggregate-Calmar objective rewarded switching the guard OFF: cutting exposure costs return
+// immediately, while max-drawdown is a single-point statistic that contributes the same number
+// whether or not the guard clipped the event. The segmented CVaR objective must not have that
+// property.
+public class GuardFitnessRewardsProtectionTests
+{
+    private static readonly System.DateTime T0 = new(2024, 1, 1, 0, 0, 0, System.DateTimeKind.Utc);
+
+    private static Candle[] FlatBtc(int n)
+    {
+        var c = new Candle[n];
+        for (int i = 0; i < n; i++)
+            c[i] = new Candle(T0.AddHours(i), 100, 101, 99, 100, 1000);
+        return c;
+    }
+
+    [Fact]
+    public void OneRuinedSegment_DragsFitnessBelowASteadyBook()
+    {
+        // Same total trade count. One book is uniformly decent; the other is decent for 90% of its
+        // life and catastrophic in one contiguous slice — precisely the shape a guard exists for.
+        // Under a single aggregate Calmar the second could score comparably, because its one bad
+        // event sets max-DD once and its good segments carry the numerator.
+        var btc = FlatBtc(3000);
+        var g   = DynamicGuardGenotype.FromGenes(
+            System.Linq.Enumerable.Range(0, DynamicGuardGenotype.Bounds.GetLength(0))
+                .Select(i => (DynamicGuardGenotype.Bounds[i, 0] + DynamicGuardGenotype.Bounds[i, 1]) / 2.0).ToArray());
+
+        var steady = new System.Collections.Generic.List<(System.DateTime, double, double, System.TimeSpan, string)>();
+        var spiked = new System.Collections.Generic.List<(System.DateTime, double, double, System.TimeSpan, string)>();
+        for (int i = 0; i < 400; i++)
+        {
+            var t = T0.AddHours(i * 4);
+            steady.Add((t, +1.5, 0.05, System.TimeSpan.FromHours(48), "grid"));
+            // Trades 200-259 are a sustained wipeout inside one contiguous segment.
+            spiked.Add((t, i is >= 200 and < 260 ? -25.0 : +1.5, 0.05, System.TimeSpan.FromHours(48), "grid"));
+        }
+
+        double fSteady = DynamicGuardGA.Evaluate(g, btc, steady);
+        double fSpiked = DynamicGuardGA.Evaluate(g, btc, spiked);
+
+        Assert.True(fSpiked < fSteady,
+            $"a book with one ruined segment ({fSpiked:F1}) must score below a steady one ({fSteady:F1}) — "
+          + "the tail term is not reaching the objective");
+    }
+
+    [Fact]
+    public void FitnessIsWeightedTowardTheWorstSegments()
+    {
+        // lambda on the CVaR term must be the majority, otherwise "protects on average" beats
+        // "protects when it matters" and the guard drifts back to idle.
+        Assert.True(DynamicGuardGA.FitnessLambda > 0.5);
+        Assert.InRange(DynamicGuardGA.FitnessCVaRAlpha, 0.1, 0.6);
+        Assert.True(DynamicGuardGA.FitnessSegments >= 5, "too few segments and the tail term has no resolution");
+    }
+}

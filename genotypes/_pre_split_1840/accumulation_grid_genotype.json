@@ -1,0 +1,24 @@
+{
+  "Bull": {
+    "EmaPeriod": 20,
+    "GridStepAtrMult": 1.9842097493991746,
+    "MaxLevels": 3,
+    "TakeProfitAtrMult": 2.677402370986072,
+    "StopLossAtrMult": 3.966827503390064,
+    "MaxHoldBars": 160,
+    "PositionSizePct": 0.059078030010318805,
+    "RegimeSustainBars": 13
+  },
+  "BullFitness": 29.256438251113885,
+  "Bear": {
+    "EmaPeriod": 20,
+    "GridStepAtrMult": 2.9698914692131297,
+    "MaxLevels": 5,
+    "TakeProfitAtrMult": 4.943762927307191,
+    "StopLossAtrMult": 3.9136116877933604,
+    "MaxHoldBars": 24,
+    "PositionSizePct": 0.0663537082796665,
+    "RegimeSustainBars": 69
+  },
+  "BearFitness": 1.9745321071391204
+}

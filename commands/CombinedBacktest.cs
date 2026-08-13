@@ -262,7 +262,7 @@ static class CombinedBacktest
 
     public static async Task RunCombinedBacktest(BybitRestClient client)
     {
-        Console.WriteLine($"=== Gravity-gen2 | COMBINED BACKTEST (all strategies, router-gated, {Config.BacktestCoins.Length} coins, val 20%) ===\n");
+        Console.WriteLine($"=== Gravity-gen2 | COMBINED BACKTEST (all strategies, router-gated, {Config.BacktestCoins.Length} coins, {DataSplit.ValLabel}) ===\n");
 
         if (!File.Exists(Config.FadeShortGenoFile)) { Console.WriteLine($"Missing FadeShort genotype — run 'train' first.");     return; }
         if (!File.Exists(Config.GridGenoFile))      { Console.WriteLine($"Missing grid genotype — run 'gridtrain' first."); return; }
@@ -1155,7 +1155,7 @@ static class CombinedBacktest
         var allRet   = allTrades.Select(t => t.Return).ToList();
 
         Console.WriteLine($"\n{new string('═', 70)}");
-        Console.WriteLine($"  SWING SUMMARY  (val 20%, {swingCoinStats.Count} coins, {swingRet.Count} trades)");
+        Console.WriteLine($"  SWING SUMMARY  ({DataSplit.ValLabel}, {swingCoinStats.Count} coins, {swingRet.Count} trades)");
         Console.WriteLine($"{new string('═', 70)}");
         if (swingRet.Count > 0)
         {
@@ -1182,7 +1182,7 @@ static class CombinedBacktest
             Console.WriteLine($"  {r.Coin,-18} {r.Kelly,6:P1}  {r.Sharpe,7:F2}  {r.Sortino,7:F2}  {r.PF,5:F2}  {r.Trades,6}  {r.WR,5:P0}  {r.AvgRet,+7:F2}%");
 
         Console.WriteLine($"\n{new string('═', 70)}");
-        Console.WriteLine($"  GRID SUMMARY  (val 20%, {gridCoinStats.Count} coins, {gridRet.Count} trades)");
+        Console.WriteLine($"  GRID SUMMARY  ({DataSplit.ValLabel}, {gridCoinStats.Count} coins, {gridRet.Count} trades)");
         Console.WriteLine($"{new string('═', 70)}");
         if (gridRet.Count > 0)
         {
@@ -1211,7 +1211,7 @@ static class CombinedBacktest
         if (flRet.Count > 0)
         {
             Console.WriteLine($"\n{new string('═', 70)}");
-            Console.WriteLine($"  FADELONG SUMMARY  (val 20%, {flCoinStats.Count} coins, {flRet.Count} trades, router-gated)");
+            Console.WriteLine($"  FADELONG SUMMARY  ({DataSplit.ValLabel}, {flCoinStats.Count} coins, {flRet.Count} trades, router-gated)");
             Console.WriteLine($"{new string('═', 70)}");
             int fw = flRet.Count(r => r > 0);
             Console.WriteLine($"  Win rate:     {(double)fw / flRet.Count:P1}  ({fw}W / {flRet.Count - fw}L)");
@@ -1232,7 +1232,7 @@ static class CombinedBacktest
         if (dlRet.Count > 0)
         {
             Console.WriteLine($"\n{new string('═', 70)}");
-            Console.WriteLine($"  DIPLONG SUMMARY  (val 20%, {dlCoinStats.Count} coins, {dlRet.Count} trades, router-gated)");
+            Console.WriteLine($"  DIPLONG SUMMARY  ({DataSplit.ValLabel}, {dlCoinStats.Count} coins, {dlRet.Count} trades, router-gated)");
             Console.WriteLine($"{new string('═', 70)}");
             int dw = dlRet.Count(r => r > 0);
             Console.WriteLine($"  Win rate:     {(double)dw / dlRet.Count:P1}  ({dw}W / {dlRet.Count - dw}L)");
@@ -1253,7 +1253,7 @@ static class CombinedBacktest
         if (slRet.Count > 0)
         {
             Console.WriteLine($"\n{new string('═', 70)}");
-            Console.WriteLine($"  SWINGLONG SUMMARY  (val 20%, {slCoinStats.Count} coins, {slRet.Count} trades, router-gated)");
+            Console.WriteLine($"  SWINGLONG SUMMARY  ({DataSplit.ValLabel}, {slCoinStats.Count} coins, {slRet.Count} trades, router-gated)");
             Console.WriteLine($"{new string('═', 70)}");
             int sw2 = slRet.Count(r => r > 0);
             Console.WriteLine($"  Win rate:     {(double)sw2 / slRet.Count:P1}  ({sw2}W / {slRet.Count - sw2}L)");
@@ -1274,7 +1274,7 @@ static class CombinedBacktest
         if (rsRet.Count > 0)
         {
             Console.WriteLine($"\n{new string('═', 70)}");
-            Console.WriteLine($"  RIPSHORT SUMMARY  (val 20%, {rsCoinStats.Count} coins, {rsRet.Count} trades, router-gated)");
+            Console.WriteLine($"  RIPSHORT SUMMARY  ({DataSplit.ValLabel}, {rsCoinStats.Count} coins, {rsRet.Count} trades, router-gated)");
             Console.WriteLine($"{new string('═', 70)}");
             int rw = rsRet.Count(r => r > 0);
             Console.WriteLine($"  Win rate:     {(double)rw / rsRet.Count:P1}  ({rw}W / {rsRet.Count - rw}L)");
@@ -1295,7 +1295,7 @@ static class CombinedBacktest
         if (agRet.Count > 0)
         {
             Console.WriteLine($"\n{new string('═', 70)}");
-            Console.WriteLine($"  ACCUMGRID SUMMARY  (val 20%, {agCoinStats.Count} coins, {agRet.Count} trades, router-gated)");
+            Console.WriteLine($"  ACCUMGRID SUMMARY  ({DataSplit.ValLabel}, {agCoinStats.Count} coins, {agRet.Count} trades, router-gated)");
             Console.WriteLine($"  NOTE: Disabled from combined portfolio — capital accumulator, not profit generator");
             Console.WriteLine($"{new string('═', 70)}");
             int aw = agRet.Count(r => r > 0);
@@ -1458,6 +1458,12 @@ static class CombinedBacktest
             // Restore the EXIT bar as Time — downstream portfolio sims key off it — while keeping
             // entry and symbol attached.
             allTrades = capFiltered.Select(t => (t.EntryTime + t.HoldDuration, t.Return, t.Conf, t.Strategy, t.EntryTime, t.Symbol)).ToList();
+
+            // Central grading of the final book. Same code path as oosbacktest and fulltest, so a
+            // difference between their headline numbers is now a difference in the TRADES, not in
+            // three private implementations of profit factor.
+            StrategyEvaluation.Report("VALIDATION BOOK", capFiltered, btcRegimeSeries,
+                                      csvPath: "reports/combined_val_trades.csv");
         }
 
         // Strategy label RETAINED. It used to be projected away here, which silently forced the

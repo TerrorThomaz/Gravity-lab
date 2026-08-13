@@ -280,12 +280,17 @@ static class OosBacktest
         if (guardCtx != null) Console.WriteLine($"  Guard: {guardCtx.Genotype}\n");
 
         RegimeRouterSession? session = null;
+        // Hoisted out of the router block so the central evaluator can bucket the final book by
+        // regime. It is the same classification the router gates on — recomputing it at the report
+        // site would risk grading against a different series than the one that did the gating.
+        RegimeBar[]? btcRegimeSeries = null;
         if (routerG != null)
         {
             var btcEntry = fetched.FirstOrDefault(f => f.sym == "BTCUSDT");
             if (btcEntry.h1 != null && btcEntry.h1.Length >= 200)
             {
                 var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcEntry.h1);
+                btcRegimeSeries = btcSeries;
                 var ethEntry  = fetched.FirstOrDefault(f => f.sym == "ETHUSDT");
                 RegimeBar[]? ethSeries = ethEntry.h1 != null && ethEntry.h1.Length >= 200
                     ? RegimeClassifier.ClassifySeriesWithDuration(ethEntry.h1) : null;
@@ -801,6 +806,12 @@ static class OosBacktest
             var filtered = PortfolioReplay.FilterByConcurrentCap(capInput, directionalCap: Config.MaxDirectionalConcurrent, perSymbolCap: Config.MaxPerSymbolConcurrent);
             Console.WriteLine($"  Concurrent cap: {allTrades.Count} → {filtered.Count} trades ({allTrades.Count - filtered.Count} removed)");
             allTrades = filtered.Select(t => (t.EntryTime + t.HoldDuration, t.Return, t.Conf, t.Strategy, t.EntryTime, t.Symbol)).ToList();
+
+            // Central grading — identical code to combinedbacktest and fulltest. This is the OOS
+            // book on never-trained coins, so it is the one grade in the suite with no selection
+            // pressure behind it.
+            StrategyEvaluation.Report("OOS BOOK", filtered, btcRegimeSeries,
+                                      csvPath: "reports/oos_trades.csv");
         }
 
         var swingRet = swingTrades.Select(t => t.Return).ToList();
@@ -1105,7 +1116,7 @@ static class OosBacktest
     public static async Task RunAllCoinsBacktest(BybitRestClient client)
     {
         int totalCoins = Config.BacktestCoins.Length + Config.OosCoins.Length;
-        Console.WriteLine($"=== Gravity-gen2 | ALL-COINS PORTFOLIO SIM ({totalCoins} coins · BacktestCoins val 20% + OOS full history) ===\n");
+        Console.WriteLine($"=== Gravity-gen2 | ALL-COINS PORTFOLIO SIM ({totalCoins} coins · BacktestCoins {DataSplit.ValLabel} + OOS full history) ===\n");
 
         if (!File.Exists(Config.FadeShortGenoFile)) { Console.WriteLine("Missing FadeShort genotype."); return; }
         if (!File.Exists(Config.GridGenoFile))      { Console.WriteLine("Missing grid genotype.");      return; }
@@ -1163,12 +1174,14 @@ static class OosBacktest
         Console.WriteLine();
 
         RegimeRouterSession? session = null;
+        RegimeBar[]? btcRegimeSeries = null;   // hoisted for the central evaluator, as in RunOosBacktest
         if (routerG != null)
         {
             var btcEntry = fetchedAll.FirstOrDefault(f => f.sym == "BTCUSDT");
             if (btcEntry.h1 != null && btcEntry.h1.Length >= 200)
             {
                 var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcEntry.h1);
+                btcRegimeSeries = btcSeries;
                 var ethEntry  = fetchedAll.FirstOrDefault(f => f.sym == "ETHUSDT");
                 RegimeBar[]? ethSeries = ethEntry.h1 != null && ethEntry.h1.Length >= 200
                     ? RegimeClassifier.ClassifySeriesWithDuration(ethEntry.h1) : null;
@@ -1188,7 +1201,7 @@ static class OosBacktest
             _          => TimeSpan.FromHours(gr.MaxHoldCandles),
         };
 
-        // ── BacktestCoins — val 20%, seed-screened ─────────────────────────────
+        // ── BacktestCoins — validation slice, seed-screened ─────────────────────────────
         var btFetched = fetchedAll.Where(f => Config.BacktestCoins.Contains(f.sym)).ToArray();
         int btSwing = 0, btGrid = 0, btFL = 0, btDL = 0, btRS = 0;
         int btSwingT = 0, btGridT = 0, btFLT = 0, btDLT = 0, btRST = 0;
@@ -1203,7 +1216,7 @@ static class OosBacktest
         void NoteScoredSpan(Candle[] h1, DateTime firstScoredTime) =>
             acTotalVCC = Math.Max(acTotalVCC, ScoredCandleCount(h1, firstScoredTime));
 
-        Console.WriteLine("── BacktestCoins (val 20%, seed-screened) ──────────────────────────────────");
+        Console.WriteLine($"── BacktestCoins ({DataSplit.ValLabel}, seed-screened) ──────────────────────────────────");
         foreach (var (sym, m15, h1) in btFetched)
         {
             if (h1.Length < 300) continue;
@@ -1446,6 +1459,9 @@ static class OosBacktest
             var filtered = PortfolioReplay.FilterByConcurrentCap(capInput, directionalCap: Config.MaxDirectionalConcurrent, perSymbolCap: Config.MaxPerSymbolConcurrent);
             Console.WriteLine($"  Concurrent cap: {allTrades.Count} → {filtered.Count} trades ({allTrades.Count - filtered.Count} removed)");
             allTrades = filtered.Select(t => (t.EntryTime + t.HoldDuration, t.Return, t.Conf, t.Strategy, t.EntryTime, t.Symbol)).ToList();
+
+            StrategyEvaluation.Report("ALL-COINS BOOK", filtered, btcRegimeSeries,
+                                      csvPath: "reports/allcoins_trades.csv");
         }
 
         var allRet   = allTrades.Select(t => t.Return).ToList();

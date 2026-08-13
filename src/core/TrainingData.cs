@@ -30,9 +30,32 @@ public static class DataSplit
 {
     // One authority. Changing these changes what every trainer means by "validation", which is
     // why they are consts here and not parameters threaded through fourteen call sites.
-    public const double TrainFraction = 0.75;
-    public const double ValFraction   = 0.125;
+    //
+    // WHY 0.80 AND NOT THE 0.75 THIS CLASS FIRST SHIPPED WITH
+    // The pre-centralisation trainers used 0.75 (TrainCommands, BacktestCommands, CoevolveGA) or
+    // 0.80 (LongTrainCommands, LowVolTrainCommands, RegimeRouterGA). Every one of those is a
+    // PREFIX of the series, and the largest prefix any of them consumed was 0.80. So a validation
+    // window that starts at 0.80 was never trained on by ANY of them — the 0.75 trainers simply
+    // saw 5% less data, which costs sample size, not validity.
+    //
+    // Setting the boundary at 0.75 instead would have been the stricter-sounding choice and the
+    // wrong one: it declares bars 0.75–0.80 to be validation, which the 0.80 trainers HAD trained
+    // on, so it would have manufactured leakage for six genotypes that did not have any, and
+    // forced a full retrain to fix a boundary that only moved because this file moved it.
+    //
+    // The genuine leaks were the two trainers with NO split at all (VolatilityWeightedRotatorGA,
+    // DynamicGuardGA) — those fit on 1.00 of the series and are the only ones 0.80 does not
+    // absolve. They are retrained; everything else stands.
+    public const double TrainFraction = 0.80;
+    public const double ValFraction   = 0.10;
     // Test is the remainder, so the three always sum to exactly 1.0 with no rounding gap.
+
+    // Report labels. Twenty-odd "val 20%" literals across nine command files described the split
+    // in print; every one of them silently became a lie the moment the boundary moved, and a
+    // report that misstates its own window is worse than one that says nothing.
+    public static string TrainLabel => $"train {TrainFraction:P0}";
+    public static string ValLabel   => $"val {ValFraction:P0}";
+    public static string TestLabel  => $"test {1.0 - TrainFraction - ValFraction:P0}";
 
     // Index boundaries for ANY time-ordered array. RegimeBar[], FundingBar[] and future series
     // types need the same split as Candle[] — a Candle-only splitter would push those callers
@@ -55,8 +78,9 @@ public static class DataSplit
         if (series is null || series.Length < 20)
             return new SplitSeries([], [], []);
 
-        int trainEnd = (int)(series.Length * TrainFraction);
-        int valEnd   = (int)(series.Length * (TrainFraction + ValFraction));
+        // Via Bounds, not a second copy of the same arithmetic — this class exists to have ONE
+        // place the boundary is computed, and it had two.
+        var (trainEnd, valEnd) = Bounds(series.Length);
         return new SplitSeries(series[..trainEnd], series[trainEnd..valEnd], series[valEnd..]);
     }
 

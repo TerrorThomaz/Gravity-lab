@@ -67,7 +67,7 @@ static class FullTest
 
     public static async Task RunFullTest(BybitRestClient client)
     {
-        Console.WriteLine("=== Gravity-gen2 | FULL TEST (val 20% + 28 OOS · all strategies · condensed) ===\n");
+        Console.WriteLine($"=== Gravity-gen2 | FULL TEST ({DataSplit.ValLabel} + 28 OOS · all strategies · condensed) ===\n");
 
         // ── Genotypes ─────────────────────────────────────────────────────────────
         var swingG  = File.Exists(Config.FadeShortGenoFile)  ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype()   : (FadeShortGenotype?)null;
@@ -663,8 +663,11 @@ static class FullTest
             _            => TimeSpan.FromHours(gr.MaxHoldCandles),
         };
 
-        static List<(DateTime Time, double Return, double Conf, string Strategy)> ApplyCap(
-            List<(DateTime Time, double Return, double Conf, string Strategy)> trades)
+        // No longer `static`: it closes over btcSeries so the capped book can be graded through
+        // StrategyEvaluation — the same call combinedbacktest and oosbacktest make, on the same
+        // trade shape. This is the point where fulltest's numbers stop being its own.
+        List<(DateTime Time, double Return, double Conf, string Strategy)> ApplyCap(
+            List<(DateTime Time, double Return, double Conf, string Strategy)> trades, string label)
         {
             if (trades.Count == 0) return trades;
             trades.Sort((a, b) => a.Time.CompareTo(b.Time));
@@ -678,12 +681,14 @@ static class FullTest
                     "gridshort"  => TimeSpan.FromHours(72),
                     _            => TimeSpan.FromHours(72),
                 }, t.Return, t.Conf)).ToList();
-            return PortfolioReplay.FilterByConcurrentCap(capIn, directionalCap: Config.MaxDirectionalConcurrent)
-                .Select(t => (t.EntryTime, t.Return, t.Conf, t.Strategy)).ToList();
+            var capped = PortfolioReplay.FilterByConcurrentCap(capIn, directionalCap: Config.MaxDirectionalConcurrent);
+            StrategyEvaluation.Report(label, capped, btcSeries,
+                                      csvPath: $"reports/fulltest_{label.ToLowerInvariant().Replace(' ', '_')}_trades.csv");
+            return capped.Select(t => (t.EntryTime, t.Return, t.Conf, t.Strategy)).ToList();
         }
 
-        valAll = ApplyCap(valAll);
-        oosAll = ApplyCap(oosAll);
+        valAll = ApplyCap(valAll, "FULLTEST VAL BOOK");
+        oosAll = ApplyCap(oosAll, "FULLTEST OOS BOOK");
 
         // Helper: trades → exposure sim input
         List<(DateTime, double, double, TimeSpan)> ToSim(
@@ -735,7 +740,7 @@ static class FullTest
         Console.WriteLine($"  STRATEGY PERFORMANCE");
         Console.WriteLine($"{new string('═', 88)}");
         Console.WriteLine($"  {"Strategy",-12}  {"Trades",6}  {"WR",5}  {"PF",5}  {"Avg%",8}  |  {"Trades",6}  {"WR",5}  {"PF",5}  {"Avg%",8}");
-        Console.WriteLine($"  {"",12}  {"── Val (20%) ─────────────────",30}  |  {"── OOS (28 coins) ────────────",29}");
+        Console.WriteLine($"  {"",12}  {$"── ({DataSplit.ValLabel}) ─────────────────",30}  |  {"── OOS (28 coins) ────────────",29}");
         Console.WriteLine($"  {new string('-', 86)}");
 
         static string FmtRow(List<double> r) => r.Count > 0
@@ -971,7 +976,7 @@ static class FullTest
 
         string Sign(double v) => v >= 0 ? "+" : "";
 
-        Console.WriteLine($"  {"",12}  {"── Val (20%) ──────────────",26}  {"── OOS (28 coins) ─────────",26}");
+        Console.WriteLine($"  {"",12}  {$"── ({DataSplit.ValLabel}) ──────────────",26}  {"── OOS (28 coins) ─────────",26}");
         Console.WriteLine($"  {"Strategy",-12}  {"W/ router",9}  {"No router",9}  {"Δ",5}  |  {"W/ router",9}  {"No router",9}  {"Δ",5}");
         Console.WriteLine($"  {new string('-', 78)}");
         int cntSwing    = valAll.Count(t => t.Strategy == "swing");
@@ -1044,7 +1049,7 @@ static class FullTest
             string FmtDG(Simulator.PortfolioResult p) =>
                 $"ret={p.EndBalance - 100:+0.0;-0.0}%  DD={p.MaxDrawdownPct:F1}%  Calmar={(p.EndBalance - 100) / Math.Max(p.MaxDrawdownPct, 1.0):F1}";
 
-            Console.WriteLine($"  {"",12}  {"── Val (20%) ──────────────────────────────",43}  {"── OOS ──────────────────────────────",37}");
+            Console.WriteLine($"  {"",12}  {$"── ({DataSplit.ValLabel}) ──────────────────────────────",43}  {"── OOS ──────────────────────────────",37}");
             Console.WriteLine($"  {"Baseline",-12}  {FmtDG(val5p),-43}  {FmtDG(oos5p),-37}");
             Console.WriteLine($"  {"Guarded",-12}  {FmtDG(val5pG),-43}  {FmtDG(oos5pG),-37}");
 

@@ -1,0 +1,11 @@
+{
+  "GuardWeight": 0.7889357371273081,
+  "AtrWeight": 0.6531091367184528,
+  "RegimeWeight": 0.27962217903481157,
+  "BtcStressWeight": 0.6628092075313888,
+  "InvertRotation": 0.3999594186823614,
+  "MinAltShare": 0.11286989606330607,
+  "RotationDeadband": 0.21822736199551454,
+  "BtcShare": 0.5989754226799976,
+  "RotationSpeed": 0.4527773759781496
+}

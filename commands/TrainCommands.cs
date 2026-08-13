@@ -332,7 +332,7 @@ static class TrainCommands
         // │ FadeShortGA.CoinData — both outside this change's ownership. Handoff, not an     │
         // │ oversight.                                                                       │
         // └──────────────────────────────────────────────────────────────────────────────────┘
-        Console.WriteLine("\n─── Overfit check (train 75% vs val 12.5%) ───");
+        Console.WriteLine($"\n─── Overfit check ({DataSplit.TrainLabel} vs {DataSplit.ValLabel}) ───");
         Console.WriteLine("  (funding priced at the interest-rate floor — this command has no per-symbol");
         Console.WriteLine("   funding path; combinedbacktest/oosbacktest now charge real rates and will be worse)");
         var tRet = coinData.SelectMany(cd =>
@@ -342,7 +342,7 @@ static class TrainCommands
 
         int tCC = coinData.Sum(cd => cd.TrainCandles.Length) * 12;
         int vCC = coinData.Sum(cd => cd.ValCandles.Length) * 12;
-        CandleFetcher.PrintSplitStats("Train 75%", tRet, tCC);
+        CandleFetcher.PrintSplitStats($"{DataSplit.TrainLabel}", tRet, tCC);
         CandleFetcher.PrintSplitStats("Val  12.5%", vRet, vCC);
 
         var btcForRegime = heldOutCoins.FirstOrDefault(c => c.Sym == "BTCUSDT").H1;

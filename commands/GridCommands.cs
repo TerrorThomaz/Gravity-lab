@@ -108,7 +108,7 @@ static class GridCommands
         }
         catch (Exception ex) { Console.WriteLine($"  ExpandingWindowValidation skipped: {ex.Message}"); }
 
-        Console.WriteLine("\n─── Overfit check (train 80% vs val 20%, session-level) ───");
+        Console.WriteLine($"\n─── Overfit check ({DataSplit.TrainLabel} vs {DataSplit.ValLabel}, session-level) ───");
         var tRet = coinData.SelectMany(cd => GridSimulator.GetGridSessionReturns(best, cd.TrainCandles.Span).Select(t => t.Return)).ToList();
         var vRet = coinData.SelectMany(cd => GridSimulator.GetGridSessionReturns(best, cd.ValCandles.Span).Select(t => t.Return)).ToList();
         int tCC  = coinData.Sum(cd => cd.TrainCandles.Length) * 12;
@@ -201,7 +201,7 @@ static class GridCommands
             new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"  Saved → {genoPath}");
 
-        Console.WriteLine("\n─── Overfit check (train 80% vs val 20%, session-level) ───");
+        Console.WriteLine($"\n─── Overfit check ({DataSplit.TrainLabel} vs {DataSplit.ValLabel}, session-level) ───");
         var tRet = coinData.SelectMany(cd => GridShortSimulator.GetGridShortSessionReturns(best, cd.TrainCandles.Span).Select(t => t.Return)).ToList();
         var vRet = coinData.SelectMany(cd => GridShortSimulator.GetGridShortSessionReturns(best, cd.ValCandles.Span).Select(t => t.Return)).ToList();
         int tCC  = coinData.Sum(cd => cd.TrainCandles.Length) * 12;
@@ -214,7 +214,7 @@ static class GridCommands
 
     public static async Task RunGridBacktest(BybitRestClient client)
     {
-        Console.WriteLine($"=== Gravity-gen2 | GRID BACKTEST ({Config.BacktestCoins.Length} coins, val 20%, 1h candles) ===\n");
+        Console.WriteLine($"=== Gravity-gen2 | GRID BACKTEST ({Config.BacktestCoins.Length} coins, {DataSplit.ValLabel}, 1h candles) ===\n");
 
         if (!File.Exists(Config.GridGenoFile))
         {
@@ -302,7 +302,7 @@ static class GridCommands
             tradesForExposure, Config.MaxTotalExposurePct);
 
         Console.WriteLine($"\n{new string('═', 70)}");
-        Console.WriteLine($"  GRID BACKTEST SUMMARY  (val 20%, 1h candles)");
+        Console.WriteLine($"  GRID BACKTEST SUMMARY  ({DataSplit.ValLabel}, 1h candles)");
         Console.WriteLine($"{new string('═', 70)}");
         Console.WriteLine($"  Total trades: {allRet.Count}  ({totalWins}W / {allRet.Count - totalWins}L)");
         Console.WriteLine($"  Win rate:     {(allRet.Count > 0 ? (double)totalWins / allRet.Count : 0):P1}");
@@ -472,7 +472,7 @@ static class GridCommands
         var ranked   = RankedPortfolioSim.Run(allCandidates, MaxSwing, MaxGrid, PosSizePct);
 
         Console.WriteLine($"══════════════════════════════════════════════════════════════════════");
-        Console.WriteLine($"  RANKED BACKTEST SUMMARY  (val 20% · {PosSizePct:P0} fixed per position · {valDays:F0} val days)");
+        Console.WriteLine($"  RANKED BACKTEST SUMMARY  ({DataSplit.ValLabel} · {PosSizePct:P0} fixed per position · {valDays:F0} val days)");
         Console.WriteLine($"══════════════════════════════════════════════════════════════════════");
         Console.WriteLine();
         PrintPort($"Unranked baseline (all {allCandidates.Count} signals, unlimited concurrent)", unranked);

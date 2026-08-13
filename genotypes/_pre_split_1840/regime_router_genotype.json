@@ -1,0 +1,18 @@
+{
+  "BullMinBars": 50,
+  "BullMinConf": 0.5023438229775081,
+  "BearMinBars": 167.98662295377594,
+  "BearMinConf": 0.1,
+  "GridMaxConf": 0.12795780120678882,
+  "EthBlendWeight": 0.09435317313855225,
+  "Fitness": 6.647334571189304,
+  "TransitionSizeMult": 0,
+  "EarlyBullFromBearMult": 1,
+  "EarlyBullFromRangingMult": 0.39948182534027127,
+  "EarlyBullBearCarry": 0.5852660975250903,
+  "RipShortBearMinBars": 50,
+  "RipShortBearMinConf": 0.5423963462785731,
+  "FadeShortBearOnly": 0.7572161017373624,
+  "FadeShortBearMinBars": 26.04084406157863,
+  "FadeShortBearMinConf": 0.746143665258675
+}

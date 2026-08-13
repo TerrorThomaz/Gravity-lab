@@ -1,0 +1,18 @@
+{
+  "AtrLookback": 40.07345780060752,
+  "AtrTrigger": 3.5,
+  "MomLookback": 26.539961753783352,
+  "MomThreshold": -0.0752486557933431,
+  "SizeFloor": 0.5029782169563672,
+  "Fitness": 133.06582851149008,
+  "PanicTrigger": 5,
+  "RecoveryBars": 2.162642133159962,
+  "BullMomBypass": 0.06316079543940627,
+  "EntryAtrGate": 3.7590629680212966,
+  "DdEntryGatePct": 1,
+  "ConfLossCapMin": 0.03,
+  "ConfLossCapMax": 0.1,
+  "ProfitProtectThreshold": 0.4915072053088954,
+  "ProfitProtectDrawback": 0.012320400974092528,
+  "ProfitProtectFactor": 0.46445861012360934
+}

@@ -1,0 +1,8 @@
+{
+  "LiquidityFloor": 0.1,
+  "LiquidityMinMult": 0.5,
+  "FreqMaxPerWindow": 33.315279202315864,
+  "FreqMultAtMax": 1,
+  "MinSizeMult": 0.23256200784058187,
+  "Fitness": 49.570098925584304
+}

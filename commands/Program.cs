@@ -38,10 +38,10 @@ switch (mode)
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
         Console.WriteLine("  dotnet run -- train              Train FadeShort GA (~10 min)");
-        Console.WriteLine("  dotnet run -- backtest           FadeShort + grid backtest: 93 coins, val 20%");
+        Console.WriteLine($"  dotnet run -- backtest           FadeShort + grid backtest: 93 coins, {DataSplit.ValLabel}");
         Console.WriteLine("  dotnet run -- papertrade         Live signals, refreshes every 4h");
         Console.WriteLine("  dotnet run -- gridtrain          Grid GA: ranging-market long grid");
-        Console.WriteLine("  dotnet run -- gridbacktest       Grid backtest: 93 coins, val 20%");
+        Console.WriteLine($"  dotnet run -- gridbacktest       Grid backtest: 93 coins, {DataSplit.ValLabel}");
         Console.WriteLine("  dotnet run -- combinedbacktest   FadeShort + grid, shared capital");
         Console.WriteLine("  dotnet run -- rankedbacktest     Ranked portfolio: top-N signals by quality");
         Console.WriteLine("  dotnet run -- test               Statistical edge validation");
@@ -54,7 +54,7 @@ switch (mode)
         Console.WriteLine("  dotnet run -- coevolvetrain      Red-Queen coevolve: Router (profit) ↔ Guard (risk), 8 rounds parallel — strategies frozen");
         Console.WriteLine("  dotnet run -- retrain            Retrain FadeShort on unknown coins (inverted screen, fixes overfit)");
         Console.WriteLine("  dotnet run -- oosbacktest        OOS backtest: 28 never-seen coins, full history, all strategies");
-        Console.WriteLine("  dotnet run -- allcoinsbacktest   Portfolio sim: BacktestCoins (val 20%) + OOS coins (full history), concurrency analysis");
+        Console.WriteLine($"  dotnet run -- allcoinsbacktest   Portfolio sim: BacktestCoins ({DataSplit.ValLabel}) + OOS coins (full history), concurrency analysis");
         Console.WriteLine("  dotnet run -- fulltest           Condensed master report: val+OOS, 7 sections, single candle fetch");
         Console.WriteLine("  dotnet run -- dynamicguardtrain  Train BTC 4H ATR/momentum dynamic guard (proactive, corrects router)");
         Console.WriteLine("  dotnet run -- rotatortrain       Train volatility-weighted rotator (co-evolves with guard)");

@@ -137,15 +137,32 @@ public static class StrategyEvaluation
 
         DateTime t0 = ordered[0].Entry;
         var stepAgg = new SortedDictionary<long, (double Sum, int N, Dictionary<MarketRegime, int> Regs)>();
+        // Positions OPEN during each step, not merely entering it. A trade held for three steps
+        // occupies exposure in all three. Counting entries only undercounts concurrency by roughly
+        // the hold-to-step ratio, which makes the cap bind later than it really does — the step
+        // version of this bootstrap overstated the OOS book by ~6x against the portfolio sim for
+        // exactly this reason.
+        var openCount = new Dictionary<long, int>();
+
         foreach (var t in ordered)
         {
             long k = (long)((t.Entry - t0).TotalHours / stepHours);
             if (!stepAgg.TryGetValue(k, out var cell))
                 cell = (0.0, 0, new Dictionary<MarketRegime, int>());
+            // Return is booked once, in the step the position was opened. Only the exposure it
+            // occupies is spread across the steps it is actually held through.
             cell.Sum += t.ReturnPct / 100.0;
             cell.N++;
             cell.Regs[t.Regime] = cell.Regs.GetValueOrDefault(t.Regime) + 1;
             stepAgg[k] = cell;
+
+            // Half-open [entry, exit): a position closing exactly on a step boundary is NOT open
+            // during the step that begins there. Using an inclusive end double-counted every
+            // trade whose hold equalled the step width — which is most of them, since the step
+            // width IS the median hold.
+            long kEndEx = Math.Max(k + 1, (long)Math.Ceiling((t.Exit - t0).TotalHours / stepHours));
+            for (long j = k; j < kEndEx; j++)
+                openCount[j] = openCount.GetValueOrDefault(j) + 1;
         }
 
         // ── The exposure cap, which is the whole reason stepping was needed ────────────────
@@ -162,13 +179,14 @@ public static class StrategyEvaluation
         //
         // Scaling down proportionally (rather than dropping trades) matches how the simulator
         // handles an over-subscribed book: everyone gets a smaller slice, nobody is turned away.
-        var steps = stepAgg.Values
-            .Select(c =>
+        var steps = stepAgg
+            .Select(kv =>
             {
-                double wanted = c.N * posFrac;
+                var c = kv.Value;
+                double wanted = Math.Max(c.N, openCount.GetValueOrDefault(kv.Key)) * posFrac;
                 double scale  = wanted > Config.MaxTotalExposurePct ? Config.MaxTotalExposurePct / wanted : 1.0;
                 return (Ret: c.Sum * posFrac * scale,
-                        Reg: c.Regs.OrderByDescending(kv => kv.Value).First().Key);
+                        Reg: c.Regs.OrderByDescending(r => r.Value).First().Key);
             })
             .ToArray();
         if (steps.Length == 0) return (1.0, 0, 0, 0, 0);

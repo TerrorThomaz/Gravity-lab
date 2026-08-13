@@ -177,9 +177,9 @@ static class PapertradeCommands
         }
         catch { journal = new List<JsonElement>(); }
 
-        var prevOpen = new Dictionary<string, (string Dir, double Entry, DateTime FirstSeen, double LastMark, double LastPnl)>();
+        var prevOpen = new Dictionary<string, (string Dir, double Entry, DateTime FirstSeen, double LastMark, double LastPnl, bool Routed, double GuardMult)>();
         foreach (var kv in OpenKeysFromJournal(journal))
-            prevOpen[kv.Key] = (kv.Value.Dir, kv.Value.Entry, DateTime.UtcNow, kv.Value.Entry, 0.0);
+            prevOpen[kv.Key] = (kv.Value.Dir, kv.Value.Entry, DateTime.UtcNow, kv.Value.Entry, 0.0, true, 1.0);
 
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
@@ -465,8 +465,27 @@ static class PapertradeCommands
             {
                 var positions = new List<object>();
 
+                // ── SHADOW MODE ───────────────────────────────────────────────────────────
+                // Every strategy is evaluated every cycle, whether or not the router allows it,
+                // and each position carries `routed` plus the guard multiplier it would have been
+                // sized by.
+                //
+                // Previously a router-gated strategy was not computed AT ALL — the check wrapped
+                // the computation instead of labelling its output. So a papertrade run recorded
+                // only the trades the router permitted, and the two components whose value is
+                // hardest to establish are exactly the two that are pure gates. Their worth lives
+                // entirely in the counterfactual: what did the router suppress, and would it have
+                // won? A log of permitted trades cannot answer that at any run length.
+                //
+                // Cost is one extra simulator pass per gated strategy per 15-minute cycle.
+                //
+                // NOTE ON READING IT LATER: `routed:false` rows are NOT paper trades. They are
+                // positions the system declined to take. Summing their P&L alongside the real ones
+                // gives a number the portfolio never had — compare the two sets, never merge them.
+                double ptGuardMult = guardSession?.GetMult(DateTime.UtcNow) ?? 1.0;
+
                 // FadeShort positions
-                if (fsRoutedOn)
+                if (true)   // shadow: computed even when the router gates FadeShort off
                 {
                     foreach (var (sym, h1, m15, passes, _, _) in coinData)
                     {
@@ -479,6 +498,7 @@ static class PapertradeCommands
                         positions.Add(new
                         {
                             sym, strat = "FadeShort", dir = "Short",
+                            routed = fsRoutedOn,   guardMult = ptGuardMult,
                             entry = Math.Round(st.Entry, 6),
                             mark  = Math.Round(px, 6),
                             pnl   = Math.Round((st.Entry - px) / st.Entry * 100.0, 2),
@@ -491,7 +511,7 @@ static class PapertradeCommands
                 }
 
                 // Grid positions
-                if (gridGPt != null && gridRoutedOn)
+                if (gridGPt != null)
                 {
                     foreach (var (sym, h1, m15, passes, _, _) in coinData)
                     {
@@ -503,6 +523,7 @@ static class PapertradeCommands
                         positions.Add(new
                         {
                             sym, strat = "Grid", dir = "Long",
+                            routed = gridRoutedOn, guardMult = ptGuardMult,
                             entry = Math.Round(gst.Anchor, 6),
                             mark  = Math.Round(px, 6),
                             pnl   = Math.Round((px - gst.Anchor) / gst.Anchor * 100.0, 2),
@@ -515,7 +536,7 @@ static class PapertradeCommands
                 }
 
                 // SwingLong positions
-                if (slGenoPt != null && slRoutedOn)
+                if (slGenoPt != null)
                 {
                     foreach (var (sym, h1, m15, passes, _, _) in coinData)
                     {
@@ -527,6 +548,7 @@ static class PapertradeCommands
                         positions.Add(new
                         {
                             sym, strat = "SwingLong", dir = "Long",
+                            routed = slRoutedOn,   guardMult = ptGuardMult,
                             entry = Math.Round(st.Entry, 6),
                             mark  = Math.Round(px, 6),
                             pnl   = Math.Round((px - st.Entry) / st.Entry * 100.0, 2),
@@ -539,7 +561,7 @@ static class PapertradeCommands
                 }
 
                 // DipLong positions
-                if (dlGenoPt != null && dlRoutedOn)
+                if (dlGenoPt != null)
                 {
                     foreach (var (sym, h1, m15, passes, _, _) in coinData)
                     {
@@ -551,6 +573,7 @@ static class PapertradeCommands
                         positions.Add(new
                         {
                             sym, strat = "DipLong", dir = "Long",
+                            routed = dlRoutedOn,   guardMult = ptGuardMult,
                             entry = Math.Round(st.Entry, 6),
                             mark  = Math.Round(px, 6),
                             pnl   = Math.Round((px - st.Entry) / st.Entry * 100.0, 2),
@@ -563,7 +586,7 @@ static class PapertradeCommands
                 }
 
                 // FadeLong positions
-                if (flGenoPt != null && flRoutedOn)
+                if (flGenoPt != null)
                 {
                     foreach (var (sym, h1, m15, passes, _, _) in coinData)
                     {
@@ -575,6 +598,7 @@ static class PapertradeCommands
                         positions.Add(new
                         {
                             sym, strat = "FadeLong", dir = "Long",
+                            routed = flRoutedOn,   guardMult = ptGuardMult,
                             entry = Math.Round(st.Entry, 6),
                             mark  = Math.Round(px, 6),
                             pnl   = Math.Round((px - st.Entry) / st.Entry * 100.0, 2),
@@ -587,7 +611,7 @@ static class PapertradeCommands
                 }
 
                 // RipShort positions
-                if (rsGenoPt != null && rsRoutedOn)
+                if (rsGenoPt != null)
                 {
                     foreach (var (sym, h1, m15, passes, _, _) in coinData)
                     {
@@ -599,6 +623,7 @@ static class PapertradeCommands
                         positions.Add(new
                         {
                             sym, strat = "RipShort", dir = "Short",
+                            routed = rsRoutedOn,   guardMult = ptGuardMult,
                             entry = Math.Round(st.Entry, 6),
                             mark  = Math.Round(px, 6),
                             pnl   = Math.Round((st.Entry - px) / st.Entry * 100.0, 2),
@@ -667,13 +692,14 @@ static class PapertradeCommands
                 }
 
                 // ── Journal: diff this cycle's open set against the previous one ──
-                var currentOpen = new Dictionary<string, (string Strat, string Sym, string Dir, double Entry, double Mark, double Pnl)>();
+                var currentOpen = new Dictionary<string, (string Strat, string Sym, string Dir, double Entry, double Mark, double Pnl, bool Routed, double GuardMult)>();
                 foreach (var p in positions.Select(o => JsonSerializer.SerializeToElement(o)))
                 {
                     string strat = p.GetProperty("strat").GetString()!;
                     string sym   = p.GetProperty("sym").GetString()!;
                     currentOpen[$"{strat}:{sym}"] = (strat, sym, p.GetProperty("dir").GetString()!,
-                        p.GetProperty("entry").GetDouble(), p.GetProperty("mark").GetDouble(), p.GetProperty("pnl").GetDouble());
+                        p.GetProperty("entry").GetDouble(), p.GetProperty("mark").GetDouble(), p.GetProperty("pnl").GetDouble(),
+                        p.GetProperty("routed").GetBoolean(), p.GetProperty("guardMult").GetDouble());
                 }
 
                 var newEvents  = new List<object>();
@@ -683,22 +709,29 @@ static class PapertradeCommands
                 foreach (var kv in currentOpen)
                     if (!prevOpen.ContainsKey(kv.Key))
                         newEvents.Add(new { time = nowIso, evt = "entry", strat = kv.Value.Strat, sym = kv.Value.Sym,
-                            dir = kv.Value.Dir, entry = kv.Value.Entry, mark = kv.Value.Mark, pnl = kv.Value.Pnl, regime });
+                            dir = kv.Value.Dir, entry = kv.Value.Entry, mark = kv.Value.Mark, pnl = kv.Value.Pnl, regime,
+                            routed = kv.Value.Routed, guardMult = kv.Value.GuardMult });
 
                 foreach (var kv in prevOpen)
                     if (!currentOpen.ContainsKey(kv.Key))
                     {
                         var parts = kv.Key.Split(':', 2);
                         newEvents.Add(new { time = nowIso, evt = "exit", strat = parts[0], sym = parts[1],
-                            dir = kv.Value.Dir, entry = kv.Value.Entry, mark = kv.Value.LastMark, pnl = kv.Value.LastPnl, regime });
+                            dir = kv.Value.Dir, entry = kv.Value.Entry, mark = kv.Value.LastMark, pnl = kv.Value.LastPnl, regime,
+                            routed = kv.Value.Routed, guardMult = kv.Value.GuardMult });
                     }
 
                 // Carry FirstSeen forward for still-open keys; cache last mark/pnl for future exits.
-                var nextOpen = new Dictionary<string, (string Dir, double Entry, DateTime FirstSeen, double LastMark, double LastPnl)>();
+                var nextOpen = new Dictionary<string, (string Dir, double Entry, DateTime FirstSeen, double LastMark, double LastPnl, bool Routed, double GuardMult)>();
                 foreach (var kv in currentOpen)
                 {
                     DateTime firstSeen = prevOpen.TryGetValue(kv.Key, out var old) ? old.FirstSeen : DateTime.UtcNow;
-                    nextOpen[kv.Key] = (kv.Value.Dir, kv.Value.Entry, firstSeen, kv.Value.Mark, kv.Value.Pnl);
+                    // Routed is taken from the ENTRY, not the exit cycle: whether the router allowed
+                    // this position is a fact about the decision that opened it. The router can flip
+                    // mid-hold, and re-reading it at exit would relabel history.
+                    bool routedAtEntry = prevOpen.TryGetValue(kv.Key, out var prev) ? prev.Routed : kv.Value.Routed;
+                    nextOpen[kv.Key] = (kv.Value.Dir, kv.Value.Entry, firstSeen, kv.Value.Mark, kv.Value.Pnl,
+                                        routedAtEntry, kv.Value.GuardMult);
                 }
                 prevOpen = nextOpen;
 

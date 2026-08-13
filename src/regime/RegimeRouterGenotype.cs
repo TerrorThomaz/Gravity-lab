@@ -33,6 +33,28 @@ public class RegimeRouterGenotype
     public double BearMinConf             { get; set; }  // [0.10, 0.80]
     public double RipShortBearMinBars     { get; set; }  // [50, 500]  — RipShort's own confirmed-bear gate
     public double RipShortBearMinConf     { get; set; }  // [0.10, 0.80]
+
+    // FadeShort's own confirmed-bear gate. Separate from RipShort's and FadeLong's for the same
+    // reason those two were split: one shared threshold gets dragged to a compromise that suits
+    // none of them.
+    //
+    // FadeShort's edge is REGIME-SPLIT, not weak. Measured on the time-embargoed held-out window,
+    // six retrains running (widened bounds, router gate, FreqW=0, WrW x2, RegimeSustain, and the
+    // corrected three-gene regime):
+    //     Bear  PF 5.28  WR 71%  45 trades  +2.28%/trade
+    //     Bull  PF 0.38  WR 13%  84 trades  -0.86%/trade
+    // The blended PF near 1.2 is those two cancelling. Bull carries ~65% of the trades and
+    // subtracts 72 points from a 102-point gross.
+    //
+    // The old gate was `NOT (Bull AND confident)`, i.e. FadeShort ran in Bear, Ranging, HighVol
+    // AND unconfident Bull — which is where most of the losses are, since "unconfident Bull" is
+    // exactly the ambiguous tape a fade gets run over in. FadeShortBearOnly (a >0 ON/OFF switch,
+    // like the other transition genes) flips it to "only in confirmed Bear", with the bar/conf
+    // thresholds TRAINED rather than assumed: how strict "confirmed" should be is precisely what
+    // routertrain is for.
+    public double FadeShortBearMinBars    { get; set; }  // [20, 400]
+    public double FadeShortBearMinConf    { get; set; }  // [0.10, 0.80]
+    public double FadeShortBearOnly       { get; set; }  // >0 = Bear-only; 0 = legacy not-confirmed-Bull
     public double GridMaxConf             { get; set; }  // [0.10, 0.70]
     public double EthBlendWeight          { get; set; }  // [0.00, 0.50]
     public double TransitionSizeMult      { get; set; }  // [0.00, 1.00]
@@ -57,6 +79,9 @@ public class RegimeRouterGenotype
         { 0.00, 1.00 }, // EarlyBullFromBearMult
         { 0.00, 1.00 }, // EarlyBullFromRangingMult
         { 0.00, 1.00 }, // EarlyBullBearCarry
+        {  20, 400 },   // FadeShortBearMinBars
+        { 0.10, 0.80 }, // FadeShortBearMinConf
+        { 0.00, 1.00 }, // FadeShortBearOnly — >0 = ON/OFF switch, like the transition genes
     };
 
     // ── BO / vector interface ─────────────────────────────────────────────────
@@ -66,6 +91,7 @@ public class RegimeRouterGenotype
         RipShortBearMinBars, RipShortBearMinConf, GridMaxConf,
         EthBlendWeight, TransitionSizeMult,
         EarlyBullFromBearMult, EarlyBullFromRangingMult, EarlyBullBearCarry,
+        FadeShortBearMinBars, FadeShortBearMinConf, FadeShortBearOnly,
     ];
 
     public static RegimeRouterGenotype FromVector(double[] v) => new()
@@ -81,6 +107,9 @@ public class RegimeRouterGenotype
         TransitionSizeMult       = Math.Clamp(v[8], 0.00, 1.00),
         EarlyBullFromBearMult    = Math.Clamp(v[9], 0.00, 1.00),
         EarlyBullFromRangingMult = Math.Clamp(v[10], 0.00, 1.00),
+        FadeShortBearMinBars     = Math.Clamp(v[12],  20, 400),
+        FadeShortBearMinConf     = Math.Clamp(v[13], 0.10, 0.80),
+        FadeShortBearOnly        = Math.Clamp(v[14], 0.00, 1.00),
         EarlyBullBearCarry       = Math.Clamp(v[11], 0.00, 1.00),
     };
 
@@ -96,6 +125,9 @@ public class RegimeRouterGenotype
             BullMinConf              = rng.NextDouble() * 0.70 + 0.10,
             BearMinBars              = rng.NextDouble() * 176 + 24,
             BearMinConf              = rng.NextDouble() * 0.70 + 0.10,
+            FadeShortBearMinBars     = rng.NextDouble() * 380 + 20,
+            FadeShortBearMinConf     = rng.NextDouble() * 0.70 + 0.10,
+            FadeShortBearOnly        = rng.NextDouble(),
             RipShortBearMinBars      = rng.NextDouble() * 450 + 50,
             RipShortBearMinConf      = rng.NextDouble() * 0.70 + 0.10,
             GridMaxConf              = rng.NextDouble() * 0.60 + 0.10,
@@ -123,6 +155,9 @@ public class RegimeRouterGenotype
             BullMinConf              = G(BullMinConf,             0.10, 0.80),
             BearMinBars              = G(BearMinBars,              24,  200),
             BearMinConf              = G(BearMinConf,             0.10, 0.80),
+            FadeShortBearMinBars     = G(FadeShortBearMinBars,     20,  400),
+            FadeShortBearMinConf     = G(FadeShortBearMinConf,    0.10, 0.80),
+            FadeShortBearOnly        = G(FadeShortBearOnly,       0.00, 1.00),
             RipShortBearMinBars      = G(RipShortBearMinBars,      50,  500),
             RipShortBearMinConf      = G(RipShortBearMinConf,     0.10, 0.80),
             GridMaxConf              = G(GridMaxConf,             0.10, 0.70),
@@ -141,6 +176,9 @@ public class RegimeRouterGenotype
             BullMinConf              = rng.NextDouble() < 0.5 ? a.BullMinConf              : b.BullMinConf,
             BearMinBars              = rng.NextDouble() < 0.5 ? a.BearMinBars              : b.BearMinBars,
             BearMinConf              = rng.NextDouble() < 0.5 ? a.BearMinConf              : b.BearMinConf,
+            FadeShortBearMinBars     = rng.NextDouble() < 0.5 ? a.FadeShortBearMinBars     : b.FadeShortBearMinBars,
+            FadeShortBearMinConf     = rng.NextDouble() < 0.5 ? a.FadeShortBearMinConf     : b.FadeShortBearMinConf,
+            FadeShortBearOnly        = rng.NextDouble() < 0.5 ? a.FadeShortBearOnly        : b.FadeShortBearOnly,
             RipShortBearMinBars      = rng.NextDouble() < 0.5 ? a.RipShortBearMinBars      : b.RipShortBearMinBars,
             RipShortBearMinConf      = rng.NextDouble() < 0.5 ? a.RipShortBearMinConf      : b.RipShortBearMinConf,
             GridMaxConf              = rng.NextDouble() < 0.5 ? a.GridMaxConf              : b.GridMaxConf,
@@ -154,6 +192,7 @@ public class RegimeRouterGenotype
     public override string ToString() =>
         $"Bull≥{BullMinBars:F0}bars/conf{BullMinConf:F2}  Bear≥{BearMinBars:F0}bars/conf{BearMinConf:F2}  " +
         $"RipBear≥{RipShortBearMinBars:F0}bars/conf{RipShortBearMinConf:F2}  " +
+        $"FsBear{(FadeShortBearOnly > 0 ? $"≥{FadeShortBearMinBars:F0}b/c{FadeShortBearMinConf:F2}" : "OFF")}  " +
         $"GridIfConf<{GridMaxConf:F2}  EthW={EthBlendWeight:F2}  TransMult={TransitionSizeMult:F2}  " +
         $"EBear={EarlyBullFromBearMult:F2}  ERng={EarlyBullFromRangingMult:F2}  BCarry={EarlyBullBearCarry:F2}  " +
         $"F={Fitness:F4}";
@@ -173,6 +212,11 @@ public record RegimeRouterGenotypeDto(
     double EarlyBullFromBearMult    = 0.0,
     double EarlyBullFromRangingMult = 0.0,
     double EarlyBullBearCarry       = 0.0,
+    // FadeShortBearOnly defaults to 0 = the legacy not-confirmed-Bull gate, so a router genotype
+    // saved before these genes existed deserializes to bit-identical behaviour.
+    double FadeShortBearMinBars = 60.0,
+    double FadeShortBearMinConf = 0.30,
+    double FadeShortBearOnly    = 0.0,
     // Defaults match the old shared BearMinBars/BearMinConf so genotype files saved
     // before RipShort got its own gate keep their exact prior behavior on load.
     double RipShortBearMinBars = 143.0,
@@ -191,6 +235,9 @@ public record RegimeRouterGenotypeDto(
         BearMinConf              = BearMinConf,
         RipShortBearMinBars      = RipShortBearMinBars,
         RipShortBearMinConf      = RipShortBearMinConf,
+        FadeShortBearMinBars     = FadeShortBearMinBars,
+        FadeShortBearMinConf     = FadeShortBearMinConf,
+        FadeShortBearOnly        = FadeShortBearOnly,
         GridMaxConf              = GridMaxConf,
         EthBlendWeight           = EthBlendWeight,
         Fitness                  = Fitness,
@@ -205,5 +252,6 @@ public record RegimeRouterGenotypeDto(
             g.GridMaxConf, g.EthBlendWeight, g.Fitness,
             g.TransitionSizeMult, g.EarlyBullFromBearMult,
             g.EarlyBullFromRangingMult, g.EarlyBullBearCarry,
+            g.FadeShortBearMinBars, g.FadeShortBearMinConf, g.FadeShortBearOnly,
             g.RipShortBearMinBars, g.RipShortBearMinConf);
 }

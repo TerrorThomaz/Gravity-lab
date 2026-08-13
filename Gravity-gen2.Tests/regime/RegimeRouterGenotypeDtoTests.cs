@@ -91,7 +91,10 @@ public class RegimeRouterGenotypeDtoTests
         double[] v = geno.ToVector();
 
         Assert.Equal(RegimeRouterGenotype.Bounds.GetLength(0), v.Length);
-        Assert.Equal(12, v.Length);
+        // 15 = 12 original + FadeShortBearMinBars/Conf/BearOnly. Pinned deliberately: Bounds,
+        // ToVector and FromVector are positionally coupled, so a gene added to one and not
+        // the others must fail here rather than silently optimise the wrong parameter.
+        Assert.Equal(15, v.Length);
         Assert.Equal(v, RegimeRouterGenotype.FromVector(v).ToVector());
 
         for (int i = 0; i < v.Length; i++)

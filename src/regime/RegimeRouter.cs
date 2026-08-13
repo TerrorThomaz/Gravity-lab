@@ -292,9 +292,26 @@ public static class RegimeRouter
         bool bearCarry        = inBullTransition && prevRegime == MarketRegime.Bear
                                 && geno.EarlyBullBearCarry > 0;
 
-        bool fadeShort = !(regime == MarketRegime.Bull
-                           && duration >= (int)geno.BullMinBars
-                           && conf >= geno.BullMinConf);
+        // FadeShort: Bear-only when the gene is on, otherwise the legacy not-confirmed-Bull rule.
+        //
+        // The legacy rule leaves FadeShort running in Bear, Ranging, HighVol AND unconfident Bull.
+        // That last bucket is where its losses live: on the time-embargoed held-out window it
+        // scores Bear PF 5.28 (45 trades, +2.28%) against Bull PF 0.38 (84 trades, -0.86%), so
+        // Bull carries ~65% of the trades and subtracts 72 points from a 102-point gross. The
+        // blended ~1.2 PF is those two cancelling, which is why six retrains of the STRATEGY never
+        // moved it — the problem was never the signal.
+        //
+        // Trained, not assumed: FadeShortBearMinBars/Conf let routertrain decide how strict
+        // "confirmed bear" must be, and FadeShortBearOnly is read as a >0 ON/OFF switch (the same
+        // convention as the transition genes) so the legacy behaviour stays reachable and the GA
+        // can reject this if it does not pay.
+        bool fadeShort = geno.FadeShortBearOnly > 0
+            ? (regime == MarketRegime.Bear
+               && duration >= (int)geno.FadeShortBearMinBars
+               && conf >= geno.FadeShortBearMinConf)
+            : !(regime == MarketRegime.Bull
+                && duration >= (int)geno.BullMinBars
+                && conf >= geno.BullMinConf);
         bool grid      = regime == MarketRegime.Ranging
                         || conf < geno.GridMaxConf
                         || (inTransition && geno.TransitionSizeMult > 0);

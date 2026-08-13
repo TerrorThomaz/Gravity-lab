@@ -42,6 +42,20 @@ public class VolatilityWeightedRotator
     // throttling FadeShort and RipShort — the two strategies that exist to earn in Bear —
     // and left the long book unhedged. A hedge that costs return and raises DD is strictly
     // worse than no hedge, which is what made this a bug rather than a tuning choice.
+    // BTC drawdown intensity as a 0-1 signal, for callers that want the rotator to react to BTC
+    // itself rather than only to the regime label.
+    //
+    // Measured justification (83 coins, daily): alts run a 1.463 beta to BTC on DOWN days against
+    // 1.202 on UP days — a +0.258 asymmetry, positive in 75/83 coins. On the 212 BTC down days in
+    // cache, the median alt UNDERPERFORMED BTC by 0.864%/day. So a BTC decline is not merely
+    // "unsafe" in the abstract: it is the specific condition under which alt exposure is worth
+    // less than the same capital held in BTC, and by a margin ~8x the round-trip rotation cost.
+    //
+    // Expressed as a magnitude rather than a boolean so the rotation is proportional to how hard
+    // BTC is falling, matching the proportional structure of the beta asymmetry itself.
+    public static double BtcStress(double btcReturnPct, double fullStressPct = 3.0)
+        => btcReturnPct >= 0 ? 0.0 : Math.Clamp(-btcReturnPct / Math.Max(0.1, fullStressPct), 0.0, 1.0);
+
     public double ComputeSafetyScore(double guardMult, double atrRatio, MarketRegime regime, bool isLong = true)
     {
         // Guard signal: lower mult = more stress = higher safety

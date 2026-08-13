@@ -1460,8 +1460,13 @@ static class CombinedBacktest
             allTrades = capFiltered.Select(t => (t.EntryTime + t.HoldDuration, t.Return, t.Conf, t.Strategy, t.EntryTime, t.Symbol)).ToList();
         }
 
+        // Strategy label RETAINED. It used to be projected away here, which silently forced the
+        // 4-tuple overload of SimulatePortfolioExposureCapped — the one that cannot see which
+        // strategy a trade belongs to. That made every per-strategy portfolio mechanism
+        // (DdGatedLongs, ProtectableLongs, covariance weights) unreachable on the main path while
+        // looking wired at the call site.
         var allTradesForExposure = allTrades
-            .Select(t => (t.Time, t.Return, t.Conf, StrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG, agBullG)))
+            .Select(t => (t.Time, t.Return, t.Conf, StrategyHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG, agBullG), t.Strategy))
             .ToList();
 
         // Same trades, strategy label retained, for the guarded/unguarded comparison further down.
@@ -1485,8 +1490,29 @@ static class CombinedBacktest
                             + $"· elevated {dec.CapForRatio(1.3):P0} · stressed {dec.CapForRatio(2.0):P0})");
         }
 
-        var port5cap   = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, dynamicCap: dynCap);
-        var portKelly  = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, dynamicCap: dynCap);
+        // GRAVITY_COVSIZE=1 — inverse-variance weights with a correlation haircut. Sizing today is
+        // per-trade Kelly plus COUNT-based caps, none of which know that two positions may be the
+        // same bet. CorrelatedShock already showed correlation is the dominant risk here, so the
+        // flat cap is a crude proxy for a covariance constraint.
+        Func<string, double>? covWeight = null;
+        if (CovarianceSizing.Enabled && allTrades.Count > 0)
+        {
+            DateTime t0 = allTrades.Min(t => t.Time), t1 = allTrades.Max(t => t.Time);
+            var grids = allTrades.GroupBy(t => t.Strategy).ToDictionary(
+                g => g.Key,
+                g => CovarianceSizing.ToGrid(g.Select(t => (t.Time, t.Return)).ToList(),
+                                             t0, t1, TimeSpan.FromDays(1)));
+            // Raw per-trade returns for the METRIC; daily grids for the CORRELATION. Mixing them
+            // would compute win rate on summed buckets, which is not win rate.
+            var raws = allTrades.GroupBy(t => t.Strategy)
+                                .ToDictionary(g => g.Key, g => g.Select(t => t.Return).ToArray());
+            var w = CovarianceSizing.Compute(grids, raws);
+            CovarianceSizing.Print(w);
+            covWeight = w.For;
+        }
+
+        var port5cap   = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, dynamicCap: dynCap, strategyWeight: covWeight);
+        var portKelly  = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, dynamicCap: dynCap, strategyWeight: covWeight);
 
         string Pct(List<double> r) => r.Count > 0 ? $"WR={(double)r.Count(x => x > 0)/r.Count:P0}  Avg={r.Average():+0.00}%" : "no trades";
         Console.WriteLine($"\n{new string('═', 70)}");
@@ -1509,6 +1535,32 @@ static class CombinedBacktest
         Console.WriteLine($"  Sharpe (combined):  {Simulator.SharpeRatio(allRet, totalVCC):F2}");
         Console.WriteLine($"  Sortino (combined): {Simulator.SortinoRatio(allRet, totalVCC):F2}");
         Console.WriteLine($"  Calmar (combined):  {Simulator.CalmarRatio(allRet):F2}");
+
+        // ── Alpha / beta vs BTC ───────────────────────────────────────────────────────────
+        // Every PF above is a RAW return, so a strategy that is simply long-biased through a
+        // rising market is indistinguishable from one with edge. This decomposes each strategy's
+        // trades against the BTC move over that trade's OWN holding period — the market exposure
+        // it actually carried — and reports what is left over.
+        //
+        // The reason this matters here specifically: OOS annualises to +86-96%/yr against
+        // validation's +19.5%/yr. OOS spans the 2023-24 bull run, validation is the recent
+        // trailing slice. A 4x gap in THAT direction is what levered beta looks like; genuine
+        // edge degrades out of sample rather than quadrupling.
+        if (btcH1ForGuard is { Length: > 1 })
+        {
+            var byStrategy = allTrades
+                .GroupBy(t => t.Strategy)
+                .ToDictionary(g => g.Key,
+                              g => (IReadOnlyList<(DateTime, DateTime, double)>)
+                                   g.Select(t => (t.Entry, t.Time, t.Return)).ToList());
+
+            BetaDecomposition.PrintHeader();
+            foreach (var kv in byStrategy.OrderBy(k => k.Key))
+                BetaDecomposition.Print(kv.Key, BetaDecomposition.RegressTrades(kv.Value, btcH1ForGuard));
+
+            var all = allTrades.Select(t => (t.Entry, t.Time, t.Return)).ToList();
+            BetaDecomposition.Print("PORTFOLIO", BetaDecomposition.RegressTrades(all, btcH1ForGuard));
+        }
 
         void PrintCombinedPort(string label, Simulator.PortfolioResult p)
         {
@@ -1762,6 +1814,8 @@ static class CombinedBacktest
             // Same rotation cost the GA is now charged (a round trip on the fraction moved), so
             // training and reporting price churn identically instead of one seeing it free.
             double prevAlt = 1.0, rotationCostPct = 0.0;
+            double rotBenchPct = 0.0;   // return earned by capital rotated into BTC/ETH
+            var safeShareAt = new List<(DateTime Time, double SafeShare)>();
             for (int i = 0; i < allTradesGuardInput.Count; i++)
             {
                 var t = allTradesGuardInput[i];
@@ -1770,10 +1824,36 @@ static class CombinedBacktest
                 bool isLong = PortfolioReplay.IsLong(t.Strategy) ?? true;
                 double s = rot.ComputeSafetyScore(gs.GetMult(t.Time), gs.GetAtrRatio(t.Time), rRegimes[i], isLong);
                 scores[i] = s;
-                var (altShare, _, _) = rot.ComputeAllocation(s);
+                var (altShare, btcShare, ethShare) = rot.ComputeAllocation(s);
                 rotationCostPct += Math.Abs(altShare - prevAlt) * TradeCosts.FeeRoundTripPct;
                 prevAlt = altShare;
                 rotated.Add((t.Time, t.Return, t.Conf * altShare, t.Hold, t.Strategy));
+
+                // Record the target safe-share at this instant. The benchmark sleeve is computed
+                // ONCE below on a time grid, NOT summed per trade — rotated-out capital is a
+                // continuously-held position, not a fresh one per signal. Summing per trade
+                // over 2800 overlapping trades over-counts it by roughly the average concurrency
+                // and produced a nonsense -149pp on the first attempt.
+                safeShareAt.Add((t.Time, btcShare + ethShare));
+            }
+
+            // ── Benchmark sleeve, time-weighted ────────────────────────────────────────────
+            // Walk the BTC series once. Between consecutive signal instants the rotated-out
+            // fraction is held constant and earns BTC's return over that interval, compounded.
+            // This is a TIME-weighted holding, which is what a rotation actually is.
+            if (btcH1ForGuard is { Length: > 1 } && safeShareAt.Count > 1)
+            {
+                safeShareAt.Sort((x, y) => x.Time.CompareTo(y.Time));
+                double sleeve = 1.0;
+                for (int i = 1; i < safeShareAt.Count; i++)
+                {
+                    double share = safeShareAt[i - 1].SafeShare;
+                    if (share <= 1e-9) continue;
+                    double seg = BenchReturnPct(btcH1ForGuard, safeShareAt[i - 1].Time,
+                                                safeShareAt[i].Time - safeShareAt[i - 1].Time);
+                    sleeve *= 1.0 + share * seg / 100.0;
+                }
+                rotBenchPct = (sleeve - 1.0) * 100.0;
             }
 
             var flatIn = GuardedPortfolio.Passthrough(allTradesGuardInput);
@@ -1787,17 +1867,36 @@ static class CombinedBacktest
             if (wTot > 1e-9)
                 Console.WriteLine($"  Signal mix: guard={rotGeno.GuardWeight / wTot:P4}  atr={rotGeno.AtrWeight / wTot:P4}  regime={rotGeno.RegimeWeight / wTot:P4}");
             int mults0 = 0;
+            // Helper: benchmark return over a trade's holding window, on the BTC clock.
+            static double BenchReturnPct(Candle[]? bars, DateTime t0, TimeSpan hold)
+            {
+                if (bars is not { Length: > 1 }) return 0.0;
+                int i0 = IdxAt(bars, t0), i1 = IdxAt(bars, t0 + hold);
+                if (i0 < 0 || i1 <= i0) return 0.0;
+                double p0 = bars[i0].Close;
+                return p0 > 1e-12 ? (bars[i1].Close - p0) / p0 * 100.0 : 0.0;
+            }
+            static int IdxAt(Candle[] bars, DateTime t)
+            {
+                int lo = 0, hi = bars.Length - 1;
+                if (t <= bars[0].Time) return 0;
+                if (t >= bars[^1].Time) return bars.Length - 1;
+                while (lo < hi) { int m = (lo + hi + 1) / 2; if (bars[m].Time <= t) lo = m; else hi = m - 1; }
+                return lo;
+            }
             for (int i = 1; i < scores.Length; i++) if (Math.Abs(scores[i] - scores[i - 1]) > 1e-9) mults0++;
             Console.WriteLine($"  Safety score: min={scores.Min():F3}  mean={scores.Average():F3}  max={scores.Max():F3}   " +
                               $"→ mean alt share retained {1.0 - scores.Average():P1}");
-            double rotNet = rp5r.EndBalance - 100 - rotationCostPct;
+            // Net = alt sleeve + benchmark sleeve - turnover.
+            double rotNet = rp5r.EndBalance - 100 - rotationCostPct + rotBenchPct;
             Console.WriteLine($"  Rotation cost: {rotationCostPct:F2}pp over {mults0} allocation changes " +
                               $"(round trip on the fraction moved, at {TradeCosts.FeeRoundTripPct:F2}% each)");
             Console.WriteLine($"  {"Sizing",-18}  {"Rot off",10}  {"Rot on",10}  {"Δ net",9}  {"DD off",7}  {"DD on",7}");
             Console.WriteLine($"  {"5% per position",-18}  {rp5.EndBalance - 100,+9:F1}%  {rotNet,+9:F1}%  " +
                               $"{rotNet - (rp5.EndBalance - 100),+8:F1}pp  {rp5.MaxDrawdownPct,6:F1}%  {rp5r.MaxDrawdownPct,6:F1}%");
-            Console.WriteLine($"  NOTE: rotated-out capital is modelled as FLAT (de-risk-to-cash lower bound),");
-            Console.WriteLine($"        not as BTC/ETH exposure — a true rotation test needs benchmark returns.");
+            Console.WriteLine($"  Benchmark sleeve (rotated-out capital held in BTC/ETH): {rotBenchPct:+0.0;-0.0}pp");
+            Console.WriteLine($"  Rationale: alts run 1.463 down-beta to BTC vs 1.202 up-beta (83 coins, 75/83");
+            Console.WriteLine($"  positive); on BTC down days the median alt underperforms BTC by 0.864%/day.");
         }
 
         if (allTrades.Count >= 2)

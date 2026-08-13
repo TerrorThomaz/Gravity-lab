@@ -94,6 +94,17 @@ public class GridGenotype
     private const double SeedMutantProbability = 0.3;
 
     // adxCeiling: dynamic upper bound loaded from swing genotype at train time.
+    //
+    // The literal 20.0 that used to sit beside it in FOUR places (Random, Mutate, ClampToBounds,
+    // FromVector) is now Bounds[0,1], so widening the box actually widens the search instead of
+    // being silently clipped by the operators — the same multi-place bounds defect that cost a
+    // full FadeShort training run.
+    //
+    // CAVEAT on the "clean partition" this ceiling implements: it is derived from FadeShort's
+    // AdxThreshold, but FadeShort measures ADX(7) and Grid measures ADX(14). Those are different
+    // scales — the faster period runs higher — so subtracting 1 from one and applying it to the
+    // other is not the clean separation it reads as. BB compression is what actually keeps the two
+    // apart; this is a loose belt-and-braces on top.
     // Pass swing.AdxThreshold − 1 so the two strategies never overlap. The
     // seed-mutant branch threads it through both the clamp and the mutation so a
     // seeded draw can never breach the grid/swing regime partition either.
@@ -102,16 +113,16 @@ public class GridGenotype
         if (seed != null && rng.NextDouble() < SeedMutantProbability)
             return seed.ClampToBounds(adxCeiling).Mutate(rng, 0.5, adxCeiling);
 
-        double adxMax = Math.Min(adxCeiling, 20.0);
+        double adxMax = Math.Min(adxCeiling, Bounds[0, 1]);
         double adxMin = 8.0;
         return new()
         {
             AdxThreshold     = adxMin + rng.NextDouble() * (adxMax - adxMin),
-            BbPeriod         = rng.Next(10, 51),
-            BbWidthMaxPct    = 0.8  + rng.NextDouble() * 1.7,
-            EmaPeriod        = rng.Next(10, 101),
-            GridStepAtrMult  = 0.3  + rng.NextDouble() * 1.7,
-            GridLevels       = rng.Next(1, 4),
+            BbPeriod         = RandInt(rng, 1),
+            BbWidthMaxPct    = Rand(rng, 2),
+            EmaPeriod        = RandInt(rng, 3),
+            GridStepAtrMult  = Rand(rng, 4),
+            GridLevels       = RandInt(rng, 5),
             TakeProfitAtrMult= 0.5  + rng.NextDouble() * 2.5,
             HardStopAtrMult  = 1.5  + rng.NextDouble() * 1.5,
             BailOutAtrMult   = 1.0  + rng.NextDouble() * 3.0,
@@ -159,39 +170,49 @@ public class GridGenotype
         }
         return new GridGenotype
         {
-            AdxThreshold     = Nudge(AdxThreshold,      8.0, Math.Min(adxCeiling, 20.0), 2.0),
-            BbPeriod         = NudgeInt(BbPeriod,        10,   50,  5),
-            BbWidthMaxPct    = Nudge(BbWidthMaxPct,      0.8,  2.5, 0.3),
-            EmaPeriod        = NudgeInt(EmaPeriod,        10,  100, 10),
-            GridStepAtrMult  = Nudge(GridStepAtrMult,    0.3,  2.0, 0.3),
+            AdxThreshold     = Nudge(AdxThreshold,      8.0, Math.Min(adxCeiling, Bounds[0, 1]), 2.0),
+            BbPeriod         = NudgeInt(BbPeriod,        (int)Lo(1), (int)Hi(1),  5),
+            BbWidthMaxPct    = Nudge(BbWidthMaxPct,      Lo(2), Hi(2), 0.3),
+            EmaPeriod        = NudgeInt(EmaPeriod,       (int)Lo(3), (int)Hi(3), 10),
+            GridStepAtrMult  = Nudge(GridStepAtrMult,    Lo(4), Hi(4), 0.3),
             GridLevels       = NudgeInt(GridLevels,        1,    3,   1),
-            TakeProfitAtrMult= Nudge(TakeProfitAtrMult,  0.5,  3.0, 0.4),
-            HardStopAtrMult  = Nudge(HardStopAtrMult,    1.5,  3.0, 0.4),
-            BailOutAtrMult   = Nudge(BailOutAtrMult,     1.0,  4.0, 0.5),
+            TakeProfitAtrMult= Nudge(TakeProfitAtrMult,  Lo(6), Hi(6), 0.4),
+            HardStopAtrMult  = Nudge(HardStopAtrMult,    Lo(7), Hi(7), 0.4),
+            BailOutAtrMult   = Nudge(BailOutAtrMult,     Lo(8), Hi(8), 0.5),
             MaxHoldCandles   = NudgeInt(MaxHoldCandles,  24,  200,  12),
-            RungSellFrac     = Nudge(RungSellFrac,       0.0,  2.0, 0.3),
-            ReanchorAlpha    = Nudge(ReanchorAlpha,      0.0,  0.2, 0.04),
-            SlopeThreshold   = Nudge(SlopeThreshold,   -0.03,  0.0, 0.008),
-            SlopeLookback    = NudgeInt(SlopeLookback,     5,   60,   8),
+            RungSellFrac     = Nudge(RungSellFrac,       Lo(10), Hi(10), 0.3),
+            ReanchorAlpha    = Nudge(ReanchorAlpha,      Lo(11), Hi(11), 0.04),
+            SlopeThreshold   = Nudge(SlopeThreshold,     Lo(12), Hi(12), 0.008),
+            SlopeLookback    = NudgeInt(SlopeLookback,   (int)Lo(13), (int)Hi(13), 8),
         };
     }
 
-    public GridGenotype ClampToBounds(double adxCeiling = 20.0) => new()
+    // Bounds is the SINGLE source for the box; adxCeiling narrows index 0 only. The literals that
+    // used to be repeated here, in Mutate and in Random cost a full retrain: BbWidthMaxPct was
+    // widened to 5.0 in Bounds while Mutate and this method still clamped at 2.5, so the GA could
+    // never PROPOSE a value above it and the genotype came back at exactly 2.5 — looking like a
+    // converged interior optimum when it was a clip. Same defect as FadeShort's, same fix.
+    private static double Lo(int i) => Bounds[i, 0];
+    private static double Rand(System.Random rng, int i) => Lo(i) + rng.NextDouble() * (Hi(i) - Lo(i));
+    private static int RandInt(System.Random rng, int i) => rng.Next((int)Lo(i), (int)Hi(i) + 1);
+    private static double Hi(int i) => Bounds[i, 1];
+
+    public GridGenotype ClampToBounds(double adxCeiling = double.MaxValue) => new()
     {
-        AdxThreshold     = Math.Clamp(AdxThreshold,     8.0, Math.Min(adxCeiling, 20.0)),
-        BbPeriod         = Math.Clamp(BbPeriod,          10,   50),
-        BbWidthMaxPct    = Math.Clamp(BbWidthMaxPct,     0.8,  2.5),
-        EmaPeriod        = Math.Clamp(EmaPeriod,         10,  100),
-        GridStepAtrMult  = Math.Clamp(GridStepAtrMult,   0.3,  2.0),
-        GridLevels       = Math.Clamp(GridLevels,         1,    3),
-        TakeProfitAtrMult= Math.Clamp(TakeProfitAtrMult, 0.5,  3.0),
-        HardStopAtrMult  = Math.Clamp(HardStopAtrMult,   1.5,  3.0),
-        BailOutAtrMult   = Math.Clamp(BailOutAtrMult,    1.0,  4.0),
-        MaxHoldCandles   = Math.Clamp(MaxHoldCandles,    24,  200),
-        RungSellFrac     = Math.Clamp(RungSellFrac,      0.0,  2.0),
-        ReanchorAlpha    = Math.Clamp(ReanchorAlpha,     0.0,  0.2),
-        SlopeThreshold   = Math.Clamp(SlopeThreshold,  -0.03,  0.0),
-        SlopeLookback    = Math.Clamp(SlopeLookback,       5,   60),
+        AdxThreshold     = Math.Clamp(AdxThreshold,     Lo(0), Math.Min(adxCeiling, Hi(0))),
+        BbPeriod         = (int)Math.Clamp(BbPeriod,    Lo(1), Hi(1)),
+        BbWidthMaxPct    = Math.Clamp(BbWidthMaxPct,    Lo(2), Hi(2)),
+        EmaPeriod        = (int)Math.Clamp(EmaPeriod,   Lo(3), Hi(3)),
+        GridStepAtrMult  = Math.Clamp(GridStepAtrMult,  Lo(4), Hi(4)),
+        GridLevels       = (int)Math.Clamp(GridLevels,  Lo(5), Hi(5)),
+        TakeProfitAtrMult= Math.Clamp(TakeProfitAtrMult,Lo(6), Hi(6)),
+        HardStopAtrMult  = Math.Clamp(HardStopAtrMult,  Lo(7), Hi(7)),
+        BailOutAtrMult   = Math.Clamp(BailOutAtrMult,   Lo(8), Hi(8)),
+        MaxHoldCandles   = (int)Math.Clamp(MaxHoldCandles, Lo(9), Hi(9)),
+        RungSellFrac     = Math.Clamp(RungSellFrac,     Lo(10), Hi(10)),
+        ReanchorAlpha    = Math.Clamp(ReanchorAlpha,    Lo(11), Hi(11)),
+        SlopeThreshold   = Math.Clamp(SlopeThreshold,   Lo(12), Hi(12)),
+        SlopeLookback    = (int)Math.Clamp(SlopeLookback, Lo(13), Hi(13)),
         Fitness = Fitness,
     };
 
@@ -199,10 +220,10 @@ public class GridGenotype
     // adxCeiling is dynamic (from swing genotype), so we use 20.0 as the static upper bound.
     public static readonly double[,] Bounds =
     {
-        {  8.0, 20.0 }, // AdxThreshold
-        {   10,   50 }, // BbPeriod
-        {  0.8,  2.5 }, // BbWidthMaxPct
-        {   10,  100 }, // EmaPeriod
+        {  8.0, 35.0 }, // AdxThreshold — was [8,20], PINNED at 20: the GA wanted a looser ranging gate
+        {    5,   50 }, // BbPeriod — was [10,50], pinned LOW
+        {  0.8,  5.0 }, // BbWidthMaxPct — was [0.8,2.5], PINNED at 2.5
+        {    5,  100 }, // EmaPeriod — was [10,100], pinned LOW
         {  0.3,  2.0 }, // GridStepAtrMult
         {    1,    3 }, // GridLevels
         {  0.5,  3.0 }, // TakeProfitAtrMult
@@ -232,7 +253,7 @@ public class GridGenotype
 
     public static GridGenotype FromVector(double[] v, double adxCeiling = 20.0) => new()
     {
-        AdxThreshold      = Math.Clamp(v[0],  8.0, Math.Min(adxCeiling, 20.0)),
+        AdxThreshold      = Math.Clamp(v[0],  8.0, Math.Min(adxCeiling, Bounds[0, 1])),
         BbPeriod          = Math.Clamp((int)Math.Round(v[1]),  10,  50),
         BbWidthMaxPct     = Math.Clamp(v[2],  0.8,  2.5),
         EmaPeriod         = Math.Clamp((int)Math.Round(v[3]),  10, 100),

@@ -811,10 +811,32 @@ public static class FoldScoreHelper
     //
     // Multiplicative rather than absolute so a hand-tuned fitness_config.json still has
     // an effect: this transform is a SHAPE delta, not an override.
+    // FreqW REINSTATED (0 -> 0.5). The original reasoning — "grid session count is driven by coin
+    // volatility, not strategy quality, so a frequency bonus would just rank coins" — was sound
+    // when written and is now contradicted by evidence: ALL FOUR of Grid's entry-gate genes trained
+    // to their permissive bounds (AdxThreshold 20/20, BbWidthMaxPct 2.499/2.5, BbPeriod 10/10,
+    // EmaPeriod 10/10). Session count is demonstrably gene-controlled — the GA was straining to
+    // fire more often and was clipped by the box, not by coin volatility.
+    //
+    // Held at 0.5 rather than 1.0 because the original concern is not baseless: a volatile coin
+    // does produce more sessions regardless of genotype. Half weight lets the GA buy volume
+    // without letting coin selection dominate the score.
+    //
+    // WHAT THIS DOES NOT FIX — the unit mismatch. GridGA scores per-SESSION
+    // (GetGridSessionReturns) while the portfolio consumes per-FILL (GetGridReturns). A session
+    // filling one rung and a session filling three score IDENTICALLY at equal mean, so the
+    // objective is blind to how much the strategy actually deploys. That is why a genotype worth
+    // 0.2% of the book scored well: it optimised exactly what it was asked. The WrW/6 divisor has
+    // the same problem — it is justified by session-level win rate being "structurally high",
+    // while the measured FILL-level win rate is 32%.
+    //
+    // Changing the scoring unit is the real fix and a larger change: it would move Grid onto a
+    // different fitness scale and invalidate comparison with every previously trained grid
+    // genotype. Widen the box and pay for volume first, measure, then decide.
     public static FitnessConfig GridShape(FitnessConfig cfg) => cfg with
     {
         WrW       = cfg.WrW / 6.0,
-        FreqW     = 0.0,
+        FreqW     = cfg.FreqW * 0.5,
         QualityW  = 0.0,
         DdPenalty = cfg.DdPenalty * 2.0,
     };

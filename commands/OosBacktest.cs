@@ -439,7 +439,14 @@ static class OosBacktest
 
             var (coinFsG, fsVarLabel) = SelectVariantLabeled(fsVariants, m15);
             coinFsG ??= swingG;
-            var trades = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1, m15, ctx.With(funding.For(sym)));
+            var rawFs  = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1, m15, ctx.With(funding.For(sym)));
+            // Router-gated, like every other strategy on this path. FadeShort was the ONLY one
+            // ungated here — the same omission that existed in CombinedBacktest, fixed there and
+            // not here, so the two commands were gating different strategy sets and any val-vs-OOS
+            // comparison partly measured that difference rather than generalisation.
+            var trades = session != null
+                ? rawFs.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeShort, t.Time)).ToList()
+                : rawFs;
             var split  = SizeThenScore(trades, t => t.Time, t => t.Return);
             var scored = split.Scored;
             var vRet   = scored.Select(t => t.Return).ToList();

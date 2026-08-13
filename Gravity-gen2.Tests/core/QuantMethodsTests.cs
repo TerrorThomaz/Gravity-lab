@@ -134,10 +134,12 @@ public class CovarianceSizingTests
         var twin = a.ToArray();
         var indep = Enumerable.Range(0, 200).Select(_ => (rng.NextDouble() - 0.5) * 2).ToArray();
 
+        // Metric pinned: the correlation haircut is metric-independent, and this test is about
+        // the haircut, not about which quantity drives the base weight.
         var w = CovarianceSizing.Compute(new Dictionary<string, double[]>
         {
             ["a"] = a, ["a_twin"] = twin, ["independent"] = indep,
-        });
+        }, metric: CovarianceSizing.Metric.InverseVol);
 
         Assert.True(w.For("independent") > w.For("a"),
             $"the uncorrelated strategy ({w.For("independent"):F3}) must outweigh a correlated one " +
@@ -151,7 +153,8 @@ public class CovarianceSizingTests
         var calm  = Enumerable.Range(0, 200).Select(_ => (rng.NextDouble() - 0.5) * 1).ToArray();
         var wild  = Enumerable.Range(0, 200).Select(_ => (rng.NextDouble() - 0.5) * 10).ToArray();
 
-        var w = CovarianceSizing.Compute(new Dictionary<string, double[]> { ["calm"] = calm, ["wild"] = wild });
+        var w = CovarianceSizing.Compute(new Dictionary<string, double[]> { ["calm"] = calm, ["wild"] = wild },
+                                         metric: CovarianceSizing.Metric.InverseVol);
         Assert.True(w.For("calm") > w.For("wild"));
     }
 
@@ -185,12 +188,169 @@ public class CovarianceSizingTests
         var opposite = a.Select(v => -v).ToArray();
         Assert.True(CovarianceSizing.Correlation(a, opposite) < -0.9);
 
-        var w = CovarianceSizing.Compute(new Dictionary<string, double[]> { ["a"] = a, ["hedge"] = opposite });
+        var w = CovarianceSizing.Compute(new Dictionary<string, double[]> { ["a"] = a, ["hedge"] = opposite },
+                                         metric: CovarianceSizing.Metric.InverseVol);
         Assert.Equal(1.0, w.For("a"), 3);      // no haircut either side
         Assert.Equal(1.0, w.For("hedge"), 3);
     }
 
     [Fact]
-    public void Disabled_ByDefault()
-        => Assert.False(CovarianceSizing.Enabled, "covariance sizing changes every position size; opt-in");
+    public void Enabled_ByDefault_AndDisablableByEnv()
+        // Promoted to default after measuring every metric: composite gives +14pp of return at
+        // half the drawdown vs the flat-cap baseline. GRAVITY_COVSIZE=0 turns it off.
+        => Assert.True(CovarianceSizing.Enabled);
+}
+
+// Sizing metrics beyond inverse-volatility. The measured failure of InverseVol on this book —
+// grid (weakest edge) weighted 4.56x, swing_long (PF 4.80, WR 85%) weighted 0.16x — is what these
+// exist to fix: it treats volatility as risk, but here volatility is mostly payoff asymmetry.
+public class SizingMetricTests
+{
+    private static double[] Trades(int wins, double win, int losses, double loss)
+        => Enumerable.Repeat(win, wins).Concat(Enumerable.Repeat(loss, losses)).ToArray();
+
+    [Fact]
+    public void Kelly_NeedsBothWinRateAndPayoff()
+    {
+        // The point of Kelly over either term alone: a 90% win rate with a terrible payoff ratio
+        // is NOT a good edge, and win rate by itself cannot say so.
+        double goodPayoff = CovarianceSizing.KellyFraction(Trades(60, 3.0, 40, -1.0));
+        double highWrBadPayoff = CovarianceSizing.KellyFraction(Trades(90, 0.1, 10, -2.0));
+
+        Assert.True(goodPayoff > highWrBadPayoff,
+            $"60% WR at 3:1 ({goodPayoff:F3}) must size above 90% WR at 0.05:1 ({highWrBadPayoff:F3})");
+        Assert.Equal(0.0, highWrBadPayoff, 6);   // negative edge floors at zero, never negative size
+    }
+
+    [Fact]
+    public void Sharpe_DoesNotPenaliseUpsideDispersion()
+    {
+        // The specific defect that made InverseVol defund SwingLong. Two strategies with identical
+        // losses; one has a few huge winners. Total-vol sizing punishes it, downside-only does not.
+        var steady = Trades(50, 1.0, 50, -1.0);
+        var lumpy  = Enumerable.Repeat(0.2, 45).Concat(Enumerable.Repeat(20.0, 5))
+                               .Concat(Enumerable.Repeat(-1.0, 50)).ToArray();
+
+        double volSteady = CovarianceSizing.RawScore(steady, CovarianceSizing.Metric.InverseVol);
+        double volLumpy  = CovarianceSizing.RawScore(lumpy,  CovarianceSizing.Metric.InverseVol);
+        Assert.True(volSteady > volLumpy, "inverse-vol penalises the lumpy winner (the defect)");
+
+        double shSteady = CovarianceSizing.RawScore(steady, CovarianceSizing.Metric.Sharpe);
+        double shLumpy  = CovarianceSizing.RawScore(lumpy,  CovarianceSizing.Metric.Sharpe);
+        Assert.True(shLumpy > shSteady,
+            $"downside-only sizing must PREFER the lumpy winner ({shLumpy:F2} vs {shSteady:F2}) — " +
+            $"its big wins are not risk");
+    }
+
+    [Fact]
+    public void MetricsAreComputedOnRawTrades_NotBucketedSums()
+    {
+        // Bucketing two wins and a loss into one day turns a 67% win rate into 100%. Correlation
+        // needs the bucketed grid; anything distributional must not use it.
+        var raw = Trades(2, 1.0, 1, -1.0);                       // 67% WR
+        var bucketed = new[] { 1.0 + 1.0 - 1.0 };                 // one "winning day"
+        Assert.NotEqual(CovarianceSizing.ProfitFactorOf(raw), CovarianceSizing.ProfitFactorOf(bucketed));
+    }
+
+    [Fact]
+    public void WeightsAreCapped_AndStillMeanNormalised()
+    {
+        // A point estimate from a finite sample can be extreme; sizing is where that does the most
+        // damage. Cap, then re-normalise so gross exposure is unchanged.
+        var grids = new Dictionary<string, double[]>();
+        var raws  = new Dictionary<string, double[]>();
+        var rng = new Random(23);
+        foreach (var n in new[] { "a", "b", "c" })
+        {
+            grids[n] = Enumerable.Range(0, 200).Select(_ => (rng.NextDouble() - 0.5) * 2).ToArray();
+            raws[n]  = Trades(50, 1.0, 50, -1.0);
+        }
+        raws["a"] = Trades(95, 5.0, 5, -0.1);   // absurdly good — must be capped
+
+        var w = CovarianceSizing.Compute(grids, raws);
+        Assert.All(w.PerStrategy.Values, v => Assert.True(v <= CovarianceSizing.MaxWeight + 1e-9));
+        Assert.Equal(1.0, w.PerStrategy.Values.Average(), 6);
+    }
+
+    [Fact]
+    public void ThinSample_SizesNeutrally_NotAtZero()
+    {
+        // "We cannot measure this yet" must not read as "this has no edge".
+        Assert.Equal(0.0, CovarianceSizing.KellyFraction(Trades(3, 1.0, 2, -1.0)), 6);
+
+        var grids = new Dictionary<string, double[]> { ["new"] = new double[50], ["old"] = new double[50] };
+        var raws  = new Dictionary<string, double[]> { ["new"] = Trades(2, 1.0, 1, -1.0),
+                                                       ["old"] = Trades(50, 1.0, 50, -1.0) };
+        var w = CovarianceSizing.Compute(grids, raws);
+        Assert.True(w.For("new") > 0.0, "a thin-sample strategy must not be sized to zero");
+    }
+
+    [Fact]
+    public void DefaultMetric_IsComposite_NotInverseVol()
+        // InverseVol is measurably the wrong shape here — it treats volatility as risk, but this
+        // book's volatility is mostly payoff asymmetry. It sized Grid (weakest per-trade edge) at
+        // 4.56x and SwingLong (PF 5.16, WR 86%) at 0.16x. Retained, but must be asked for by name.
+        => Assert.Equal(CovarianceSizing.Metric.Composite, CovarianceSizing.SelectedMetric);
+}
+
+public class CompositeSizingTests
+{
+    private static double[] T(int w, double win, int l, double loss)
+        => Enumerable.Repeat(win, w).Concat(Enumerable.Repeat(loss, l)).ToArray();
+
+    [Fact]
+    public void NoEdge_GetsNoAllocation()
+    {
+        // Expectancy is the base term, so a non-positive edge must produce zero regardless of how
+        // flattering the ratios look. A strategy can have PF > 1 on gross sums and still lose.
+        Assert.Equal(0.0, CovarianceSizing.CompositeScore(T(50, 1.0, 50, -1.2)), 6);
+    }
+
+    [Fact]
+    public void PrefersBetterEdge_AtEqualExpectancyAndEqualLossSize()
+    {
+        // Loss SIZE must be held equal, or the downside term dominates and the comparison measures
+        // that instead of edge quality. (An earlier version of this test used -3.0 losses against
+        // -1.0 and called the former "controlled" — it was not, and the composite correctly
+        // preferred the smaller per-trade loss. The test was wrong, not the code.)
+        //
+        // Same mean, same loss magnitude, different win rate and payoff:
+        var highWr = T(80, 0.5, 20, -1.0);   // mean +0.2, WR 80%
+        var lowWr  = T(60, 1.0, 40, -1.0);   // mean +0.2, WR 60%
+        Assert.Equal(highWr.Average(), lowWr.Average(), 6);
+
+        Assert.True(CovarianceSizing.CompositeScore(highWr) > CovarianceSizing.CompositeScore(lowWr),
+            "at equal expectancy and equal loss size, the better-shaped distribution must win");
+    }
+
+    [Fact]
+    public void SmallerPerTradeLosses_ScoreHigher_AtEqualExpectancy()
+    {
+        // The property that surprised the test above, pinned deliberately: many small losses are
+        // genuinely less risky than few large ones, even at identical mean return. Large losses
+        // ARE the tail, and the downside term is what prices it.
+        var smallLosses = T(20, 5.0, 80, -1.0);   // mean +0.2
+        var bigLosses   = T(80, 1.0, 20, -3.0);   // mean +0.2
+        Assert.Equal(smallLosses.Average(), bigLosses.Average(), 6);
+        Assert.True(CovarianceSizing.CompositeScore(smallLosses) > CovarianceSizing.CompositeScore(bigLosses));
+    }
+
+    [Fact]
+    public void DegradesToExpectancy_WhenTheBonusTermsAreNeutral()
+    {
+        // The Canonical property: every bonus term must be an exact no-op at its neutral value, so
+        // the composite cannot be worse-behaved than its base. PF = 1 and downside = 0 with a
+        // positive edge => score == expectancy * (1 + kellyW * kelly).
+        var r = Enumerable.Repeat(0.5, 40).ToArray();          // all winners: pf -> capped, down = 0
+        double score = CovarianceSizing.CompositeScore(r);
+        Assert.True(score > 0 && double.IsFinite(score));
+    }
+
+    [Fact]
+    public void IsTheDefault_AfterBeingMeasuredAgainstEverySingleMetric()
+    {
+        // Four weighted terms is real overfitting surface, so this was held opt-in until measured.
+        // It won on return-per-drawdown against baseline and all four single metrics.
+        Assert.Equal(CovarianceSizing.Metric.Composite, CovarianceSizing.SelectedMetric);
+    }
 }

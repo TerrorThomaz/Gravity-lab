@@ -58,11 +58,11 @@ static class GridCommands
         }
         if (coinData.Count == 0) { Console.WriteLine("No data."); return; }
 
-        double adxCeiling = 20.0;
+        double adxCeiling = GridGenotype.Bounds[0, 1];
         if (File.Exists(Config.FadeShortGenoFile))
         {
             var swingGeno = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype();
-            adxCeiling = Math.Min(swingGeno.AdxThreshold - 1.0, 20.0);
+            adxCeiling = Math.Min(swingGeno.AdxThreshold - 1.0, GridGenotype.Bounds[0, 1]);
             Console.WriteLine($"  Swing AdxThreshold={swingGeno.AdxThreshold:F0} → grid ceiling={adxCeiling:F0} (clean partition)");
         }
 
@@ -168,11 +168,11 @@ static class GridCommands
         }
         if (coinData.Count == 0) { Console.WriteLine("No data."); return; }
 
-        double adxCeiling = 20.0;
+        double adxCeiling = GridGenotype.Bounds[0, 1];
         if (File.Exists(Config.FadeShortGenoFile))
         {
             var swingGeno = JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype();
-            adxCeiling = Math.Min(swingGeno.AdxThreshold - 1.0, 20.0);
+            adxCeiling = Math.Min(swingGeno.AdxThreshold - 1.0, GridGenotype.Bounds[0, 1]);
             Console.WriteLine($"  Swing AdxThreshold={swingGeno.AdxThreshold:F0} → grid ceiling={adxCeiling:F0} (clean partition)");
         }
 

@@ -436,6 +436,11 @@ public static class Simulator
         // The scalar remains the ceiling, so a dynamic cap can only ever be as loose as the
         // statically-guarded bound — it cannot smuggle the book past what GuardExposureCap allows.
         Func<DateTime, double>? dynamicCap = null,
+        // Optional per-strategy size weight (CovarianceSizing). Mean-normalised by construction,
+        // so this REDISTRIBUTES size between strategies rather than changing gross exposure — the
+        // exposure cap still binds the total. Keeping the two separable is what makes either one
+        // measurable on its own.
+        Func<string, double>? strategyWeight = null,
         double profitProtectFactor      = 1.0)   // size multiplier in protection mode; 1.0 = no reduction
     {
         GuardExposureCap(maxTotalExposurePct);
@@ -494,6 +499,7 @@ public static class Simulator
             double ddScale          = Math.Max(0.20, 1.0 - currentDd / drawdownBrakeAt);
 
             double desiredFrac = Math.Min(conf * kellyMultiplier, maxPositionFrac);
+            if (strategyWeight != null) desiredFrac = Math.Min(desiredFrac * strategyWeight(strategy), maxPositionFrac);
             double desiredEur  = desiredFrac * balance * ddScale;
             if (inProtectMode) desiredEur *= profitProtectFactor;
             double posEur      = Math.Min(desiredEur, headroomEur);

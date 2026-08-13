@@ -1045,8 +1045,20 @@ public class GridShapeTests
         Assert.Equal(2.0, g.DdPenalty, 12);
         Assert.Equal(20.0, 10.0 * g.DdPenalty, 12);
 
-        // No frequency bonus: FreqW = 0 makes Canonical's freqBonus exactly 1.0.
-        Assert.Equal(0.0, g.FreqW, 12);
+        // HALF frequency bonus, reinstated from 0.
+        //
+        // The original FreqW = 0 was justified as "grid session count is driven by coin
+        // volatility, not strategy quality, so a frequency bonus would just rank coins". Evidence
+        // now contradicts it: all four of Grid's entry-gate genes trained to their PERMISSIVE
+        // bounds (AdxThreshold 20/20, BbWidthMaxPct 2.499/2.5, BbPeriod 10/10, EmaPeriod 10/10).
+        // Session count is gene-controlled — the GA was straining to fire more often and the box
+        // stopped it, not coin volatility.
+        //
+        // Held at half rather than full because the original concern is not baseless: a volatile
+        // coin genuinely does produce more sessions regardless of genotype. Half lets the GA buy
+        // volume without letting coin selection dominate the fold score.
+        Assert.Equal(0.5, g.FreqW, 12);
+        Assert.Equal(0.5, FoldScoreHelper.GridShape(new FitnessConfig()).FreqW, 12);
     }
 
     [Fact]

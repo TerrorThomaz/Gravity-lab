@@ -11,5 +11,8 @@
   "EarlyBullFromRangingMult": 0.39948182534027127,
   "EarlyBullBearCarry": 0.5852660975250903,
   "RipShortBearMinBars": 50,
-  "RipShortBearMinConf": 0.5423963462785731
+  "RipShortBearMinConf": 0.5423963462785731,
+  "FadeShortBearOnly": 0.7572161017373624,
+  "FadeShortBearMinBars": 26.04084406157863,
+  "FadeShortBearMinConf": 0.746143665258675
 }

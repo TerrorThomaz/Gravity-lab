@@ -685,3 +685,54 @@ public class DdEntryGateBoundsTests
         Assert.Contains("DdGate=off", disabled.ToString());
     }
 }
+
+// The guard's objective used to be `(valCalmar + oosCalmar) / 2` — it was selected on the
+// validation window AND on the never-trained OOS coins. Routing the split boundary through
+// DataSplit fixed which bars were CALLED validation while the GA kept optimising against them.
+public class GuardObjectiveIsTrainOnlyTests
+{
+    private static readonly System.DateTime T0 = new(2024, 1, 1, 0, 0, 0, System.DateTimeKind.Utc);
+
+    private static Candle[] FlatBtc(int n)
+    {
+        var c = new Candle[n];
+        for (int i = 0; i < n; i++)
+            c[i] = new Candle(T0.AddHours(i), 100, 101, 99, 100, 1000);
+        return c;
+    }
+
+    private static System.Collections.Generic.List<(System.DateTime, double, double, System.TimeSpan, string)>
+        Book(int n, double ret) =>
+        System.Linq.Enumerable.Range(0, n)
+            .Select(i => (T0.AddHours(i * 8), ret, 0.05, System.TimeSpan.FromHours(48), "grid"))
+            .ToList();
+
+    [Fact]
+    public void Evaluate_ScoresOnlyTheListItIsGiven()
+    {
+        // A winning book and a losing book must not produce the same fitness. If Evaluate still
+        // averaged a second, hidden list, the two would be dragged toward each other.
+        var btc  = FlatBtc(900);
+        var g    = DynamicGuardGenotype.FromGenes(
+            System.Linq.Enumerable.Range(0, DynamicGuardGenotype.Bounds.GetLength(0))
+                .Select(i => (DynamicGuardGenotype.Bounds[i, 0] + DynamicGuardGenotype.Bounds[i, 1]) / 2.0).ToArray());
+
+        double win  = DynamicGuardGA.Evaluate(g, btc, Book(100, +2.0));
+        double lose = DynamicGuardGA.Evaluate(g, btc, Book(100, -2.0));
+
+        Assert.True(win > lose, $"winning book scored {win:F2}, losing book {lose:F2} — the objective is not reading its input");
+        Assert.True(lose < 0, "a book that only loses cannot have positive Calmar");
+    }
+
+    [Fact]
+    public void Evaluate_TakesExactlyOneTradeList()
+    {
+        // Compile-time guard. Two lists is how val and OOS both got into the objective; the fix is
+        // that a caller holding a val list now has to make a visible decision instead of passing
+        // it as a second argument. If this ever compiles with two lists again, the leak is back.
+        var m = typeof(DynamicGuardGA).GetMethod("Evaluate",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(m);
+        Assert.Equal(3, m!.GetParameters().Length);   // genotype, btcH1, trainTrades
+    }
+}

@@ -59,8 +59,11 @@ static class DynamicGuardTrainCommands
             session = new RegimeRouterSession(btcSeries, ethSeries, routerG);
         }
 
-        var valTrades = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>();
-        var oosTrades = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>();
+        // trainTrades is the ONLY list the GA sees. val and oos are built to be reported against
+        // afterwards; feeding either of them to Run is what this change exists to prevent.
+        var trainTrades = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>();
+        var valTrades   = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>();
+        var oosTrades   = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>();
 
         foreach (var sym in Config.BacktestCoins)
         {
@@ -87,57 +90,68 @@ static class DynamicGuardTrainCommands
             var m15Train = m15s.Train;
             var m15Val   = m15s.Val;
 
-            // FadeShort — exempt from guard; tighter screen matches FullTest
+            // Emit this coin's portfolio trades over an arbitrary slice, into an arbitrary list.
+            // The slice used to be hardcoded to Val everywhere below, which is how the GA ended up
+            // optimising on the validation window. Now the SAME code fills the train objective and
+            // the val report, so the two cannot drift apart.
+            //
+            // Every screen and every confidence is computed on TRAIN regardless of which slice is
+            // being emitted. DipLong and SwingLong previously derived confidence from the val
+            // trades themselves — a second, quieter val dependency that survived the boundary fix.
+            void Emit(Candle[] hs, Candle[] ms, List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> target)
             {
-                var screenH1  = h1Train.Length >= 4380 ? h1Train : h1;
-                var screenM15 = screenH1.Length == h1.Length ? m15 : m15Train;
-                var fsTr = FadeShortSimulator.GetFadeShortReturns(swingG, screenH1, screenM15).Select(t => t.Return).ToList();
-                if (fsTr.Count >= 5 && fsTr.Average() > 0
-                    && Simulator.ProfitFactor(fsTr) >= 1.3
-                    && Simulator.SortinoRatio(fsTr, screenH1.Length * 12) >= 0.5)
+                if (hs.Length < 100) return;
+
+                // FadeShort — exempt from guard; tighter screen matches FullTest
                 {
-                    double conf = Simulator.ComputeConfidence(fsTr);
-                    foreach (var (t, ret, _, _, _) in FadeShortSimulator.GetFadeShortReturns(swingG, h1Val, m15Val))
-                        valTrades.Add((t, ret, conf, TimeSpan.FromHours(swingG.MaxHoldCandles), "swing"));
+                    var screenH1  = h1Train.Length >= 4380 ? h1Train : h1;
+                    var screenM15 = screenH1.Length == h1.Length ? m15 : m15Train;
+                    var fsTr = FadeShortSimulator.GetFadeShortReturns(swingG, screenH1, screenM15).Select(t => t.Return).ToList();
+                    if (fsTr.Count >= 5 && fsTr.Average() > 0
+                        && Simulator.ProfitFactor(fsTr) >= 1.3
+                        && Simulator.SortinoRatio(fsTr, screenH1.Length * 12) >= 0.5)
+                    {
+                        double conf = Simulator.ComputeConfidence(fsTr);
+                        foreach (var (t, ret, _, _, _) in FadeShortSimulator.GetFadeShortReturns(swingG, hs, ms))
+                            target.Add((t, ret, conf, TimeSpan.FromHours(swingG.MaxHoldCandles), "swing"));
+                    }
                 }
-            }
-            // Grid — guarded
-            if (h1Train.Length >= 100)
-            {
-                var gTr = GridSimulator.GetGridReturns(gridG, h1Train).Select(t => t.Return).ToList();
-                if (gTr.Count >= 5 && gTr.Average() > 0 && Simulator.ProfitFactor(gTr) >= 1.2)
+                // Grid — guarded
                 {
-                    double conf = Simulator.ComputeConfidence(gTr);
-                    var raw   = GridSimulator.GetGridReturns(gridG, h1Val);
-                    var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList() : raw;
+                    var gTr = GridSimulator.GetGridReturns(gridG, h1Train).Select(t => t.Return).ToList();
+                    if (gTr.Count >= 5 && gTr.Average() > 0 && Simulator.ProfitFactor(gTr) >= 1.2)
+                    {
+                        double conf = Simulator.ComputeConfidence(gTr);
+                        var raw   = GridSimulator.GetGridReturns(gridG, hs);
+                        var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList() : raw;
+                        foreach (var t in gated)
+                            target.Add((t.Time, t.Return, conf, TimeSpan.FromHours(gridG.MaxHoldCandles), "grid"));
+                    }
+                }
+                // DipLong — guarded
+                if (dlG != null && ms.Length >= 400 && m15Train.Length >= 400)
+                {
+                    double conf = Simulator.ComputeConfidence(
+                        DipLongSimulator.GetDipLongReturns(dlG, h1Train, m15Train).Select(t => t.Return).ToList());
+                    var raw   = DipLongSimulator.GetDipLongReturns(dlG, hs, ms);
+                    var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
                     foreach (var t in gated)
-                        valTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(gridG.MaxHoldCandles), "grid"));
+                        target.Add((t.Time, t.Return, conf, TimeSpan.FromHours(dlG.MaxHoldCandles), "diplong"));
                 }
-            }
-            // DipLong — guarded
-            if (dlG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
-            {
-                var raw   = DipLongSimulator.GetDipLongReturns(dlG, h1Val, m15Val);
-                var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
-                if (gated.Count > 0)
+                // SwingLong — guarded
+                if (slG != null && ms.Length >= 400 && m15Train.Length >= 400)
                 {
-                    double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
+                    double conf = Simulator.ComputeConfidence(
+                        SwingLongSimulator.GetSwingLongReturns(slG, h1Train, m15Train).Select(t => t.Return).ToList());
+                    var raw   = SwingLongSimulator.GetSwingLongReturns(slG, hs, ms);
+                    var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
                     foreach (var t in gated)
-                        valTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(dlG.MaxHoldCandles), "diplong"));
+                        target.Add((t.Time, t.Return, conf, TimeSpan.FromHours(slG.MaxHoldCandles), "swing_long"));
                 }
             }
-            // SwingLong — guarded
-            if (slG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
-            {
-                var raw   = SwingLongSimulator.GetSwingLongReturns(slG, h1Val, m15Val);
-                var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
-                if (gated.Count > 0)
-                {
-                    double conf = Simulator.ComputeConfidence(gated.Select(t => t.Return).ToList());
-                    foreach (var t in gated)
-                        valTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(slG.MaxHoldCandles), "swing_long"));
-                }
-            }
+
+            Emit(h1Train, m15Train, trainTrades);   // the GA objective
+            Emit(h1Val,   m15Val,   valTrades);     // report only
         }
 
         foreach (var sym in Config.OosCoins)
@@ -201,16 +215,19 @@ static class DynamicGuardTrainCommands
             }
         }
 
-        Console.WriteLine($"  Val trades: {valTrades.Count}  OOS trades: {oosTrades.Count}");
-        Console.WriteLine($"  Guarded: val={valTrades.Count(t => DynamicGuardSession.IsGuarded(t.Strategy))}  oos={oosTrades.Count(t => DynamicGuardSession.IsGuarded(t.Strategy))}");
-        if (valTrades.Count < 20 || oosTrades.Count < 20)
+        Console.WriteLine($"  Train trades: {trainTrades.Count}  (GA objective)");
+        Console.WriteLine($"  Val trades:   {valTrades.Count}  OOS trades: {oosTrades.Count}  (report only)");
+        Console.WriteLine($"  Guarded: train={trainTrades.Count(t => DynamicGuardSession.IsGuarded(t.Strategy))}"
+                        + $"  val={valTrades.Count(t => DynamicGuardSession.IsGuarded(t.Strategy))}"
+                        + $"  oos={oosTrades.Count(t => DynamicGuardSession.IsGuarded(t.Strategy))}");
+        if (trainTrades.Count < 20)
         {
-            Console.WriteLine("  Insufficient trades — aborting."); return;
+            Console.WriteLine("  Insufficient train trades — aborting."); return;
         }
 
-        Console.WriteLine("\n  Running DynamicGuardGA (40 individuals, 60 generations)...\n");
+        Console.WriteLine("\n  Running DynamicGuardGA (40 individuals, 60 generations) on the TRAIN slice...\n");
         var ga   = new DynamicGuardGA(populationSize: 40, generations: 60);
-        var best = ga.Run(btcH1, valTrades, oosTrades);
+        var best = ga.Run(btcH1, trainTrades);
 
         // Show before/after — use ApplyCap so baseline matches fulltest exactly
         var dgSession  = new DynamicGuardSession(btcH1, best);

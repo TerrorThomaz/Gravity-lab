@@ -88,7 +88,7 @@ public class CoevolveGA
         var emptyGuard = (
             val: new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>(),
             oos: new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>());
-        var (guardVal, guardOos) = data.BtcH1.Length >= 50
+        var (guardTrain, guardHold) = data.BtcH1.Length >= 50
             ? BuildGuardTrades(fsSeed, dlSeed, slSeed, data.GridGeno, data.GridShortGeno, data, routerElite)
             : emptyGuard;
 
@@ -104,8 +104,8 @@ public class CoevolveGA
             // Capture for closures
             var routerCap   = routerElite;
             var guardCap    = guardBest;
-            var guardValCap = guardVal;
-            var guardOosCap = guardOos;
+            var guardTrainCap = guardTrain;   // the GA objective — earlier slice only
+            var guardHoldCap  = guardHold;    // reported, never optimised against
 
             // ── Parallel: Router maximises profit || Guard minimises risk ──────────
             var routerTask = Task.Run(() =>
@@ -122,10 +122,13 @@ public class CoevolveGA
 
             var guardTask = Task.Run(() =>
             {
-                if (data.BtcH1.Length < 50 || (guardValCap.Count < 20 && guardOosCap.Count < 20))
+                if (data.BtcH1.Length < 50 || guardTrainCap.Count < 20)
                     return guardCap;
+                // Objective is the EARLIER slice only. This used to pass both halves, so the guard
+                // was fit on the entire trade history and the "pseudo-oos" half it was reported
+                // against had been part of its own objective.
                 return (DynamicGuardGenotype?)new DynamicGuardGA(GuardPopSize, GuardGens)
-                    .Run(data.BtcH1, guardValCap, guardOosCap);
+                    .Run(data.BtcH1, guardTrainCap);
             });
 
             Task.WaitAll(routerTask, guardTask);
@@ -186,9 +189,9 @@ public class CoevolveGA
             // Rebuild guard trade lists using the just-evolved Router for the next round
             if (data.BtcH1.Length >= 50)
             {
-                (guardVal, guardOos) = BuildGuardTrades(
+                (guardTrain, guardHold) = BuildGuardTrades(
                     fsSeed, dlSeed, slSeed, data.GridGeno, data.GridShortGeno, data, routerElite);
-                Console.WriteLine($"  Guard trades: val={guardVal.Count}  pseudo-oos={guardOos.Count}");
+                Console.WriteLine($"  Guard trades: train={guardTrain.Count}  holdout={guardHold.Count} (holdout is report-only)");
             }
         }
 

@@ -1,11 +1,11 @@
 {
-  "GuardWeight": 0.7889357371273081,
-  "AtrWeight": 0.6531091367184528,
-  "RegimeWeight": 0.27962217903481157,
-  "BtcStressWeight": 0.6628092075313888,
-  "InvertRotation": 0.3999594186823614,
-  "MinAltShare": 0.11286989606330607,
-  "RotationDeadband": 0.21822736199551454,
-  "BtcShare": 0.5989754226799976,
-  "RotationSpeed": 0.4527773759781496
+  "GuardWeight": 0.5974826725505953,
+  "AtrWeight": 0.7781248541992862,
+  "RegimeWeight": 0.012150891260782793,
+  "BtcStressWeight": 0.3806052388573077,
+  "InvertRotation": 0.26883649433911483,
+  "MinAltShare": 0.39679753217827085,
+  "RotationDeadband": 0.27701191745784004,
+  "BtcShare": 0.4429262775743741,
+  "RotationSpeed": 0.9543387661534425
 }

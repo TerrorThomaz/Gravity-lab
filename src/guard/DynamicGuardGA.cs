@@ -40,10 +40,10 @@ public class DynamicGuardGA
 
     internal const int DefaultSeed = 42;
 
+    // trainTrades MUST come from the train slice. See Evaluate for what happens when it doesn't.
     public DynamicGuardGenotype Run(
         Candle[] btcH1,
-        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> valTrades,
-        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> oosTrades)
+        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> trainTrades)
     {
         Console.WriteLine($"  [seed] DynamicGuardGA rng seed = {_seedLabel}");
 
@@ -54,7 +54,7 @@ public class DynamicGuardGA
         for (int i = 0; i < _populationSize; i++)
         {
             var g = DynamicGuardGenotype.FromGenes(RandomGenes(nDim, _rng));
-            pop.Add(g with { Fitness = Evaluate(g, btcH1, valTrades, oosTrades) });
+            pop.Add(g with { Fitness = Evaluate(g, btcH1, trainTrades) });
         }
         pop = [.. pop.OrderByDescending(g => g.Fitness)];
 
@@ -68,7 +68,7 @@ public class DynamicGuardGA
                 for (int d = 0; d < nDim; d++)
                     genes[d] = MutateGene(d, genes[d], _rng);
                 var child = DynamicGuardGenotype.FromGenes(genes);
-                next.Add(child with { Fitness = Evaluate(child, btcH1, valTrades, oosTrades) });
+                next.Add(child with { Fitness = Evaluate(child, btcH1, trainTrades) });
             }
             pop = [.. next.OrderByDescending(g => g.Fitness)];
             if (gen % 10 == 0)
@@ -78,7 +78,7 @@ public class DynamicGuardGA
         Console.WriteLine("\n─── Bayesian refinement (30 TPE iterations) ───");
         var seedObs = pop.Take(10).Select(g => (g.ToGenes(), g.Fitness));
         var history = BayesianOptimizer.Refine(seedObs, DynamicGuardGenotype.Bounds,
-            genes => Evaluate(DynamicGuardGenotype.FromGenes(genes), btcH1, valTrades, oosTrades),
+            genes => Evaluate(DynamicGuardGenotype.FromGenes(genes), btcH1, trainTrades),
             30, _rng);
         var top  = history.OrderByDescending(h => h.Fitness).First();
         var best = DynamicGuardGenotype.FromGenes(top.Params, top.Fitness);
@@ -86,25 +86,33 @@ public class DynamicGuardGA
         return best;
     }
 
+    // ONE trade list, and it must be the TRAIN slice.
+    //
+    // This previously took (valTrades, oosTrades) and returned `(valCalmar + oosCalmar) / 2` — the
+    // guard was selected directly on the validation window AND on the never-trained OOS coins that
+    // exist to be the clean arbiter. Routing the boundary through DataSplit fixed which bars were
+    // CALLED validation while the GA went on optimising against them, so the leak survived the fix
+    // that was supposed to remove it.
+    //
+    // The damage was not subtle: every "guarded vs unguarded" comparison in fulltest and
+    // oosbacktest showed a guard being scored on the data it was fit to, which is why guarding
+    // appeared to more than double the OOS return (+29071% → +61271%) rather than trading a little
+    // return for a lot of drawdown, which is what a guard is for.
+    //
+    // Collapsing to a single parameter is deliberate: a caller that still has a val or OOS list to
+    // hand now has to decide which one to pass instead of silently averaging both.
     internal static double Evaluate(
         DynamicGuardGenotype g,
         Candle[] btcH1,
-        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> valTrades,
-        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> oosTrades)
+        List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> trainTrades)
     {
-        var session   = new DynamicGuardSession(btcH1, g);
-        var valCapped = ApplyCap(valTrades);
-        var oosCapped = ApplyCap(oosTrades);
-        var valSim    = ApplyGuard(valCapped, session);
-        var oosSim    = ApplyGuard(oosCapped, session);
+        var session = new DynamicGuardSession(btcH1, g);
+        var sim     = ApplyGuard(ApplyCap(trainTrades), session);
         // ddLongEntryGatePct takes a DD fraction. g.DdEntryGatePct is the EFFECTIVE gate: either a
         // live threshold in [0.02, 0.15] or DdGateDisabled (1.0) when the search turned the gate
         // off. Both are already fraction units — do not rescale here.
-        var valR      = Simulator.SimulatePortfolioExposureCapped(valSim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: g.DdEntryGatePct, confLossCapMin: g.ConfLossCapMin, confLossCapMax: g.ConfLossCapMax, profitProtectThreshold: g.ProfitProtectThreshold, profitProtectDrawback: g.ProfitProtectDrawback, profitProtectFactor: g.ProfitProtectFactor);
-        var oosR      = Simulator.SimulatePortfolioExposureCapped(oosSim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: g.DdEntryGatePct, confLossCapMin: g.ConfLossCapMin, confLossCapMax: g.ConfLossCapMax, profitProtectThreshold: g.ProfitProtectThreshold, profitProtectDrawback: g.ProfitProtectDrawback, profitProtectFactor: g.ProfitProtectFactor);
-        double valCalmar = (valR.EndBalance - 100.0) / Math.Max(valR.MaxDrawdownPct, 0.5);
-        double oosCalmar = (oosR.EndBalance - 100.0) / Math.Max(oosR.MaxDrawdownPct, 0.5);
-        return (valCalmar + oosCalmar) / 2.0;
+        var r = Simulator.SimulatePortfolioExposureCapped(sim, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: g.DdEntryGatePct, confLossCapMin: g.ConfLossCapMin, confLossCapMax: g.ConfLossCapMax, profitProtectThreshold: g.ProfitProtectThreshold, profitProtectDrawback: g.ProfitProtectDrawback, profitProtectFactor: g.ProfitProtectFactor);
+        return (r.EndBalance - 100.0) / Math.Max(r.MaxDrawdownPct, 0.5);
     }
 
     // Apply concurrent position cap — identical to fulltest ApplyCap, so GA sees same trade set.

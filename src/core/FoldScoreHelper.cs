@@ -119,7 +119,32 @@ public static class FoldScoreHelper
         // Set FreqW = 0 for any strategy whose problem is too many marginal trades rather than
         // too few. It is exactly 1.0 (a no-op) at FreqW = 0, and `gain` still rewards genuine
         // volume — you are removing the DOUBLE payment, not the incentive to trade.
-        double freqBonus = 1.0 + 0.15 * freqW * Math.Log(Math.Max(1.0, returns.Count / (double)minTradesPerFold));
+        //
+        // ── THE FIX: frequency is now EARNED, not granted ────────────────────────────────
+        // The bonus above was unconditional on trade quality, so any gene that could loosen an
+        // entry filter was paid for the extra volume whether or not the extra trades had an edge.
+        // Measured directly: RipShort's regime-adapt gene took 27% more trades at an IDENTICAL
+        // train profit factor (7.10 vs 7.03) and collected ~25% more fitness for it — the fitness
+        // ratio tracked the trade-count ratio almost exactly. Held-out profit factor went the
+        // other way (0.95 with the gene, 1.00 without), which is what "more trades, same quality"
+        // looks like once it meets data the GA has not seen.
+        //
+        // freqQuality gates the bonus on the two things that make extra trades worth having:
+        //   · profit factor — 0 credit at PF 1.0 (breakeven), full credit at FreqPfFull
+        //   · average return per trade — 0 credit at or below zero, full at FreqAvgFullPct
+        // Both must be good; the product means a strategy cannot buy volume credit with one while
+        // failing the other. At PF <= 1 the term is exactly 0, so adding losing trades now earns
+        // NOTHING rather than a log-scaled reward.
+        //
+        // `gain` still rewards genuine volume — this removes the unearned second payment, not the
+        // incentive to trade. Bit-for-bit unchanged at FreqW = 0, as before.
+        double avgReturn   = returns.Average();
+        double freqQuality =
+            Math.Clamp((pf - 1.0) / Math.Max(1e-9, cfg.FreqPfFull - 1.0), 0.0, 1.0) *
+            Math.Clamp(avgReturn / Math.Max(1e-9, cfg.FreqAvgFullPct), 0.0, 1.0);
+
+        double freqBonus = 1.0 + 0.15 * freqW * freqQuality
+                         * Math.Log(Math.Max(1.0, returns.Count / (double)minTradesPerFold));
 
         // RetentionW scales retention's deviation from 1.0, same lerp form as quality.
         // The 0.2 floor stays on the RAW ratio — it defines how much end-of-fold

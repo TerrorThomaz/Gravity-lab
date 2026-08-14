@@ -42,6 +42,17 @@ namespace TradingGA;
 // was confirmed at entry (used by RipShortGA for regime-conditional FoldScore).
 public static class RipShortSimulator
 {
+    // CONTROL SWITCH for the regime-adapt experiment. Set GRAVITY_RIPSHORT_NOADAPT=1 to force
+    // adapt to 0 at the point of USE, leaving the genes drawn and mutated exactly as before.
+    //
+    // Why here and not by pinning the bounds to {0,0}: the genes must still consume the same
+    // number of RNG draws, or the control run's random stream diverges from the pilot's and the
+    // comparison degrades into "two different GA runs" — which this codebase already warns is
+    // enough to land in a different basin on its own. Same seed + same draws + effect disabled
+    // isolates the gene as the only difference. Zero-width bounds would also risk a divide-by-
+    // range inside the TPE refinement.
+    private static readonly bool NoAdapt =
+        Environment.GetEnvironmentVariable("GRAVITY_RIPSHORT_NOADAPT") == "1";
     private const int AtrPeriod         = 14;
     private const int RsiPeriod         = 7;
     private const int AdxPeriod         = 7;
@@ -362,7 +373,7 @@ public static class RipShortSimulator
                     double maturity = g.RegimeAdaptPivotBars <= 0
                         ? 1.0
                         : Math.Min(1.0, bearRegimeBarsAtBar[h1Ref] / (double)g.RegimeAdaptPivotBars);
-                    double adapt = g.RegimeAdaptStrength * (1.0 - maturity);
+                    double adapt = NoAdapt ? 0.0 : g.RegimeAdaptStrength * (1.0 - maturity);
 
                     // Rally zone: RSI bounced up into 40–60 range (relief rally, not new low).
                     // Positive adapt raises the bar — a deeper bounce is required before shorting

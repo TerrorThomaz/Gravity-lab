@@ -115,13 +115,18 @@ public class FitnessConfigTests
         //   pf=2.0      -> pfMult   = 1 + (2.0-1.5)*0.5              = 1.25
         //   rr=2.0      -> rrMult   = (2.0-1.0)/1.5                  = 0.666...
         //   quality     = min(sqrt(1.25*0.666...), 2.5)              = 0.912870929...
-        //   freqBonus   = 1 + 0.15*ln(12/5)
+        //   freqQuality = clamp((pf-1)/(FreqPfFull-1),0,1) * clamp(avg/FreqAvgFullPct,0,1)
+        //                 Baseline is pf 2.00 and avg +0.9167%/trade, so the pf ramp is full and
+        //                 the avg ramp is 0.9167 -> freqQuality = 0.9167, NOT 1.0. That is the
+        //                 whole change: volume credit is now scaled by whether the trades earning
+        //                 it are any good.
+        //   freqBonus   = 1 + 0.15*freqQuality*ln(12/5)
         //   ddDiv       = 1 + maxDd*10
         //   retention   = max(0.2, gain/peakGain)
         //   base        = gain*100 * wrMult * quality * freqBonus / ddDiv * retention
         //   score       = base * (1 + 0.5*sharpe/3) * (1 + 0.3*sortino/4)
         //                 (CalmarW and PfW default to 0 -> those factors are exactly 1)
-        Assert.Equal(12.50381465957052, Score(Baseline()), precision: 9);
+        Assert.Equal(12.382864178863091, Score(Baseline()), precision: 9);
     }
 
     [Fact]
@@ -162,8 +167,8 @@ public class FitnessConfigTests
 
         Assert.True(harsh < neutral, $"DdPenalty 2.5 ({harsh}) should score below 1.0 ({neutral})");
         Assert.True(lenient > neutral, $"DdPenalty 0.0 ({lenient}) should score above 1.0 ({neutral})");
-        Assert.Equal(9.462346228864174,  harsh,   precision: 9);
-        Assert.Equal(15.913945930362482, lenient, precision: 9);
+        Assert.Equal(9.3708161353558506,  harsh,   precision: 9);
+        Assert.Equal(15.760008954916664, lenient, precision: 9);
     }
 
     [Fact]
@@ -176,7 +181,7 @@ public class FitnessConfigTests
 
         Assert.True(eager > neutral, $"FreqW 2.0 ({eager}) should score above 1.0 ({neutral})");
         Assert.True(off < neutral,   $"FreqW 0.0 ({off}) should score below 1.0 ({neutral})");
-        Assert.Equal(13.955220428059627, eager, precision: 9);
+        Assert.Equal(13.713319466644776, eager, precision: 9);
         Assert.Equal(11.05240889108141,  off,   precision: 9);
     }
 
@@ -190,8 +195,8 @@ public class FitnessConfigTests
 
         Assert.True(eager > neutral, $"WrW 2.0 ({eager}) should score above 1.0 ({neutral})");
         Assert.True(off < neutral,   $"WrW 0.0 ({off}) should score below 1.0 ({neutral})");
-        Assert.Equal(15.389310350240638, eager, precision: 9);
-        Assert.Equal(9.6183189689004,  off,   precision: 9);
+        Assert.Equal(15.240448220139193, eager, precision: 9);
+        Assert.Equal(9.5252801375869964,  off,   precision: 9);
     }
 
     [Fact]
@@ -234,9 +239,9 @@ public class FitnessConfigTests
 
         Assert.True(eager < neutral, $"QualityW 2.0 ({eager}) should score below 1.0 ({neutral})");
         Assert.True(off > neutral,   $"QualityW 0.0 ({off}) should score above 1.0 ({neutral})");
-        Assert.Equal(0.8654880282101324, neutral, precision: 9);
-        Assert.Equal(0.1081860035262662, eager,   precision: 9);
-        Assert.Equal(1.6227900528939987, off,     precision: 9);
+        Assert.Equal(0.76904327300006325, neutral, precision: 9);
+        Assert.Equal(0.096130409125007574, eager,   precision: 9);
+        Assert.Equal(1.441956136875119, off,     precision: 9);
     }
 
     [Fact]
@@ -261,7 +266,7 @@ public class FitnessConfigTests
         double harsh   = Score(r, new FitnessConfig() with { RetentionW = 2.0 });
 
         Assert.True(harsh < neutral, $"RetentionW 2.0 ({harsh}) should score below 1.0 ({neutral})");
-        Assert.Equal(10.23039381237588, harsh, precision: 9);
+        Assert.Equal(10.13143432816071, harsh, precision: 9);
     }
 
     [Fact]
@@ -282,7 +287,7 @@ public class FitnessConfigTests
 
         Assert.True(eager > neutral, $"GainW 1.5 ({eager}) should score above 1.0 ({neutral})");
         Assert.Equal(neutral * 1.5, eager, precision: 9);
-        Assert.Equal(18.755721989355777, eager, precision: 9);
+        Assert.Equal(18.574296268294638, eager, precision: 9);
     }
 
     // ── Defensive clamping of pathological configured values ─────────────────

@@ -41,9 +41,25 @@ public record FitnessConfig(
     // Clamp(Sqrt(pfMult*rrMult) * QualityW + (1 - QualityW), 0.0, 2.5).
     // Weighting happens BEFORE the 2.5 cap, so the cap still binds.  1.0 = no-op.
     double QualityW        = 1.0,
-    // Scales the log trade-count bonus: 1.0 + 0.15 * FreqW * Log(max(1, n/minTrades)).
+    // Scales the log trade-count bonus:
+    //   1.0 + 0.15 * FreqW * freqQuality * Log(max(1, n/minTrades)).
     // 1.0 = no-op.
     double FreqW           = 1.0,
+    // ── Quality gate on the frequency bonus ─────────────────────────────────────────────
+    // Extra trades only earn volume credit when they are also GOOD trades. freqQuality is the
+    // product of two clamped ramps — profit factor and average return per trade — so a genotype
+    // cannot buy frequency credit by loosening an entry filter while per-trade edge stays flat.
+    //
+    // Measured motivation: RipShort's regime-adapt gene bought 27% more trades at an unchanged
+    // train PF (7.10 vs 7.03) and collected ~25% more fitness, while held-out PF moved the wrong
+    // way (0.95 vs 1.00). The GA was not finding an edge, it was finding this term.
+    //
+    // FreqPfFull: PF at which frequency credit is full. Zero credit at PF 1.0 (breakeven) — a
+    // fold that merely breaks even gets no reward for doing it many times.
+    double FreqPfFull      = 2.0,
+    // FreqAvgFullPct: average return per trade (in PERCENT) at which credit is full. Zero at or
+    // below 0%. Set to the scale of a genuinely worthwhile trade, not the scale of a typical one.
+    double FreqAvgFullPct  = 1.0,
     // Scales drawdown sensitivity in the divisor: ddDiv = 1.0 + maxDd * 10.0 * DdPenalty.
     // Higher = harsher on drawdown. Floored at 0 so ddDiv >= 1.0.  1.0 = no-op.
     double DdPenalty       = 1.0,

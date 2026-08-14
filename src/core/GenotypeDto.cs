@@ -289,6 +289,10 @@ class SwingLongGenotypeDto
     public double PositionSizePct           { get; set; }
     public int    TimeStopBars              { get; set; }
     public double TimeStopLossPct           { get; set; }
+    // Serialised explicitly: a gene the DTO drops round-trips to 0, which for this gate means
+    // "ignore BTC" — training would save a learned routing preference and loading would silently
+    // discard it. Same failure that wrote AtrLow/AtrHigh = [0, 9999] into every high-vol genotype.
+    public double BtcAlignWeight           { get; set; }
     public double Fitness                   { get; set; }
     public double AtrLow                    { get; init; } = 0.0;
     public double AtrHigh                   { get; init; } = 9999.0;
@@ -309,6 +313,7 @@ class SwingLongGenotypeDto
         PositionSizePct           = g.PositionSizePct,
         TimeStopBars              = g.TimeStopBars,
         TimeStopLossPct           = g.TimeStopLossPct,
+        BtcAlignWeight  = g.BtcAlignWeight,
         Fitness                   = g.Fitness,
         AtrLow                    = cfg?.AtrLow  ?? 0.0,
         AtrHigh                   = cfg?.AtrHigh ?? 9999.0,
@@ -330,6 +335,8 @@ class SwingLongGenotypeDto
         PositionSizePct           = PositionSizePct           > 0 ? PositionSizePct           : 0.03,
         TimeStopBars              = TimeStopBars              > 0 ? TimeStopBars              : 999,  // 0 in old JSON → disabled
         TimeStopLossPct           = TimeStopLossPct           > 0 ? TimeStopLossPct           : 0.99,
+        // 0 is MEANINGFUL (gate off), so no `> 0 ? x : default` rewrite here.
+        BtcAlignWeight            = Math.Clamp(BtcAlignWeight, 0.0, 1.0),
         Fitness                   = Fitness,
     }.ClampToBounds();
 }

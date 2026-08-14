@@ -75,6 +75,39 @@ public class SwingLongGA
         _tradeGate         = tradeGate;
         _cfg               = cfg ?? new FitnessConfig();
         _btcSeries         = btcSeries;
+
+        // ── ROUTER AS INDICATOR ──────────────────────────────────────────────────────────
+        // Expose the BTC regime series the router itself is built on, as a time-indexed signed
+        // alignment score, so the entry test can read it. Signed so that Bull and Bear are
+        // opposite rather than merely "not each other": +conf in Bull, -conf in Bear, 0 in
+        // Ranging/HighVol, where direction genuinely carries no information.
+        //
+        // Binary search per lookup, same shape as RegimeBarLookup.TagRegimes, so this is O(log n)
+        // per entry test rather than a scan.
+        if (btcSeries is { Length: > 0 })
+        {
+            var bars = btcSeries;
+            SwingLongSimulator.BtcRegimeProbe = t =>
+            {
+                long ticks = t.Ticks;
+                if (ticks <= bars[0].Time.Ticks)  return Signed(bars[0]);
+                if (ticks >= bars[^1].Time.Ticks) return Signed(bars[^1]);
+                int lo = 0, hi = bars.Length - 1;
+                while (lo < hi)
+                {
+                    int mid = (lo + hi + 1) / 2;
+                    if (bars[mid].Time.Ticks <= ticks) lo = mid; else hi = mid - 1;
+                }
+                return Signed(bars[lo]);
+            };
+        }
+
+        static double Signed(RegimeBar b) => b.Regime switch
+        {
+            MarketRegime.Bull => +b.Confidence,
+            MarketRegime.Bear => -b.Confidence,
+            _                 => 0.0,
+        };
         _eliteCarryOver        = eliteCarryOver;
         _cataclysmStagnantGens = cataclysmStagnantGens;
         (_rng, _seed, _seedSupplied) = GaSearch.CreateRng(seed);

@@ -32,6 +32,16 @@ public class SwingLongGenotype
     public int    TimeStopBars    { get; set; }   // 10–80   h1 bars before decay activates
     public double TimeStopLossPct { get; set; }   // 0.02–0.25  max loss ratio at TimeStopBars
 
+    // ── ROUTER AS INDICATOR ──────────────────────────────────────────────────────────────
+    // Minimum BTC bullishness required before this strategy will take a long, learned rather than
+    // imposed. Mapped to a required alignment score of -1 + 2*w, so:
+    //     0.0  -> required -1.0, no score can be below it => gate always passes => EXACT no-op
+    //     0.5  -> required  0.0  => refuses to trade while BTC is net-bearish
+    //     1.0  -> required +1.0  => only trades at full BTC bull confidence
+    // 0 must be a bit-for-bit no-op or "the GA ignored BTC" is indistinguishable from "the gene
+    // had no leverage" — the same discipline the RipShort pilot needed to stay interpretable.
+    public double BtcAlignWeight { get; set; }   // 0.0–1.0, 0 = ignore BTC entirely
+
     public double Fitness { get; set; } = double.MinValue;
 
     // Bounds for BayesianOptimizer — order matches ToVector/FromVector.
@@ -51,7 +61,8 @@ public class SwingLongGenotype
         {0.01, 0.05 }, // PositionSizePct
         {  10,  80  }, // TimeStopBars
         {0.02, 0.25 }, // TimeStopLossPct
-    };
+            { 0.0,  1.0 }, // BtcAlignWeight — 0 disables
+};
 
     public static readonly double[,] BoundsLowVol =
     {
@@ -69,7 +80,8 @@ public class SwingLongGenotype
         {0.01, 0.03 }, // PositionSizePct (smaller for low-vol)
         {  20,  100 }, // TimeStopBars (longer for low-vol)
         {0.02, 0.20 }, // TimeStopLossPct
-    };
+            { 0.0,  1.0 }, // BtcAlignWeight — 0 disables
+};
 
     public static readonly double[,] BoundsHighVol =
     {
@@ -87,7 +99,8 @@ public class SwingLongGenotype
         {0.03, 0.07 }, // PositionSizePct
         {  20,  60  }, // TimeStopBars
         {0.08, 0.20 }, // TimeStopLossPct
-    };
+            { 0.0,  1.0 }, // BtcAlignWeight — 0 disables
+};
 
     public static readonly string[] ParameterNames =
     [
@@ -164,6 +177,7 @@ public class SwingLongGenotype
         PositionSizePct           = Math.Clamp(v[11], BoundsHighVol[11, 0], BoundsHighVol[11, 1]),
         TimeStopBars              = (int)Math.Clamp(Math.Round(v[12]), BoundsHighVol[12, 0], BoundsHighVol[12, 1]),
         TimeStopLossPct           = Math.Clamp(v[13], BoundsHighVol[13, 0], BoundsHighVol[13, 1]),
+        BtcAlignWeight            = v.Length > 14 ? Math.Clamp(v[14], 0.0, 1.0) : 0.0,
     };
 
     public SwingLongGenotype ClampToBoundsHighVol()
@@ -191,6 +205,7 @@ public class SwingLongGenotype
         MinDeclineAtrMult, StopLossAtrMult, TakeProfitAtrMult,
         TrailingActivationAtrMult, TrailingStopAtrMult, MaxHoldCandles, PositionSizePct,
         TimeStopBars, TimeStopLossPct,
+        BtcAlignWeight,
     ];
 
     public static SwingLongGenotype FromVector(double[] v) => new()
@@ -209,6 +224,7 @@ public class SwingLongGenotype
         PositionSizePct           = Math.Clamp(v[11], 0.01, 0.05),
         TimeStopBars              = Math.Clamp((int)Math.Round(v[12]), 10,  80),
         TimeStopLossPct           = Math.Clamp(v[13], 0.02, 0.25),
+        BtcAlignWeight            = v.Length > 14 ? Math.Clamp(v[14], 0.0, 1.0) : 0.0,
     };
 
     public static SwingLongGenotype FromVectorLowVol(double[] v) => new()
@@ -227,6 +243,7 @@ public class SwingLongGenotype
         PositionSizePct           = Math.Clamp(v[11], 0.01, 0.03),
         TimeStopBars              = Math.Clamp((int)Math.Round(v[12]), 20, 100),
         TimeStopLossPct           = Math.Clamp(v[13], 0.02, 0.20),
+        BtcAlignWeight            = v.Length > 14 ? Math.Clamp(v[14], 0.0, 1.0) : 0.0,
     };
 
     // Same seeded-init contract as Random (see SeedMutantProbability), but the
@@ -277,6 +294,7 @@ public class SwingLongGenotype
             PositionSizePct           = 0.01 + rng.NextDouble() * 0.04,
             TimeStopBars              = rng.Next(10, 81),
             TimeStopLossPct           = 0.02 + rng.NextDouble() * 0.23,
+            BtcAlignWeight  = rng.NextDouble(),
         };
     }
 
@@ -299,6 +317,7 @@ public class SwingLongGenotype
             PositionSizePct           = Pick(a.PositionSizePct,           b.PositionSizePct),
             TimeStopBars              = Pick(a.TimeStopBars,              b.TimeStopBars),
             TimeStopLossPct           = Pick(a.TimeStopLossPct,           b.TimeStopLossPct),
+            BtcAlignWeight  = Pick(a.BtcAlignWeight, b.BtcAlignWeight),
         };
     }
 
@@ -330,6 +349,7 @@ public class SwingLongGenotype
             PositionSizePct           = Nudge(PositionSizePct,    0.01, 0.05, 0.005),
             TimeStopBars              = NudgeInt(TimeStopBars,    10, 80, 8),
             TimeStopLossPct           = Nudge(TimeStopLossPct,   0.02, 0.25, 0.03),
+            BtcAlignWeight  = Nudge(BtcAlignWeight, 0.0, 1.0, 0.15),
         };
     }
 
@@ -349,6 +369,7 @@ public class SwingLongGenotype
         PositionSizePct           = Math.Clamp(PositionSizePct, 0.01, 0.05),
         TimeStopBars              = Math.Clamp(TimeStopBars,    10,  80),
         TimeStopLossPct           = Math.Clamp(TimeStopLossPct, 0.02, 0.25),
+        BtcAlignWeight  = Math.Clamp(BtcAlignWeight, 0.0, 1.0),
         Fitness = Fitness,
     };
 

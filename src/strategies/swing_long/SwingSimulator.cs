@@ -551,6 +551,20 @@ public static class SwingLongSimulator
         SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, in ExecContext ctx)
         => GetSwingLongReturns(g, h1, m15, ctx.Funding, ctx.Ratchet);
 
+    // ── ROUTER AS INDICATOR ──────────────────────────────────────────────────────────────
+    // btcRegime returns a SIGNED alignment score for a moment in time: +confidence when BTC is
+    // Bull, -confidence when Bear, 0 otherwise. It is the router's own input series, exposed to
+    // the strategy as just another indicator.
+    //
+    // Why this is different from the existing gate. RegimeRouterSession decides ON or OFF for a
+    // whole strategy, outside it, and the GA's tradeGate only WEIGHTS trades the simulator has
+    // already taken (see RipShortGA:124) — the strategy is penalised for trading in the wrong
+    // regime but can never decline to. Here the signal reaches the entry test, so a strategy can
+    // learn its own routing jointly with its entry logic instead of having one bolted on after.
+    //
+    // Null => feature absent, every existing call site bit-for-bit unchanged.
+    public static Func<DateTime, double>? BtcRegimeProbe;
+
     internal const int AtrPeriod = 14;
     internal const int RsiPeriod =  7;
     internal const int AdxPeriod =  7;
@@ -690,7 +704,23 @@ public static class SwingLongSimulator
                         // 1h BoS: close above previous candle's high (bullish)
                         bool h1Bos = h1BullBos[h1Ref];
 
-                        if (bigDrop && diverging && h1Bos)
+                        // BTC alignment gate. score is +conf in Bull, -conf in Bear, 0 elsewhere,
+                        // so `required` is the minimum BTC bullishness this genotype demands
+                        // before it will take a long. BtcAlignWeight = 0 makes required = -1,
+                        // which no score can fall below — the test is then vacuously true and
+                        // this is EXACTLY the pre-gene code path.
+                        //
+                        // One-sided by construction: the gate can only REMOVE setups, never
+                        // create them. After the frequency-bonus fix a gene can no longer profit
+                        // from loosening alone, but a routing gate that could manufacture trades
+                        // would still be answering a different question than the one asked.
+                        double btcScore = BtcRegimeProbe?.Invoke(h1[h1Ref].Time) ?? 1.0;
+                        double required = g.BtcAlignWeight <= 0.0
+                            ? -1.0
+                            : -1.0 + 2.0 * g.BtcAlignWeight;
+                        bool btcOk = btcScore >= required;
+
+                        if (bigDrop && diverging && h1Bos && btcOk)
                         {
                             cachedSetupMet = true;
                             cachedSwingLow = swingLow;

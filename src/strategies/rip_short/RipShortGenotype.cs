@@ -499,5 +499,9 @@ public class RipShortGenotype
         $"MaxH={MaxHoldCandles}bars Pos={PositionSizePct:P0} " +
         $"TStop({TimeStopBars}bars/{TimeStopLossPct:P0}) " +
         $"RegSust={RegimeSustainedBars} " +
+        // Printed so a generation log SHOWS whether the GA is exploring adaptation or has already
+        // collapsed it. Without this the only readout is the saved JSON at the very end, which
+        // cannot distinguish "converged to zero early" from "never varied".
+        $"Adapt(pivot={RegimeAdaptPivotBars} str={RegimeAdaptStrength:+0.00;-0.00;0.00}) " +
         $"F={Fitness:F4}";
 }

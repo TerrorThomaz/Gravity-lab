@@ -565,6 +565,14 @@ public static class SwingLongSimulator
     // Null => feature absent, every existing call site bit-for-bit unchanged.
     public static Func<DateTime, double>? BtcRegimeProbe;
 
+    // CONTROL SWITCH. GRAVITY_SWINGLONG_NOBTC=1 forces the gate open at the point of USE, leaving
+    // the gene drawn and mutated exactly as before so the RNG stream matches the experimental run
+    // bit for bit. Pinning the bound to {0,0} instead would change the number of draws and the
+    // control would degrade into "a second, different GA run" — which this repo already warns is
+    // enough on its own to land in a different basin.
+    private static readonly bool NoBtcGate =
+        Environment.GetEnvironmentVariable("GRAVITY_SWINGLONG_NOBTC") == "1";
+
     internal const int AtrPeriod = 14;
     internal const int RsiPeriod =  7;
     internal const int AdxPeriod =  7;
@@ -715,7 +723,7 @@ public static class SwingLongSimulator
                         // from loosening alone, but a routing gate that could manufacture trades
                         // would still be answering a different question than the one asked.
                         double btcScore = BtcRegimeProbe?.Invoke(h1[h1Ref].Time) ?? 1.0;
-                        double required = g.BtcAlignWeight <= 0.0
+                        double required = (NoBtcGate || g.BtcAlignWeight <= 0.0)
                             ? -1.0
                             : -1.0 + 2.0 * g.BtcAlignWeight;
                         bool btcOk = btcScore >= required;

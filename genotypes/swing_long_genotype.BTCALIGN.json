@@ -1,0 +1,20 @@
+{
+  "EmaPeriod": 53,
+  "AdxThreshold": 33.19885472124388,
+  "LookbackCandles": 75,
+  "RsiOversold": 38.82619367205827,
+  "RsiDivThreshold": 7.124919866269883,
+  "MinDeclineAtrMult": 3.561269527562554,
+  "StopLossAtrMult": 0.3,
+  "TakeProfitAtrMult": 10,
+  "TrailingActivationAtrMult": 3.9399923138273842,
+  "TrailingStopAtrMult": 5,
+  "MaxHoldCandles": 60,
+  "PositionSizePct": 0.05,
+  "TimeStopBars": 80,
+  "TimeStopLossPct": 0.21123929832188393,
+  "BtcAlignWeight": 0.8709998239744454,
+  "Fitness": -1.2751648773288464,
+  "AtrLow": 0,
+  "AtrHigh": 9999
+}

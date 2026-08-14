@@ -177,12 +177,43 @@ public static class FoldScoreHelper
         double sortino = PerTradeSortino(returns);
         // GainW scales the raw gain term. At 1.0 the `* gainW` factor is exact, so the
         // product below is bit-identical to the historical `gain * 100.0 * wrMult * ...`.
-        double base_   = gain * 100.0 * gainW * wrMult * qualityMult * freqBonus / ddDiv * retentionMult;
+        // ── SAMPLE-SIZE SHRINKAGE ON THE QUALITY TERMS ───────────────────────────────────
+        // WHY: every quality multiplier below rewards PER-TRADE edge and none of them cares how
+        // many trades produced it. A profit factor of 7 on 30 trades multiplies exactly as hard
+        // as a profit factor of 7 on 3000. Against that sit five compounding quality factors and
+        // exactly ONE linear term (`gain`) that falls when you trade less — so the cheapest way
+        // up is to shrink toward minTradesPerFold and keep the luckiest subset. Small samples
+        // have high variance, which is precisely what makes a lucky subset findable.
+        //
+        // Observed: SwingLong with a learnable BTC gate went to weight 0.871 (only trade above
+        // 0.74 BTC bull confidence), scored well in training, and produced val expectancy
+        // -0.711% with expanding-window efficiency 0.303 — three of four OOS windows had no
+        // usable trades at all. Closing the frequency exploit did not remove overfitting, it
+        // redirected it into extreme selectivity, because that direction was still unpriced.
+        //
+        // FORM: shrink each multiplier toward its neutral value of 1.0 by w = n / (n + k).
+        // Asymptotic, never clipped — a hard gate or a cap would create a cliff or a plateau,
+        // and this file already carries the scar from one: the tail terms were a hard gate at
+        // n=100, where deleting a WINNING trade raised the fold score 35.8%. w rises smoothly
+        // (k=50: 0.375 at n=30, 0.67 at n=100, 0.91 at n=500) so there is a gradient everywhere.
+        //
+        // A spectacular statistic on a thin sample now scores like a mediocre one until the
+        // sample earns it. This does NOT penalise selectivity — a genuinely selective strategy
+        // with a real edge converges to full credit as its trade count grows. It removes the
+        // reward for being selective by ACCIDENT.
+        //
+        // Bit-for-bit no-op at QualityShrinkK = 0, which switches shrinkage off entirely.
+        double shrinkW = cfg.QualityShrinkK <= 0.0
+            ? 1.0
+            : returns.Count / (returns.Count + cfg.QualityShrinkK);
+        double Shrink(double mult) => 1.0 + (mult - 1.0) * shrinkW;
+
+        double base_   = gain * 100.0 * gainW * wrMult * Shrink(qualityMult) * freqBonus / ddDiv * retentionMult;
         double score   = base_
-            * (1.0 + cfg.SharpeW  * Math.Max(0, Math.Min(sharpe  / 3.0,  statBonusCeiling)))
-            * (1.0 + cfg.CalmarW  * Math.Max(0, Math.Min(calmar  / 2.0,  statBonusCeiling)))
-            * (1.0 + cfg.PfW      * Math.Max(0, Math.Min(pfStat - 1.0,   statBonusCeiling)))
-            * (1.0 + cfg.SortinoW * Math.Max(0, Math.Min(sortino / 4.0,  statBonusCeiling)))
+            * Shrink(1.0 + cfg.SharpeW  * Math.Max(0, Math.Min(sharpe  / 3.0,  statBonusCeiling)))
+            * Shrink(1.0 + cfg.CalmarW  * Math.Max(0, Math.Min(calmar  / 2.0,  statBonusCeiling)))
+            * Shrink(1.0 + cfg.PfW      * Math.Max(0, Math.Min(pfStat - 1.0,   statBonusCeiling)))
+            * Shrink(1.0 + cfg.SortinoW * Math.Max(0, Math.Min(sortino / 4.0,  statBonusCeiling)))
             * volWeight;
 
         score *= CVaRPenalty(returns, cfg);

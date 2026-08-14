@@ -126,7 +126,7 @@ public class FitnessConfigTests
         //   base        = gain*100 * wrMult * quality * freqBonus / ddDiv * retention
         //   score       = base * (1 + 0.5*sharpe/3) * (1 + 0.3*sortino/4)
         //                 (CalmarW and PfW default to 0 -> those factors are exactly 1)
-        Assert.Equal(12.382864178863091, Score(Baseline()), precision: 9);
+        Assert.Equal(10.973649446869963, Score(Baseline()), precision: 9);
     }
 
     [Fact]
@@ -134,13 +134,13 @@ public class FitnessConfigTests
     {
         // Second fixture, this one with raw quality ABOVE 1.0, so it also pins the
         // quality lerp on the other side of the neutral point.
-        Assert.Equal(77.60830060738729, Score(HighQuality()), precision: 9);
+        Assert.Equal(45.705636615740843, Score(HighQuality()), precision: 9);
     }
 
     [Fact]
     public void NeutralDefaults_ReproduceHistoricalHardcodedScore_BelowWinRateKnee()
     {
-        Assert.Equal(10.799709715315416, Score(LowWinRate()), precision: 9);
+        Assert.Equal(8.1139190004487727, Score(LowWinRate()), precision: 9);
     }
 
     [Fact]
@@ -167,8 +167,8 @@ public class FitnessConfigTests
 
         Assert.True(harsh < neutral, $"DdPenalty 2.5 ({harsh}) should score below 1.0 ({neutral})");
         Assert.True(lenient > neutral, $"DdPenalty 0.0 ({lenient}) should score above 1.0 ({neutral})");
-        Assert.Equal(9.3708161353558506,  harsh,   precision: 9);
-        Assert.Equal(15.760008954916664, lenient, precision: 9);
+        Assert.Equal(8.3043833651988894,  harsh,   precision: 9);
+        Assert.Equal(13.966462932379956, lenient, precision: 9);
     }
 
     [Fact]
@@ -181,8 +181,8 @@ public class FitnessConfigTests
 
         Assert.True(eager > neutral, $"FreqW 2.0 ({eager}) should score above 1.0 ({neutral})");
         Assert.True(off < neutral,   $"FreqW 0.0 ({off}) should score below 1.0 ({neutral})");
-        Assert.Equal(13.713319466644776, eager, precision: 9);
-        Assert.Equal(11.05240889108141,  off,   precision: 9);
+        Assert.Equal(12.152694110686273, eager, precision: 9);
+        Assert.Equal(9.7946047830536518,  off,   precision: 9);
     }
 
     [Fact]
@@ -195,8 +195,8 @@ public class FitnessConfigTests
 
         Assert.True(eager > neutral, $"WrW 2.0 ({eager}) should score above 1.0 ({neutral})");
         Assert.True(off < neutral,   $"WrW 0.0 ({off}) should score below 1.0 ({neutral})");
-        Assert.Equal(15.240448220139193, eager, precision: 9);
-        Assert.Equal(9.5252801375869964,  off,   precision: 9);
+        Assert.Equal(13.50603008845534, eager, precision: 9);
+        Assert.Equal(8.4412688052845883,  off,   precision: 9);
     }
 
     [Fact]
@@ -218,7 +218,7 @@ public class FitnessConfigTests
         double eager   = Score(r, new FitnessConfig() with { QualityW = 1.3 });
 
         Assert.True(eager > neutral, $"QualityW 1.3 ({eager}) should score above 1.0 ({neutral})");
-        Assert.Equal(86.50182675083921, eager, precision: 9);
+        Assert.Equal(47.170682262458364, eager, precision: 9);
     }
 
     [Fact]
@@ -239,9 +239,9 @@ public class FitnessConfigTests
 
         Assert.True(eager < neutral, $"QualityW 2.0 ({eager}) should score below 1.0 ({neutral})");
         Assert.True(off > neutral,   $"QualityW 0.0 ({off}) should score above 1.0 ({neutral})");
-        Assert.Equal(0.76904327300006325, neutral, precision: 9);
-        Assert.Equal(0.096130409125007574, eager,   precision: 9);
-        Assert.Equal(1.441956136875119, off,     precision: 9);
+        Assert.Equal(1.3038402379592424, neutral, precision: 9);
+        Assert.Equal(1.1743809235519418, eager,   precision: 9);
+        Assert.Equal(1.4332995523665433, off,     precision: 9);
     }
 
     [Fact]
@@ -255,7 +255,7 @@ public class FitnessConfigTests
         double bigger = Score(r, new FitnessConfig() with { QualityW = 5.0 });
 
         Assert.Equal(big, bigger, precision: 12);
-        Assert.Equal(119.90803365636894, big, precision: 9);
+        Assert.Equal(52.673743389267578, big, precision: 9);
     }
 
     [Fact]
@@ -266,7 +266,7 @@ public class FitnessConfigTests
         double harsh   = Score(r, new FitnessConfig() with { RetentionW = 2.0 });
 
         Assert.True(harsh < neutral, $"RetentionW 2.0 ({harsh}) should score below 1.0 ({neutral})");
-        Assert.Equal(10.13143432816071, harsh, precision: 9);
+        Assert.Equal(8.9784404565299685, harsh, precision: 9);
     }
 
     [Fact]
@@ -275,7 +275,7 @@ public class FitnessConfigTests
         var r = EndsAtPeak();   // retentionRaw == 1.0 -> nothing for the weight to scale
         double neutral = Score(r);
         Assert.Equal(neutral, Score(r, new FitnessConfig() with { RetentionW = 3.0 }), precision: 12);
-        Assert.Equal(50.46283209729822, neutral, precision: 9);
+        Assert.Equal(27.920086485636887, neutral, precision: 9);
     }
 
     [Fact]
@@ -287,7 +287,7 @@ public class FitnessConfigTests
 
         Assert.True(eager > neutral, $"GainW 1.5 ({eager}) should score above 1.0 ({neutral})");
         Assert.Equal(neutral * 1.5, eager, precision: 9);
-        Assert.Equal(18.574296268294638, eager, precision: 9);
+        Assert.Equal(16.460474170304945, eager, precision: 9);
     }
 
     // ── Defensive clamping of pathological configured values ─────────────────

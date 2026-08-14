@@ -60,6 +60,16 @@ public record FitnessConfig(
     // FreqAvgFullPct: average return per trade (in PERCENT) at which credit is full. Zero at or
     // below 0%. Set to the scale of a genuinely worthwhile trade, not the scale of a typical one.
     double FreqAvgFullPct  = 1.0,
+    // ── Sample-size shrinkage on the quality multipliers ────────────────────────────────
+    // Half-credit trade count: each quality multiplier (qualityMult, and the Sharpe / Calmar /
+    // PF / Sortino bonus factors) is pulled toward its neutral 1.0 by w = n / (n + k).
+    //   k = 50 -> w = 0.375 at n=30, 0.67 at n=100, 0.91 at n=500, 0.98 at n=2000
+    // Set to 0 to disable, which is a bit-for-bit no-op.
+    //
+    // This exists because the quality terms are blind to sample size: PF 7 on 30 trades scored
+    // identically to PF 7 on 3000, so the GA was paid to be selective by accident. It does not
+    // punish genuine selectivity — a real edge converges to full credit as trades accumulate.
+    double QualityShrinkK  = 50.0,
     // Scales drawdown sensitivity in the divisor: ddDiv = 1.0 + maxDd * 10.0 * DdPenalty.
     // Higher = harsher on drawdown. Floored at 0 so ddDiv >= 1.0.  1.0 = no-op.
     double DdPenalty       = 1.0,

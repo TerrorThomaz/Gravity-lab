@@ -293,6 +293,7 @@ public static class RipShortSimulator
 
         var result = new List<(DateTime, double, string, int, DateTime, double)>();
 
+        double   cachedAdapt     = 0.0;   // 0 => every expression below is the pre-gene one
         bool     inTrade         = false;
         double   entry           = 0;
         double   hardStop        = 0;
@@ -347,8 +348,26 @@ public static class RipShortSimulator
                     bool trendOk = h1Closes[h1Ref] < h1Ema[h1Ref]
                                 && h1Adx[h1Ref] >= g.AdxThreshold;
 
-                    // Rally zone: RSI bounced up into 40–60 range (relief rally, not new low)
-                    bool rallyOk = h1Rsi[h1Ref] >= g.RsiRallyThreshold;
+                    // ── Regime-adaptive entry threshold (PILOT) ───────────────────────────
+                    // How established the bear regime is, 0..1, from the consecutive bear-bar
+                    // counter this simulator already maintains. A fresh downturn scores near 0;
+                    // one past RegimeAdaptPivotBars scores exactly 1.
+                    //
+                    // adapt is 0 at a mature regime and +/-RegimeAdaptStrength at a brand new one,
+                    // so a strategy can be stricter (or looser) precisely when the regime it trades
+                    // has least evidence behind it. At RegimeAdaptStrength == 0 adapt is 0 at every
+                    // bar and both expressions below reduce to the original constants EXACTLY —
+                    // that is what makes "the GA turned it off" a readable answer rather than a
+                    // slightly-perturbed one.
+                    double maturity = g.RegimeAdaptPivotBars <= 0
+                        ? 1.0
+                        : Math.Min(1.0, bearRegimeBarsAtBar[h1Ref] / (double)g.RegimeAdaptPivotBars);
+                    double adapt = g.RegimeAdaptStrength * (1.0 - maturity);
+
+                    // Rally zone: RSI bounced up into 40–60 range (relief rally, not new low).
+                    // Positive adapt raises the bar — a deeper bounce is required before shorting
+                    // into a downtrend that has not proven itself.
+                    bool rallyOk = h1Rsi[h1Ref] >= g.RsiRallyThreshold * (1.0 + adapt);
 
                     if (regimeOk && trendOk && rallyOk)
                     {
@@ -362,6 +381,7 @@ public static class RipShortSimulator
                         cachedSwingHigh  = swingHigh;
                         cachedAtrH4      = atrH4;
                         cachedRegimeBars = bearRegimeBarsAtBar[h1Ref];
+                        cachedAdapt      = adapt;
                     }
                 }
 
@@ -374,7 +394,8 @@ public static class RipShortSimulator
                     inTrade         = true;
                     entry           = m15[nextBar].Open;
                     atrEntry        = cachedAtrH4;
-                    hardStop        = cachedSwingHigh + g.StopLossAtrMult * atrEntry;
+                    // Positive adapt tightens the stop in an unproven regime; negative widens it.
+                    hardStop        = cachedSwingHigh + g.StopLossAtrMult * (1.0 - cachedAdapt) * atrEntry;
                     target          = entry - g.TakeProfitAtrMult * atrEntry;
                     trailLow        = entry;
                     trailArmed      = false;

@@ -49,6 +49,20 @@ public class RipShortGenotype
     // ── Regime-conditional fitness gene ──────────────────────────────────────────
     public int    RegimeSustainedBars  { get; set; }   // 10–100    min consecutive bear-regime h1 bars before a trade counts
 
+    // ── Regime-adaptive parameters (PILOT) ──────────────────────────────────────────
+    // Lets the strategy scale its own entry threshold and stop with how ESTABLISHED the bear
+    // regime is, instead of using one fixed setting from a fresh downturn to a mature one.
+    //
+    // The question these exist to answer is whether the GA WANTS this. RegimeAdaptStrength = 0
+    // is a bit-for-bit no-op — not "approximately neutral", exactly the old code path — so if
+    // adaptation does not pay, selection drives the gene to zero and that is the answer. A gene
+    // that cannot be switched off would only tell us the GA found SOME value for it.
+    //
+    // Signed on purpose. Positive tightens when the regime is young (stricter RSI, tighter stop);
+    // negative loosens. Which direction helps is exactly what is unknown, so it is not assumed.
+    public int    RegimeAdaptPivotBars { get; set; }   // 20–300    bars of bear regime counted as "mature"
+    public double RegimeAdaptStrength  { get; set; }   // -0.4–0.4  0 = disabled (exact no-op)
+
     public double Fitness { get; set; } = double.MinValue;
 
     // ── Seeded initialisation ────────────────────────────────────────────────────
@@ -90,6 +104,8 @@ public class RipShortGenotype
             TimeStopBars              = rng.Next(5, 51),
             TimeStopLossPct           = 0.02 + rng.NextDouble() * 0.23,
             RegimeSustainedBars  = rng.Next(10, 101),
+            RegimeAdaptPivotBars = (int)(Lo(IdxAdaptPivot) + rng.NextDouble() * (Hi(IdxAdaptPivot) - Lo(IdxAdaptPivot))),
+            RegimeAdaptStrength  = Lo(IdxAdaptStrength) + rng.NextDouble() * (Hi(IdxAdaptStrength) - Lo(IdxAdaptStrength)),
         };
     }
 
@@ -112,6 +128,8 @@ public class RipShortGenotype
             TimeStopBars              = Pick(a.TimeStopBars,              b.TimeStopBars),
             TimeStopLossPct           = Pick(a.TimeStopLossPct,           b.TimeStopLossPct),
             RegimeSustainedBars  = Pick(a.RegimeSustainedBars,  b.RegimeSustainedBars),
+            RegimeAdaptPivotBars = Pick(a.RegimeAdaptPivotBars, b.RegimeAdaptPivotBars),
+            RegimeAdaptStrength  = Pick(a.RegimeAdaptStrength,  b.RegimeAdaptStrength),
         };
     }
 
@@ -143,6 +161,8 @@ public class RipShortGenotype
             TimeStopBars              = NudgeInt(TimeStopBars,    5, 50, 5),
             TimeStopLossPct           = Nudge(TimeStopLossPct,   0.02, 0.25, 0.03),
             RegimeSustainedBars  = NudgeInt(RegimeSustainedBars, 10, 100, 10),
+            RegimeAdaptPivotBars = NudgeInt(RegimeAdaptPivotBars, (int)Lo(IdxAdaptPivot), (int)Hi(IdxAdaptPivot), 30),
+            RegimeAdaptStrength  = Nudge(RegimeAdaptStrength, Lo(IdxAdaptStrength), Hi(IdxAdaptStrength), 0.15),
         };
     }
 
@@ -169,11 +189,20 @@ public class RipShortGenotype
         TimeStopBars              = Math.Clamp(TimeStopBars,               5,   50),
         TimeStopLossPct           = Math.Clamp(TimeStopLossPct,           0.02, 0.25),
         RegimeSustainedBars  = Math.Clamp(RegimeSustainedBars,  10,  100),
+        // Omitting a field from this initialiser silently RESETS it to 0. For RegimeAdaptStrength
+        // that means the gene is disabled on every clamp, and the GA would look like it rejected
+        // adaptation when in fact the plumbing threw it away.
+        RegimeAdaptPivotBars = Math.Clamp(RegimeAdaptPivotBars, (int)Lo(IdxAdaptPivot), (int)Hi(IdxAdaptPivot)),
+        RegimeAdaptStrength  = Math.Clamp(RegimeAdaptStrength, Lo(IdxAdaptStrength), Hi(IdxAdaptStrength)),
         Fitness = Fitness,
     };
 
     // ── Bayesian optimiser interface ──────────────────────────────────────────
     // [gene, 0]=min  [gene, 1]=max — mirrors the Clamp bounds above.
+    private const int IdxAdaptPivot = 14, IdxAdaptStrength = 15;
+    private static double Lo(int i) => Bounds[i, 0];
+    private static double Hi(int i) => Bounds[i, 1];
+
     public static readonly double[,] Bounds =
     {
         { 100,  500 }, // RegimeLongEmaPeriod
@@ -190,7 +219,9 @@ public class RipShortGenotype
         {   5,   50 }, // TimeStopBars
         { 0.02,0.25 }, // TimeStopLossPct
         {  10,  100 }, // RegimeSustainedBars
-    };
+            {  20,  300 }, // RegimeAdaptPivotBars
+        {-0.4,  0.4 }, // RegimeAdaptStrength — 0 disables
+};
 
     public static readonly double[,] BoundsLowVol =
     {
@@ -208,7 +239,9 @@ public class RipShortGenotype
         {  20,  80 }, // TimeStopBars (longer for low-vol)
         { 0.02,0.20 }, // TimeStopLossPct
         {  10,  100 }, // RegimeSustainedBars
-    };
+            {  20,  300 }, // RegimeAdaptPivotBars
+        {-0.4,  0.4 }, // RegimeAdaptStrength — 0 disables
+};
 
     public static readonly double[,] BoundsHighVol =
     {
@@ -226,7 +259,9 @@ public class RipShortGenotype
         {  15,   45 }, // TimeStopBars
         { 0.08, 0.20 }, // TimeStopLossPct
         {  30,   80 }, // RegimeSustainedBars
-    };
+            {  20,  300 }, // RegimeAdaptPivotBars
+        {-0.4,  0.4 }, // RegimeAdaptStrength — 0 disables
+};
 
     public static readonly string[] ParameterNames =
     [
@@ -264,6 +299,8 @@ public class RipShortGenotype
             TimeStopBars              = rng.Next(15, 46),
             TimeStopLossPct           = 0.08 + rng.NextDouble() * 0.12,
             RegimeSustainedBars  = rng.Next(30, 81),
+            RegimeAdaptPivotBars = (int)(Lo(IdxAdaptPivot) + rng.NextDouble() * (Hi(IdxAdaptPivot) - Lo(IdxAdaptPivot))),
+            RegimeAdaptStrength  = Lo(IdxAdaptStrength) + rng.NextDouble() * (Hi(IdxAdaptStrength) - Lo(IdxAdaptStrength)),
         };
     }
 
@@ -288,6 +325,8 @@ public class RipShortGenotype
         TimeStopBars              = (int)Math.Clamp(Math.Round(v[11]), BoundsHighVol[11, 0], BoundsHighVol[11, 1]),
         TimeStopLossPct           = Math.Clamp(v[12], BoundsHighVol[12, 0], BoundsHighVol[12, 1]),
         RegimeSustainedBars       = (int)Math.Clamp(Math.Round(v[13]), BoundsHighVol[13, 0], BoundsHighVol[13, 1]),
+        RegimeAdaptPivotBars      = v.Length > IdxAdaptPivot    ? (int)Math.Clamp(Math.Round(v[IdxAdaptPivot]), BoundsHighVol[IdxAdaptPivot, 0], BoundsHighVol[IdxAdaptPivot, 1]) : (int)BoundsHighVol[IdxAdaptPivot, 0],
+        RegimeAdaptStrength       = v.Length > IdxAdaptStrength ? Math.Clamp(v[IdxAdaptStrength], BoundsHighVol[IdxAdaptStrength, 0], BoundsHighVol[IdxAdaptStrength, 1]) : 0.0,
     };
 
     public RipShortGenotype ClampToBoundsHighVol()
@@ -318,6 +357,7 @@ public class RipShortGenotype
         MaxHoldCandles, PositionSizePct,
         TimeStopBars, TimeStopLossPct,
         RegimeSustainedBars,
+        RegimeAdaptPivotBars, RegimeAdaptStrength,
     ];
 
     public static RipShortGenotype FromVector(double[] v) => new()
@@ -336,6 +376,12 @@ public class RipShortGenotype
         TimeStopBars              = Math.Clamp((int)Math.Round(v[11]),   5,  50),
         TimeStopLossPct           = Math.Clamp(v[12], 0.02, 0.25),
         RegimeSustainedBars       = Math.Clamp((int)Math.Round(v[13]), 10, 100),
+        // Older vectors (13 genes) predate these — they read as 0, which disables adaptation.
+        // Carried through the variant paths too: ClampToBoundsHighVol is FromVectorHighVol(ToVector()),
+        // so a gene missing there is silently zeroed on every clamp — which is how the diversity
+        // test caught a pivot of 0 sitting outside its own [20,300] bound.
+        RegimeAdaptPivotBars      = v.Length > IdxAdaptPivot    ? Math.Clamp((int)Math.Round(v[IdxAdaptPivot]), (int)Lo(IdxAdaptPivot), (int)Hi(IdxAdaptPivot)) : 0,
+        RegimeAdaptStrength       = v.Length > IdxAdaptStrength ? Math.Clamp(v[IdxAdaptStrength], Lo(IdxAdaptStrength), Hi(IdxAdaptStrength)) : 0.0,
     };
 
     public static RipShortGenotype FromVectorLowVol(double[] v) => new()
@@ -354,6 +400,11 @@ public class RipShortGenotype
         TimeStopBars              = Math.Clamp((int)Math.Round(v[11]),  20,  80),
         TimeStopLossPct           = Math.Clamp(v[12], 0.02, 0.20),
         RegimeSustainedBars       = Math.Clamp((int)Math.Round(v[13]), 10, 100),
+        // Carried through the variant paths too. ClampToBoundsHighVol is FromVectorHighVol(ToVector()),
+        // so a gene missing here is silently zeroed on every clamp — which is how the diversity
+        // test caught a pivot of 0 sitting outside its own [20,300] bound.
+        RegimeAdaptPivotBars      = v.Length > IdxAdaptPivot    ? Math.Clamp((int)Math.Round(v[IdxAdaptPivot]), (int)Lo(IdxAdaptPivot), (int)Hi(IdxAdaptPivot)) : 0,
+        RegimeAdaptStrength       = v.Length > IdxAdaptStrength ? Math.Clamp(v[IdxAdaptStrength], Lo(IdxAdaptStrength), Hi(IdxAdaptStrength)) : 0.0,
     };
 
     // Same seeded-init contract as Random (see SeedMutantProbability), but the
@@ -380,6 +431,8 @@ public class RipShortGenotype
             TimeStopBars              = rng.Next(20, 81),
             TimeStopLossPct           = 0.02 + rng.NextDouble() * 0.18,
             RegimeSustainedBars  = rng.Next(10, 101),
+            RegimeAdaptPivotBars = (int)(Lo(IdxAdaptPivot) + rng.NextDouble() * (Hi(IdxAdaptPivot) - Lo(IdxAdaptPivot))),
+            RegimeAdaptStrength  = Lo(IdxAdaptStrength) + rng.NextDouble() * (Hi(IdxAdaptStrength) - Lo(IdxAdaptStrength)),
         };
     }
 
@@ -399,6 +452,9 @@ public class RipShortGenotype
         TimeStopBars              = Math.Clamp(TimeStopBars,               20,  80),
         TimeStopLossPct           = Math.Clamp(TimeStopLossPct,           0.02, 0.20),
         RegimeSustainedBars  = Math.Clamp(RegimeSustainedBars,  10,  100),
+        // Carried, not dropped — see the note on ClampToBounds.
+        RegimeAdaptPivotBars = Math.Clamp(RegimeAdaptPivotBars, (int)Lo(IdxAdaptPivot), (int)Hi(IdxAdaptPivot)),
+        RegimeAdaptStrength  = Math.Clamp(RegimeAdaptStrength, Lo(IdxAdaptStrength), Hi(IdxAdaptStrength)),
         Fitness = Fitness,
     };
 
@@ -430,6 +486,8 @@ public class RipShortGenotype
             TimeStopBars              = NudgeInt(TimeStopBars,    20, 80, 5),
             TimeStopLossPct           = Nudge(TimeStopLossPct,   0.02, 0.20, 0.03),
             RegimeSustainedBars  = NudgeInt(RegimeSustainedBars, 10, 100, 10),
+            RegimeAdaptPivotBars = NudgeInt(RegimeAdaptPivotBars, (int)Lo(IdxAdaptPivot), (int)Hi(IdxAdaptPivot), 30),
+            RegimeAdaptStrength  = Nudge(RegimeAdaptStrength, Lo(IdxAdaptStrength), Hi(IdxAdaptStrength), 0.15),
         };
     }
 

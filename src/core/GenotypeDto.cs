@@ -218,6 +218,8 @@ class RipShortGenotypeDto
     public double PositionSizePct             { get; set; }
     public int    TimeStopBars                { get; set; }  // 0 = not in old JSON → use 999 (disabled)
     public double TimeStopLossPct             { get; set; }  // 0 = not in old JSON → use 0.99 (disabled)
+    public int    RegimeAdaptPivotBars      { get; set; }
+    public double RegimeAdaptStrength       { get; set; }
     public int    RegimeSustainedBars         { get; set; }
     public double Fitness                     { get; set; }
     public double AtrLow                      { get; init; } = 0.0;
@@ -239,6 +241,8 @@ class RipShortGenotypeDto
         TimeStopBars              = g.TimeStopBars,
         TimeStopLossPct           = g.TimeStopLossPct,
         RegimeSustainedBars       = g.RegimeSustainedBars,
+        RegimeAdaptPivotBars = g.RegimeAdaptPivotBars,
+        RegimeAdaptStrength  = g.RegimeAdaptStrength,
         Fitness                   = g.Fitness,
         AtrLow                    = cfg?.AtrLow  ?? 0.0,
         AtrHigh                   = cfg?.AtrHigh ?? 9999.0,
@@ -260,6 +264,11 @@ class RipShortGenotypeDto
         TimeStopBars              = TimeStopBars        > 0 ? TimeStopBars        : 999,  // 0 in old JSON → disabled
         TimeStopLossPct           = TimeStopLossPct     > 0 ? TimeStopLossPct     : 0.99,
         RegimeSustainedBars       = RegimeSustainedBars > 0 ? RegimeSustainedBars : 30,
+        // NOT defaulted via `> 0`: RegimeAdaptStrength is signed, and 0 is a MEANING (adaptation
+        // off), not a missing value. The `> 0` idiom used above would silently rewrite every
+        // genotype that legitimately learned "do not adapt" into an invented default.
+        RegimeAdaptPivotBars      = RegimeAdaptPivotBars > 0 ? RegimeAdaptPivotBars : 100,
+        RegimeAdaptStrength       = RegimeAdaptStrength,
         Fitness                   = Fitness,
     }.ClampToBounds();
 }

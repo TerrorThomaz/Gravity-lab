@@ -1,30 +1,7 @@
 namespace TradingGA;
 
-// THE evaluation. One trade list in, one verdict out.
-//
-// WHY THIS EXISTS
-// Nine commands currently evaluate strategies — backtest, gridbacktest, combinedbacktest,
-// oosbacktest, allcoinsbacktest, rankedbacktest, yearlybreakdown, fulltest, test — and they
-// overlap heavily while disagreeing in detail. Each computes its own subset of statistics, in its
-// own order, with its own thresholds, and prints them in its own format. Consequences observed in
-// this codebase:
-//
-//   · combinedbacktest gated FadeShort through the router; oosbacktest did not. The two commands
-//     were evaluating different strategy sets, so any val-vs-OOS gap partly measured that.
-//   · fulltest excluded FadeLong behind a stale comment while combinedbacktest included it.
-//   · The guard was applied in some commands and not others, with the headline row differing.
-//   · A defect fixed in one command stayed live in the others (the FadeShort gate, twice).
-//
-// A single evaluator cannot drift from itself. Commands become thin adapters that produce a trade
-// list and hand it here; what "evaluate" MEANS lives in one place.
-//
-// WHAT IT ADDS OVER THE EXISTING PIECES
-// Risk of ruin, Value at Risk and a regime-switching bootstrap did not exist anywhere. The last is
-// the important one: the repo's moving-block bootstrap preserves LOCAL autocorrelation but has no
-// concept of a regime, so it cannot answer "what if the next bear cluster runs three times longer
-// than any in the sample?" — and this book's returns are strongly regime-dependent (+5.80%/trade
-// at max BTC stress against +2.08% in calm). Resampling that ignores clustering understates the
-// tail of exactly the distribution that matters.
+// Single evaluator: one trade list in, one verdict out. Commands produce trade lists and hand them here.
+// Adds: risk of ruin, VaR, regime-switching bootstrap (preserves regime clustering that moving-block misses).
 public static class StrategyEvaluation
 {
     public readonly record struct Trade(
@@ -47,9 +24,7 @@ public static class StrategyEvaluation
         IReadOnlyDictionary<MarketRegime, (int N, double Avg, double Pf)> ByRegime,
         Grade  Verdict);
 
-    // A/B/C/D/F across the four axes that actually decide whether a backtest is believable. The
-    // components all existed already, scattered across six reports — which is part of why it took
-    // until now to notice a strategy carrying 20.7% of the book had an alpha t-stat of -0.08.
+    // A/B/C/D/F across four axes: edge, robustness, risk, sample.
     public record Grade(char Edge, char Robustness, char Risk, char Sample, string Summary)
     {
         public char Overall
@@ -103,45 +78,23 @@ public static class StrategyEvaluation
     }
 
     // ── Regime-switching bootstrap ────────────────────────────────────────────────────────
-    // Resamples trades in REGIME BLOCKS rather than uniformly. Good and bad conditions cluster in
-    // reality — a bear market is a run of correlated bad months, not bad days scattered through
-    // good ones — and a bootstrap that breaks that clustering silently reports a thinner tail than
-    // the strategy actually faces.
-    //
-    // The block is chosen by sampling a regime, then drawing a run of trades from that regime whose
-    // length is geometrically distributed around the regime's observed mean run length. That
-    // preserves BOTH the within-regime return distribution and the persistence of regimes, which a
-    // fixed-length moving-block bootstrap does not.
+    // Resamples in regime blocks (geometric run length around observed mean). Preserves both
+    // within-regime distribution and regime persistence. Moving-block bootstrap has no regime concept.
     private static (double Ruin, double Median, double P05, double P95, double MaxDd)
         RegimeSwitchingBootstrap(IReadOnlyList<Trade> trades, double posFrac, int? seed)
     {
         var rng = seed.HasValue ? new Random(seed.Value) : new Random(12345);
 
         // ── Trades → TIME STEPS ───────────────────────────────────────────────────────────
-        // This used to compound each trade sequentially: bal += ret * posFrac * bal, once per
-        // trade. For a book of 9,583 trades across ~190 coins at +2.25% mean and 5% per position
-        // that is (1.001125)^9583 ≈ 48,000× — it reported a p05 of +5,948,753%.
-        //
-        // The error is that the trades OVERLAP. A multi-coin book holds many positions at once, so
-        // its trade count is not its number of turns; compounding per trade invents a sequence of
-        // independent bets that the portfolio never took. (Identical shape to the benchmark-sleeve
-        // bug fixed earlier — summing a per-trade quantity over a concurrent book.)
-        //
-        // Bucketing by entry time into steps one median-hold wide fixes both ends: the horizon
-        // becomes the real elapsed span, and concurrency is preserved because a step holding
-        // twenty correlated losers loses twenty times as much — which is the tail the bootstrap
-        // exists to measure and the per-trade version could not represent at all.
+        // Bucket by entry time into steps one median-hold wide. Trades overlap (multi-coin book),
+        // so compounding per trade invents independent bets the portfolio never took.
         var ordered = trades.OrderBy(t => t.Entry).ToArray();
         var holds   = ordered.Select(t => (t.Exit - t.Entry).TotalHours).Where(h => h > 0).OrderBy(h => h).ToArray();
         double stepHours = holds.Length > 0 ? Math.Max(1.0, holds[holds.Length / 2]) : 1.0;
 
         DateTime t0 = ordered[0].Entry;
         var stepAgg = new SortedDictionary<long, (double Sum, int N, Dictionary<MarketRegime, int> Regs)>();
-        // Positions OPEN during each step, not merely entering it. A trade held for three steps
-        // occupies exposure in all three. Counting entries only undercounts concurrency by roughly
-        // the hold-to-step ratio, which makes the cap bind later than it really does — the step
-        // version of this bootstrap overstated the OOS book by ~6x against the portfolio sim for
-        // exactly this reason.
+        // Positions OPEN during each step (not merely entering). A trade held for 3 steps occupies exposure in all 3.
         var openCount = new Dictionary<long, int>();
 
         foreach (var t in ordered)
@@ -149,36 +102,21 @@ public static class StrategyEvaluation
             long k = (long)((t.Entry - t0).TotalHours / stepHours);
             if (!stepAgg.TryGetValue(k, out var cell))
                 cell = (0.0, 0, new Dictionary<MarketRegime, int>());
-            // Return is booked once, in the step the position was opened. Only the exposure it
-            // occupies is spread across the steps it is actually held through.
+            // Return booked once at entry; exposure spread across held steps.
             cell.Sum += t.ReturnPct / 100.0;
             cell.N++;
             cell.Regs[t.Regime] = cell.Regs.GetValueOrDefault(t.Regime) + 1;
             stepAgg[k] = cell;
 
-            // Half-open [entry, exit): a position closing exactly on a step boundary is NOT open
-            // during the step that begins there. Using an inclusive end double-counted every
-            // trade whose hold equalled the step width — which is most of them, since the step
-            // width IS the median hold.
+            // Half-open [entry, exit): closing on a step boundary = NOT open during that step.
             long kEndEx = Math.Max(k + 1, (long)Math.Ceiling((t.Exit - t0).TotalHours / stepHours));
             for (long j = k; j < kEndEx; j++)
                 openCount[j] = openCount.GetValueOrDefault(j) + 1;
         }
 
-        // ── The exposure cap, which is the whole reason stepping was needed ────────────────
-        // n concurrent positions at posFrac each want n·posFrac of the account. The live book
-        // refuses: Config.MaxTotalExposurePct caps total exposure at 30%, and every portfolio sim
-        // in this repo enforces it. The bootstrap did not, so a step holding 190 positions ran at
-        // 950% notional — unlevered-impossible, and the source of the +5,948,753% p05.
-        //
-        // Note the stepping alone does NOT fix that magnitude: log(1+x) ≈ x for small x, so summing
-        // within a step and compounding across steps agrees with per-trade compounding to first
-        // order. Both give exp(Σ posFrac·ret). The cap is what actually bounds it — and the cap
-        // cannot be applied without first knowing which trades are concurrent, which is what the
-        // steps are for.
-        //
-        // Scaling down proportionally (rather than dropping trades) matches how the simulator
-        // handles an over-subscribed book: everyone gets a smaller slice, nobody is turned away.
+        // ── The exposure cap ─────────────────────────────────────────────────────────────
+        // Config.MaxTotalExposurePct caps total exposure. Without it, a step with 190 positions
+        // runs at 950% notional. Proportional scaling (not dropping trades) matches simulator behaviour.
         var steps = stepAgg
             .Select(kv =>
             {
@@ -194,7 +132,7 @@ public static class StrategyEvaluation
         var byRegime = steps.GroupBy(s => s.Reg).ToDictionary(g => g.Key, g => g.Select(s => s.Ret).ToArray());
         var regimes  = byRegime.Keys.ToArray();
 
-        // Observed mean run length per regime, in STEPS — the unit the paths are built from.
+        // Observed mean run length per regime (in steps).
         var runLen = new Dictionary<MarketRegime, double>();
         foreach (var reg in regimes)
         {
@@ -223,14 +161,12 @@ public static class StrategyEvaluation
                 var reg = regimes[rng.Next(regimes.Length)];
                 var pool = byRegime[reg];
                 double mean = Math.Max(1.0, runLen[reg]);
-                // Geometric run length with the observed mean.
+                // Geometric run length.
                 int len = Math.Max(1, (int)Math.Ceiling(Math.Log(1 - rng.NextDouble()) / Math.Log(1 - 1.0 / mean)));
 
                 for (int i = 0; i < len && emitted < steps.Length; i++, emitted++)
                 {
-                    // Floored at −1: a step cannot lose more than the whole account. Without this
-                    // a single catastrophic step drives the balance negative and every subsequent
-                    // multiplication flips sign.
+                    // Floored at -1: a step cannot lose more than the whole account.
                     bal *= 1.0 + Math.Max(-1.0, pool[rng.Next(pool.Length)]);
                     if (bal > peak) peak = bal;
                     double d = peak > 1e-9 ? (peak - bal) / peak : 0;
@@ -258,9 +194,7 @@ public static class StrategyEvaluation
     {
         char edge = pf >= 2.0 && exp > 0 ? 'A' : pf >= 1.5 ? 'B' : pf >= 1.2 ? 'C' : pf >= 1.0 ? 'D' : 'F';
 
-        // Robustness = does the edge survive in EVERY regime it trades, or is it one regime's luck?
-        // FadeShort scored PF 5.28 in Bear and 0.38 in Bull; a blended number hid that for six
-        // retrains.
+        // Robustness: does the edge survive in every regime, or is it one regime's luck?
         var meaningful = byRegime.Where(kv => kv.Value.N >= 20).ToList();
         int losing = meaningful.Count(kv => kv.Value.Pf < 1.0);
         char rob = meaningful.Count == 0 ? 'F'
@@ -300,16 +234,11 @@ public static class StrategyEvaluation
         return Math.Sqrt(s / x.Length);
     }
 
-    // ── The single entry point every backtest command reports through ─────────────────────
-    // PortfolioReplay.Trade is the shape all three portfolio backtests already build on their way
-    // into the concurrency cap, so this adapter sits where the trade list is final: routed, capped,
-    // and about to be turned into equity. Reporting from anywhere earlier grades a book that is not
-    // the one the sim runs.
+    // ── Entry point for all backtest commands ────────────────────────────────────────────
+    // Adapter from PortfolioReplay.Trade. Tagged at ENTRY time (not exit) for regime assignment.
     public static List<Trade> FromPortfolio(IReadOnlyList<PortfolioReplay.Trade> trades, RegimeBar[]? btcRegimes = null)
     {
-        // Tagged at ENTRY, not exit. A trade opened in Bear and closed after the turn belongs to
-        // the regime that produced the signal — tagging on exit would credit the new regime with a
-        // decision made under the old one.
+        // Regime tagged at entry (the regime that produced the signal), not exit.
         var tags = btcRegimes is { Length: > 0 }
             ? RegimeBarLookup.TagRegimes(btcRegimes, trades.Select(t => t.EntryTime).ToList())
             : null;
@@ -319,10 +248,7 @@ public static class StrategyEvaluation
             tags is null ? MarketRegime.Ranging : tags[i])).ToList();
     }
 
-    // Evaluate + Print + optional trade-log export, in one call, so a command adds statistics by
-    // adding a line rather than by growing its own copy of them. Every previous report reimplemented
-    // PF/WR/Sharpe locally, which is why fulltest, combinedbacktest and oosbacktest could disagree
-    // about the same book and nothing flagged it.
+    // Evaluate + Print + optional CSV export in one call.
     public static Result Report(string label, IReadOnlyList<PortfolioReplay.Trade> trades,
                                 RegimeBar[]? btcRegimes = null, string? csvPath = null)
     {
@@ -352,9 +278,7 @@ public static class StrategyEvaluation
         }
     }
 
-    // Trade-log export, in the shape third-party evaluators (QuantPad and similar) expect.
-    // Deliberately raw per-trade rows rather than a summary: an external tool's value is that it
-    // has no stake in the choices made here, and a summary would launder those choices into it.
+    // Raw per-trade CSV for third-party evaluators (no summary — external tool should have its own view).
     public static void ExportCsv(IReadOnlyList<Trade> trades, string path)
     {
         var lines = new List<string> { "entry_time,exit_time,symbol,strategy,regime,return_pct" };

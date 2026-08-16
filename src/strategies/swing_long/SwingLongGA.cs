@@ -2,16 +2,8 @@ using System.Collections.Concurrent;
 
 namespace TradingGA;
 
-// SwingLong GA — bull-regime RSI bullish divergence + bullish BoS.
-// 5-fold walk-forward CV on TIME-based fold windows shared across coins, falling back to
-// per-coin percentage folds when no BTC regime series is supplied (same pattern as DipLongGA).
-// Uses canonical FoldScore via FoldScoreHelper.
-// Fitness = lambda x CVaR_0.4(fold_scores) + (1 - lambda) x mean(fold_scores)
-// over the SURVIVING walk-forward folds (those that reached MinTradesPerFold trades), where
-// lambda is VC-proportional on avg N/d. The fold vector is CONSTANT LENGTH: a fold that
-// never reached MinTradesPerFold enters as ThinFoldScore rather than vanishing. Monotone
-// non-decreasing in every fold score by construction — see FoldScoreHelper.AggregateFoldScores
-// for why `mean - stdMult x std` was not.
+// SwingLong GA: bull-regime RSI bullish divergence + bullish BoS.
+// Fitness: CVaR/mean blend over walk-forward folds. Uses truncation selection (not tournament).
 public class SwingLongGA
 {
     public record CoinData(
@@ -36,24 +28,8 @@ public class SwingLongGA
     private const int MinTradesPerFold = 20;
     private const int D                = 14;
 
-    // SELECTION SCHEME — deliberately NOT tournament, and deliberately left as-is.
-    //
-    // This GA picks parent A uniformly from eliteIsland (the top `eliteCount`, default 10 of 60)
-    // and parent B uniformly from the top HALF of the population. That is truncation selection,
-    // and it is HARSHER than the tournament-4 the other GAs used to run: parent A is drawn from
-    // the top 16.7% with certainty and parent B never comes from the bottom half at all, so the
-    // bottom half of the population has exactly zero reproductive probability rather than the
-    // 6.25% tournament-4 gave it. Converting it to tournament-2 would be a genuine improvement
-    // but it is a structural change to the reproduction operator, not a parameter change, and it
-    // would move this genotype to a different search regime than the one its committed
-    // parameters were selected under. HANDOFF: switching SwingLongGA to
-    // GaSearch.Tournament(population, k, _rng, g => g.Fitness) for both parents, then re-running
-    // swinglongtrain and comparing on OOS, is the right follow-up.
-    //
-    // eliteCount here sizes BOTH the reporting/BO slice AND the parent-A pool. eliteCarryOver is
-    // the number copied unchanged into the next generation (previously a hardcoded literal 5)
-    // and the number that survives a cataclysm.
-    // seed: null draws one explicitly and prints it, so any run can be reproduced.
+    // Truncation selection: parent A from elite, parent B from top half. Harsher than tournament.
+    // eliteCount sizes parent-A pool + reporting/BO slice. eliteCarryOver = real elitism knob.
     public SwingLongGA(
         int populationSize    = 60,
         int generations       = 100,
@@ -76,14 +52,7 @@ public class SwingLongGA
         _cfg               = cfg ?? new FitnessConfig();
         _btcSeries         = btcSeries;
 
-        // ── ROUTER AS INDICATOR ──────────────────────────────────────────────────────────
-        // Expose the BTC regime series the router itself is built on, as a time-indexed signed
-        // alignment score, so the entry test can read it. Signed so that Bull and Bear are
-        // opposite rather than merely "not each other": +conf in Bull, -conf in Bear, 0 in
-        // Ranging/HighVol, where direction genuinely carries no information.
-        //
-        // Binary search per lookup, same shape as RegimeBarLookup.TagRegimes, so this is O(log n)
-        // per entry test rather than a scan.
+        // Expose BTC regime as signed alignment score for entry test. O(log n) binary search.
         if (btcSeries is { Length: > 0 })
         {
             var bars = btcSeries;
@@ -135,19 +104,7 @@ public class SwingLongGA
             return FoldScoreHelper.Canonical(all, posFrac, MinTradesPerFold, _cfg, statBonusCeiling: 1.5);
         }
 
-        // Walk-forward folds, k of them, cut on CALENDAR TIME rather than array indices.
-        //
-        // With a BTC regime series available, fold boundaries are computed once on BTC
-        // (balanced on the number of active bull bars, with an embargo gap) and handed to
-        // every coin as [Start, End) time windows; each coin then binary-searches that
-        // window into its own h1/m15 arrays. Index-space bounds can NOT be shared across
-        // coins — a coin's training array is an 80% split of its own (variable-length)
-        // history, so index i is a different calendar date on every symbol, and coins
-        // shorter than a fold's start index would drop out of every later fold and dump
-        // their entire history into fold 0.
-        //
-        // Without a BTC series, fall back to per-coin percentage folds: each coin slices
-        // its own history into k equal parts, which is alignment-safe by construction.
+        // Walk-forward folds on CALENDAR TIME (BTC regime-aware when available, else per-coin %).
         int k = folds;
 
         (DateTime Start, DateTime End)[]? windows = _btcSeries != null
@@ -156,11 +113,7 @@ public class SwingLongGA
 
         var foldScores = new List<double>();
         var foldCounts = new List<int>();
-        // Folds ATTEMPTED, including the thin ones skipped below — the aggregator scales
-        // Every attempted fold is scored -- a thin one enters at ThinFoldScore -- so that
-        // concentrating all activity into one favourable
-        // market window can no longer beat trading consistently across all of them.
-        int attemptedFolds = 0;
+        int attemptedFolds = 0;  // includes thin folds
 
         for (int f = 0; f < k; f++)
         {
@@ -190,11 +143,6 @@ public class SwingLongGA
                 }
             }
 
-            // Only folds that actually reached MinTradesPerFold trades take part in the
-            // aggregation. A thin fold returns the constant -1.0 sentinel, and mixing
-            // constants into the aggregate would let a no-trade fold masquerade as a real
-            // (merely bad) one. It still counts toward attemptedFolds and enters the aggregate
-            // at ThinFoldScore, so withdrawing from a window is strictly loss-making.
             if (foldReturns.Count < MinTradesPerFold) continue;
 
             foldScores.Add(FoldScoreHelper.Canonical(foldReturns, posFrac, MinTradesPerFold, _cfg, statBonusCeiling: 1.5));
@@ -232,15 +180,8 @@ public class SwingLongGA
 
         for (int gen = 0; gen < _generations; gen++)
         {
-            // Mutation rate anneals 0.65 → 0.05 across the run. The old
-            // `stagnantGens >= 15 ? rate * 2` boost is gone — see GaSearch.Cataclysm for why
-            // doubling a per-gene PROBABILITY on a fixed creep step cannot escape a basin, and
-            // why the boost latched on permanently once it fired.
             double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
-
-            // WARNING: this parallel body must stay RNG-FREE. System.Random is not thread-safe;
-            // a single _rng draw added here would silently corrupt its internal state (and
-            // destroy reproducibility) with no exception to point at it.
+            // WARNING: parallel body must stay RNG-free.
             Parallel.ForEach(population, ind =>
                 ind.Fitness = Fitness(ind, coins, useValidation: false));
 
@@ -276,13 +217,6 @@ public class SwingLongGA
 
             if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                // CHC restart. `population` is already sorted best-first, so the survivors are
-                // exactly the individuals the normal path would have carried over — the
-                // best-so-far genotype lives through the restart, and eliteIsland (captured
-                // above from the same sorted list) still holds the champion regardless.
-                // Random(_rng) with NO genotype seed: the restart must sample the whole bounds
-                // box, not a neighbourhood of the incumbent. This matters more here than
-                // anywhere else — truncation selection converges even faster than tournament-4.
                 population = GaSearch.Cataclysm(population, _populationSize, _eliteCarryOver,
                                                 () => SwingLongGenotype.Random(_rng), ref stagnantGens);
                 if (_verbose)
@@ -295,8 +229,6 @@ public class SwingLongGA
                 nextGen.AddRange(eliteIsland.Take(_eliteCarryOver));
                 while (nextGen.Count < _populationSize)
                 {
-                    // Truncation selection — see the constructor note on why this is not a
-                    // tournament and why converting it is a separate, validated change.
                     var a = eliteIsland[_rng.Next(eliteIsland.Count)];
                     var b = population[_rng.Next(Math.Min(population.Count, _populationSize / 2))];
                     nextGen.Add(SwingLongGenotype.Crossover(a, b, _rng).Mutate(_rng, mutationRate));
@@ -305,7 +237,6 @@ public class SwingLongGA
             }
         }
 
-        // BO refinement
         if (_verbose) Console.WriteLine("\n  BO refinement (60 iterations, TPE)...");
         var boSeed = eliteIsland
             .Select(g => (g.ToVector(), g.Fitness))
@@ -328,9 +259,7 @@ public class SwingLongGA
             if (_verbose) Console.WriteLine($"  BO improved elite: {boGeno}");
         }
 
-        // Final rescore on val set
         if (_verbose) Console.WriteLine("\n=== SwingLong held-out validation ===");
-        // WARNING: RNG-free parallel body — see the note in the generation loop.
         Parallel.ForEach(eliteIsland, ind =>
             ind.Fitness = Fitness(ind, coins, useValidation: true));
         var best = eliteIsland.OrderByDescending(g => g.Fitness).First();
@@ -366,10 +295,7 @@ public class SwingLongGA
 
         for (int gen = 0; gen < _generations; gen++)
         {
-            // See Run() for why the stagnation mutation-rate boost was removed.
             double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
-
-            // WARNING: this parallel body must stay RNG-FREE — System.Random is not thread-safe.
             Parallel.ForEach(population, ind =>
                 ind.Fitness = Fitness(ind, coins, useValidation: false));
 
@@ -405,8 +331,6 @@ public class SwingLongGA
 
             if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                // Restart draws from the LowVol random factory (this run's own bounds box),
-                // unseeded — see Run() for the full rationale.
                 population = GaSearch.Cataclysm(population, _populationSize, _eliteCarryOver,
                                                 () => SwingLongGenotype.RandomLowVol(_rng), ref stagnantGens);
                 if (_verbose)
@@ -450,7 +374,6 @@ public class SwingLongGA
         }
 
         if (_verbose) Console.WriteLine("\n=== SwingLongLowVol held-out validation ===");
-        // WARNING: RNG-free parallel body — see the note in the generation loop.
         Parallel.ForEach(eliteIsland, ind =>
             ind.Fitness = Fitness(ind, coins, useValidation: true));
         var best = eliteIsland.OrderByDescending(g => g.Fitness).First();

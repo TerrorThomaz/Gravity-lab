@@ -1,12 +1,7 @@
 namespace TradingGA;
 
-// Pre-computes per-4H-bar size multipliers from BTC H1 data.
-// Three-tier response:
-//   Normal:   ATR ≤ AtrTrigger  →  mult = 1.0 (unless momentum stress)
-//   Stress:   ATR > AtrTrigger  →  mult ramps down toward SizeFloor
-//   Panic:    ATR > PanicTrigger → mult = 0.0 (full halt, ignores floor)
-// Recovery: after any trigger clears, stays at SizeFloor for RecoveryBars 4H bars.
-// O(1) per-trade lookup via binary search on tick array.
+// Pre-computes per-4H-bar size multipliers from BTC H1. Three tiers: normal/stress/panic.
+// Recovery: stays at SizeFloor for RecoveryBars after trigger clears. O(1) lookup.
 public class DynamicGuardSession
 {
     private readonly long[]   _ticks;
@@ -39,19 +34,19 @@ public class DynamicGuardSession
 
         for (int i = 0; i < n; i++)
         {
-            // Running ATR baseline (O(1) rolling sum)
+
             atrSum += atr[i];
             if (i >= atrN) atrSum -= atr[i - atrN];
             int    cnt      = Math.Min(i + 1, atrN);
             double avgAtr   = atrSum / cnt;
             double atrRatio = avgAtr > 1e-9 ? atr[i] / avgAtr : 1.0;
 
-            // Short-term momentum: (close[i] − close[i−momN]) / close[i−momN]
+
             int    momIdx = Math.Max(0, i - momN);
             double momRef = h4[momIdx].Close;
             double mom    = momRef > 1e-9 ? (h4[i].Close - momRef) / momRef : 0.0;
 
-            // Long-term momentum (8-day): used by bull-bypass logic in GetMult
+
             int    ltIdx  = Math.Max(0, i - ltN);
             double ltRef  = h4[ltIdx].Close;
             _ltMom[i]     = ltRef > 1e-9 ? (h4[i].Close - ltRef) / ltRef : 0.0;
@@ -62,7 +57,7 @@ public class DynamicGuardSession
             double mult;
             if (atrRatio > g.PanicTrigger)
             {
-                // Panic: full halt; reset the recovery countdown
+
                 mult              = 0.0;
                 recoveryCountdown = recN;
             }
@@ -70,7 +65,7 @@ public class DynamicGuardSession
             {
                 mult = g.ComputeMult(atrRatio, mom);
 
-                // Any stress clears → still clamp to floor for RecoveryBars bars
+
                 if (mult < 1.0 - 1e-9)
                     recoveryCountdown = recN;                  // reset on every stressed bar
 
@@ -84,11 +79,10 @@ public class DynamicGuardSession
         }
     }
 
-    // Standard guard multiplier (no bull bypass). Used by ScenarioGA and legacy callers.
+    // Standard guard multiplier (no bull bypass).
     public double GetMult(DateTime time) => GetMultInternal(time, applyBullBypass: false, "");
 
-    // Strategy-aware multiplier: DipLong/SwingLong bypass the guard during 8-day bull trends.
-    // Grid always gets the standard guard (fires in ranging, not bull-dependent).
+    // DipLong/SwingLong bypass during 8-day bull trends. Grid always gets standard guard.
     public double GetMult(DateTime time, string strategy)
     {
         bool isBullLong = strategy is "diplong" or "swing_long";
@@ -115,7 +109,7 @@ public class DynamicGuardSession
         return _mults[lo];
     }
 
-    // Raw 4H ATR ratio at a given time — used for diagnostics in FullTest Section 10.
+    // Raw 4H ATR ratio for diagnostics.
     public double GetAtrRatio(DateTime time)
     {
         if (_ticks.Length == 0) return 1.0;
@@ -131,20 +125,18 @@ public class DynamicGuardSession
         return _atrRatios[lo];
     }
 
-    // Hard entry block for DipLong/SwingLong when BTC 4H ATR is elevated.
-    // Intentionally NOT bypassed by BullMomBypass: high ATR widens ATR-based stops
-    // regardless of trend direction, so large per-trade losses are possible even in bull markets.
+    // Hard entry block for DipLong/SwingLong when ATR is elevated. NOT bypassed by BullMomBypass.
     public bool IsEntryBlocked(DateTime time, string strategy)
     {
         if (strategy is not ("diplong" or "swing_long")) return false;
         return GetAtrRatio(time) > _entryAtrGate;
     }
 
-    // Strategies that the guard applies to (same set as DrawdownGuard).
+
     public static bool IsGuarded(string strategy) =>
         strategy is "grid" or "gridshort" or "diplong" or "swing_long";
 
-    // Aggregates 1H candles into 4H candles (groups of 4, aligned by array index).
+
     private static Candle[] Aggregate4H(Candle[] h1)
     {
         if (h1.Length == 0) return [];
@@ -166,7 +158,7 @@ public class DynamicGuardSession
         return [.. result];
     }
 
-    // Per-bar true range (unsmoothed; smoothing done via rolling avg in constructor).
+
     private static double[] ComputeTrueRange(Candle[] bars)
     {
         var tr = new double[bars.Length];

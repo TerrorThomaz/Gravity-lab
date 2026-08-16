@@ -1,18 +1,10 @@
 namespace TradingGA;
 
-// Filters a combined trade list by per-strategy concurrent position count.
-// Trades are walked in entry-time order; a trade is skipped if its strategy
-// already has maxConcurrent open positions at that entry time.
-// HoldDuration is used to determine when each position closes.
-//
-// Apply BEFORE SimulatePortfolioExposureCapped so the EUR cap sees a realistic
-// trade list that won't blow up with 93 simultaneously correlated positions.
+// Filters combined trade list by per-strategy concurrent position count. Apply before exposure cap.
 public static class PortfolioReplay
 {
-    // Default caps per strategy kind. DirectionalCap (passed separately) limits
-    // total same-direction concurrent exposure across all strategies.
-    // NOTE: Any strategy label absent from these sets will warn once per call and be
-    // counted conservatively against both directional caps.
+    // Default caps per strategy. WARNING: unknown label → falls back to int.MaxValue,
+    // counted against both directional caps.
     public static readonly Dictionary<string, int> DefaultCaps = new()
     {
         ["fade_short"] = 10,
@@ -32,24 +24,13 @@ public static class PortfolioReplay
     private static readonly HashSet<string> ShortStrategies = new(StringComparer.OrdinalIgnoreCase)
         { "swing", "fade_short", "ripshort", "gridshort" };
 
-    // Direction of a strategy label, for consumers that must treat long and short exposure
-    // differently — the rotator's safety score inverts its regime term by direction. Null means
-    // the label is unknown; callers should pick the conservative reading rather than guess,
-    // exactly as the concurrent-cap logic below counts an unknown label against BOTH caps.
+    // Direction of a strategy. Null = unknown label → callers should be conservative.
     public static bool? IsLong(string strategy) =>
         LongStrategies.Contains(strategy)  ? true
       : ShortStrategies.Contains(strategy) ? false
       : null;
 
-    // Symbol enables a PER-COIN concurrency cap. Without it this record cannot tell
-    // "8 positions on 8 coins" from "8 positions on ONE coin" — the cap counts per STRATEGY
-    // only, so all per-coin exposure was invisible to the risk layer. That is the same
-    // accounting hole that keeps RipShort's DcaAndWait marked MUST NOT BE ENABLED, and it has
-    // to close before any multi-leg mode can be trusted.
-    //
-    // Optional with a default so existing call sites compile, but PerSymbolCap warns loudly
-    // when it is asked to enforce a limit on trades that carry no symbol — a silent no-op here
-    // would be worse than the missing feature.
+    // Symbol enables per-coin cap. Optional, but PerSymbolCap warns if trades carry no Symbol.
     public record Trade(
         string   Strategy,
         DateTime EntryTime,
@@ -58,7 +39,7 @@ public static class PortfolioReplay
         double   Conf,
         string   Symbol = "");
 
-    // Filter trades by concurrent position cap. Returns a new list with capped trades removed.
+
     public static List<Trade> FilterByConcurrentCap(
         IEnumerable<Trade> trades,
         Dictionary<string, int>? caps = null,
@@ -79,7 +60,7 @@ public static class PortfolioReplay
 
         foreach (var t in sorted)
         {
-            // Warn once if caps has no entry for this label
+
             if (!caps.TryGetValue(t.Strategy, out int cap))
             {
                 cap = int.MaxValue;
@@ -101,9 +82,7 @@ public static class PortfolioReplay
 
             if (closes.Count >= cap) continue;
 
-            // Per-coin cap. This is what makes a multi-leg mode safe: without it, N legs on one
-            // coin look identical to N positions spread across N coins, and the concentration
-            // risk is invisible.
+            // Per-coin cap.
             List<DateTime>? symCloses = null;
             if (perSymbolCap != int.MaxValue)
             {
@@ -126,8 +105,7 @@ public static class PortfolioReplay
                 }
             }
 
-            // An unrecognised label has no known direction, so it counts against BOTH
-            // directional caps rather than escaping them — the conservative choice.
+            // Unknown label → counts against both directional caps.
             bool knownLong  = LongStrategies.Contains(t.Strategy);
             bool knownShort = ShortStrategies.Contains(t.Strategy);
             bool unknownDir = !knownLong && !knownShort;

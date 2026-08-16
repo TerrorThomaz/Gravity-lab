@@ -1,23 +1,7 @@
 namespace TradingGA;
 
-// Genetic algorithm for the fade-long strategy.
-// Bear-regime oversold bounce: fires only in detected bear markets (EMA slope
-// structure), so the GA only needs to generalise over bear periods.
-//
-// FoldScore filters trades to those where the bear regime has been confirmed
-// for at least RegimeSustainedBars consecutive h1 bars at entry. Regime is
-// measured by EMA conditions (close < EMA AND RegimeEma declining) — not ADX,
-// which is entry-level. This prevents noise trades polluting the score.
-//
-// Protection mode (profit protect) is handled by DynamicGuardGenotype — moved there
-// so the guard trains on all strategies combined (better N/d ratio).
-//
-// Fitness = lambda x CVaR_0.4(fold_scores) + (1 - lambda) x mean(fold_scores)
-// over the SURVIVING walk-forward folds (those that reached MinTradesPerFold trades), where
-// lambda is VC-proportional on avg N/d. The fold vector is CONSTANT LENGTH: a fold that
-// never reached MinTradesPerFold enters as ThinFoldScore rather than vanishing. Monotone
-// non-decreasing in every fold score by construction — see FoldScoreHelper.AggregateFoldScores
-// for why `mean - stdMult x std` was not.
+// FadeLong GA: bear-regime oversold bounce. Regime = EMA structure (not ADX).
+// Fitness: CVaR/mean blend over walk-forward folds with regime-sustained filtering.
 public class FadeLongGA
 {
     public record CoinData(ReadOnlyMemory<Candle> TrainH1, ReadOnlyMemory<Candle> ValH1, ReadOnlyMemory<Candle> TrainM15, ReadOnlyMemory<Candle> ValM15, double Weight = 1.0);
@@ -40,10 +24,6 @@ public class FadeLongGA
     private const int MinTradesPerFold = 25;   // VC theory requires N > d per fold; d=15 after protection mode moved to guard
     private const int D                = 15;   // genotype parameter count (excl. Fitness)
 
-    // eliteCount sizes the reporting slice / BO seed set / final-winner pool ONLY.
-    // eliteCarryOver is the real elitism knob (was a hardcoded literal 5). See GaSearch for the
-    // tournamentK = 2 rationale and for why stagnation now triggers a cataclysmic restart.
-    // seed: null draws one explicitly and prints it, so any run can be reproduced.
     public FadeLongGA(
         int  populationSize    = 50,
         int  generations       = 80,
@@ -136,19 +116,7 @@ public class FadeLongGA
             }
         }
 
-        // Walk-forward folds, k of them, cut on CALENDAR TIME rather than array indices.
-        //
-        // With a BTC regime series available, fold boundaries are computed once on BTC
-        // (balanced on the number of active bear bars, with an embargo gap) and handed to
-        // every coin as [Start, End) time windows; each coin then binary-searches that
-        // window into its own h1/m15 arrays. Index-space bounds can NOT be shared across
-        // coins — FadeLong's training arrays are bear-window-FILTERED concatenations of a
-        // few thousand bars, so index i is a completely different calendar date on every
-        // symbol, and coins shorter than a fold's start index would drop out of every
-        // later fold and dump their entire history into fold 0.
-        //
-        // Without a BTC series, fall back to per-coin percentage folds: each coin slices
-        // its own history into k equal parts, which is alignment-safe by construction.
+        // Walk-forward folds on CALENDAR TIME (BTC regime-aware when available, else per-coin %).
         int k = folds;
 
         (DateTime Start, DateTime End)[]? windows = _btcSeries != null
@@ -157,11 +125,7 @@ public class FadeLongGA
 
         var foldScores = new List<double>();
         var foldCounts = new List<int>();
-        // Folds ATTEMPTED, including the thin ones skipped below — the aggregator scales
-        // Every attempted fold is scored -- a thin one enters at ThinFoldScore -- so that
-        // concentrating all activity into one favourable
-        // market window can no longer beat trading consistently across all of them.
-        int attemptedFolds = 0;
+        int attemptedFolds = 0;  // includes thin folds
 
         for (int f = 0; f < k; f++)
         {
@@ -191,11 +155,6 @@ public class FadeLongGA
                                       .Select(t => (t.Return, t.RegimeBars)));
             }
 
-            // Only folds that actually reached MinTradesPerFold scored trades take part in
-            // the aggregation. A thin fold returns the constant -1.0 sentinel, and mixing
-            // constants into the aggregate would let a no-trade fold masquerade as a real
-            // (merely bad) one. It still counts toward attemptedFolds and enters the aggregate
-            // at ThinFoldScore, so withdrawing from a window is strictly loss-making.
             int scoredTrades = foldRet.Count(t => t.RegimeBars >= ind.RegimeSustainedBars);
             if (scoredTrades < MinTradesPerFold) continue;
 
@@ -240,15 +199,8 @@ public class FadeLongGA
 
         for (int gen = 0; gen < _generations; gen++)
         {
-            // Mutation rate anneals 0.65 → 0.05 across the run. The old
-            // `stagnantGens >= 15 ? rate * 2` boost is gone — see GaSearch.Cataclysm for why
-            // doubling a per-gene PROBABILITY on a fixed creep step cannot escape a basin, and
-            // why the boost latched on permanently once it fired.
             double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
-
-            // WARNING: this parallel body must stay RNG-FREE. System.Random is not thread-safe;
-            // a single _rng draw added here would silently corrupt its internal state (and
-            // destroy reproducibility) with no exception to point at it.
+            // WARNING: parallel body must stay RNG-free.
             Parallel.ForEach(population, ind =>
                 ind.Fitness = Fitness(ind, coins, useValidation: false));
 
@@ -284,12 +236,6 @@ public class FadeLongGA
 
             if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                // CHC restart. `population` is already sorted best-first, so the survivors are
-                // exactly the individuals the normal path would have carried over — the
-                // best-so-far genotype lives through the restart, and eliteIsland (captured
-                // above from the same sorted list) still holds the champion regardless.
-                // Random(_rng) with NO genotype seed: the restart must sample the whole bounds
-                // box, not a neighbourhood of the incumbent.
                 population = GaSearch.Cataclysm(population, _populationSize, _eliteCarryOver,
                                                 () => FadeLongGenotype.Random(_rng), ref stagnantGens);
                 if (_verbose)
@@ -312,7 +258,6 @@ public class FadeLongGA
             }
         }
 
-        // ── Bayesian refinement ──────────────────────────────────────────────────
         if (_verbose) Console.WriteLine("\n  BO refinement (30 iterations, TPE)...");
         var boSeed = eliteIsland
             .Select(g => (g.ToVector(), g.Fitness))
@@ -336,7 +281,6 @@ public class FadeLongGA
         }
 
         if (_verbose) Console.WriteLine("\n=== FadeLong held-out validation ===");
-        // WARNING: RNG-free parallel body — see the note in the generation loop.
         Parallel.ForEach(eliteIsland, ind =>
             ind.Fitness = Fitness(ind, coins, useValidation: true));
 
@@ -345,8 +289,6 @@ public class FadeLongGA
         return best;
     }
 
-    // Tournament size comes from the constructor (default GaSearch.DefaultTournamentK = 2), not
-    // from a defaulted method parameter that no call site ever overrode.
     internal FadeLongGenotype TournamentSelect(List<FadeLongGenotype> pop) =>
         GaSearch.Tournament(pop, _tournamentK, _rng, g => g.Fitness);
 }

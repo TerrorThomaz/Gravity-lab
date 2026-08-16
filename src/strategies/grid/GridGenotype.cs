@@ -1,113 +1,30 @@
 namespace TradingGA;
 
-// Grid trading genotype — long grid in ranging markets.
-//
-// Regime: ADX(14) < AdxThreshold AND BbWidth(BbPeriod) < BbWidthMaxPct → ranging, grid fires.
-//         Both conditions must hold at entry.
-//         ADX(14) is fixed (not a gene) — shared indicator with swing, same value at every candle.
-//         BbWidth = (UpperBB − LowerBB) / MiddleBB × 100 — measures price compression.
-//         Exit during active grid: ADX(14) ≥ AdxThreshold → trending, close all.
-//
-// Regime partition vs swing:
-//   Swing fires when ADX(14) ≥ swing.AdxThreshold (typically 18–24).
-//   Grid fires when ADX(14) < grid.AdxThreshold (hard upper bound 20).
-//   This ensures grid always sits below swing's entry zone — no overlap.
-//   RunGridTrain loads the live swing genotype and enforces this ceiling dynamically.
-//
-// Grid: buy at fixed ATR-spaced levels below the EMA anchor.
-//       Each level closes independently when price recovers TakeProfitAtrMult × ATR above it.
-//       Hard stop at HardStopAtrMult × ATR below anchor — exits all when range breaks down.
-//
-// Gene units:
-//   AdxThreshold             — ranging regime upper bound: grid fires when ADX(14) < this [8–20]
-//   BbPeriod                 — Bollinger Band period for compression detection [10–50]
-//   BbWidthMaxPct            — maximum BB width % — tight to force genuine ranging [0.8–2.5]
-//   EmaPeriod                — EMA anchor for grid centre [10–100]
-//   GridStepAtrMult          — ATR-scaled spacing between grid levels [0.3–2.0]
-//   GridLevels               — number of buy levels below EMA [1–3]
-//   TakeProfitAtrMult        — per-level profit target above each fill [0.5–3.0]
-//   HardStopAtrMult          — hard stop below EMA anchor [1.5–3.0]
-//   BailOutAtrMult           — close all when price drops this far below lowest filled level [1.0–4.0]
-//   MaxHoldCandles           — h1 bars before force-close [24–200]
+// Grid genotype: long grid in ranging markets (ADX<threshold + BB compression).
+// Regime partition: grid ADX < swing ADX (enforced dynamically by adxCeiling).
 public class GridGenotype
 {
-    // ── Regime (coordinated with swing's ADX threshold — see RunGridTrain) ────────
     public double AdxThreshold    { get; set; }  // 8–20   grid fires when ADX(14) < this
-    public int    BbPeriod        { get; set; }  // 10–50  BB period for compression gate
-    public double BbWidthMaxPct   { get; set; }  // 0.8–2.5 max BB width % — genuine range only
-    public int    EmaPeriod       { get; set; }  // 10–100 range centre reference
-
-    // ── Grid structure ────────────────────────────────────────────────────────────
-    public double GridStepAtrMult  { get; set; }  // 0.3–2.0 level spacing
-    public int    GridLevels       { get; set; }  // 1–3     buy levels below EMA
-    public double TakeProfitAtrMult { get; set; } // 0.5–3.0 per-level TP above fill
-    public double HardStopAtrMult  { get; set; }  // 1.5–3.0 hard stop below anchor — catastrophic break
-    public double BailOutAtrMult   { get; set; }  // 1.0–4.0 close all when price drops this far below lowest filled level
-    public int    MaxHoldCandles   { get; set; }  // 24–200  h1 bars before force-close
-
-    // ── Grid-bot mechanics, added 2026-08 ────────────────────────────────────────────────────
-    // RungSellFrac: sell target as a FRACTION OF THE RUNG SPACING rather than a free ATR target.
-    // 1.0 = a true grid bot — buy a rung, sell at the rung above, capture exactly one step.
-    // 0 = disabled, keep the legacy TakeProfitAtrMult behaviour.
-    //
-    // Why this exists: the legacy exit sells at entry + TakeProfitAtrMult x ATR, which on the
-    // trained genotype is 2.43x the rung spacing — FURTHER than the entire 3-level ladder is deep
-    // (2.04 ATR). So a fill had to ride a sustained directional move to exit, while the Ranging
-    // gate exists precisely to select against sustained moves. The entry regime and the exit
-    // target were pulling in opposite directions.
-    public double RungSellFrac   { get; set; }  // 0 = legacy TP · 0.5–2.0 = multiples of a rung
-
-    // ReanchorAlpha: EMA-following rate for the anchor while a session is open. 0 = the legacy
-    // static anchor fixed at activation; higher values track the moving EMA, as
-    // AccumulationGridSimulator already does. A static ladder is stranded when price trends away
-    // from it, which is the structural difference between Grid and the accumulator — and the
-    // accumulator is the component that validated OOS (-3.47% vs trailing EMA on 27/27 coins).
-    public double ReanchorAlpha  { get; set; }  // 0–0.2 per-bar pull toward the live EMA
-
-    // The direction bias was a HARDCODED veto: `if (emaSlope < -0.005) continue`, with a fixed
-    // 20-bar lookback. Neither number was searchable, so the GA could not tune how directional
-    // the grid should be — only whether the constants happened to suit.
-    // Bounded at or below ZERO. A positive threshold would demand a RISING market to open, turning
-    // a Ranging-gated grid into a trend follower and contradicting its own entry regime. The gene
-    // tunes how much decline to tolerate, not whether to require an advance.
-    public double SlopeThreshold { get; set; } = -0.005;  // -0.03–0.0 min EMA slope to open
-    public int    SlopeLookback  { get; set; }  // 5–60 bars
+    public int    BbPeriod        { get; set; }  // 10–50  BB period for compression
+    public double BbWidthMaxPct   { get; set; }  // 0.8–2.5 max BB width %
+    public int    EmaPeriod       { get; set; }  // 10–100 range centre
+    public double GridStepAtrMult { get; set; }  // 0.3–2.0 level spacing
+    public int    GridLevels      { get; set; }  // 1–3    buy levels below EMA
+    public double TakeProfitAtrMult { get; set; } // 0.5–3.0 per-level TP
+    public double HardStopAtrMult { get; set; }  // 1.5–3.0 hard stop below anchor
+    public double BailOutAtrMult  { get; set; }  // 1.0–4.0 close all below lowest fill
+    public int    MaxHoldCandles  { get; set; }  // 24–200 h1 bars before force-close
+    public double RungSellFrac    { get; set; }  // 0=legacy TP; 0.5–2.0 = multiples of rung spacing
+    public double ReanchorAlpha   { get; set; }  // 0=static anchor; >0 tracks live EMA
+    public double SlopeThreshold  { get; set; } = -0.005;  // -0.03–0.0 max EMA slope to open (never positive)
+    public int    SlopeLookback   { get; set; }  // 5–60   bars for slope measurement
 
     public double Fitness { get; set; } = double.MinValue;
 
-    // ── Seeded initialisation ────────────────────────────────────────────────────
-    // Probability that a seeded Random draw returns a LOOSE mutant of the seed
-    // rather than an independent uniform draw. Matches RegimeRouterGenotype.Random,
-    // which sits on the identical GA Run skeleton; one number across the whole
-    // strategy suite keeps the initial-diversity mix comparable between GAs.
-    //
-    // Resulting population mix at popSize 80 with a seed (the GA's Run block
-    // installs the clamped seed at index 0 and tight rate-0.25 mutants at 1..16):
-    //   1  exact seed
-    //   16 tight  (rate 0.25) mutants  — the seed's immediate neighbourhood
-    //   ~19 loose (rate 0.50) mutants  — 30% of the remaining 63 slots
-    //   ~44 fully independent random genotypes
-    // ≈ 45% anchored on the incumbent, ≈ 55% genuine exploration. Before this
-    // change the last 63 slots were byte-identical copies of the seed, leaving
-    // at most 17 distinct starting points (78.75% duplicates) — a hill-climb,
-    // not a GA.
+    // Seeded init: 30% loose mutant, ~45% anchored / ~55% exploration.
     private const double SeedMutantProbability = 0.3;
 
-    // adxCeiling: dynamic upper bound loaded from swing genotype at train time.
-    //
-    // The literal 20.0 that used to sit beside it in FOUR places (Random, Mutate, ClampToBounds,
-    // FromVector) is now Bounds[0,1], so widening the box actually widens the search instead of
-    // being silently clipped by the operators — the same multi-place bounds defect that cost a
-    // full FadeShort training run.
-    //
-    // CAVEAT on the "clean partition" this ceiling implements: it is derived from FadeShort's
-    // AdxThreshold, but FadeShort measures ADX(7) and Grid measures ADX(14). Those are different
-    // scales — the faster period runs higher — so subtracting 1 from one and applying it to the
-    // other is not the clean separation it reads as. BB compression is what actually keeps the two
-    // apart; this is a loose belt-and-braces on top.
-    // Pass swing.AdxThreshold − 1 so the two strategies never overlap. The
-    // seed-mutant branch threads it through both the clamp and the mutation so a
-    // seeded draw can never breach the grid/swing regime partition either.
+    // adxCeiling: dynamic upper bound from swing genotype. BB compression is the real partition.
     public static GridGenotype Random(System.Random rng, GridGenotype? seed = null, double adxCeiling = 20.0)
     {
         if (seed != null && rng.NextDouble() < SeedMutantProbability)
@@ -187,11 +104,7 @@ public class GridGenotype
         };
     }
 
-    // Bounds is the SINGLE source for the box; adxCeiling narrows index 0 only. The literals that
-    // used to be repeated here, in Mutate and in Random cost a full retrain: BbWidthMaxPct was
-    // widened to 5.0 in Bounds while Mutate and this method still clamped at 2.5, so the GA could
-    // never PROPOSE a value above it and the genotype came back at exactly 2.5 — looking like a
-    // converged interior optimum when it was a clip. Same defect as FadeShort's, same fix.
+    // Bounds is single source of truth; all operators read through these accessors.
     private static double Lo(int i) => Bounds[i, 0];
     private static double Rand(System.Random rng, int i) => Lo(i) + rng.NextDouble() * (Hi(i) - Lo(i));
     private static int RandInt(System.Random rng, int i) => rng.Next((int)Lo(i), (int)Hi(i) + 1);
@@ -216,14 +129,12 @@ public class GridGenotype
         Fitness = Fitness,
     };
 
-    // ── Bayesian optimiser interface ──────────────────────────────────────────
-    // adxCeiling is dynamic (from swing genotype), so we use 20.0 as the static upper bound.
     public static readonly double[,] Bounds =
     {
-        {  8.0, 35.0 }, // AdxThreshold — was [8,20], PINNED at 20: the GA wanted a looser ranging gate
-        {    5,   50 }, // BbPeriod — was [10,50], pinned LOW
-        {  0.8,  5.0 }, // BbWidthMaxPct — was [0.8,2.5], PINNED at 2.5
-        {    5,  100 }, // EmaPeriod — was [10,100], pinned LOW
+        {  8.0, 35.0 }, // AdxThreshold
+        {    5,   50 }, // BbPeriod
+        {  0.8,  5.0 }, // BbWidthMaxPct
+        {    5,  100 }, // EmaPeriod
         {  0.3,  2.0 }, // GridStepAtrMult
         {    1,    3 }, // GridLevels
         {  0.5,  3.0 }, // TakeProfitAtrMult
@@ -232,8 +143,8 @@ public class GridGenotype
         {   24,  200 }, // MaxHoldCandles
         {  0.0,  2.0 }, // RungSellFrac   — 0 disables, else multiples of the rung spacing
         {  0.0,  0.2 }, // ReanchorAlpha  — 0 = static anchor (legacy)
-        {-0.03,  0.0 }, // SlopeThreshold — was hardcoded -0.005; never POSITIVE (see below)
-        {    5,   60 }, // SlopeLookback  — was hardcoded 20
+        {-0.03,  0.0 }, // SlopeThreshold (never positive — would contradict ranging regime)
+        {    5,   60 }, // SlopeLookback
     };
 
     public static readonly string[] ParameterNames =

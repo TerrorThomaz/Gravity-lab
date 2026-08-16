@@ -2,20 +2,8 @@ using System.Collections.Concurrent;
 
 namespace TradingGA;
 
-// Red-Queen coevolution: Router, Guard AND the four regime-gated strategies.
-// Strategies CO-ADAPT: each round they retrain against the router's current gating.
-//
-//   Each round, in parallel:
-//     Router[t] ← raw strategy trade lists (finds profitable bull windows)
-//     Guard[t]  ← Router[t-1]-gated trade lists (manages risk in those windows)
-//
-//   Router maximises profit by routing trades through the best bull/bear windows.
-//   Guard manages risk by reducing sizing when BTC volatility signals danger.
-//   They co-adapt: guard pressure changes what "profitable" routing looks like;
-//   router pressure changes which trades the guard must protect against.
-//
-//   Strategies then re-fit to the gating they are actually deployed under, so GA fitness
-//   and deployed behaviour describe the same object.
+// Red-Queen coevolution: Router + Guard + 6 strategies co-adapt over 8 rounds.
+// Each round: Router and Guard evolve in parallel, then strategies retrain against the new router.
 public class CoevolveGA
 {
     public record AllData(
@@ -42,7 +30,7 @@ public class CoevolveGA
         RegimeRouterGenotype  Router,
         DynamicGuardGenotype  DynamicGuard);
 
-    // Weight applied to a trade the router would gate OFF. Not 0.0 — see the [ADAPT] block.
+    // Soft gate floor — out-of-window trades still contribute at this weight.
     private const double GateFloor = 0.10;
 
     private const int RedQueenRounds = 8;
@@ -63,19 +51,8 @@ public class CoevolveGA
         var routerElite = routerSeed ?? RegimeRouterGenotype.Random(new Random(), null);
         var guardBest   = dgSeed;
 
-        // Strategies now CO-ADAPT: each round they retrain against the router's current gating.
-        //
-        // They used to be frozen, which reproduced exactly the train-then-gate misalignment this
-        // class exists to remove. Measured cost of that misalignment: the strategy GAs score every
-        // trade, then the router discards 54-57% of them (DipLong 1221 -> 531, SwingLong 2087 ->
-        // 963), so the GA was selecting on an object that is not what gets deployed. DipLong's
-        // ungated held-out PF is 0.64 while its router-gated val PF is 2.44 — the edge lives in
-        // the gating, and the strategy was never allowed to see it.
-        //
-        // The hook needed for this already existed: every strategy GA takes a `tradeGate`
-        // weight function and NO caller passed one. It gates on t.Time, which every simulator
-        // records as the EXIT bar — the same field CombinedBacktest gates on, so train and serve
-        // agree here by construction (both share the entry-vs-exit approximation).
+        // Strategies co-adapt: retrain each round against the router's current gating.
+        // Gates on t.Time (exit bar), matching how backtests gate.
         Console.WriteLine("  Building strategy trade lists (round 0, ungated)...");
         var rawTrades = BuildTradeLists(fsSeed, dlSeed, slSeed, rsSeed, data.GridGeno, data.GridShortGeno, data);
         Console.WriteLine(
@@ -84,7 +61,7 @@ public class CoevolveGA
                 Enum.GetValues<RegimeRouterGA.StrategyKind>()
                     .Select(k => $"{k}: {rawTrades.Count(t => t.Kind == k)}")));
 
-        // Initial guard trade lists (router-gated)
+
         var emptyGuard = (
             val: new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>(),
             oos: new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>());
@@ -101,13 +78,13 @@ public class CoevolveGA
             if (guardBest != null) Console.WriteLine($"  Guard:  {guardBest}");
             Console.WriteLine("  [PARALLEL] Router ← all trades  ║  Guard ← Router[t-1]-gated trades");
 
-            // Capture for closures
+
             var routerCap   = routerElite;
             var guardCap    = guardBest;
             var guardTrainCap = guardTrain;   // the GA objective — earlier slice only
             var guardHoldCap  = guardHold;    // reported, never optimised against
 
-            // ── Parallel: Router maximises profit || Guard minimises risk ──────────
+
             var routerTask = Task.Run(() =>
             {
                 if (rawTrades.Count < 50) return routerCap;
@@ -124,9 +101,7 @@ public class CoevolveGA
             {
                 if (data.BtcH1.Length < 50 || guardTrainCap.Count < 20)
                     return guardCap;
-                // Objective is the EARLIER slice only. This used to pass both halves, so the guard
-                // was fit on the entire trade history and the "pseudo-oos" half it was reported
-                // against had been part of its own objective.
+                // Objective is the earlier slice only.
                 return (DynamicGuardGenotype?)new DynamicGuardGA(GuardPopSize, GuardGens)
                     .Run(data.BtcH1, guardTrainCap);
             });
@@ -138,12 +113,7 @@ public class CoevolveGA
             Console.WriteLine($"\n  Router: {routerElite}");
             if (guardBest != null) Console.WriteLine($"  Guard:  {guardBest}");
 
-            // ── Strategies re-adapt to the router that just evolved ──────────────────
-            // Soft gate, not a hard 0/1. A hard gate would drop out-of-window trades entirely,
-            // and a fold that falls under MinTradesPerFold now enters the aggregate at
-            // ThinFoldScore = -5.0 — so an over-eager router in an early round could starve a
-            // strategy into a score it can never climb out of. The floor keeps a gradient the
-            // GA can follow while still strongly preferring in-gate trades.
+            // Soft gate (floor=0.10) — hard gate could starve a strategy into an unrecoverable score.
             var gateSession = new RegimeRouterSession(data.BtcSeries, data.EthSeries, routerElite);
             Func<RegimeRouterGA.StrategyKind, Func<DateTime, double>> gateFor =
                 kind => t => gateSession.IsActive(kind, t) ? 1.0 : GateFloor;
@@ -166,12 +136,7 @@ public class CoevolveGA
                     tradeGate: gateFor(RegimeRouterGA.StrategyKind.FadeLong),
                     btcSeries: data.BtcSeries).Run(data.FlCoins, flSeed);
 
-            // FadeShort and Grid were left out of the loop and are the two the OOS run says do
-            // not earn their place: Grid PF 0.97 (losing) and FadeShort PF 1.12 on 5,263 trades
-            // — the largest trade count in the book for almost no edge, and at ~48% of gross
-            // going to costs the most cost-fragile thing in it. Both are gated by the router in
-            // production, so both had the same train-then-gate misalignment as the other four
-            // and no chance to adapt to it.
+            // FadeShort and Grid also co-adapt (same train-then-gate misalignment).
             if (fsSeed != null && data.FsCoins.Count > 0)
                 fsSeed = new FadeShortGA(generations: stratGens, verbose: false,
                     tradeGate: gateFor(RegimeRouterGA.StrategyKind.FadeShort)).Run(data.FsCoins, fsSeed);
@@ -183,10 +148,10 @@ public class CoevolveGA
                               $"RipShort F={rsSeed?.Fitness:F3}  FadeLong F={flSeed?.Fitness:F3}  " +
                               $"FadeShort F={fsSeed?.Fitness:F3}  Grid F={data.GridGeno?.Fitness:F3}");
 
-            // The router must now compete against the strategies it just reshaped.
+
             rawTrades = BuildTradeLists(fsSeed, dlSeed, slSeed, rsSeed, data.GridGeno, data.GridShortGeno, data);
 
-            // Rebuild guard trade lists using the just-evolved Router for the next round
+
             if (data.BtcH1.Length >= 50)
             {
                 (guardTrain, guardHold) = BuildGuardTrades(
@@ -198,7 +163,7 @@ public class CoevolveGA
         return new CoevolveResult(fsSeed, data.GridGeno, flSeed!, dlSeed!, slSeed!, rsSeed!, routerElite, guardBest!);
     }
 
-    // ── Trade list builders (parallelised over coins) ─────────────────────────
+
 
     private static List<RegimeRouterGA.TradeRecord> BuildTradeLists(
         FadeShortGenotype?  fs,
@@ -338,7 +303,7 @@ public class CoevolveGA
         }
 
         var all   = bag.OrderBy(t => t.Item1).ToList();
-        int split = (int)(all.Count * DataSplit.TrainFraction);   // was a bare 0.75 literal
+        int split = (int)(all.Count * DataSplit.TrainFraction);
         return (all[..split], all[split..]);
     }
 

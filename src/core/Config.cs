@@ -15,131 +15,35 @@ static class Config
     public const string DynamicGuardGenoFile  = "genotypes/dynamic_guard_genotype.json";
     public const string RotatorGenoFile       = "genotypes/vol_rotator_genotype.json";
 
-    // Maximum gross notional across all concurrent positions, as a fraction of equity.
-    //
-    // ┌── THIS CONSTANT IS WHAT MAKES THE MISSING LIQUIDATION MODEL DEFENSIBLE ──────────┐
-    // │ Nothing in this repo models liquidation. At 0.30 the book runs at 0.30x gross     │
-    // │ leverage, so maintenance margin would need roughly a 40x larger position before   │
-    // │ it could bind ahead of any modelled stop — every exit is a stop, target, trail or │
-    // │ timeout, and that is true of reality too. Raise this past ~1.0 and the assumption │
-    // │ dies SILENTLY: backtests keep printing clean stop-outs on paths where a real      │
-    // │ account would already have been liquidated, so the cap manufactures the returns   │
-    // │ it was raised to chase. Simulator.SimulatePortfolioExposureCapped now throws      │
-    // │ above 1.0 rather than let that happen. Add a liquidation model first.             │
-    // └──────────────────────────────────────────────────────────────────────────────────┘
-    // NOT const: GRAVITY_MAXEXP sweeps it so the number can be VALIDATED rather than asserted.
-    // Measured, this cap binds on 70-90% of entries with peak gross sitting flush against it — it
-    // is the most active risk control in the system and the primary determinant of deployed
-    // capital, not a distant safety margin. A constant that shapes returns on four trades in five
-    // deserves evidence, and until this sweep there was none: 0.30 was chosen to keep the missing
-    // liquidation model irrelevant, which is a different job from sizing the book correctly.
-    // SWEPT, with mark-to-market drawdown (src/core/MarkToMarket.cs) so the risk side is measurable:
-    //
-    //   cap   binds on   realized DD   MtM DD   gross peak   gross avg   5%cap return
-    //   0.30    68.3%       1.77%       1.66%      30.9%       19.7%        133.0%
-    //   0.50    56.3%       1.77%       1.66%      52.7%       29.0%        235.5%
-    //   0.80    39.3%       1.77%       1.66%      83.8%       40.6%        388.0%
-    //   1.00    28.4%       1.80%       1.66%     104.4%       47.3%        496.3%
-    //
-    // The cap adds CONCURRENT POSITIONS, it does not resize them: maxPositionFrac caps each
-    // position independently, so raising the cap admits more 5% slots rather than bigger ones.
-    // (Average position in EUR appears to scale 4.8x across this sweep, but that is mostly the
-    // account growing — as a fraction of equity it moves only 0.91% -> 1.71%.)
-    //
-    // Drawdown genuinely does not scale, and with MtM in place that is a finding rather than an
-    // artifact: twenty staggered 5% positions really are smoother than six. What the val window
-    // does NOT contain is a correlated crash, and at 104% gross a -20% correlated move is a -20%
-    // equity event. So the remaining unmodelled risk is the CORRELATED TAIL, not concurrency
-    // accounting and not liquidation (which still cannot bind at these levels).
-    //
-    // 0.30 stays until a correlated-shock stress test says what the book survives. The sweep says
-    // the upside of raising it is large; it does not say the risk is acceptable.
-    // 0.30 is now justified on TAIL LOSS, which is the risk that actually ends accounts — not on
-    // drawdown (which does not scale with this cap) and not on liquidation (which cannot bind here).
-    // From CorrelatedShock.Run, every open position taking the same adverse move at once:
-    //
-    //   shock    cap 0.30      cap 1.00      uncapped (peak demand 285% of equity)
-    //    10%       3.1%         10.4%          28.5%
-    //    20%       6.2%         20.9%          57.0%   unrecoverable
-    //    30%       9.3%         31.3%          85.5%   near-total
-    //    40%      12.4%         41.7%         114.0%   ACCOUNT GONE
-    //
-    // UNCAPPED THE BOOK WANTS 285% GROSS. The cap is holding back ~8x its own size, so it is not a
-    // safety margin — it is the binding control, active on 78% of entries.
-    //
-    // This also does not relax as the system grows: more strategies or a shorter bar interval raise
-    // signal arrival rate and therefore concurrent-position demand, while equity does not grow with
-    // them. Higher frequency puts MORE load on this constant, not less.
+    // Max gross notional as fraction of equity. 0.30 keeps liquidation model irrelevant.
+    // Simulator throws above 1.0. Binds on ~70% of entries. Justified on tail loss (CorrelatedShock).
+    // NOT const: GRAVITY_MAXEXP sweeps it for validation.
     public const double MaxTotalExposurePct = 0.30;
     public const int MaxDirectionalConcurrent = 20;
     public const double MinMedianVolUsdM    = 0.5;
 
-    // ── THE single slippage authority ────────────────────────────────────────────────────
-    // Round-trip slippage in basis points, quoted at TradeCosts.ReferenceAtrPct (3% ATR).
-    // 10 bps = 0.10%, a pessimistic taker-side estimate covering the mid-cap alt perps in
-    // the BacktestCoins universe.
-    //
-    // Every slippage charge in the codebase is this number times a dimensionless shape; no
-    // simulator carries its own slippage constant any more. It is charged EXACTLY ONCE per
-    // trade, inside the simulators via TradeCosts, so GA fitness and backtest reporting price
-    // the same trade identically — see the header of src/core/Simulator.cs for why trade level
-    // is the only placement that achieves that. The portfolio layer no longer charges it, and
-    // the portfolio entry points take no slippage parameter at all.
-    //
-    // Changing this number changes the objective the GAs select on. Genotypes trained under a
-    // different value are not comparable and must be retrained. Results recorded before
-    // 2026-08 assumed 0.0; results recorded before this unification saw a split cost model
-    // (simulator-only in training, simulator + portfolio in reporting).
+    // Single slippage authority: 10 bps round-trip at 3% ATR. Charged once per trade via TradeCosts.
+    // Changing this changes the GA objective — genotypes trained under a different value must retrain.
     public const double SlippageBps = 10.0;
 
-    // ── Participation impact (Layer 3) ───────────────────────────────────────────────────
-    // OFF by default. Turning it on changes every trade's cost, therefore the GA's objective,
-    // therefore every genotype in genotypes/ — the same invalidation the slippage unification
-    // caused. It is a deliberate retrain, not a free improvement. GRAVITY_IMPACT=1 enables.
-    //
-    // Why it matters despite being small in bps: it is the ONLY size-aware cost in the model.
-    // Everything else (fees, slippage, stop-gap) is identical for a EUR2 and a EUR200 position,
-    // so without this term extra position size executes for free — and the exposure-cap work
-    // makes position size a free variable. An unpriced size axis means the backtest pays you
-    // for leverage it cannot cost.
+    // Participation impact. OFF by default (GRAVITY_IMPACT=1 enables). The only size-aware cost.
+    // Turning on invalidates all genotypes — deliberate retrain, not free improvement.
     public static readonly bool ChargeParticipationImpact =
         Environment.GetEnvironmentVariable("GRAVITY_IMPACT") == "1";
 
-    // Account size the participation charge is quoted at. A CALIBRATION ANCHOR, not a second
-    // magnitude knob — it fixes where on the size axis LiquidityModel.ImpactCoefficient is
-    // measured, exactly as TradeCosts.ReferenceAtrPct does for volatility. Simulators emit
-    // percentages and never see a real balance, so participation needs a reference notional.
+    // Calibration anchor for participation charge. Not a magnitude knob.
     public const double ReferenceEquityUsd = 100_000.0;
 
-    // Max concurrent positions per strategy PER COIN. 1 preserves today's behaviour exactly —
-    // every signal simulator holds one position per coin via its `inTrade` flag, so this merely
-    // makes that implicit property explicit and enforceable at the risk layer. Raise it only
-    // alongside a multi-leg simulator, and never without PortfolioReplay.Trade.Symbol populated
-    // (the cap warns and no-ops when symbols are missing rather than silently passing).
+    // Max concurrent per strategy per coin. Raise only with multi-leg simulator + Trade.Symbol populated.
     public const int MaxPerSymbolConcurrent = 1;
 
-    // ATR-ratio band claimed by the low-vol variant files. VariantRouter.Select picks the
-    // NARROWEST band containing the current ratio, so this is what stops a lowvol genotype
-    // from tying the base band [0, 9999] and shadowing the base genotype outright.
-    //
-    // WARNING — this band is an ASSERTION ABOUT ROUTING, not a property of the training.
-    // lowvoltrain applies no ATR filter of any kind: its only screen is median volume, and
-    // FadeShortGA.RunLowVol contains no ATR reference. The low-vol genotypes are fit on the
-    // SAME data as the base genotypes and differ only in their parameter box (BoundsLowVol).
-    // Serving them exclusively below 0.8 is therefore a train/serve mismatch. See CLAUDE.md.
+    // Low-vol ATR band. WARNING: train/serve mismatch — lowvoltrain applies no ATR filter.
+    // VariantRouter picks narrowest band containing current ratio.
     public const double LowVolAtrLow  = 0.0;
     public const double LowVolAtrHigh = 0.8;
 
-    // Graded router sizing. IsActive answers "may this strategy trade at all"; the graded curve
-    // answers "how much", so a barely-confirmed regime funds smaller than a deeply-confirmed one.
-    // A boolean gate is a cliff, and cliffs are the defect shape this codebase keeps finding
-    // (the n=100 tail gate, rrMult at rr=1, the PF<1.3 Sharpe gate) — the GA is rewarded for
-    // sitting just past the edge rather than for being right.
-    //
-    // Deliberately NOT new genes: the curve rides on the confidence the classifier already emits
-    // and the thresholds the router already has, so nothing is added to a parameter count whose
-    // effective sample is dozens of independent regime episodes, not thousands of trades.
-    // Promote to genes only if the fixed curve demonstrably beats the boolean baseline.
+    // Graded router sizing: ramps from floor to full across [GradedConfStart, GradedConfFull].
+    // Not new genes — rides on existing confidence + thresholds. Promote to genes only if proven.
     public const double GradedConfStart = 0.20;   // at/below this → floor funding
     public const double GradedConfFull  = 0.80;   // at/above this → full funding
     public const double GradedSizeFloor = 0.30;   // never fund an active strategy below this
@@ -186,9 +90,7 @@ static class Config
         "GMTUSDT",   "STGUSDT",   "JTOUSDT",
     ];
 
-    // Out-of-sample coins — never used in any strategy training or BacktestCoins.
-    // Volume threshold is relaxed to $0.05M/h (vs $0.5M for production) since
-    // OOS testing validates strategy edge, not execution feasibility.
+    // OOS coins — never used in training. Volume threshold relaxed to $0.05M/h.
     public static readonly string[] OosCoins =
     [
         // L1s / mid-caps not in universe

@@ -1,22 +1,7 @@
 namespace TradingGA;
 
-// Genetic algorithm for the dip-long strategy.
-// Regime-gated bull pullback: fires only in detected bull markets (dual-EMA
-// slope filter), so the GA only needs to generalise over bull periods.
-//
-// FoldScore filters trades to those where the bull regime has been confirmed
-// for at least RegimeSustainedBars consecutive h1 bars at entry. This prevents
-// trades taken on the first bar of a new regime (noise) from polluting the score.
-//
-// Protection mode (profit protect) is handled by DynamicGuardGenotype — moved there
-// so the guard trains on all strategies combined (better N/d ratio).
-//
-// Fitness = lambda x CVaR_0.4(fold_scores) + (1 - lambda) x mean(fold_scores)
-// over the SURVIVING walk-forward folds (those that reached MinTradesPerFold trades), where
-// lambda is VC-proportional on avg N/d. The fold vector is CONSTANT LENGTH: a fold that
-// never reached MinTradesPerFold enters as ThinFoldScore rather than vanishing. Monotone
-// non-decreasing in every fold score by construction — see FoldScoreHelper.AggregateFoldScores
-// for why `mean - stdMult x std` was not.
+// DipLong GA: bull-regime RSI dip + bullish BoS. Mirror of RipShort.
+// Fitness: CVaR/mean blend over walk-forward folds with regime-sustained filtering.
 public class DipLongGA
 {
     public record CoinData(ReadOnlyMemory<Candle> TrainH1, ReadOnlyMemory<Candle> ValH1, ReadOnlyMemory<Candle> TrainM15, ReadOnlyMemory<Candle> ValM15, double Weight = 1.0);
@@ -28,11 +13,8 @@ public class DipLongGA
     private readonly bool                  _verbose;
     private readonly Func<DateTime, double>? _tradeGate;
 
-    // Exit ratchet applied INSIDE fitness. Without this the GA selects TP / trail / MaxHold in a
-    // world where no profit floor exists, and the floor is then bolted on at run time — the same
-    // train-then-deploy mismatch that made the router's gating worth 54-57% of trades the strategy
-    // GA never saw. If the ratchet is going to change exits, the genes have to be chosen under it.
-    private readonly RatchetConfig _ratchet;  // null = no gating; returns weight 0..1 (set by CoevolveGA)
+    // Ratchet applied inside fitness so genes are selected under the same exit rules as deployment.
+    private readonly RatchetConfig _ratchet;
     private readonly RegimeBar[]?          _btcSeries;    // optional: for regime diversity bonus
     private readonly int                   _tournamentK;
     private readonly int                   _eliteCarryOver;
@@ -45,15 +27,7 @@ public class DipLongGA
     private const int MinTradesPerFold = 25;   // VC theory requires N > d per fold; d=14 after protection mode moved to guard
     private const int D                = 14;   // genotype parameter count (excl. Fitness)
 
-    // populationSize / generations / migrationInterval keep their historical meaning.
-    //
-    // eliteCount is NOT the elitism knob — it sizes the reporting slice, the BO seed set and
-    // the final-winner pool only. eliteCarryOver is the number of individuals actually copied
-    // unchanged into the next generation, and it was a hardcoded literal 5 before this
-    // parameter existed (a live mis-tuning trap: raising eliteCount changed nothing about the
-    // search). Defaults are the shared GaSearch constants — see that file for why
-    // tournamentK = 2 rather than the old 4, and why the stagnation response is now a
-    // cataclysmic restart rather than a mutation-rate boost.
+    // eliteCount = reporting/BO pool. eliteCarryOver = real elitism knob.
     public DipLongGA(
         int  populationSize    = 50,
         int  generations       = 80,
@@ -148,19 +122,7 @@ public class DipLongGA
             }
         }
 
-        // Walk-forward folds, k of them, cut on CALENDAR TIME rather than array indices.
-        //
-        // With a BTC regime series available, fold boundaries are computed once on BTC
-        // (balanced on the number of active-regime bars, with an embargo gap) and handed
-        // to every coin as [Start, End) time windows; each coin then binary-searches that
-        // window into its own h1/m15 arrays. Index-space bounds can NOT be shared across
-        // coins — a coin's training array is an 80% split of its own (variable-length)
-        // history, so index i is a different calendar date on every symbol, and coins
-        // shorter than a fold's start index would drop out of every later fold and dump
-        // their entire history into fold 0.
-        //
-        // Without a BTC series, fall back to per-coin percentage folds: each coin slices
-        // its own history into k equal parts, which is alignment-safe by construction.
+        // Walk-forward folds on CALENDAR TIME (BTC regime-aware when available, else per-coin %).
         int k = folds;
 
         (DateTime Start, DateTime End)[]? windows = _btcSeries != null
@@ -169,11 +131,7 @@ public class DipLongGA
 
         var foldScores = new List<double>();
         var foldCounts = new List<int>();
-        // Folds ATTEMPTED, including the thin ones skipped below — the aggregator scales
-        // Every attempted fold is scored -- a thin one enters at ThinFoldScore -- so that
-        // concentrating all activity into one favourable
-        // market window can no longer beat trading consistently across all of them.
-        int attemptedFolds = 0;
+        int attemptedFolds = 0;  // includes thin folds
 
         for (int f = 0; f < k; f++)
         {
@@ -203,11 +161,6 @@ public class DipLongGA
                                     .Select(t => (t.Return, t.RegimeBars)));
             }
 
-            // Only folds that actually reached MinTradesPerFold scored trades take part in
-            // the aggregation. A thin fold returns the constant -1.0 sentinel, and mixing
-            // constants into the aggregate would let a no-trade fold masquerade as a real
-            // (merely bad) one. It still counts toward attemptedFolds and enters the aggregate
-            // at ThinFoldScore, so withdrawing from a window is strictly loss-making.
             int scoredTrades = foldRet.Count(t => t.RegimeBars >= ind.RegimeSustainedBars);
             if (scoredTrades < MinTradesPerFold) continue;
 
@@ -252,15 +205,8 @@ public class DipLongGA
 
         for (int gen = 0; gen < _generations; gen++)
         {
-            // Mutation rate anneals 0.65 → 0.05 across the run. The old
-            // `stagnantGens >= 15 ? rate * 2` boost is gone — see GaSearch.Cataclysm for why
-            // doubling a per-gene PROBABILITY on a fixed creep step cannot escape a basin, and
-            // why the boost latched on permanently once it fired.
             double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
-
-            // WARNING: this parallel body must stay RNG-FREE. System.Random is not thread-safe;
-            // a single _rng draw added here would silently corrupt its internal state (and
-            // destroy reproducibility) with no exception to point at it.
+            // WARNING: parallel body must stay RNG-free.
             Parallel.ForEach(population, ind =>
                 ind.Fitness = Fitness(ind, coins, useValidation: false));
 
@@ -296,12 +242,6 @@ public class DipLongGA
 
             if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                // CHC restart. `population` is already sorted best-first, so the survivors are
-                // exactly the individuals the normal path would have carried over — the
-                // best-so-far genotype lives through the restart, and eliteIsland (captured
-                // above from the same sorted list) still holds the champion regardless.
-                // Random(_rng) with NO genotype seed: the restart must sample the whole bounds
-                // box, not a neighbourhood of the incumbent.
                 population = GaSearch.Cataclysm(population, _populationSize, _eliteCarryOver,
                                                 () => DipLongGenotype.Random(_rng), ref stagnantGens);
                 if (_verbose)
@@ -324,9 +264,6 @@ public class DipLongGA
             }
         }
 
-        // ── Bayesian refinement: TPE polishes the GA's elite region ─────────────
-        // Seed BO with all elite members (top-15) accumulated over all generations.
-        // BO finds fine-grained improvements that crossover/mutation miss near the optimum.
         if (_verbose) Console.WriteLine("\n  BO refinement (30 iterations, TPE)...");
         var boSeed = eliteIsland
             .Select(g => (g.ToVector(), g.Fitness))
@@ -342,7 +279,6 @@ public class DipLongGA
         var boChampion = boHistory.OrderByDescending(h => h.Fitness).First();
         var boGeno     = DipLongGenotype.FromVector(boChampion.Params);
 
-        // Inject BO champion into elite island if it's competitive
         boGeno.Fitness = Fitness(boGeno, coins, useValidation: false);
         if (boGeno.Fitness > eliteIsland.Last().Fitness)
         {
@@ -352,7 +288,6 @@ public class DipLongGA
         }
 
         if (_verbose) Console.WriteLine("\n=== DipLong held-out validation ===");
-        // WARNING: RNG-free parallel body — see the note in the generation loop.
         Parallel.ForEach(eliteIsland, ind =>
             ind.Fitness = Fitness(ind, coins, useValidation: true));
 
@@ -395,10 +330,7 @@ public class DipLongGA
 
         for (int gen = 0; gen < _generations; gen++)
         {
-            // See Run() for why the stagnation mutation-rate boost was removed.
             double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
-
-            // WARNING: this parallel body must stay RNG-FREE — System.Random is not thread-safe.
             Parallel.ForEach(population, ind =>
                 ind.Fitness = Fitness(ind, coins, useValidation: false));
 
@@ -434,8 +366,6 @@ public class DipLongGA
 
             if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                // Restart draws from the LowVol random factory (this run's own bounds box),
-                // unseeded — see Run() for the full rationale.
                 population = GaSearch.Cataclysm(population, _populationSize, _eliteCarryOver,
                                                 () => DipLongGenotype.RandomLowVol(_rng), ref stagnantGens);
                 if (_verbose)
@@ -482,7 +412,6 @@ public class DipLongGA
         }
 
         if (_verbose) Console.WriteLine("\n=== DipLongLowVol held-out validation ===");
-        // WARNING: RNG-free parallel body — see the note in the generation loop.
         Parallel.ForEach(eliteIsland, ind =>
             ind.Fitness = Fitness(ind, coins, useValidation: true));
 
@@ -491,9 +420,6 @@ public class DipLongGA
         return best;
     }
 
-    // Tournament size comes from the constructor (default GaSearch.DefaultTournamentK = 2), not
-    // from a defaulted method parameter that no call site ever overrode. internal so the
-    // selection-pressure test can exercise the REAL selector rather than a copy of it.
     internal DipLongGenotype TournamentSelect(List<DipLongGenotype> pop) =>
         GaSearch.Tournament(pop, _tournamentK, _rng, g => g.Fitness);
 }

@@ -1,15 +1,7 @@
 namespace TradingGA;
 
-// Bidirectional swing long — mirror of FadeShort using RSI bullish divergence + bullish BoS.
-// Router-gated on DipLongActive (shared with DipLong — both are bull-regime long strategies).
-//
-// Entry:  strong bull trend (ADX + EMA) · min decline from recent high
-//         · RSI bullish divergence (price lower low but RSI higher = sellers losing steam)
-//         · 1h close above prev high (BoS) · 15m close above prev 15m high (precision entry)
-// Exit:   swing-low stop · fixed ATR target · trailing stop · max-hold timeout
-//
-// Fixed: RsiPeriod=7, AdxPeriod=7 (mirrors FadeShort constants).
-// ATR exit sizing uses h4 ATR (aggregated from h1) to match multi-day holding timeframe.
+// SwingLong genotype: bull-regime RSI bullish divergence + bullish BoS. Mirror of FadeShort.
+// Fixed: RsiPeriod=7, AdxPeriod=7. Exit sizing uses h4 ATR.
 public class SwingLongGenotype
 {
     public int    EmaPeriod     { get; set; }   // 20–100   trend-direction EMA
@@ -32,19 +24,11 @@ public class SwingLongGenotype
     public int    TimeStopBars    { get; set; }   // 10–80   h1 bars before decay activates
     public double TimeStopLossPct { get; set; }   // 0.02–0.25  max loss ratio at TimeStopBars
 
-    // ── ROUTER AS INDICATOR ──────────────────────────────────────────────────────────────
-    // Minimum BTC bullishness required before this strategy will take a long, learned rather than
-    // imposed. Mapped to a required alignment score of -1 + 2*w, so:
-    //     0.0  -> required -1.0, no score can be below it => gate always passes => EXACT no-op
-    //     0.5  -> required  0.0  => refuses to trade while BTC is net-bearish
-    //     1.0  -> required +1.0  => only trades at full BTC bull confidence
-    // 0 must be a bit-for-bit no-op or "the GA ignored BTC" is indistinguishable from "the gene
-    // had no leverage" — the same discipline the RipShort pilot needed to stay interpretable.
-    public double BtcAlignWeight { get; set; }   // 0.0–1.0, 0 = ignore BTC entirely
+    // BTC alignment gate: 0=ignore (exact no-op), 0.5=refuse net-bearish, 1.0=full bull only.
+    public double BtcAlignWeight { get; set; }   // 0.0–1.0
 
     public double Fitness { get; set; } = double.MinValue;
 
-    // Bounds for BayesianOptimizer — order matches ToVector/FromVector.
     public static readonly double[,] Bounds =
     {
         {  20, 100  }, // EmaPeriod
@@ -110,28 +94,10 @@ public class SwingLongGenotype
         "TimeStopBars", "TimeStopLossPct",
     ];
 
-    // ── Seeded initialisation ────────────────────────────────────────────────────
-    // Probability that a seeded Random* draw returns a LOOSE mutant of the seed
-    // rather than an independent uniform draw. Matches RegimeRouterGenotype.Random,
-    // which sits on the identical GA Run skeleton; one number across the whole
-    // strategy suite keeps the initial-diversity mix comparable between GAs.
-    //
-    // Resulting population mix at popSize 80 with a seed (the GA's Run block
-    // installs the clamped seed at index 0 and tight rate-0.25 mutants at 1..16):
-    //   1  exact seed
-    //   16 tight  (rate 0.25) mutants  — the seed's immediate neighbourhood
-    //   ~19 loose (rate 0.50) mutants  — 30% of the remaining 63 slots
-    //   ~44 fully independent random genotypes
-    // ≈ 45% anchored on the incumbent, ≈ 55% genuine exploration. Before this
-    // change the last 63 slots were byte-identical copies of the seed, leaving
-    // at most 17 distinct starting points (78.75% duplicates) — a hill-climb,
-    // not a GA.
+    // Seeded init: 30% loose mutant, ~45% anchored / ~55% exploration.
     private const double SeedMutantProbability = 0.3;
 
-    // Same seeded-init contract as Random (see SeedMutantProbability), but the
-    // seed-mutant branch is confined to BoundsHighVol via ClampToBoundsHighVol +
-    // MutateHighVol — never the normal-regime Mutate, which would propose
-    // genotypes outside the region the high-vol variant is defined on.
+    // High-vol variant: seed-mutant uses HighVol clamp+mutate.
     public static SwingLongGenotype RandomHighVol(System.Random rng, SwingLongGenotype? seed = null)
     {
         if (seed != null && rng.NextDouble() < SeedMutantProbability)
@@ -156,11 +122,7 @@ public class SwingLongGenotype
         };
     }
 
-    // ── High-vol variant operators ───────────────────────────────────────────────
-    // The low-vol variant already had ClampToBoundsLowVol / MutateLowVol; the
-    // high-vol variant had only BoundsHighVol, so seeded RandomHighVol had no
-    // in-region mutation operator to call. Both are driven off the BoundsHighVol
-    // table so they can never drift out of the high-vol region.
+    // High-vol variant operators — driven off BoundsHighVol.
     public static SwingLongGenotype FromVectorHighVol(double[] v) => new()
     {
         EmaPeriod                 = (int)Math.Clamp(Math.Round(v[0]),  BoundsHighVol[0, 0],  BoundsHighVol[0, 1]),
@@ -246,9 +208,7 @@ public class SwingLongGenotype
         BtcAlignWeight            = v.Length > 14 ? Math.Clamp(v[14], 0.0, 1.0) : 0.0,
     };
 
-    // Same seeded-init contract as Random (see SeedMutantProbability), but the
-    // seed-mutant branch uses the low-vol clamp + mutate pair so it stays inside
-    // BoundsLowVol.
+    // Low-vol variant: seed-mutant uses LowVol clamp+mutate.
     public static SwingLongGenotype RandomLowVol(System.Random rng, SwingLongGenotype? seed = null)
     {
         if (seed != null && rng.NextDouble() < SeedMutantProbability)

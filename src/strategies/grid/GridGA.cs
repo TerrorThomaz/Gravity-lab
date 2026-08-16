@@ -1,34 +1,10 @@
 namespace TradingGA;
 
-// Genetic algorithm for grid trading (ranging-market long grid, 1h candles).
-// Structure mirrors FadeShortGA.
-//
-// FoldScore operates on per-SESSION returns (mean of all level fills per activation),
-// not per-fill returns. This prevents inflating WR and trade count when GridLevels > 1.
-//
-// FoldScore is FoldScoreHelper.Canonical under FoldScoreHelper.GridShape — the SAME formula
-// every other strategy uses, with Grid's justified divergences expressed as a config
-// delta rather than a second hand-inlined formula:
-//   win-rate slope 0.5 not 3.0 (per-session WR is structurally high)
-//   drawdown penalty 2× stronger than swing (a grid's tail risk is the whole-ladder stop-out)
-//   no frequency bonus — session count is driven by coin volatility, not strategy quality
-//   no quality term — Canonical's rr ramp is calibrated for rr >= 1.0; a grid runs below it.
-// Fitness = lambda x CVaR_0.4(fold_scores) + (1 - lambda) x mean(fold_scores)
-// over the SURVIVING walk-forward folds (those that reached MinTradesPerFold trades), where
-// lambda is VC-proportional on avg N/d. The fold vector is CONSTANT LENGTH: a fold that
-// never reached MinTradesPerFold enters as ThinFoldScore rather than vanishing. Monotone
-// non-decreasing in every fold score by construction — see FoldScoreHelper.AggregateFoldScores
-// for why `mean - stdMult x std` was not.
-// Folds are cut PER COIN on that coin's own array — see Fitness().
+// Grid GA: ranging-market long grid, 1h candles. Per-session returns (not per-fill).
+// Fitness: CVaR/mean blend with GridShape config delta (lower WR slope, 2x DD penalty, no freq bonus).
 public class GridGeneticAlgorithm
 {
-    // Funding rides on CoinData because it is per-SYMBOL, and this GA only ever sees candle
-    // arrays. Without it GridGA called GetGridSessionReturns with no funding argument, which does
-    // NOT mean "no funding" — it charges the pessimistic interest-rate FLOOR. The backtests pass
-    // real per-symbol rates, and a long in a bull regime routinely pays more than the floor. So
-    // the GA optimised under a cheaper cost model than the one it is scored against: the same
-    // train/serve mismatch as the invisible-slippage defect, and the leading explanation for
-    // Grid's held-out PF reading lower in the portfolio than standalone.
+    // Funding is per-symbol; null = floor fallback (not zero cost).
     public record CoinData(ReadOnlyMemory<Candle> TrainCandles, ReadOnlyMemory<Candle> ValCandles,
                            double Weight = 1.0, FundingRateSession? Funding = null);
 
@@ -45,18 +21,13 @@ public class GridGeneticAlgorithm
     private readonly Random        _rng;
     private readonly FitnessConfig _cfg;
 
-    // Router gating weight; null = ungated. Weights by t.Time (the EXIT bar), matching the
-    // field CombinedBacktest gates on, so train and serve agree. Set by CoevolveGA.
+    // Router gating: weights by exit time, set by CoevolveGA.
     private readonly Func<DateTime, double>? _tradeGate;
 
     private const int    MinTradesPerFold = 10;
     private const double FitPosFrac       = 0.03;
     private const int    D                = 10;   // genotype parameter count (excl. Fitness) — see GridGenotype.Bounds
 
-    // eliteCount sizes the reporting slice / BO seed set / final-winner pool ONLY.
-    // eliteCarryOver is the real elitism knob (was a hardcoded literal 5). See GaSearch for the
-    // tournamentK = 2 rationale and for why stagnation now triggers a cataclysmic restart.
-    // seed: null draws one explicitly and prints it, so any run can be reproduced.
     public GridGeneticAlgorithm(
         int            populationSize    = 60,
         int            generations       = 100,
@@ -83,19 +54,7 @@ public class GridGeneticAlgorithm
         (_rng, _seed, _seedSupplied) = GaSearch.CreateRng(seed);
     }
 
-    // Canonical fold score under the Grid-family shape transform.
-    //
-    // This used to be a hand-inlined copy of the fitness formula, which left the six
-    // FitnessConfig term weights inert, skipped CVaRPenalty/TailRatioBonus entirely, and
-    // put Grid on a different SCALE from every other strategy — a scale CoevolveGA and
-    // RegimeRouterGA then combined with the others as if they were comparable.
-    //
-    // FoldScoreHelper.GridShape carries the justified divergences forward as a config
-    // delta instead: win-rate slope 0.5 not 3.0, drawdown divisor x20 not x10, no
-    // frequency bonus, and no quality term (Canonical's rr ramp is calibrated for
-    // rr >= 1.0, while a grid operates below it — see GridShape). The retention and gain
-    // terms are re-enabled at their neutral 1.0, and the tail terms now apply.
-    // statBonusCeiling stays at 1.0 as before.
+    // Canonical fold score with GridShape config delta.
     private static double FoldScore(List<double> returns, FitnessConfig cfg, double volWeight = 1.0)
         => FoldScoreHelper.Canonical(
             returns, FitPosFrac, MinTradesPerFold,
@@ -119,26 +78,7 @@ public class GridGeneticAlgorithm
             return FoldScore(all, _cfg);
         }
 
-        // Walk-forward folds, k of them, cut PER COIN on that coin's OWN array.
-        //
-        // Index-space fold bounds must never be shared across coins: each coin's training
-        // array is a percentage split of its own (variable-length) history, so index i is a
-        // different calendar date on every symbol. The previous code cut the folds on
-        // minLen — the SHORTEST coin — which both misaligned "fold f" across symbols and
-        // silently discarded every bar past minLen on every longer coin. Grid is
-        // single-timeframe (h1 only; CoinData carries one candle array), so there is no
-        // h1→m15 index mapping to maintain here.
-        //
-        // FURTHER IMPROVEMENT: if a BTC RegimeBar series is ever threaded into this GA,
-        // switch to FoldScoreHelper.ComputeRegimeAwareFoldWindows + RangeForWindow so that
-        // fold f covers the same calendar stretch of market history for every symbol — that
-        // is what the regime-gated GAs (DipLong/SwingLong/FadeLong/RipShort) now do. No BTC
-        // series reaches this constructor today, so per-coin percentage folds are the
-        // alignment-safe option available here.
-        //
-        // k is derived from the MEDIAN coin length rather than the shortest, so a single
-        // short symbol can no longer cap the fold count for the whole run. Coins whose own
-        // fold range comes out under 40 bars are skipped for that fold instead.
+        // Per-coin folds; k from median coin length (not shortest).
         int medianLen = MedianLength(validCoins.Select(x => x.arr.Length));
         int k         = Math.Min(folds, medianLen / 40);
 
@@ -154,11 +94,7 @@ public class GridGeneticAlgorithm
 
         var foldScores = new List<double>(k);
         var foldCounts = new List<int>(k);
-        // Folds ATTEMPTED, including the thin ones skipped below — the aggregator scales
-        // Every attempted fold is scored -- a thin one enters at ThinFoldScore -- so that
-        // concentrating all activity into one favourable
-        // market window can no longer beat trading consistently across all of them.
-        int attemptedFolds = 0;
+        int attemptedFolds = 0;  // includes thin folds
         for (int f = 0; f < k; f++)
         {
             attemptedFolds++;
@@ -173,11 +109,6 @@ public class GridGeneticAlgorithm
                         .Where(t => t.w >= 0.05).Select(t => t.Return * t.w));
             }
 
-            // Only folds that actually reached MinTradesPerFold sessions take part in the
-            // aggregation. A thin fold returns the constant -1.0 sentinel from FoldScore,
-            // and mixing constants into the aggregate would let a no-trade fold masquerade as
-            // a real (merely bad) one. It still counts toward attemptedFolds, so
-            // skipping a fold costs coverage.
             if (foldReturns.Count < MinTradesPerFold) continue;
 
             foldScores.Add(FoldScore(foldReturns, _cfg));
@@ -187,9 +118,6 @@ public class GridGeneticAlgorithm
         return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D, attemptedFolds);
     }
 
-    // Median of a set of array lengths. Used to size the fold count without letting the
-    // single shortest symbol dictate k for everyone (folds are per-coin now, so k no longer
-    // has to fit inside the shortest array).
     private static int MedianLength(IEnumerable<int> lengths)
     {
         var sorted = lengths.OrderBy(n => n).ToArray();
@@ -231,15 +159,8 @@ public class GridGeneticAlgorithm
 
         for (int gen = 0; gen < _generations; gen++)
         {
-            // Mutation rate anneals 0.65 → 0.05 across the run. The old
-            // `stagnantGens >= 15 ? rate * 2` boost is gone — see GaSearch.Cataclysm for why
-            // doubling a per-gene PROBABILITY on a fixed creep step cannot escape a basin, and
-            // why the boost latched on permanently once it fired.
             double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
-
-            // WARNING: this parallel body must stay RNG-FREE. System.Random is not thread-safe;
-            // a single _rng draw added here would silently corrupt its internal state (and
-            // destroy reproducibility) with no exception to point at it.
+            // WARNING: parallel body must stay RNG-free.
             Parallel.ForEach(population, ind =>
                 ind.Fitness = Fitness(ind, coins, useValidation: false));
 
@@ -275,12 +196,6 @@ public class GridGeneticAlgorithm
 
             if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                // CHC restart. `population` is already sorted best-first, so the survivors are
-                // exactly the individuals the normal path would have carried over — the
-                // best-so-far genotype lives through the restart, and eliteIsland (captured
-                // above from the same sorted list) still holds the champion regardless.
-                // Random(_rng, seed: null, adxCeiling) — NO genotype seed, so the restart
-                // samples the whole bounds box rather than a neighbourhood of the incumbent.
                 population = GaSearch.Cataclysm(population, _populationSize, _eliteCarryOver,
                                                 () => GridGenotype.Random(_rng, null, adxCeiling), ref stagnantGens);
                 if (_verbose)
@@ -303,7 +218,6 @@ public class GridGeneticAlgorithm
             }
         }
 
-        // ── Bayesian refinement ──────────────────────────────────────────────────
         if (_verbose) Console.WriteLine("\n  BO refinement (30 iterations, TPE)...");
         var boSeed = eliteIsland
             .Select(g => (g.ToVector(), g.Fitness))
@@ -328,11 +242,8 @@ public class GridGeneticAlgorithm
 
         if (_verbose) Console.WriteLine("\n=== Held-out validation (report-only, not used for selection) ===");
 
-        // Select winner by train fitness (best taken from elite sorted by train fitness)
         var best = eliteIsland.First();
         double trainFit = best.Fitness;
-
-        // Compute validation score for the winner only
         best.Fitness = Fitness(best, coins, useValidation: true);
 
         if (_verbose) Console.WriteLine($"Best (selected on train): train={trainFit:F3}  val={best.Fitness:F3}");
@@ -340,9 +251,6 @@ public class GridGeneticAlgorithm
         return best;
     }
 
-    // Tournament size comes from the constructor (default GaSearch.DefaultTournamentK = 2), not
-    // from a defaulted method parameter that no call site ever overrode. internal so the
-    // selection-pressure test can exercise the REAL selector rather than a copy of it.
     internal GridGenotype TournamentSelect(List<GridGenotype> pop) =>
         GaSearch.Tournament(pop, _tournamentK, _rng, g => g.Fitness);
 }

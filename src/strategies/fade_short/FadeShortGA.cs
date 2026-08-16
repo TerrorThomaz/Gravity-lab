@@ -2,31 +2,13 @@ using System.Buffers;
 
 namespace TradingGA;
 
-// Genetic algorithm for swing trading (1h setup + 15m entry/exit).
-// Uses 5-fold walk-forward CV; fitness directly optimises portfolio outcomes.
-//
-// FoldScore simulates a portfolio at a fixed 3% position size through each fold:
-//   - Main signal  : compounded portfolio gain (not per-trade expectancy)
-//   - Win rate     : multiplier — linearly penalises WR < 40%, bonus above 40%
-//   - Drawdown     : divisor   — sharply penalises peak-to-trough drawdown
-//   - Frequency    : log bonus — mild incentive to generate more trades
-//
-// FoldScore = (port_gain × 100) × wr_mult × freq_bonus / dd_div
-//
-// Fitness = lambda x CVaR_0.4(fold_scores) + (1 - lambda) x mean(fold_scores)
-// over the SURVIVING walk-forward folds (those that reached MinTradesPerFold trades), where
-// lambda is VC-proportional on avg N/d. The fold vector is CONSTANT LENGTH: a fold that
-// never reached MinTradesPerFold enters as ThinFoldScore rather than vanishing. Monotone
-// non-decreasing in every fold score by construction — see FoldScoreHelper.AggregateFoldScores
-// for why `mean - stdMult x std` was not.
-// Folds are cut PER COIN on that coin's own array — see FitnessFromCache.
+// FadeShort GA: fades overbought rallies in uptrends. 1h setup + 15m entry/exit.
+// Fitness: CVaR/mean blend over per-coin walk-forward folds with regime-sustained filtering.
 public class FadeShortGA
 {
     public record CoinData(ReadOnlyMemory<Candle> TrainCandles, ReadOnlyMemory<Candle> ValCandles, double Weight = 1.0);
 
-    // Pre-computed fixed-period indicators for a single candle array.
-    // RSI/ADX/ATR periods are constants in FadeShortSimulator, so these arrays
-    // are the same for every individual and only need to be built once per Run().
+    // Pre-computed fixed-period indicators (RSI/ADX/ATR are constants, same for all individuals).
     private sealed record CoinCache(
         Candle[] Candles,
         double[] Closes,
@@ -71,20 +53,13 @@ public class FadeShortGA
     private readonly Random       _rng;
     private readonly FitnessConfig _cfg;
 
-    // Router gating weight, mirroring the hook the four regime-gated GAs already had.
-    // null = ungated. Weights by t.Time (the EXIT bar), matching CombinedBacktest's gate so
-    // train and serve agree. Set by CoevolveGA so FadeShort adapts to the router that gates it.
+    // Router gating: weights by exit time, set by CoevolveGA.
     private readonly Func<DateTime, double>? _tradeGate;
 
     private const int MinTradesPerFold = 30;
     private const int D                = 13;   // genotype parameter count (excl. Fitness) — see FadeShortGenotype.Bounds
 
-    // eliteCount sizes the reporting slice / BO seed set / final-winner pool ONLY.
-    // eliteCarryOver is the real elitism knob — the number of individuals copied unchanged into
-    // the next generation, previously a hardcoded literal 5. See GaSearch for why tournamentK
-    // defaults to 2 (takeover ~8.5 generations at N=80, vs ~4.2 at the old k=4) and why
-    // stagnation now triggers a cataclysmic restart instead of a mutation-rate boost.
-    // seed: null draws a seed explicitly and prints it, so any run can be reproduced.
+    // eliteCount = reporting/BO pool size. eliteCarryOver = real elitism knob. seed=null = random.
     public FadeShortGA(
         int           populationSize    = 50,
         int           generations       = 80,
@@ -111,30 +86,13 @@ public class FadeShortGA
         (_rng, _seed, _seedSupplied) = GaSearch.CreateRng(seed);
     }
 
-    // Regime-sustained fold score, same shape as RipShortGA.FoldScore.
-    //
-    // CanonicalRegime DISCARDS trades whose uptrend was younger than sustainedBars — it does not
-    // penalise them. That distinction is the whole point: `gain` accumulates linearly per trade and
-    // is the dominant fitness term, so a discarded trade cannot buy fitness at any volume, whereas
-    // a penalty merely shifts the break-even. Zeroing FreqW was the penalty approach and moved
-    // trade count by 0.7%.
-    //
-    // sustainedBars = 0 reproduces plain Canonical exactly (every trade has RegimeBars >= 0), so
-    // a genotype file predating this gene behaves identically.
+    // Regime-sustained fold score. sustainedBars=0 = plain Canonical (no filtering).
     private static double FoldScore(List<(double Return, int RegimeBars)> returns, double posFrac,
                                     int sustainedBars, FitnessConfig cfg, double volWeight = 1.0)
         => FoldScoreHelper.CanonicalRegime(returns, posFrac, sustainedBars, MinTradesPerFold, cfg,
                                            volWeight, statBonusCeiling: 1.0);
 
-    // Pool returns across ALL coins within each fold slot (fold f = the f-th equal slice of
-    // each coin's OWN history, so the pooled slot is the same relative position for every
-    // symbol even though the absolute dates differ).
-    // Per-coin fitness was flat (-1 everywhere) because each coin individually
-    // produced too few trades per fold. Pooling 12 coins gives ~12× more trades
-    // per fold while fold-to-fold std still guards temporal overfitting.
-    //
-    // Uses pre-computed RSI/ADX/ATR caches and a caller-rented EMA buffer so that
-    // per-individual allocations are limited to the single EMA array per coin per fold.
+    // Pooled per-coin folds with pre-computed indicators. EMA buffer rented per individual.
     private static double FitnessFromCache(
         FadeShortGenotype        ind,
         IReadOnlyList<CoinCache> caches,
@@ -168,27 +126,7 @@ public class FadeShortGA
                 return FoldScore(all, posFrac, ind.RegimeSustainBars, cfg, volWeight);
             }
 
-            // Walk-forward folds, k of them, cut PER COIN on that coin's OWN array.
-            //
-            // Index-space fold bounds must never be shared across coins: each coin's
-            // training array is a percentage split of its own (variable-length) history, so
-            // index i is a different calendar date on every symbol. The previous code cut
-            // the folds on minLen — the SHORTEST coin — which both misaligned "fold f"
-            // across symbols and silently discarded every bar past minLen on every longer
-            // coin. FadeShort is single-timeframe here (h1 only; the m15 execution leg lives
-            // in the backtester, not in this GA), so there is no h1→m15 index mapping to
-            // maintain — the fold range indexes cache.Candles/Closes/Rsi/Adx/Atr directly.
-            //
-            // FURTHER IMPROVEMENT: if a BTC RegimeBar series is ever threaded into this GA,
-            // switch to FoldScoreHelper.ComputeRegimeAwareFoldWindows + RangeForWindow so
-            // that fold f covers the same calendar stretch of market history for every
-            // symbol — that is what the regime-gated GAs (DipLong/SwingLong/FadeLong/
-            // RipShort) now do. No BTC series reaches this constructor today, so per-coin
-            // percentage folds are the alignment-safe option available here.
-            //
-            // k is derived from the MEDIAN coin length rather than the shortest, so a single
-            // short symbol can no longer cap the fold count for the whole run. Coins whose
-            // own fold range comes out under 40 bars are skipped for that fold instead.
+            // Per-coin folds; k from median coin length (not shortest).
             int medianLen = MedianCandleLength(caches);
             int k         = Math.Min(folds, medianLen / 40);
 
@@ -209,10 +147,7 @@ public class FadeShortGA
 
             var foldScores = new List<double>(k);
             var foldCounts = new List<int>(k);
-            // Folds ATTEMPTED, including the thin ones skipped below — the aggregator
-            // scales by surviving/attempted so that concentrating all activity into one
-            // favourable window can no longer beat trading consistently across all of them.
-            int attemptedFolds = 0;
+            int attemptedFolds = 0;  // includes thin folds
             for (int f = 0; f < k; f++)
             {
                 attemptedFolds++;
@@ -229,11 +164,6 @@ public class FadeShortGA
                         { double w = gate?.Invoke(t.Time) ?? 1.0; if (w >= 0.05) foldReturns.Add((t.Return * w, t.RegimeBarsActive)); }
                 }
 
-                // Only folds that actually reached MinTradesPerFold trades take part in the
-                // aggregation. A thin fold returns the constant -1.0 sentinel from
-                // Canonical(), and mixing constants into the aggregate would let a
-                // no-trade fold masquerade as a real (merely bad) one. It still counts
-                // toward attemptedFolds, so skipping folds costs coverage.
                 if (foldReturns.Count < MinTradesPerFold) continue;
 
                 double volWeight = AverageVolCoverageFold(caches, k, f, cfg);
@@ -249,9 +179,6 @@ public class FadeShortGA
         }
     }
 
-    // Median candle count across the coin caches. Used to size the fold count without
-    // letting the single shortest symbol dictate k for everyone (folds are per-coin now,
-    // so k no longer has to fit inside the shortest array).
     private static int MedianCandleLength(IReadOnlyList<CoinCache> caches)
     {
         if (caches.Count == 0) return 0;
@@ -259,8 +186,6 @@ public class FadeShortGA
         return lens[lens.Length / 2];
     }
 
-    // Vol coverage over each coin's FULL array (no minLen truncation — coverage is a
-    // per-coin average, so longer coins contribute their whole history).
     private static double AverageVolCoverageFull(IReadOnlyList<CoinCache> caches, FitnessConfig cfg)
     {
         if (cfg.AtrLow <= 0.0 && cfg.AtrHigh >= 9999.0) return 1.0;
@@ -274,8 +199,6 @@ public class FadeShortGA
         return count == 0 ? 1.0 : sum / count;
     }
 
-    // Vol coverage for fold f, sliced per coin exactly as the trade loop slices it — the
-    // ATR array is built from the same candle array, so it shares that index space.
     private static double AverageVolCoverageFold(
         IReadOnlyList<CoinCache> caches, int folds, int fold, FitnessConfig cfg)
     {
@@ -306,8 +229,6 @@ public class FadeShortGA
             if (seed != null) Console.WriteLine($"  Seeding from: {seed}");
         }
 
-        // Pre-compute fixed-period indicators once per coin before the GA loop.
-        // Only EMA (EmaPeriod is a gene) is computed per individual inside FitnessFromCache.
         var trainCaches = coins
             .Select(c => BuildCache(c.TrainCandles, c.Weight))
             .Where(c => c.Candles.Length >= 100)
@@ -322,7 +243,6 @@ public class FadeShortGA
             .Select(_ => FadeShortGenotype.Random(_rng, seed))
             .ToList();
 
-        // Inject seed variants into first 20% of population
         if (seed != null)
         {
             var clamped = seed.ClampToBounds();
@@ -338,15 +258,8 @@ public class FadeShortGA
 
         for (int gen = 0; gen < _generations; gen++)
         {
-            // Mutation rate anneals 0.65 → 0.05 across the run. The old
-            // `stagnantGens >= 15 ? rate * 2` boost is gone — see GaSearch.Cataclysm for why
-            // doubling a per-gene PROBABILITY on a fixed creep step cannot escape a basin, and
-            // why the boost latched on permanently once it fired.
             double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
-
-            // WARNING: this parallel body must stay RNG-FREE. System.Random is not thread-safe;
-            // a single _rng draw added here would silently corrupt its internal state (and
-            // destroy reproducibility) with no exception to point at it.
+            // WARNING: parallel body must stay RNG-free.
             Parallel.ForEach(population, ind =>
                 ind.Fitness = FitnessFromCache(ind, trainCaches, useFolds: true, _cfg, _tradeGate));
 
@@ -382,12 +295,6 @@ public class FadeShortGA
 
             if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                // CHC restart. `population` is already sorted best-first, so the survivors are
-                // exactly the individuals the normal path would have carried over — the
-                // best-so-far genotype lives through the restart, and eliteIsland (captured
-                // above from the same sorted list) still holds the champion regardless.
-                // Random(_rng) with NO genotype seed: the restart must sample the whole bounds
-                // box, not a neighbourhood of the incumbent.
                 population = GaSearch.Cataclysm(population, _populationSize, _eliteCarryOver,
                                                 () => FadeShortGenotype.Random(_rng), ref stagnantGens);
                 if (_verbose)
@@ -410,13 +317,7 @@ public class FadeShortGA
             }
         }
 
-        // ── Bayesian refinement: TPE polishes the GA's elite region ─────────────
-        // Mirrors DipLongGA. FadeShort was the only GA without this stage, so when the broken
-        // post-GA BO pass in TrainCommands was deleted it was left with no refinement at all.
-        // Critically, this evaluates the SAME function the GA selects on (FitnessFromCache over
-        // trainCaches with folds) and accepts against a value from that same function — which is
-        // exactly what the deleted outer pass failed to do: it optimised mean per-trade return
-        // and compared it against a held-out fold-aggregated score.
+        // BO refinement: same fitness function as GA selection.
         if (_verbose) Console.WriteLine("\n  BO refinement (60 iterations, TPE)...");
         var boSeed = eliteIsland
             .Select(g => (g.ToVector(), g.Fitness))
@@ -443,14 +344,10 @@ public class FadeShortGA
         }
         else if (_verbose) Console.WriteLine($"  BO champion rejected (F={boGeno.Fitness:F3} <= elite floor {eliteIsland.Last().Fitness:F3})");
 
-        // Report-only validation (not used for selection)
         if (_verbose) Console.WriteLine("\n=== Held-out validation (report-only, not used for selection) ===");
-
-        // Select winner by train fitness (best taken from elite sorted by train fitness)
         var best = eliteIsland.First();
         double trainFit = best.Fitness;
 
-        // Compute validation score for the winner only
         best.Fitness = FitnessFromCache(best, valCaches, useFolds: false, _cfg, _tradeGate);
 
         if (_verbose) Console.WriteLine($"Best (selected on train): train={trainFit:F3}  val={best.Fitness:F3}");
@@ -502,10 +399,7 @@ public class FadeShortGA
 
         for (int gen = 0; gen < _generations; gen++)
         {
-            // See Run() for why the stagnation mutation-rate boost was removed.
             double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
-
-            // WARNING: this parallel body must stay RNG-FREE — System.Random is not thread-safe.
             Parallel.ForEach(population, ind =>
                 ind.Fitness = FitnessFromCache(ind, trainCaches, useFolds: true, _cfg, _tradeGate));
 
@@ -541,8 +435,6 @@ public class FadeShortGA
 
             if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                // Restart draws from the LowVol random factory (this run's own bounds box),
-                // unseeded — see Run() for the full rationale.
                 population = GaSearch.Cataclysm(population, _populationSize, _eliteCarryOver,
                                                 () => FadeShortGenotype.RandomLowVol(_rng), ref stagnantGens);
                 if (_verbose)
@@ -565,11 +457,6 @@ public class FadeShortGA
             }
         }
 
-        // ── Bayesian refinement, LowVol variant ────────────────────────────────
-        // Same rationale as Run's. Note this path MUST use the LowVol bounds and the LowVol
-        // vector reader: BoundsLowVol is a genuinely different box (see FadeShortGenotype), so
-        // refining against the normal Bounds here would propose genotypes outside the region
-        // this variant is defined on and then clamp them back in, biasing toward the boundary.
         if (_verbose) Console.WriteLine("\n  BO refinement (60 iterations, TPE, LowVol bounds)...");
         var boSeedLv = eliteIsland
             .Select(g => (g.ToVector(), g.Fitness))
@@ -608,9 +495,6 @@ public class FadeShortGA
         return best;
     }
 
-    // Tournament size comes from the constructor (default GaSearch.DefaultTournamentK = 2), not
-    // from a defaulted method parameter that no call site ever overrode. internal so the
-    // selection-pressure test can exercise the REAL selector rather than a copy of it.
     internal FadeShortGenotype TournamentSelect(List<FadeShortGenotype> pop) =>
         GaSearch.Tournament(pop, _tournamentK, _rng, g => g.Fitness);
 }

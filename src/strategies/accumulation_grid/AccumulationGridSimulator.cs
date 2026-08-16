@@ -2,43 +2,20 @@ using TradingGA;
 
 namespace GravityGen2.Strategies.AccumulationGrid;
 
-// EMA-anchored dynamic accumulation grid.
-//
-// Direction: LONG. Verified from the gross-return formula, not the file name — every exit
-// books (exitPx − entryPrices[n]) / entryPrices[n], i.e. profit when price RISES, and levels
-// are limit buys at emaNow − n × GridStepAtrMult × ATR with TP = entry + TakeProfitAtrMult ×
-// ATR. So funding is priced with isLong: true, which under the sign rule in FundingRateSession
-// makes a positive rate a COST.
-//
-// Funding used to be missing here entirely — this and GridSimulator were the only simulators
-// booking ZERO funding while every other strategy paid at least the interest-rate floor, a
-// systematic cost advantage of ~0.01%/8h over holds up to MaxHoldBars. One charge covers the
-// whole accumulation session: every level is priced from the session's activation timestamp,
-// matching the convention in GridShortSimulator and GridSimulator. Levels that fill later are
-// therefore charged for ticks they were not open across — deliberately pessimistic, and
-// identical across the grid family so it cannot tilt an intra-family comparison.
+// AccumulationGrid simulator: EMA-anchored dynamic accumulation, LONG.
+// Funding: isLong=true. Regime-gated with sustain requirement.
 public static class AccumulationGridSimulator
 {
     private const int AtrPeriod = 14;
 
-    // Cost model: see TradeCosts in src/core/Simulator.cs. Same shape as the other two grid
-    // simulators — the three must price a round trip identically. isTp is retained on the
-    // signature but no longer changes the cost; see GridSimulator.TradeCost for why the
-    // limit-fill discount is deliberately not modelled.
-    private const double StopGapAtrK = 0.18;
+    private const double StopGapAtrK = 0.18;  // same as grid family
 
     internal static double TradeCost(double atrAtStart, double entryPx, bool isStop, bool isTp = false,
                                      double barNotional = 0.0, double posFrac = 0.0)
         => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrAtStart, entryPx), isStop, StopGapAtrK,
                                    barNotional, posFrac);
 
-    // funding: optional real rate series. Passing null does NOT mean "no funding" — the
-    // fallback branch of FundingRateSession.PnlPct still charges the interest-rate floor
-    // (-0.01pp per 8h settlement crossed), same as every other strategy.
-    // EntryPrice is returned because an accumulator's success is an EXECUTION question — what did
-    // it pay relative to the market over the same period — not a profit-factor question. Without
-    // it the only available score was PF, which is a trading-edge yardstick and let this drift
-    // from PF 1.32 to 1.03 unnoticed while nothing measured what it is actually for.
+    // null funding = floor fallback. EntryPrice returned for execution-quality benchmarking.
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetAccumulationReturns(
         AccumulationGridGenotype g, ReadOnlySpan<Candle> h1, MarketRegime targetRegime,
         FundingRateSession? funding = null)
@@ -83,10 +60,7 @@ public static class AccumulationGridSimulator
         bool active = false;
         int filledLevels = 0;
         double[] entryPrices = new double[g.MaxLevels];
-        // Per-LEVEL fill time. sessionStartTime is the funding reference for the whole session and
-        // is NOT the entry of levels 2..n — a grid fills progressively as price falls, so using it
-        // would misdate every added level. Needed for the unified trade shape and for any
-        // acquisition metric that benchmarks each fill against its own local market.
+        // Per-level fill time (sessionStartTime is funding reference, not per-level entry).
         DateTime[] entryTimes = new DateTime[g.MaxLevels];
         double trailingStop = 0;
         double highestPrice = 0;
@@ -97,8 +71,6 @@ public static class AccumulationGridSimulator
 
         void CloseAll(int i, double exitPx, bool isStop = false)
         {
-            // isLong: true — levels are limit buys below the EMA and exits book (exit − entry),
-            // so a positive funding rate is a cost. See the sign rule in FundingRateSession.
             double fundingPnl = FundingRateSession.PnlPct(sessionStartTime, times[i], funding, isLong: true);
             for (int n = 0; n < filledLevels; n++)
             {
@@ -197,7 +169,7 @@ public static class AccumulationGridSimulator
                     highestPrice = closes[i];
                     trailingStop = highestPrice - g.StopLossAtrMult * atrNow;
                     holdCount = 0;
-                    sessionStartTime = times[i];   // funding reference for every level in this session
+                    sessionStartTime = times[i];
                 }
             }
         }
@@ -208,16 +180,7 @@ public static class AccumulationGridSimulator
         return (result, finalState);
     }
 
-    // Acquisition quality vs a LOCAL VWAP window centred on each fill.
-    //
-    // A whole-series VWAP is not a valid execution benchmark over long spans: on a coin that
-    // trended up for three years the full-period VWAP sits far below any recent price, so every
-    // late fill scores "above VWAP" no matter how well it was executed. Measured for real —
-    // the same accumulator scored +2.54% on a 20% val window and -26.86% on full history, and
-    // that gap is the artifact, not the strategy. Comparing each fill to the market average
-    // AROUND it answers the question actually being asked: did we buy below the local average?
-    //
-    // Returns mean % below local VWAP (positive = bought cheaper than the local market).
+    // Acquisition quality vs local VWAP. Returns mean % below local VWAP (positive = cheaper).
     public static double AcquisitionDiscountPct(
         IReadOnlyList<Candle> h1, IReadOnlyList<double> entryPrices, IReadOnlyList<DateTime> entryTimes,
         int halfWindowBars = 360)
@@ -250,16 +213,7 @@ public static class AccumulationGridSimulator
     }
 
 
-    // Causal variant: benchmark each fill against a TRAILING EMA of typical price.
-    //
-    // AcquisitionDiscountPct centres its VWAP window on the fill, so it includes bars AFTER the
-    // trade. That is normal in post-hoc transaction-cost analysis ("did we get a good basis vs
-    // where it subsequently traded"), but it is not causal — nothing at the fill could have known
-    // those bars. The EMA version only ever looks backwards, so it answers the stricter question:
-    // at the moment of the fill, was this below the market's own running average?
-    //
-    // Any gap between the two is informative rather than a discrepancy: EMA-only measures timing
-    // skill available in real time; the centred window measures realised basis.
+    // Causal variant: trailing EMA benchmark (backward-looking only, no future bars).
     public static double AcquisitionDiscountEmaPct(
         IReadOnlyList<Candle> h1, IReadOnlyList<double> entryPrices, IReadOnlyList<DateTime> entryTimes,
         int emaPeriod = 360)
@@ -283,9 +237,8 @@ public static class AccumulationGridSimulator
             if (px <= 1e-9) continue;
             int idx = Array.BinarySearch(times, entryTimes[k]);
             if (idx < 0) idx = ~idx;
-            // Step back one bar: the fill cannot use its own bar's completed average.
             idx = Math.Clamp(idx - 1, 0, h1.Count - 1);
-            if (idx < emaPeriod) continue;          // EMA not warmed up yet
+            if (idx < emaPeriod) continue;
             double avg = ema[idx];
             if (avg <= 1e-9) continue;
             sum += (avg - px) / avg * 100.0; n++;

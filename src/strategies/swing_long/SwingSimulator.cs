@@ -1,35 +1,15 @@
 namespace TradingGA;
 
-// Swing trading simulator — operates on 4h candles, short-only profit-taking thesis.
-//
-// Entry: all of the following must align on the same candle:
-//   1. Strong uptrend    — ADX ≥ threshold AND close > EMA
-//   2. Min rally filter  — recent high is ≥ MinRallyAtrMult × ATR above the recent low
-//                          (confirms there's a real extended move to fade, not noise)
-//   3. RSI divergence    — RSI at the current candle is ≥ RsiDivThreshold below the RSI
-//                          at the most recent swing high, AND that swing-high RSI cleared
-//                          RsiOverbought (buyers were exhausted at the top)
-//   4. Structure break   — close below the previous candle's low (market committed to reversal)
-//
-// Exit: swing-high stop · fixed ATR target · trailing stop once armed · max-hold timeout.
-//   Stop = swingHigh + StopLossAtrMult × ATR: invalidates the thesis (new high printed).
-//   Wider than a fixed-from-entry stop but correct — wick noise below the swing high is
-//   noise; price exceeding the swing high means the fade was wrong.
-// ATR multiples use the 14-period ATR fixed at entry for the life of the trade.
+// FadeShortSimulator (defined here, not in fade_short/): fades overbought rallies in uptrends.
+// Dual-TF: 1h setup + 15m entry/exit. h4 ATR for exit sizing. Invariant: stop = swingHigh + SL×ATR.
 public static class FadeShortSimulator
 {
     internal const int AtrPeriod    = 14;
-    internal const int RsiPeriod    = 7;   // fixed — not a gene; GA always converges here
-    internal const int AdxPeriod    = 7;   // fixed — not a gene; GA always converges here (faster ADX, more reactive to trend onset)
-    // Cost model: see TradeCosts in src/core/Simulator.cs. Fee + slippage on BOTH sides
-    // (slippage magnitude comes from Config.SlippageBps and nowhere else) + a gap premium on
-    // stop exits only. Execution is on 15m bars; the ATR reference passed in is h4.
-    // At the 3% reference ATR: TP ≈ 0.21%, Stop ≈ 0.30%. A meme perp at 8% ATR pays ≈ 0.38% /
-    // 0.62% — the volatility scaling is in TradeCosts, not here.
-    private const double StopGapAtrK = 0.030;  // stop gap premium = k × atrPct — fast-stop fill risk
+    internal const int RsiPeriod    = 7;   // fixed, not a gene
+    internal const int AdxPeriod    = 7;   // fixed, not a gene
+    private const double StopGapAtrK = 0.030;  // gap premium on stop exits
 
-    // EntryTime/EntryPrice: `Time` is the EXIT bar. Appended as NAMED fields so existing
-    // t.Time / t.Return consumers compile unchanged.
+    // Time = EXIT bar.
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetFadeShortReturns(
         FadeShortGenotype g, ReadOnlySpan<Candle> candles)
     {
@@ -41,11 +21,11 @@ public static class FadeShortSimulator
         bool   InTrade,
         double Entry,
         double HardStop,   // swingHigh + SL×ATR
-        double MaeStop,    // entry + MAE×ATR (tighter ceiling on adverse excursion)
+        double MaeStop,    // entry + MAE×ATR ceiling
         double Target,
         bool   TrailArmed,
-        double TrailLow,   // lowest price seen since entry (trail reference for short)
-        int    HoldCount); // h1 bars held
+        double TrailLow,   // lowest close since entry
+        int    HoldCount);
 
     public static FadeShortTradeState GetFadeShortTradeState(FadeShortGenotype g, ReadOnlySpan<Candle> candles)
     {
@@ -73,9 +53,7 @@ public static class FadeShortSimulator
         return SimulateCore(g, candles, closes, highs, lows, rsi, adx, atr, ema, warmup, candles.Length);
     }
 
-    // Entry point for the GA fitness loop — uses pre-computed fixed-period indicators and a
-    // caller-rented EMA buffer, simulating only over [rangeStart, rangeEnd).
-    // This avoids per-individual allocations of rsi/adx/atr arrays and Candle→double LINQ copies.
+    // GA fitness path: pre-computed indicators + caller-rented EMA buffer.
     internal static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetFadeShortReturnsPrecomputed(
         FadeShortGenotype g,
         ReadOnlySpan<Candle>  candles,
@@ -92,8 +70,7 @@ public static class FadeShortSimulator
         return trades.Select(t => (t.Item1, t.Item2, t.Item3, t.Item5, t.Item6)).ToList();
     }
 
-    // Regime-carrying twin of the above — the GA fitness path. Same core, same cost, but keeps
-    // RegimeBarsActive so FadeShortGA can filter through FoldScoreHelper.CanonicalRegime.
+    // Regime-carrying variant for regime-conditional fold scoring.
     internal static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)>
         GetFadeShortReturnsPrecomputedWithRegime(
             FadeShortGenotype g,
@@ -111,8 +88,7 @@ public static class FadeShortSimulator
         return trades;
     }
 
-    // Core simulation loop shared by RunSwing and GetFadeShortReturnsPrecomputed.
-    // iStart/iEnd are absolute indices into the full arrays; caller ensures iStart ≥ warmup.
+    // Core sim loop. iStart/iEnd are absolute indices; caller ensures iStart ≥ warmup.
     private static (List<(DateTime, double, string, int, DateTime, double)> Trades, FadeShortTradeState FinalState)
         SimulateCore(
             FadeShortGenotype g,
@@ -123,13 +99,7 @@ public static class FadeShortSimulator
     {
         var result = new List<(DateTime, double, string, int, DateTime, double)>();
 
-        // Consecutive bars the coin's UPTREND has held — the regime FadeShort fades. Same shape as
-        // RipShortSimulator's bearRegimeBarsAtBar, mirrored in direction. Computed inline rather
-        // than precomputed by the caller because it depends only on arrays the caller already
-        // passes, and adding a parameter would touch every call site for no benefit.
-        // Regime ema is SEPARATE from the signal ema and much longer (100-500 vs 20-100), and the
-        // slope window is searchable. Reusing the signal ema with a fixed 5-bar slope made the
-        // regime flicker, so upBars reset constantly and RegimeSustainBars had nothing to gate.
+        // Consecutive uptrend bars (regime FadeShort fades). Separate regime EMA (100-500) from signal EMA.
         var regimeEma   = Trend.Ema(closes, g.RegimeEmaPeriod);
         var regimeSlope = Signals.EmaSlope(regimeEma, g.RegimeSlopeLookback);
 
@@ -140,10 +110,10 @@ public static class FadeShortSimulator
 
         bool     inTrade   = false;
         int      entryRegimeBars = 0;
-        int      entryIdx  = 0;         // h1 bar the position opened on — participation reference
-        int      upBars    = 0;         // running uptrend-bar counter, reset when the regime breaks
+        int      entryIdx  = 0;
+        int      upBars    = 0;         // uptrend-bar counter, resets when regime breaks
         double   entry     = 0;
-        DateTime entryTime = default;   // h1-only path: exposed so callers get the ENTRY, not the exit
+        DateTime entryTime = default;
         double hardStop   = 0;
         double maeStop    = 0;
         double target     = 0;
@@ -158,8 +128,6 @@ public static class FadeShortSimulator
             double price  = closes[i];
             double atrNow = atr[i] > 1e-10 ? atr[i] : price * 0.04;
 
-            // Advance the uptrend counter EVERY bar, in or out of a trade, so the count reflects
-            // the regime's real age rather than restarting when a position closes.
             upBars = (price > regimeEma[i] && regimeSlope[i] > 0) ? upBars + 1 : 0;
 
             if (!inTrade)
@@ -185,17 +153,14 @@ public static class FadeShortSimulator
                 bool bos = bearBos[i];
                 if (!bos) continue;
 
-                // ── Enter short ───────────────────────────────────────────────────
                 inTrade    = true;
                 entry      = price;
-                entryTime  = candles[i].Time;   // h1-only path: the entry bar IS candles[i]
-                entryRegimeBars = upBars;       // consecutive bars the faded uptrend has held
+                entryTime  = candles[i].Time;
+                entryRegimeBars = upBars;
                 entryIdx   = i;
                 atrEntry   = atrNow;
-                // Stop above the swing high: if price exceeds that level the fade thesis is wrong.
                 hardStop   = swingHigh + g.StopLossAtrMult * atrEntry;
-                // MAE ceiling: caps loss on slow-grind rallies that stay below swingHigh stop.
-                maeStop    = entry + g.MaeAtrMult * atrEntry;
+                maeStop    = entry + g.MaeAtrMult * atrEntry;  // caps slow-grind losses
                 target     = entry - g.TakeProfitAtrMult * atrEntry;
                 trailLow   = price;
                 trailArmed = false;
@@ -230,7 +195,6 @@ public static class FadeShortSimulator
             }
         }
 
-        // Mark open position at last close of the simulated range
         if (inTrade)
         {
             double finalPx = closes[iEnd - 1];
@@ -244,14 +208,7 @@ public static class FadeShortSimulator
         return (result, finalState);
     }
 
-    // ── Multi-timeframe: 1h setup + 15m entry + h4 exit sizing ──────────────────
-    // h1  = 1h candles  — EMA/RSI/ADX regime gate, swing-high lookback, RSI divergence
-    //                     MinRallyAtrMult uses h1 ATR (right scale for h1 rally detection)
-    // m15 = 15m candles — BoS entry trigger, trailing stop tick-by-tick, timeout
-    // h4  = aggregated from h1 (factor 4) — ATR reference for all EXIT sizing
-    //       (stop, TP, trail activation, trail distance) so distances match holding TF
-    // LookbackCandles and MaxHoldCandles are h1 bars.
-
+    // Multi-TF: h1 setup, 15m entry/exit, h4 ATR for exit sizing.
     public static Candle[] AggregateCandles(Candle[] candles, int factor)
     {
         var result = new List<Candle>(candles.Length / factor + 1);
@@ -269,9 +226,7 @@ public static class FadeShortSimulator
         return result.ToArray();
     }
 
-    // EntryTime/EntryPrice: `Time` is the EXIT bar. Appended as NAMED fields so existing
-    // t.Time / t.Return consumers compile unchanged.
-    // ExecContext overloads — the single point of contact for both strategies in this file.
+    // ExecContext overload for multi-TF path.
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetFadeShortReturns(
         FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, in ExecContext ctx)
         => GetFadeShortReturns(g, h1, m15, ctx.Funding, ctx.Ratchet);
@@ -284,10 +239,7 @@ public static class FadeShortSimulator
         return trades.Select(t => (t.Item1, t.Item2, t.Item3, t.Item5, t.Item6)).ToList();
     }
 
-    // 6-tuple variant carrying RegimeBarsActive — consumed by FadeShortGA for regime-sustained
-    // fold scoring, exactly as RipShortSimulator.GetRipShortReturnsWithRegime is by RipShortGA.
-    // Kept as a SEPARATE entry point rather than widening the existing one so the ~40 call sites
-    // that do not care about the regime field stay untouched.
+    // Regime-carrying variant for regime-conditional fold scoring.
     internal static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)>
         GetFadeShortReturnsWithRegime(
             FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
@@ -303,8 +255,7 @@ public static class FadeShortSimulator
         return state;
     }
 
-    // Returns scored trades — entry+exit times and signal quality score — for ranked portfolio sim.
-    // Score = rsiExcess × adxRatio × rallyRatio (all > 1 at entry → higher = stronger signal).
+    // Scored trades for ranked portfolio. Score = rsiExcess × adxRatio × rallyRatio.
     public static List<ScoredTrade> GetScoredSwingTrades(string coin, FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15)
     {
         var scored = new List<ScoredTrade>();
@@ -342,15 +293,7 @@ public static class FadeShortSimulator
         var m15Closes = CandleExt.Closes(m15);
         var m15Lows   = CandleExt.Lows(m15);
 
-        // Consecutive h1 bars the coin's own UPTREND has been established — the regime FadeShort
-        // fades. Mirrors RipShortSimulator's bearRegimeBarsAtBar exactly (close vs regime EMA plus
-        // EMA slope sign, counter resets the moment the condition breaks); the only difference is
-        // the direction, because FadeShort fades an uptrend where RipShort rides a downtrend.
-        //
-        // Emitted per trade and consumed by FoldScoreHelper.CanonicalRegime, which DISCARDS trades
-        // below the genotype's RegimeSustainBars rather than penalising them — so they never reach
-        // `gain`, which is the only term strong enough to matter (it accumulates linearly per trade
-        // while freqBonus only paid logarithmically).
+        // Consecutive uptrend bars for regime-conditional fold scoring.
         int[] upRegimeBarsAtBar = new int[h1.Length];
         {
             var h1RegimeEma = Trend.Ema(h1Closes, g.RegimeEmaPeriod);
@@ -378,12 +321,11 @@ public static class FadeShortSimulator
         bool   trailArmed = false;
         int    entryIH1   = 0;
 
-        // Cache h1 setup result — only recomputed when h1Ref changes (every 4 m15 bars)
         int    cachedH1Ref     = -1;
         bool   cachedSetupMet  = false;
         double cachedSwingHigh = 0;
         double cachedAtrRef    = 0;
-        double cachedScore     = 0;   // signal quality at setup candle (used by ranked sim)
+        double cachedScore     = 0;   // signal quality for ranked sim
 
         double   entryScore = 0;
         DateTime entryTime  = default;
@@ -405,18 +347,13 @@ public static class FadeShortSimulator
 
             if (!inTrade)
             {
-                // Recompute h1 setup only when h1Ref advances (4 m15 bars per h1 bar)
                 if (h1Ref != cachedH1Ref)
                 {
                     cachedH1Ref    = h1Ref;
                     cachedSetupMet = false;
 
-                    // h1 ATR: rally qualification (right scale for h1 price structure)
                     double atrH1 = h1Atr[h1Ref] > 1e-10 ? h1Atr[h1Ref] : h1Closes[h1Ref] * 0.02;
-
-                    // h4 ATR: exit sizing (matches the multi-day holding timeframe)
-                    // Use the previous completed h4 bar — the current h4 bar aggregates future h1 bars
-                    int h4Ref = Math.Max(0, h1Ref / 4 - 1);
+                    int h4Ref = Math.Max(0, h1Ref / 4 - 1);  // previous completed h4 bar
                     double atrH4 = h4Ref < h4Atr.Length && h4Atr[h4Ref] > 1e-10
                                  ? h4Atr[h4Ref]
                                  : atrH1 * 4;
@@ -435,10 +372,7 @@ public static class FadeShortSimulator
                         {
                             cachedSetupMet  = true;
                             cachedSwingHigh = swingHigh;
-                            cachedAtrRef    = atrH4;   // exits use h4 ATR
-
-                            // Signal quality: product of three independent strengths.
-                            // Each factor > 1 at entry (threshold is the floor, not the target).
+                            cachedAtrRef    = atrH4;
                             double rsiExcess  = rsiAtHigh - g.RsiOverbought;
                             double adxRatio   = h1Adx[h1Ref] / g.AdxThreshold;
                             double rallyRatio = (swingHigh - recentLow) / (g.MinRallyAtrMult * atrH1);
@@ -447,9 +381,7 @@ public static class FadeShortSimulator
                     }
                 }
 
-                // BoS on 15m: close below the previous 15m candle's low.
-                // Enter at the OPEN of the next 15m bar — the BoS is only confirmed at bar close,
-                // so the earliest realistic fill is the following bar's open.
+                // 15m bearish BoS trigger; enter at next bar's open.
                 if (cachedSetupMet && m15Closes[im15] < m15Lows[im15 - 1])
                 {
                     int nextBar = im15 + 1;
@@ -475,8 +407,7 @@ public static class FadeShortSimulator
                 if (!trailArmed && entry - trailLow >= g.TrailingActivationAtrMult * atrEntry)
                     trailArmed = true;
 
-                int holdH1 = ih1 - entryIH1;   // elapsed h1 bars since entry
-
+                int holdH1 = ih1 - entryIH1;
                 if (ratchet.Enabled && !lockArmed
                     && ExitRatchet.ShouldArm(false, entry, atrEntry, trailLow, ratchet))
                     lockArmed = true;
@@ -521,14 +452,7 @@ public static class FadeShortSimulator
         return (result, new FadeShortTradeState(inTrade, entry, hardStop, maeStop, target, trailArmed, trailLow, finalHold));
     }
 
-    // ── Cost model ────────────────────────────────────────────────────────────────
-    // Total round-trip cost for one trade. Delegates to the single repo-wide model so this
-    // strategy stays comparable with the other seven; the only strategy-specific input is the
-    // stop gap shape. isStop=true adds the gap premium: price often blows through the stop
-    // level in a volatile bar.
-    // Traded value of the entry bar, in quote currency. Zero when volume is missing, which
-    // makes the impact term vanish rather than blow up — a data gap must not silently zero
-    // out a strategy, and the flat slippage still applies underneath.
+    // Entry bar notional in quote currency. Zero when volume missing (impact term vanishes).
     internal static double EntryBarNotional(ReadOnlySpan<Candle> bars, int i)
         => (uint)i < (uint)bars.Length ? bars[i].Volume * bars[i].Close : 0.0;
 
@@ -539,37 +463,17 @@ public static class FadeShortSimulator
 
 }
 
-// ── SwingLong simulator ──────────────────────────────────────────────────────────────────
-// Mirror of FadeShortSimulator: RSI bullish divergence + bullish BoS.
-// h1  = setup (EMA/RSI/ADX regime gate, swing-low lookback, RSI divergence)
-// m15 = precision entry (bullish BoS: close > prev 15m high)
-// h4  = exit sizing ATR (aggregated from h1; matches multi-day holding timeframe)
+// SwingLongSimulator: bull-regime RSI bullish divergence + bullish BoS. Mirror of FadeShort.
 public static class SwingLongSimulator
 {
-    // ExecContext overload — the single point of contact.
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetSwingLongReturns(
         SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, in ExecContext ctx)
         => GetSwingLongReturns(g, h1, m15, ctx.Funding, ctx.Ratchet);
 
-    // ── ROUTER AS INDICATOR ──────────────────────────────────────────────────────────────
-    // btcRegime returns a SIGNED alignment score for a moment in time: +confidence when BTC is
-    // Bull, -confidence when Bear, 0 otherwise. It is the router's own input series, exposed to
-    // the strategy as just another indicator.
-    //
-    // Why this is different from the existing gate. RegimeRouterSession decides ON or OFF for a
-    // whole strategy, outside it, and the GA's tradeGate only WEIGHTS trades the simulator has
-    // already taken (see RipShortGA:124) — the strategy is penalised for trading in the wrong
-    // regime but can never decline to. Here the signal reaches the entry test, so a strategy can
-    // learn its own routing jointly with its entry logic instead of having one bolted on after.
-    //
-    // Null => feature absent, every existing call site bit-for-bit unchanged.
+    // Router-as-indicator: signed BTC alignment score (+Bull, -Bear, 0 otherwise). Null = absent.
     public static Func<DateTime, double>? BtcRegimeProbe;
 
-    // CONTROL SWITCH. GRAVITY_SWINGLONG_NOBTC=1 forces the gate open at the point of USE, leaving
-    // the gene drawn and mutated exactly as before so the RNG stream matches the experimental run
-    // bit for bit. Pinning the bound to {0,0} instead would change the number of draws and the
-    // control would degrade into "a second, different GA run" — which this repo already warns is
-    // enough on its own to land in a different basin.
+    // Control switch: GRAVITY_SWINGLONG_NOBTC=1 forces gate open, preserving RNG stream.
     private static readonly bool NoBtcGate =
         Environment.GetEnvironmentVariable("GRAVITY_SWINGLONG_NOBTC") == "1";
 
@@ -577,9 +481,7 @@ public static class SwingLongSimulator
     internal const int RsiPeriod =  7;
     internal const int AdxPeriod =  7;
 
-    // Cost model: see TradeCosts in src/core/Simulator.cs. Identical shape to FadeShort —
-    // this is its long-side mirror, so it must not price a round trip differently.
-    private const double StopGapAtrK = 0.030;
+    private const double StopGapAtrK = 0.030;  // gap premium on stop exits
 
     internal static double TradeCost(bool isStop, double atrEntry, double entryPx,
                                       double barNotional = 0.0, double posFrac = 0.0)
@@ -592,11 +494,9 @@ public static class SwingLongSimulator
         double HardStop,
         double Target,
         bool   TrailArmed,
-        double TrailHigh,   // highest price seen since entry (trail reference for long)
+        double TrailHigh,   // highest close since entry
         int    HoldCount);
 
-    // EntryTime/EntryPrice: `Time` is the EXIT bar. Appended as NAMED fields so existing
-    // t.Time / t.Return consumers compile unchanged.
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetSwingLongReturns(
         SwingLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
         FundingRateSession? funding = null, RatchetConfig ratchet = default)
@@ -691,37 +591,21 @@ public static class SwingLongSimulator
 
                     double atrH1 = h1Atr[h1Ref] > 1e-10 ? h1Atr[h1Ref] : h1Closes[h1Ref] * 0.02;
 
-                    // Use the previous completed h4 bar — the current h4 bar aggregates future h1 bars
-                    int    h4Ref = Math.Max(0, h1Ref / 4 - 1);
+                    int    h4Ref = Math.Max(0, h1Ref / 4 - 1);  // previous completed h4 bar
                     double atrH4 = h4Ref < h4Atr.Length && h4Atr[h4Ref] > 1e-10
                                  ? h4Atr[h4Ref] : atrH1 * 4;
 
-                    // Trend gate: price above EMA and ADX trending
                     bool strongTrend = h1Adx[h1Ref] >= g.AdxThreshold && h1Closes[h1Ref] > h1Ema[h1Ref];
                     if (strongTrend)
                     {
                         var (swingLow, _, recentHigh) = Signals.SwingLowLookback(
                             h1Closes, h1Highs, h1Lows, h1Ref, g.LookbackCandles);
 
-                        // Min decline filter: real pullback, not noise
                         bool bigDrop = bigDropArr[h1Ref];
-
-                        // RSI bullish divergence: swingLow RSI was oversold AND current RSI recovered
                         bool diverging  = bullDiv[h1Ref];
-
-                        // 1h BoS: close above previous candle's high (bullish)
                         bool h1Bos = h1BullBos[h1Ref];
 
-                        // BTC alignment gate. score is +conf in Bull, -conf in Bear, 0 elsewhere,
-                        // so `required` is the minimum BTC bullishness this genotype demands
-                        // before it will take a long. BtcAlignWeight = 0 makes required = -1,
-                        // which no score can fall below — the test is then vacuously true and
-                        // this is EXACTLY the pre-gene code path.
-                        //
-                        // One-sided by construction: the gate can only REMOVE setups, never
-                        // create them. After the frequency-bonus fix a gene can no longer profit
-                        // from loosening alone, but a routing gate that could manufacture trades
-                        // would still be answering a different question than the one asked.
+                        // BTC alignment gate: BtcAlignWeight=0 is exact no-op (required=-1, always passes).
                         double btcScore = BtcRegimeProbe?.Invoke(h1[h1Ref].Time) ?? 1.0;
                         double required = (NoBtcGate || g.BtcAlignWeight <= 0.0)
                             ? -1.0
@@ -737,8 +621,7 @@ public static class SwingLongSimulator
                     }
                 }
 
-                // 15m bullish BoS: close above previous 15m candle's high.
-                // Enter at the OPEN of the next 15m bar — the BoS is only confirmed at bar close.
+                // 15m bullish BoS trigger; enter at next bar's open.
                 if (cachedSetupMet && m15Closes[im15] > m15Highs[im15 - 1])
                 {
                     int nextBar = im15 + 1;
@@ -763,11 +646,7 @@ public static class SwingLongSimulator
 
                 int holdH1 = ih1 - entryIH1;
 
-                // Minimum-profit ratchet. THIS WAS MISSING: SwingLongSimulator declared lockArmed
-                // and reset it at entry but never called ExitRatchet, so the ratchet parameter was
-                // accepted and silently dropped. It was misread as "the trail geometry already
-                // guarantees profit so the floor never binds" — the field simply never arrived.
-                // Caught by ExecContextConformanceTests, which is what that test exists for.
+                // Min-profit ratchet (was missing — caught by conformance tests).
                 if (ratchet.Enabled && !lockArmed
                     && ExitRatchet.ShouldArm(true, entry, atrEntry, trailHigh, ratchet))
                     lockArmed = true;
@@ -779,8 +658,6 @@ public static class SwingLongSimulator
                 bool hitTrail  = trailArmed && m15Price < trailHigh - g.TrailingStopAtrMult * atrEntry;
                 bool timedOut  = holdH1 >= g.MaxHoldCandles;
 
-                // Time-decay stop: after TimeStopBars bars, tolerated loss narrows linearly
-                // from TimeStopLossPct down to 0% at MaxHoldCandles.
                 bool hitTimeStop = false;
                 if (!hitStop && !hitTarget && !hitTrail && !timedOut
                     && holdH1 >= g.TimeStopBars && g.MaxHoldCandles > g.TimeStopBars)

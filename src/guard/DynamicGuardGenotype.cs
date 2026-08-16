@@ -29,52 +29,29 @@ public record DynamicGuardGenotype(
     double ProfitProtectFactor,    // position size multiplier when in protection mode (0.20–1.00); 1.0 = no reduction
     double Fitness = 0)
 {
-    // "Never fires" value for DdEntryGatePct. The simulator compares a drawdown FRACTION
-    // (peak - balance) / peak, which cannot exceed 1.0, so 1.0 == gate permanently off.
+    // "Never fires" sentinel for DdEntryGatePct (DD fraction can't exceed 1.0).
     public const double DdGateDisabled = 1.0;
 
-    // Index of the DD-gate THRESHOLD in Bounds / ToGenes / FromGenes.
+
     public const int DdGateGeneIndex = 9;
 
-    // Index of the DD-gate ON/OFF switch in Bounds / ToGenes / FromGenes.
-    //
-    // Why a separate switch gene instead of widening Bounds[9] to {0.02, 1.0}:
-    // the GA must be able to select "off" for a risk control, or the control is imposed
-    // rather than validated. But a single continuous gene spanning [0.02, 1.0] makes the
-    // live band ([0.02, 0.15]) only 13% of the range, and — worse — ties every mutation
-    // step to that range. DynamicGuardGA mutates with sigma = 0.1 * range (= 0.098) and
-    // BayesianOptimizer's KDE bandwidth is clamped to [3%, 20%] of range (= [0.029, 0.196]);
-    // both are wider than the entire 0.13-wide live band, so neither optimiser could ever
-    // tune the threshold — every perturbation of a live gene would fling it out of the band.
-    // Splitting the decision keeps Bounds[9] at its natural scale (mutation sigma 0.013,
-    // TPE bandwidth [0.004, 0.026]) and gives the on/off choice a clean 50/50 prior under
-    // uniform initialisation, at the cost of one extra — binary — search dimension.
+    // DD-gate ON/OFF switch gene. Separate from the threshold gene because widening Bounds[9]
+    // to [0.02, 1.0] would make the live band only 13% of the range, breaking both optimisers.
     public const int DdGateEnableGeneIndex = 15;
 
-    // Gene 15 >= this ⇒ gate live at gene 9; below ⇒ gate off.
+
     public const double DdGateEnableThreshold = 0.5;
 
-    // Canonical values ToGenes emits for the switch. They sit at the midpoints of the two
-    // halves rather than saturating at 0.0/1.0 so the boundary stays crossable: at 0.25/0.75
-    // it is 2.5 mutation sigmas away for the GA and inside one TPE bandwidth. Saturated
-    // 0/1 values would make the switch effectively unflippable after initialisation.
+    // Canonical switch values at midpoints (0.25/0.75) so the boundary stays crossable.
     public const double DdGateEnabledGene  = 0.75;
     public const double DdGateDisabledGene = 0.25;
 
-    // NUMBER OF SEARCH GENES — deliberately one MORE than the record's 15 value fields:
-    // the DD gate is a single effective field (the threshold) driven by TWO search genes
-    // (threshold at index 9 + on/off switch at index 15), folded back together by FromGenes.
-    // Everything that walks the search space (DynamicGuardGA.RandomGenes / MutateGene,
-    // BayesianOptimizer.Refine) sizes itself off Bounds.GetLength(0), so Bounds, ToGenes and
-    // this constant must agree exactly — the static constructor below enforces that, and
-    // DynamicGuardTests pins it from the outside.
+    // 16 search genes (one more than the 15 value fields): the DD gate uses two genes (threshold + switch).
     public const int GeneCount = 16;
 
     static DynamicGuardGenotype()
     {
-        // Static assertion: a Bounds row count that drifts away from ToGenes' arity would make
-        // the GA mutate genes that do not exist, or leave the last gene(s) frozen at their
-        // initial draw. Fail loudly at type-load rather than silently mis-optimise.
+        // Static assertion: Bounds row count must match GeneCount.
         if (Bounds.GetLength(0) != GeneCount)
             throw new InvalidOperationException(
                 $"DynamicGuardGenotype gene-layout mismatch: Bounds has {Bounds.GetLength(0)} rows, " +
@@ -109,30 +86,8 @@ public record DynamicGuardGenotype(
         {  0.0,   1.00},   // DdGateEnabled  — >= 0.5 ⇒ DD gate live at gene 9, else off
     };
 
-    // THE CLAMP POLICY, in one sentence:
-    //   a DdEntryGatePct is kept verbatim only if it already lies inside the live band
-    //   [Bounds[9,0], Bounds[9,1]]; EVERY other value — NaN, infinity, negative, zero,
-    //   below the band, above the band, or a legacy percent-scale number — coerces the
-    //   gate OFF (DdGateDisabled), and only the exact sentinel does so without being
-    //   flagged as coerced.
-    //
-    // Note this is NOT "clamp into bounds" for any input, including 0.005 and 0.90, which sit
-    // just outside the band and would once have been snapped to 0.02 / 0.15. Under the two-gene
-    // design the GA never needs the snapping behaviour — it says "off" with the switch gene
-    // (index 15) and only ever emits in-band thresholds at gene 9, so the ONLY callers that can
-    // present an out-of-band number are deserialisation of a stale/hand-edited genotype file
-    // and a hand-written `new`/`with`. For those, an out-of-band number is evidence of a bug or
-    // a unit mix-up, not a preference about where the threshold belongs.
-    //
-    // Why "off" and never "clamp to the nearest edge": until 2026-08 this gene was bounded
-    // {2, 15} and defaulted to 15.0, i.e. it was stored on a PERCENT scale while
-    // Simulator.SimulatePortfolioExposureCapped compared it against a fraction in [0, 1].
-    // Every such value demanded a >200% drawdown, so the gate was inert across its whole
-    // search space. A gene the GA selected while the gate was provably inert carries no
-    // evidence about where the threshold belongs, so snapping it to an edge would silently
-    // switch on a never-validated long-entry blocker — at 0.02 that is close to "block all
-    // DipLong/SwingLong entries permanently". Coercing off is the only choice that changes
-    // no backtest number. Retrain to get a real threshold.
+    // Clamp policy: in-band values kept verbatim; everything else (NaN, legacy percent-scale, etc.)
+    // coerces gate OFF. Out-of-band = stale genotype, not a preference. Retrain for a real threshold.
     public static double ClampDdEntryGate(double raw, out bool wasCoerced)
     {
         double lo = Bounds[DdGateGeneIndex, 0], hi = Bounds[DdGateGeneIndex, 1];
@@ -141,16 +96,14 @@ public record DynamicGuardGenotype(
             wasCoerced = false;
             return raw;
         }
-        // Anything else is unusable as a threshold. The explicit sentinel is a legitimate
-        // way to say "off", so it is not reported as a coercion.
+
         wasCoerced = raw != DdGateDisabled;
         return DdGateDisabled;
     }
 
     public static double ClampDdEntryGate(double raw) => ClampDdEntryGate(raw, out _);
 
-    // Enforces the DdEntryGatePct invariant for every construction path — primary
-    // constructor, object initialiser and `with` expression alike.
+    // Enforces DdEntryGatePct invariant for all construction paths.
     private readonly double _ddEntryGatePct = ClampDdEntryGate(DdEntryGatePct);
     public double DdEntryGatePct
     {
@@ -160,10 +113,7 @@ public record DynamicGuardGenotype(
 
     public bool DdGateIsLive => DdEntryGatePct < DdGateDisabled;
 
-    // ToGenes/FromGenes are exact inverses on the record: the two DD-gate genes are emitted
-    // in canonical form (an off individual reports the LOOSEST live threshold, so flipping
-    // the switch on is the mildest possible perturbation rather than a jump to the harshest
-    // 2% gate), and FromGenes folds them back into the single effective field.
+    // ToGenes/FromGenes: exact inverses. Off individual emits loosest threshold for smooth switch-on.
     public double[] ToGenes() =>
     [
         AtrLookback, AtrTrigger, MomLookback, MomThreshold, SizeFloor, PanicTrigger, RecoveryBars,
@@ -185,9 +135,7 @@ public record DynamicGuardGenotype(
             g.Length > 14 ? g[14] : 1.0,    // default: no size reduction
             fitness);
 
-    // Folds the threshold gene and the switch gene into the single effective field.
-    // A legacy 15-gene vector (no switch) is read by its threshold alone — ClampDdEntryGate
-    // already turns anything unusable there into "off".
+    // Folds threshold + switch genes into the single effective field. Legacy 15-gene vectors handled.
     private static double DdGateFromGenes(double[] g)
     {
         if (g.Length <= DdGateGeneIndex) return DdGateDisabled;
@@ -196,8 +144,7 @@ public record DynamicGuardGenotype(
         return enabled ? ClampDdEntryGate(g[DdGateGeneIndex]) : DdGateDisabled;
     }
 
-    // Returns multiplier in [SizeFloor, 1.0] based on ATR and momentum stress.
-    // Panic and recovery are applied at the session level (DynamicGuardSession).
+    // Multiplier in [SizeFloor, 1.0]. Panic/recovery handled at session level.
     public double ComputeMult(double atrRatio, double momentum)
     {
         double atrStress = Math.Clamp((atrRatio - AtrTrigger) / Math.Max(AtrTrigger, 0.1), 0, 1);

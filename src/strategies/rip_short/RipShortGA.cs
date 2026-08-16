@@ -1,22 +1,7 @@
 namespace TradingGA;
 
-// Genetic algorithm for the rip-short strategy.
-// Regime-gated bear trend-continuation: fires only in detected bear markets
-// (dual-EMA slope filter), so the GA only needs to generalise over bear periods.
-//
-// Direction-mirror of DipLongGA. FoldScore filters trades to those where the bear
-// regime has been confirmed for at least RegimeSustainedBars consecutive h1 bars at
-// entry — trades taken on the first bar of a new regime (noise) don't pollute the score.
-//
-// Training uses flat pessimistic funding (funding: null) so it never requires a
-// funding dataset; live/backtest paths supply a FundingRateSession for real rates.
-//
-// Fitness = lambda x CVaR_0.4(fold_scores) + (1 - lambda) x mean(fold_scores)
-// over the SURVIVING walk-forward folds (those that reached MinTradesPerFold trades), where
-// lambda is VC-proportional on avg N/d. The fold vector is CONSTANT LENGTH: a fold that
-// never reached MinTradesPerFold enters as ThinFoldScore rather than vanishing. Monotone
-// non-decreasing in every fold score by construction — see FoldScoreHelper.AggregateFoldScores
-// for why `mean - stdMult x std` was not.
+// RipShort GA: bear-regime RSI relief-rally short. Trains with funding:null (floor fallback).
+// Fitness: CVaR/mean blend over per-coin walk-forward folds, regime-sustained filtering.
 public class RipShortGA
 {
     public record CoinData(ReadOnlyMemory<Candle> TrainH1, ReadOnlyMemory<Candle> ValH1, ReadOnlyMemory<Candle> TrainM15, ReadOnlyMemory<Candle> ValM15, double Weight = 1.0);
@@ -71,20 +56,7 @@ public class RipShortGA
         (_rng, _seed, _seedSupplied) = GaSearch.CreateRng(seed);
     }
 
-    // Canonical fold score, filtered to trades that fired during a CONFIRMED bear regime
-    // (RegimeBars >= sustainedBars) — CanonicalRegime does that filtering itself.
-    //
-    // This used to be a hand-inlined copy of the canonical formula. The copy had drifted
-    // in three ways that all mattered: the six FitnessConfig term weights
-    // (GainW/WrW/QualityW/FreqW/DdPenalty/RetentionW) were INERT here because the
-    // coefficients were hardcoded, CVaRPenalty and TailRatioBonus were never applied at
-    // all, and the fitness was therefore on a different scale from the other strategies —
-    // which CoevolveGA and RegimeRouterGA then combine.
-    //
-    // The one divergence that was deliberate is PRESERVED: statBonusCeiling stays at 1.0
-    // (max combined stat stack ~5x, not ~40x) because RipShort's sparse bear-window
-    // sample let an uncapped stack compound a lucky fold into a fake edge
-    // (train F=15718 vs held-out OOS PF=0.88, see the overfit check).
+    // Canonical fold score with regime filtering. statBonusCeiling=1.0 (sparse bear window overfit guard).
     private static double FoldScore(
         List<(double Return, int RegimeBars)> returns,
         double posFrac,
@@ -128,19 +100,7 @@ public class RipShortGA
             return FoldScore(all, posFrac, ind.RegimeSustainedBars, _cfg, volWeight);
         }
 
-        // Walk-forward folds, k of them, cut on CALENDAR TIME rather than array indices.
-        //
-        // With a BTC regime series available, fold boundaries are computed once on BTC
-        // (balanced on the number of active bear bars, with an embargo gap) and handed to
-        // every coin as [Start, End) time windows; each coin then binary-searches that
-        // window into its own h1/m15 arrays. Index-space bounds can NOT be shared across
-        // coins — RipShort's training arrays are bear-window-FILTERED concatenations of a
-        // few thousand bars, so index i is a completely different calendar date on every
-        // symbol, and coins shorter than a fold's start index would drop out of every
-        // later fold and dump their entire history into fold 0.
-        //
-        // Without a BTC series, fall back to per-coin percentage folds: each coin slices
-        // its own history into k equal parts, which is alignment-safe by construction.
+        // Walk-forward folds on CALENDAR TIME (BTC regime-aware windows when available, else per-coin %).
         int k = folds;
 
         (DateTime Start, DateTime End)[]? windows = _btcSeries != null
@@ -149,11 +109,7 @@ public class RipShortGA
 
         var foldScores = new List<double>();
         var foldCounts = new List<int>();
-        // Folds ATTEMPTED, including the thin ones skipped below — the aggregator scales
-        // Every attempted fold is scored -- a thin one enters at ThinFoldScore -- so that
-        // concentrating all activity into one favourable
-        // market window can no longer beat trading consistently across all of them.
-        int attemptedFolds = 0;
+        int attemptedFolds = 0;  // includes thin folds (scored at ThinFoldScore)
 
         for (int f = 0; f < k; f++)
         {
@@ -183,11 +139,7 @@ public class RipShortGA
                                       .Select(t => (t.Return, t.RegimeBars)));
             }
 
-            // Only folds that actually reached MinTradesPerFold scored trades take part in
-            // the aggregation. A thin fold returns the constant -1.0 sentinel, and mixing
-            // constants into the aggregate would let a no-trade fold masquerade as a real
-            // (merely bad) one. It still counts toward attemptedFolds and enters the aggregate
-            // at ThinFoldScore, so withdrawing from a window is strictly loss-making.
+            // Thin folds enter aggregate at ThinFoldScore; only scored folds contribute directly.
             int scoredTrades = foldRet.Count(t => t.RegimeBars >= ind.RegimeSustainedBars);
             if (scoredTrades < MinTradesPerFold) continue;
 
@@ -232,15 +184,8 @@ public class RipShortGA
 
         for (int gen = 0; gen < _generations; gen++)
         {
-            // Mutation rate anneals 0.65 → 0.05 across the run. The old
-            // `stagnantGens >= 15 ? rate * 2` boost is gone — see GaSearch.Cataclysm for why
-            // doubling a per-gene PROBABILITY on a fixed creep step cannot escape a basin, and
-            // why the boost latched on permanently once it fired.
             double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
-
-            // WARNING: this parallel body must stay RNG-FREE. System.Random is not thread-safe;
-            // a single _rng draw added here would silently corrupt its internal state (and
-            // destroy reproducibility) with no exception to point at it.
+            // WARNING: parallel body must stay RNG-free (System.Random not thread-safe).
             Parallel.ForEach(population, ind =>
                 ind.Fitness = Fitness(ind, coins, useValidation: false));
 
@@ -276,12 +221,7 @@ public class RipShortGA
 
             if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                // CHC restart. `population` is already sorted best-first, so the survivors are
-                // exactly the individuals the normal path would have carried over — the
-                // best-so-far genotype lives through the restart, and eliteIsland (captured
-                // above from the same sorted list) still holds the champion regardless.
-                // Random(_rng) with NO genotype seed: the restart must sample the whole bounds
-                // box, not a neighbourhood of the incumbent.
+                // CHC restart: keep best, reinit rest from full bounds box (unseeded).
                 population = GaSearch.Cataclysm(population, _populationSize, _eliteCarryOver,
                                                 () => RipShortGenotype.Random(_rng), ref stagnantGens);
                 if (_verbose)
@@ -304,7 +244,7 @@ public class RipShortGA
             }
         }
 
-        // ── Bayesian refinement: TPE polishes the GA's elite region ─────────────
+        // BO refinement: TPE polishes elite region.
         if (_verbose) Console.WriteLine("\n  BO refinement (30 iterations, TPE)...");
         var boSeed = eliteIsland
             .Select(g => (g.ToVector(), g.Fitness))
@@ -320,7 +260,6 @@ public class RipShortGA
         var boChampion = boHistory.OrderByDescending(h => h.Fitness).First();
         var boGeno     = RipShortGenotype.FromVector(boChampion.Params);
 
-        // Inject BO champion into elite island if it's competitive
         boGeno.Fitness = Fitness(boGeno, coins, useValidation: false);
         if (boGeno.Fitness > eliteIsland.Last().Fitness)
         {
@@ -329,8 +268,7 @@ public class RipShortGA
             if (_verbose) Console.WriteLine($"  BO improved elite: {boGeno}");
         }
 
-        // ── Final selection: winner chosen on TRAIN fitness (no validation re-selection) ──
-        // Held-out validation is computed for the single winner as a report only.
+        // Winner chosen on train fitness; validation is report-only.
         if (_verbose) Console.WriteLine("\n=== RipShort held-out validation (report-only, not used for selection) ===");
 
         var best = eliteIsland.First();   // elite sorted by train fitness
@@ -376,10 +314,7 @@ public class RipShortGA
 
         for (int gen = 0; gen < _generations; gen++)
         {
-            // See Run() for why the stagnation mutation-rate boost was removed.
             double mutationRate = 0.6 * (1.0 - (double)gen / _generations) + 0.05;
-
-            // WARNING: this parallel body must stay RNG-FREE — System.Random is not thread-safe.
             Parallel.ForEach(population, ind =>
                 ind.Fitness = Fitness(ind, coins, useValidation: false));
 
@@ -415,8 +350,6 @@ public class RipShortGA
 
             if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                // Restart draws from the LowVol random factory (this run's own bounds box),
-                // unseeded — see Run() for the full rationale.
                 population = GaSearch.Cataclysm(population, _populationSize, _eliteCarryOver,
                                                 () => RipShortGenotype.RandomLowVol(_rng), ref stagnantGens);
                 if (_verbose)
@@ -473,8 +406,6 @@ public class RipShortGA
         return best;
     }
 
-    // Tournament size comes from the constructor (default GaSearch.DefaultTournamentK = 2), not
-    // from a defaulted method parameter that no call site ever overrode.
     internal RipShortGenotype TournamentSelect(List<RipShortGenotype> pop) =>
         GaSearch.Tournament(pop, _tournamentK, _rng, g => g.Fitness);
 }

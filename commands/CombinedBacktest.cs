@@ -78,60 +78,8 @@ static class CombinedBacktest
         return (family, excluded);
     }
 
-    // ── Variant loading helper ────────────────────────────────────────────────
-    // Scans genotypes/ for all files matching {strategyKey}_*_genotype.json and the
-    // plain {strategyKey}_genotype.json default.  Builds a VariantSpec<TG>[] array
-    // with one entry per file found (AtrLow/AtrHigh come from the DTO).
-    static VariantSpec<TG>[] LoadVariants<TDto, TG>(
-        string strategyKey,
-        Func<TDto, TG> toGenotype,
-        Func<TDto, (double Low, double High)> getRange)
-        where TG : class
-    {
-        var files = Directory.Exists("genotypes")
-            ? Directory.GetFiles("genotypes", $"{strategyKey}_*_genotype.json")
-            : Array.Empty<string>();
-        string defaultFile = $"genotypes/{strategyKey}_genotype.json";
-        if (File.Exists(defaultFile))
-            files = files.Append(defaultFile).Distinct().ToArray();
-        if (files.Length == 0) return Array.Empty<VariantSpec<TG>>();
-        return files.Select(f =>
-        {
-            var dto = JsonSerializer.Deserialize<TDto>(File.ReadAllText(f))!;
-            var (lo, hi) = getRange(dto);
-            string variantId = Path.GetFileNameWithoutExtension(f)
-                .Replace($"{strategyKey}_", "").Replace("_genotype", "");
-            return new VariantSpec<TG>(variantId, lo, hi, toGenotype(dto));
-        }).ToArray();
-    }
-
-    // Portfolio trade labels → router StrategyKind. Null means the router does not gate this
-    // label (accumgrid is routed by its own Bull/Bear sub-genotypes, not by a StrategyKind).
-
-    // GRAVITY_ATRCAP=1 puts the ATR-scaled loss cap on RipShort's PRODUCTION path.
-    //
-    // clamp(2.5 x ATR%, 3%, 10%): scales with the coin's own volatility so it sits outside the
-    // noise (a flat 6% cap raised trade count 48% and halved return by being brushed), but a
-    // short's downside is unbounded so it still meets an absolute ceiling.
-    // Trades tail risk for a little return; the exit-override table below prints the current numbers.
-    // Note CVaR5 moves the OTHER way (-7.61% -> -9.67%): it truncates the catastrophic trade
-    // while letting the average bad trade run further. That is the deliberate trade.
-    static RipShortSimulator.ExitOverrideConfig? ProdRipCap() =>
-        Environment.GetEnvironmentVariable("GRAVITY_ATRCAP") == "1"
-            ? new RipShortSimulator.ExitOverrideConfig(RipShortSimulator.ExitOverrideMode.None,
-                  MaxLossPct: 10.0, MaxLossAtrMult: 2.5, MaxLossPctFloor: 3.0)
-            : null;
-    static RegimeRouterGA.StrategyKind? StrategyKindOf(string strategy) => strategy switch
-    {
-        "swing" or "fade_short" => RegimeRouterGA.StrategyKind.FadeShort,
-        "grid"                  => RegimeRouterGA.StrategyKind.Grid,
-        "gridshort"             => RegimeRouterGA.StrategyKind.GridShort,
-        "diplong"               => RegimeRouterGA.StrategyKind.DipLong,
-        "swing_long"            => RegimeRouterGA.StrategyKind.SwingLong,
-        "fadelong"              => RegimeRouterGA.StrategyKind.FadeLong,
-        "ripshort"              => RegimeRouterGA.StrategyKind.RipShort,
-        _                       => null,
-    };
+    // Variant loading/selection, the label→StrategyKind map and ProdRipCap live in
+    // StrategyPipeline (the reproducer-of-record); this command calls them directly.
 
 
     // ── GATED-EXPOSURE BASELINE ("no-signal" strategy) ────────────────────────────────
@@ -211,55 +159,6 @@ static class CombinedBacktest
         Console.WriteLine("  Same router gate and same fee as the live strategies. No entry signal at all.");
     }
 
-    static TG? SelectVariant<TG>(VariantSpec<TG>[] variants, Candle[] m15)
-        where TG : class
-    {
-        if (variants.Length == 0) return null;
-        double[] highs  = m15.Select(c => c.High).ToArray();
-        double[] lows   = m15.Select(c => c.Low).ToArray();
-        double[] closes = m15.Select(c => c.Close).ToArray();
-        double[] atr    = Volatility.Atr(highs, lows, closes, 14);
-        int      bar    = atr.Length - 1;
-        return VariantRouter.Select(atr, bar, variants) ?? variants[0].Genotype;
-    }
-
-    static (TG? Genotype, string Label) SelectVariantLabeled<TG>(VariantSpec<TG>[] variants, Candle[] m15)
-        where TG : class
-    {
-        if (variants.Length == 0) return (null, "base");
-        double[] highs  = m15.Select(c => c.High).ToArray();
-        double[] lows   = m15.Select(c => c.Low).ToArray();
-        double[] closes = m15.Select(c => c.Close).ToArray();
-        double[] atr    = Volatility.Atr(highs, lows, closes, 14);
-        int      bar    = atr.Length - 1;
-        if (bar < 100 || atr.Length <= bar)
-            return (variants[0].Genotype, LabelForVariant(variants[0]));
-        double baseline = 0;
-        for (int j = bar - 100; j < bar; j++) baseline += atr[j];
-        baseline /= 100;
-        if (baseline < 1e-10)
-            return (variants[0].Genotype, LabelForVariant(variants[0]));
-        double ratio = atr[bar] / baseline;
-        VariantSpec<TG>? best = null;
-        double bestWidth = double.MaxValue;
-        foreach (var v in variants)
-        {
-            if (v.Genotype == null) continue;
-            if (ratio < v.AtrLow || ratio >= v.AtrHigh) continue;
-            double width = v.AtrHigh - v.AtrLow;
-            if (width < bestWidth) { bestWidth = width; best = v; }
-        }
-        var selected = best ?? variants[0];
-        return (selected.Genotype, LabelForVariant(selected));
-    }
-
-    static string LabelForVariant<T>(VariantSpec<T> v) where T : class
-    {
-        if (v.AtrLow >= 1.0) return "highvol";
-        if (v.AtrHigh <= 1.0) return "lowvol";
-        return "base";
-    }
-
     public static async Task RunCombinedBacktest(BybitRestClient client)
     {
         Console.WriteLine($"=== Gravity-gen2 | COMBINED BACKTEST (all strategies, router-gated, {Config.BacktestCoins.Length} coins, {DataSplit.ValLabel}) ===\n");
@@ -268,27 +167,27 @@ static class CombinedBacktest
         if (!File.Exists(Config.GridGenoFile))      { Console.WriteLine($"Missing grid genotype — run 'gridtrain' first."); return; }
 
         // Load variant arrays (currently one entry each; infrastructure ready for multi-variant)
-        var fsVariants = LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(
+        var fsVariants = StrategyPipeline.LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(
             "fade_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var gridVariants = LoadVariants<GridGenotypeDto, GridGenotype>(
+        var gridVariants = StrategyPipeline.LoadVariants<GridGenotypeDto, GridGenotype>(
             "grid_best", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var flVariants = LoadVariants<FadeLongGenotypeDto, FadeLongGenotype>(
+        var flVariants = StrategyPipeline.LoadVariants<FadeLongGenotypeDto, FadeLongGenotype>(
             "fade_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var dlVariants = LoadVariants<DipLongGenotypeDto, DipLongGenotype>(
+        var dlVariants = StrategyPipeline.LoadVariants<DipLongGenotypeDto, DipLongGenotype>(
             "dip_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var slVariants = LoadVariants<SwingLongGenotypeDto, SwingLongGenotype>(
+        var slVariants = StrategyPipeline.LoadVariants<SwingLongGenotypeDto, SwingLongGenotype>(
             "swing_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var rsVariants = LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
+        var rsVariants = StrategyPipeline.LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
             "rip_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
 
         // Load high-vol variants (ATR ratio > 1.5)
-        var fsHvVariants = LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(
+        var fsHvVariants = StrategyPipeline.LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(
             "fade_short_highvol", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var dlHvVariants = LoadVariants<DipLongGenotypeDto, DipLongGenotype>(
+        var dlHvVariants = StrategyPipeline.LoadVariants<DipLongGenotypeDto, DipLongGenotype>(
             "dip_long_highvol", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var slHvVariants = LoadVariants<SwingLongGenotypeDto, SwingLongGenotype>(
+        var slHvVariants = StrategyPipeline.LoadVariants<SwingLongGenotypeDto, SwingLongGenotype>(
             "swing_long_highvol", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var rsHvVariants = LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
+        var rsHvVariants = StrategyPipeline.LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
             "rip_short_highvol", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
 
         // Representative single genotypes (for portfolio hold-time calcs and logging)
@@ -349,19 +248,7 @@ static class CombinedBacktest
         Console.WriteLine();
 
         Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins (15m → 1h, ~3yr)...");
-        var sem = new SemaphoreSlim(4);
-        var fetchTasks = Config.BacktestCoins.Select(async sym =>
-        {
-            await sem.WaitAsync();
-            try
-            {
-                var m15 = await CandleFetcher.FetchFifteenMinCandlesCached(client, sym, batches: 113);
-                var h1  = FadeShortSimulator.AggregateCandles(m15.ToArray(), 4);
-                return (sym, m15: m15.ToArray(), h1);
-            }
-            finally { sem.Release(); }
-        });
-        var fetched = await Task.WhenAll(fetchTasks);
+        var fetched = await StrategyPipeline.FetchFifteenMinAsync(client, Config.BacktestCoins, batches: 113);
         Console.WriteLine($"  Done.\n");
 
         // ── Funding rate sessions, ONE PER SYMBOL ────────────────────────────────────────
@@ -373,36 +260,17 @@ static class CombinedBacktest
         // which is exactly when DipLong/SwingLong/AccumGrid are active and holding. EXPECT THE
         // NUMBERS BELOW TO GET WORSE. That is the correction, not a regression.
         Console.WriteLine("  Fetching per-symbol funding rate history...");
-        var funding = await CandleFetcher.FetchFundingSessionsAsync(client, fetched.Select(f => f.sym));
-        funding.PrintSummary();
+        var funding = await StrategyPipeline.FetchFundingAsync(client, fetched);
         Console.WriteLine();
 
         // ── DynamicGuard session ─────────────────────────────────────────────────────────
-        // Built here, applied at the portfolio-summary step. Before this change `grep -rn
-        // DynamicGuardSession commands/` had no hit in this file at all: the guard was trained
-        // by 'dynamicguardtrain' and reported in papertrade, but the headline numbers this
-        // command prints — the ones CLAUDE.md tells you to compare after any simulator change —
-        // were produced with the guard switched off entirely.
         var btcH1ForGuard = fetched.FirstOrDefault(f => f.sym == "BTCUSDT").h1;
         var guardCtx      = GuardedPortfolio.TryLoad(btcH1ForGuard);
         if (guardCtx != null) Console.WriteLine($"  Guard: {guardCtx.Genotype}\n");
 
-        RegimeRouterSession? session  = null;
-        RegimeBar[]?         btcRegimeSeries = null;
-        if (routerG != null)
-        {
-            var btcEntry = fetched.FirstOrDefault(f => f.sym == "BTCUSDT");
-            if (btcEntry.h1 != null && btcEntry.h1.Length >= 200)
-            {
-                btcRegimeSeries   = RegimeClassifier.ClassifySeriesWithDuration(btcEntry.h1);
-                var ethEntry      = fetched.FirstOrDefault(f => f.sym == "ETHUSDT");
-                RegimeBar[]? ethSeries = ethEntry.h1 != null && ethEntry.h1.Length >= 200
-                    ? RegimeClassifier.ClassifySeriesWithDuration(ethEntry.h1) : null;
-                session = new RegimeRouterSession(btcRegimeSeries, ethSeries, routerG).WithBtcBars(btcH1ForGuard);
-                Console.WriteLine($"  Router session: BTC {btcRegimeSeries.Length} bars  ETH {(ethSeries != null ? ethSeries.Length.ToString() : "none")} bars\n");
-            }
-            else Console.WriteLine("  ⚠ BTC data insufficient for regime session — router gate disabled\n");
-        }
+        var router = StrategyPipeline.BuildRouterSession(routerG, fetched, btcH1ForGuard, withBtcBars: true);
+        RegimeRouterSession? session  = router.Session;
+        RegimeBar[]?         btcRegimeSeries = router.BtcRegimeSeries;
 
         var swingTrades       = new List<(DateTime Time, double Return, double Conf)>();
         var gridTrades        = new List<(DateTime Time, double Return, double Conf)>();
@@ -568,7 +436,7 @@ static class CombinedBacktest
 
             var screenH1  = h1Train.Length >= 4380 ? h1Train : h1;
             var screenM15 = screenH1.Length == h1.Length ? m15 : m15Train;
-            var (coinFsG, fsVarLabel) = SelectVariantLabeled(fsVariants, m15);
+            var (coinFsG, fsVarLabel) = StrategyPipeline.SelectVariantLabeled(fsVariants, m15);
             coinFsG ??= swingG;
             var tRet  = FadeShortSimulator.GetFadeShortReturns(coinFsG, screenH1, screenM15, funding.For(sym)).Select(t => t.Return).ToList();
             double tExp  = tRet.Count >= 20 ? tRet.Average() : double.NegativeInfinity;
@@ -639,7 +507,7 @@ static class CombinedBacktest
             var h1Train = h1[..split];
             var h1Val   = h1[split..];
 
-            var (coinGridG, gridVarLabel) = SelectVariantLabeled(gridVariants, m15Grid);
+            var (coinGridG, gridVarLabel) = StrategyPipeline.SelectVariantLabeled(gridVariants, m15Grid);
             coinGridG ??= gridG;
             // Grid books funding too. Historically it did NOT — GridSimulator carried no funding
             // term at all, so the grid family held positions up to MaxHoldCandles (77 h1 bars in
@@ -709,7 +577,7 @@ static class CombinedBacktest
                 int    vCC = h1Val.Length * 12;
                 flTotalVCC += vCC;
 
-                var (coinFlG, flVarLabel) = SelectVariantLabeled(flVariants, m15);
+                var (coinFlG, flVarLabel) = StrategyPipeline.SelectVariantLabeled(flVariants, m15);
                 coinFlG ??= flG;
                 var raw    = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1Val, m15Val, ctx.With(funding.For(sym)));
                 var gated  = session != null
@@ -771,7 +639,7 @@ static class CombinedBacktest
                 int    vCC = h1Val.Length * 12;
                 dlTotalVCC += vCC;
 
-                var (coinDlG, dlVarLabel) = SelectVariantLabeled(dlVariants, m15);
+                var (coinDlG, dlVarLabel) = StrategyPipeline.SelectVariantLabeled(dlVariants, m15);
                 coinDlG ??= dlG;
                 var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1Val, m15Val, ctx.With(funding.For(sym)));
                 var gated = session != null
@@ -833,7 +701,7 @@ static class CombinedBacktest
                 int    vCC = h1Val.Length * 12;
                 slTotalVCC += vCC;
 
-                var (coinSlG, slVarLabel) = SelectVariantLabeled(slVariants, m15);
+                var (coinSlG, slVarLabel) = StrategyPipeline.SelectVariantLabeled(slVariants, m15);
                 coinSlG ??= slG;
                 var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1Val, m15Val, ctx.With(funding.For(sym)));
                 // NOTE: SwingLong is gated on StrategyKind.DipLong, not SwingLong. Both are
@@ -898,9 +766,9 @@ static class CombinedBacktest
                 int    vCC = h1Val.Length * 12;
                 rsTotalVCC += vCC;
 
-                var (coinRsG, rsVarLabel) = SelectVariantLabeled(rsVariants, m15);
+                var (coinRsG, rsVarLabel) = StrategyPipeline.SelectVariantLabeled(rsVariants, m15);
                 coinRsG ??= rsG;
-                var raw    = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val, funding.For(sym), ProdRipCap(),
+                var raw    = RipShortSimulator.GetRipShortReturns(coinRsG, h1Val, m15Val, funding.For(sym), StrategyPipeline.ProdRipCap(),
                                  ExitRatchet.ForStrategy("ripshort"));
                 // WaitForBreakeven: suppress the MaxHoldCandles time exit while the position is
                 // underwater AND local vol is calm, capped at MaxExtraHoldCandles. Size stays 1x,
@@ -1500,25 +1368,151 @@ static class CombinedBacktest
         // per-trade Kelly plus COUNT-based caps, none of which know that two positions may be the
         // same bet. CorrelatedShock already showed correlation is the dominant risk here, so the
         // flat cap is a crude proxy for a covariance constraint.
-        Func<string, double>? covWeight = null;
-        if (CovarianceSizing.Enabled && allTrades.Count > 0)
+        Func<string, double>? strategySizeWeight = null;   // one sizing hook: cov-size OR vol-target OR risk-parity OR VaR/utility, never both
+        // Sizing philosophy selector. Mutually exclusive; GRAVITY_SIZING wins when set, else cov-size
+        // (the default). Each reads the same `allTrades` and feeds the strategyWeight hook, so a run is
+        // never a silent blend of two different sizing methods. Available: voltarget | riskparity |
+        // var | es | crra | covsize.
+        string sizingRule = Environment.GetEnvironmentVariable("GRAVITY_SIZING")?.ToLowerInvariant()
+                            ?? (Environment.GetEnvironmentVariable("GRAVITY_VOLTARGET") == "1" ? "voltarget" : "covsize");
+
+        // ── Covariance matrix once, reused by risk parity and VaR/utility below. ──
+        // Daily-aligned grids from CovarianceSizing (already the reproducible common grid).
+        double[]? jointCov = null;
+        string[]? stratNames = null;
+        if (sizingRule is "riskparity" or "blend" or "covsize")
         {
-            DateTime t0 = allTrades.Min(t => t.Time), t1 = allTrades.Max(t => t.Time);
             var grids = allTrades.GroupBy(t => t.Strategy).ToDictionary(
-                g => g.Key,
-                g => CovarianceSizing.ToGrid(g.Select(t => (t.Time, t.Return)).ToList(),
-                                             t0, t1, TimeSpan.FromDays(1)));
-            // Raw per-trade returns for the METRIC; daily grids for the CORRELATION. Mixing them
-            // would compute win rate on summed buckets, which is not win rate.
-            var raws = allTrades.GroupBy(t => t.Strategy)
-                                .ToDictionary(g => g.Key, g => g.Select(t => t.Return).ToArray());
-            var w = CovarianceSizing.Compute(grids, raws);
-            CovarianceSizing.Print(w);
-            covWeight = w.For;
+                g => g.Key, g => CovarianceSizing.ToGrid(g.Select(t => (t.Time, t.Return)).ToList(),
+                                                         allTrades.Min(t => t.Time), allTrades.Max(t => t.Time), TimeSpan.FromDays(1)));
+            stratNames = grids.Keys.OrderBy(x => x).ToArray();
+            var series = stratNames.Select(n => grids[n]).ToArray();
+            var sample = CovarianceMatrix.Sample(series);
+            jointCov = CovarianceMatrix.Shrink(sample, stratNames.Length, lambda: 0.3);
         }
 
-        var port5cap   = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, dynamicCap: dynCap, strategyWeight: covWeight);
-        var portKelly  = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, dynamicCap: dynCap, strategyWeight: covWeight);
+        switch (sizingRule)
+        {
+            case "voltarget":
+                strategySizeWeight = SizingMethods.VolTargetStrategyWeights(
+                    allTrades.Select(t => (t.Strategy, t.Return)).ToList(),
+                    targetVolPct: 1.5, volFloorPct: 0.5, volCapPct: 8.0, meanNormalise: false);
+                if (strategySizeWeight != null)
+                    Console.WriteLine("  [SIZING=voltarget] volatility-targeted sizing active (target 1.5% per-strategy vol)");
+                break;
+
+            case "riskparity":
+                if (jointCov != null && stratNames is { Length: > 0 })
+                {
+                    var rp = RiskParity.EqualRiskContribution(jointCov, stratNames.Length, normalizeToMeanOne: true);
+                    var map = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+                    for (int a = 0; a < stratNames.Length; a++) map[stratNames[a]] = rp.Weights[a];
+                    strategySizeWeight = s => map.TryGetValue(s, out var w) ? w : 1.0;
+                    Console.WriteLine($"  [SIZING=riskparity] equal-risk-contribution sizing (portfolio vol {rp.PortfolioVol:F3}, {CovarianceMatrix.EffectiveBets(jointCov, stratNames.Length):F1} effective bets)");
+                }
+                break;
+
+            case "var":
+            case "es":
+            case "crra":
+                strategySizeWeight = VaRSizing.BuildWeights(allTrades.Select(t => (t.Strategy, t.Return)).ToList(), sizingRule, gamma: 4.0, budgetPct: 2.0, refFrac: 0.05);
+                if (strategySizeWeight != null)
+                    Console.WriteLine($"  [SIZING={sizingRule}] tail-risk/utility sizing active (budget {2.0:F0}pp equity tail, gamma={4.0})");
+                break;
+
+            case "covsize":
+            default:
+                if (CovarianceSizing.Enabled && allTrades.Count > 0)
+                {
+                    DateTime t0 = allTrades.Min(t => t.Time), t1 = allTrades.Max(t => t.Time);
+                    var grids = allTrades.GroupBy(t => t.Strategy).ToDictionary(
+                        g => g.Key,
+                        g => CovarianceSizing.ToGrid(g.Select(t => (t.Time, t.Return)).ToList(), t0, t1, TimeSpan.FromDays(1)));
+                    var raws = allTrades.GroupBy(t => t.Strategy)
+                                        .ToDictionary(g => g.Key, g => g.Select(t => t.Return).ToArray());
+                    var w = CovarianceSizing.Compute(grids, raws);
+                    CovarianceSizing.Print(w);
+                    strategySizeWeight = w.For;
+                }
+                break;
+
+            // BLEND: geometric mix of a return-shape weight and a risk-cap weight, swept over alpha.
+            // Solves the ES/vol-halves-DD-but-loses-return problem by keeping the return shape where
+            // the edge is while capping the tails that add drawdown. alpha → 1 = pure return-shape,
+            // alpha → 0 = pure risk-cap. We pick the alpha maximising return-per-unit-drawdown and
+            // report the whole curve so the tradeoff is visible.
+            case "blend":
+            {
+                // Return-shape: risk-parity (covariance-aware) is the best pure return source in the
+                // earlier comparison; fall back to vol-target if covariance is unavailable.
+                Func<string, double> retShape;
+                string shapeName;
+                if (jointCov is { } cov && stratNames is { Length: > 0 })
+                {
+                    var rp = RiskParity.EqualRiskContribution(cov, stratNames.Length, normalizeToMeanOne: true);
+                    var mp = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+                    for (int a = 0; a < stratNames.Length; a++) mp[stratNames[a]] = rp.Weights[a];
+                    retShape = s => mp.TryGetValue(s, out var wv) ? wv : 1.0;
+                    shapeName = "riskparity";
+                }
+                else
+                {
+                    var vt = SizingMethods.VolTargetStrategyWeights(
+                        allTrades.Select(t => (t.Strategy, t.Return)).ToList(),
+                        targetVolPct: 1.5, volFloorPct: 0.5, volCapPct: 8.0, meanNormalise: false) ?? (s => 1.0);
+                    retShape = vt;
+                    shapeName = "voltarget";
+                }
+
+                // Risk-cap: ES (expected shortfall) is the strongest risk reducer; fall back to vol-target.
+                Func<string, double> riskCap;
+                string riskName;
+                var esW = VaRSizing.BuildWeights(allTrades.Select(t => (t.Strategy, t.Return)).ToList(), "es", gamma: 4.0, budgetPct: 2.0, refFrac: 0.05);
+                if (esW != null) { riskCap = esW; riskName = "es"; }
+                else
+                {
+                    var vt = SizingMethods.VolTargetStrategyWeights(
+                        allTrades.Select(t => (t.Strategy, t.Return)).ToList(),
+                        targetVolPct: 1.5, volFloorPct: 0.5, volCapPct: 8.0, meanNormalise: false) ?? (s => 1.0);
+                    riskCap = vt; riskName = "voltarget";
+                }
+
+                var allStrats = allTrades.Select(t => t.Strategy).Distinct().ToList();
+                string ebTag = jointCov is { } jc && stratNames is { Length: > 0 } ? $"EB={CovarianceMatrix.EffectiveBets(jc, stratNames.Length):F1}" : "n/a";
+                Console.WriteLine($"  [SIZING=blend] geometric mix: return-shape=<{shapeName}> × risk-cap=<{riskName}>  (covariance {ebTag})");
+                Console.WriteLine($"  {"alpha",6}  {"ret%",9}  {"maxDD%",8}  {"ret/DD",8}");
+
+                // Sweep alpha, score each blend on the ACTUAL portfolio outcome. The user goal is "high return,
+                // low drawdown". With the exposure cap binding, DD stays in a tight band across α while
+                // return varies meaningfully — so the right pick is the MOST RETURN among blends whose
+                // DD is within a small budget of the safest point (DdBudgetPts = 0.20pp over min DD).
+                // This is the Pareto-knee on the (return, DD) frontier, not just "lowest DD".
+                double bestAlpha = 0, bestRet = 0, bestDD = 0;
+                double minDd = double.PositiveInfinity;
+                var points = new List<(double alpha, double ret, double dd)>();
+                foreach (var alpha in new double[] { 0.0, 0.2, 0.35, 0.5, 0.65, 0.8, 1.0 })
+                {
+                    Func<string, double>? blended = SizingMethods.BlendWeights(retShape, riskCap, allStrats, alpha, meanNormalise: true);
+                    var (retPct, ddPct, _) = SizingMethods.BacktestWithWeights(
+                        allTradesForExposure, blended, Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
+                    double score = ddPct > 1e-9 ? retPct / Math.Pow(ddPct, 1.5) : retPct;
+                    Console.WriteLine($"  {alpha,6:F2}  {retPct,+9:F1}  {ddPct,8:F2}  {score,8:F2}");
+                    points.Add((alpha, retPct, ddPct));
+                    minDd = Math.Min(minDd, ddPct);
+                }
+                const double ddBudgetPts = 0.20;   // allowed DD headroom over the safest point
+                double ddCeiling = minDd + ddBudgetPts;
+                foreach (var p in points)
+                    if (p.dd <= ddCeiling && p.ret > bestRet)
+                    { bestRet = p.ret; bestDD = p.dd; bestAlpha = p.alpha; }
+                strategySizeWeight = SizingMethods.BlendWeights(retShape, riskCap, allStrats, bestAlpha, meanNormalise: true);
+                Console.WriteLine($"  → best blend (max return with DD ≤ {minDd:F2}%+{ddBudgetPts:F2}pp): alpha {bestAlpha:F2} → {bestRet:F1}% return, {bestDD:F2}% DD");
+                break;
+            }
+        }
+
+        var port5cap   = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, maxPositionFrac: 0.05, dynamicCap: dynCap, strategyWeight: strategySizeWeight);
+        var portKelly  = Simulator.SimulatePortfolioExposureCapped(allTradesForExposure, Config.MaxTotalExposurePct, dynamicCap: dynCap, strategyWeight: strategySizeWeight);
 
         string Pct(List<double> r) => r.Count > 0 ? $"WR={(double)r.Count(x => x > 0)/r.Count:P0}  Avg={r.Average():+0.00}%" : "no trades";
         Console.WriteLine($"\n{new string('═', 70)}");
@@ -1614,7 +1608,7 @@ static class CombinedBacktest
 
             foreach (var grp in allTrades.GroupBy(t => t.Strategy).OrderBy(g => g.Key))
             {
-                var kind = StrategyKindOf(grp.Key);
+                var kind = StrategyPipeline.StrategyKindOf(grp.Key);
                 if (kind is null) continue;
                 bool isLong  = PortfolioReplay.IsLong(grp.Key) ?? true;
                 int  nReal   = grp.Count();
@@ -1772,7 +1766,7 @@ static class CombinedBacktest
             var mults  = new List<double>(allTradesGuardInput.Count);
             foreach (var t in allTradesGuardInput)
             {
-                var kind = StrategyKindOf(t.Strategy);
+                var kind = StrategyPipeline.StrategyKindOf(t.Strategy);
                 // A label the router does not gate (e.g. accumgrid) keeps full size rather than
                 // being silently zeroed by a kind it was never routed by.
                 double m = kind is null ? 1.0 : session.SizeMult(kind.Value, t.Time);
@@ -2126,7 +2120,7 @@ static class CombinedBacktest
 
         foreach (var (sym, h1f, m15f, conf) in swingFullCoins)
         {
-            var coinFsGFull = SelectVariant(fsVariants, m15f) ?? swingG;
+            var coinFsGFull = StrategyPipeline.SelectVariant(fsVariants, m15f) ?? swingG;
             var coinRet = new List<double>();
             foreach (var (t, ret, _, _, _) in FadeShortSimulator.GetFadeShortReturns(coinFsGFull, h1f, m15f, funding.For(sym)))
             {
@@ -2152,7 +2146,7 @@ static class CombinedBacktest
         if (flG != null)
             foreach (var (sym, h1f, m15f, conf) in flFullCoins)
             {
-                var coinFlGFull = SelectVariant(flVariants, m15f) ?? flG;
+                var coinFlGFull = StrategyPipeline.SelectVariant(flVariants, m15f) ?? flG;
                 var coinRet = new List<double>();
                 foreach (var t in FadeLongSimulator.GetFadeLongReturns(coinFlGFull, h1f, m15f, funding.For(sym)))
                 {
@@ -2166,7 +2160,7 @@ static class CombinedBacktest
         if (dlG != null)
             foreach (var (sym, h1f, m15f, conf) in dlFullCoins)
             {
-                var coinDlGFull = SelectVariant(dlVariants, m15f) ?? dlG;
+                var coinDlGFull = StrategyPipeline.SelectVariant(dlVariants, m15f) ?? dlG;
                 var coinRet = new List<double>();
                 foreach (var t in DipLongSimulator.GetDipLongReturns(coinDlGFull, h1f, m15f, funding.For(sym)))
                 {
@@ -2180,7 +2174,7 @@ static class CombinedBacktest
         if (slG != null)
             foreach (var (sym, h1f, m15f, conf) in slFullCoins)
             {
-                var coinSlGFull = SelectVariant(slVariants, m15f) ?? slG;
+                var coinSlGFull = StrategyPipeline.SelectVariant(slVariants, m15f) ?? slG;
                 var coinRet = new List<double>();
                 foreach (var t in SwingLongSimulator.GetSwingLongReturns(coinSlGFull, h1f, m15f, funding.For(sym)))
                 {
@@ -2194,7 +2188,7 @@ static class CombinedBacktest
         if (rsG != null)
             foreach (var (sym, h1f, m15f, conf) in rsFullCoins)
             {
-                var coinRsGFull = SelectVariant(rsVariants, m15f) ?? rsG;
+                var coinRsGFull = StrategyPipeline.SelectVariant(rsVariants, m15f) ?? rsG;
                 var coinRet = new List<double>();
                 foreach (var t in RipShortSimulator.GetRipShortReturns(coinRsGFull, h1f, m15f, funding.For(sym)))
                 {

@@ -5,43 +5,7 @@ namespace TradingGA;
 
 static class PapertradeCommands
 {
-    // ── Variant loading helpers ───────────────────────────────────────────────
-    static VariantSpec<TG>[] LoadVariants<TDto, TG>(
-        string strategyKey,
-        Func<TDto, TG> toGenotype,
-        Func<TDto, (double Low, double High)> getRange)
-        where TG : class
-    {
-        var files = Directory.Exists("genotypes")
-            ? Directory.GetFiles("genotypes", $"{strategyKey}_*_genotype.json")
-            : Array.Empty<string>();
-        string defaultFile = $"genotypes/{strategyKey}_genotype.json";
-        if (File.Exists(defaultFile))
-            files = files.Append(defaultFile).Distinct().ToArray();
-        if (files.Length == 0) return Array.Empty<VariantSpec<TG>>();
-        return files.Select(f =>
-        {
-            var dto = JsonSerializer.Deserialize<TDto>(File.ReadAllText(f))!;
-            var (lo, hi) = getRange(dto);
-            string variantId = Path.GetFileNameWithoutExtension(f)
-                .Replace($"{strategyKey}_", "").Replace("_genotype", "");
-            return new VariantSpec<TG>(variantId, lo, hi, toGenotype(dto));
-        }).ToArray();
-    }
-
-    // Selects a genotype from variants using the last-bar ATR ratio of the m15 array.
-    // Returns null when no variants are loaded or insufficient history.
-    static TG? SelectVariant<TG>(VariantSpec<TG>[] variants, Candle[] m15)
-        where TG : class
-    {
-        if (variants.Length == 0) return null;
-        double[] highs  = m15.Select(c => c.High).ToArray();
-        double[] lows   = m15.Select(c => c.Low).ToArray();
-        double[] closes = m15.Select(c => c.Close).ToArray();
-        double[] atr    = Volatility.Atr(highs, lows, closes, 14);
-        int      bar    = atr.Length - 1;
-        return VariantRouter.Select(atr, bar, variants) ?? variants[0].Genotype;
-    }
+    // Variant loading/selection live in StrategyPipeline (the reproducer-of-record).
 
     // Replays a saved journal to the set of currently-open positions (entry not yet
     // followed by an exit), so restarts don't re-emit "entry" events for open trades.
@@ -80,17 +44,17 @@ static class PapertradeCommands
         }
 
         // Load variant arrays at startup (currently single-element; ready for multi-variant)
-        var fsVariantsPt = LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(
+        var fsVariantsPt = StrategyPipeline.LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(
             "fade_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var gridVariantsPt = LoadVariants<GridGenotypeDto, GridGenotype>(
+        var gridVariantsPt = StrategyPipeline.LoadVariants<GridGenotypeDto, GridGenotype>(
             "grid_best", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var slVariantsPt = LoadVariants<SwingLongGenotypeDto, SwingLongGenotype>(
+        var slVariantsPt = StrategyPipeline.LoadVariants<SwingLongGenotypeDto, SwingLongGenotype>(
             "swing_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var dlVariantsPt = LoadVariants<DipLongGenotypeDto, DipLongGenotype>(
+        var dlVariantsPt = StrategyPipeline.LoadVariants<DipLongGenotypeDto, DipLongGenotype>(
             "dip_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var flVariantsPt = LoadVariants<FadeLongGenotypeDto, FadeLongGenotype>(
+        var flVariantsPt = StrategyPipeline.LoadVariants<FadeLongGenotypeDto, FadeLongGenotype>(
             "fade_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var rsVariantsPt = LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
+        var rsVariantsPt = StrategyPipeline.LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
             "rip_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
 
         var gUniversalPt = fsVariantsPt.Length > 0 ? fsVariantsPt[0].Genotype! : null;
@@ -301,7 +265,7 @@ static class PapertradeCommands
                     double px       = h1[^1].Close;
                     var    coinCl   = CoinClusterHelper.ClassifyByName(sym);
                     // Use VariantRouter to select per-coin ATR-regime variant; fall back to cluster genotype
-                    var    gForCoin = SelectVariant(fsVariantsPt, m15) ?? clusterGenosPt[coinCl];
+                    var    gForCoin = StrategyPipeline.SelectVariant(fsVariantsPt, m15) ?? clusterGenosPt[coinCl];
                     var    st       = FadeShortSimulator.GetFadeShortTradeState(gForCoin, h1, m15);
 
                     string stateStr  = st.InTrade
@@ -334,7 +298,7 @@ static class PapertradeCommands
                     if (!passes) { Console.WriteLine($"  {sym,-18}  skip  ATR={atrPct:F1}% vol=${volM:F0}M"); continue; }
 
                     double px       = h1[^1].Close;
-                    var    coinGridG = (m15 != null ? SelectVariant(gridVariantsPt, m15) : null) ?? gridGPt;
+                    var    coinGridG = (m15 != null ? StrategyPipeline.SelectVariant(gridVariantsPt, m15) : null) ?? gridGPt;
                     var    gst = GridSimulator.GetGridTradeState(coinGridG, h1);
 
                     string stateStr  = gst.Active ? $"GRID L{gst.FilledLevels}" : "watching";
@@ -363,7 +327,7 @@ static class PapertradeCommands
                     if (h1 == null || m15 == null) { Console.WriteLine($"  {sym,-18}  (no data)"); continue; }
                     if (!passes) { Console.WriteLine($"  {sym,-18}  skip  ATR={atrPct:F1}% vol=${volM:F0}M"); continue; }
                     double px      = h1[^1].Close;
-                    var coinSlG    = SelectVariant(slVariantsPt, m15) ?? slGenoPt;
+                    var coinSlG    = StrategyPipeline.SelectVariant(slVariantsPt, m15) ?? slGenoPt;
                     var st = SwingLongSimulator.GetSwingLongTradeState(coinSlG, h1, m15, fundingSession);
                     string capTag = (st.InTrade && slOpen >= PortfolioReplay.DefaultCaps["swing_long"]) ? " [CAP]" : "";
                     if (st.InTrade) slOpen++;
@@ -390,7 +354,7 @@ static class PapertradeCommands
                     if (h1 == null || m15 == null) { Console.WriteLine($"  {sym,-18}  (no data)"); continue; }
                     if (!passes) { Console.WriteLine($"  {sym,-18}  skip  ATR={atrPct:F1}% vol=${volM:F0}M"); continue; }
                     double px      = h1[^1].Close;
-                    var coinDlG    = SelectVariant(dlVariantsPt, m15) ?? dlGenoPt;
+                    var coinDlG    = StrategyPipeline.SelectVariant(dlVariantsPt, m15) ?? dlGenoPt;
                     var st = DipLongSimulator.GetDipLongTradeState(coinDlG, h1, m15, fundingSession);
                     string capTag = (st.InTrade && dlOpen >= PortfolioReplay.DefaultCaps["diplong"]) ? " [CAP]" : "";
                     if (st.InTrade) dlOpen++;
@@ -417,7 +381,7 @@ static class PapertradeCommands
                     if (h1 == null || m15 == null) { Console.WriteLine($"  {sym,-18}  (no data)"); continue; }
                     if (!passes) { Console.WriteLine($"  {sym,-18}  skip  ATR={atrPct:F1}% vol=${volM:F0}M"); continue; }
                     double px      = h1[^1].Close;
-                    var coinFlG    = SelectVariant(flVariantsPt, m15) ?? flGenoPt;
+                    var coinFlG    = StrategyPipeline.SelectVariant(flVariantsPt, m15) ?? flGenoPt;
                     var st = FadeLongSimulator.GetFadeLongTradeState(coinFlG, h1, m15, fundingSession);
                     string capTag = (st.InTrade && flOpen >= PortfolioReplay.DefaultCaps["fadelong"]) ? " [CAP]" : "";
                     if (st.InTrade) flOpen++;
@@ -445,7 +409,7 @@ static class PapertradeCommands
                     if (h1 == null || m15 == null) { Console.WriteLine($"  {sym,-18}  (no data)"); continue; }
                     if (!passes) { Console.WriteLine($"  {sym,-18}  skip  ATR={atrPct:F1}% vol=${volM:F0}M"); continue; }
                     double px      = h1[^1].Close;
-                    var coinRsG    = SelectVariant(rsVariantsPt, m15) ?? rsGenoPt;
+                    var coinRsG    = StrategyPipeline.SelectVariant(rsVariantsPt, m15) ?? rsGenoPt;
                     var st = RipShortSimulator.GetRipShortTradeState(coinRsG, h1, m15);
                     string capTag = (st.InTrade && rsOpen >= PortfolioReplay.DefaultCaps["ripshort"]) ? " [CAP]" : "";
                     if (st.InTrade) rsOpen++;
@@ -491,7 +455,7 @@ static class PapertradeCommands
                     {
                         if (h1 == null || m15 == null || !passes) continue;
                         var coinCl = CoinClusterHelper.ClassifyByName(sym);
-                        var gForCoin = SelectVariant(fsVariantsPt, m15) ?? clusterGenosPt[coinCl];
+                        var gForCoin = StrategyPipeline.SelectVariant(fsVariantsPt, m15) ?? clusterGenosPt[coinCl];
                         var st = FadeShortSimulator.GetFadeShortTradeState(gForCoin, h1, m15);
                         if (!st.InTrade) continue;
                         double px = m15[^1].Close;
@@ -516,7 +480,7 @@ static class PapertradeCommands
                     foreach (var (sym, h1, m15, passes, _, _) in coinData)
                     {
                         if (h1 == null || !passes) continue;
-                        var coinGridG = (m15 != null ? SelectVariant(gridVariantsPt, m15) : null) ?? gridGPt;
+                        var coinGridG = (m15 != null ? StrategyPipeline.SelectVariant(gridVariantsPt, m15) : null) ?? gridGPt;
                         var gst = GridSimulator.GetGridTradeState(coinGridG, h1);
                         if (!gst.Active) continue;
                         double px = h1[^1].Close;
@@ -541,7 +505,7 @@ static class PapertradeCommands
                     foreach (var (sym, h1, m15, passes, _, _) in coinData)
                     {
                         if (h1 == null || m15 == null || !passes) continue;
-                        var coinSlG = SelectVariant(slVariantsPt, m15) ?? slGenoPt;
+                        var coinSlG = StrategyPipeline.SelectVariant(slVariantsPt, m15) ?? slGenoPt;
                         var st = SwingLongSimulator.GetSwingLongTradeState(coinSlG, h1, m15, fundingSession);
                         if (!st.InTrade) continue;
                         double px = m15[^1].Close;
@@ -566,7 +530,7 @@ static class PapertradeCommands
                     foreach (var (sym, h1, m15, passes, _, _) in coinData)
                     {
                         if (h1 == null || m15 == null || !passes) continue;
-                        var coinDlG = SelectVariant(dlVariantsPt, m15) ?? dlGenoPt;
+                        var coinDlG = StrategyPipeline.SelectVariant(dlVariantsPt, m15) ?? dlGenoPt;
                         var st = DipLongSimulator.GetDipLongTradeState(coinDlG, h1, m15, fundingSession);
                         if (!st.InTrade) continue;
                         double px = m15[^1].Close;
@@ -591,7 +555,7 @@ static class PapertradeCommands
                     foreach (var (sym, h1, m15, passes, _, _) in coinData)
                     {
                         if (h1 == null || m15 == null || !passes) continue;
-                        var coinFlG = SelectVariant(flVariantsPt, m15) ?? flGenoPt;
+                        var coinFlG = StrategyPipeline.SelectVariant(flVariantsPt, m15) ?? flGenoPt;
                         var st = FadeLongSimulator.GetFadeLongTradeState(coinFlG, h1, m15, fundingSession);
                         if (!st.InTrade) continue;
                         double px = m15[^1].Close;
@@ -616,7 +580,7 @@ static class PapertradeCommands
                     foreach (var (sym, h1, m15, passes, _, _) in coinData)
                     {
                         if (h1 == null || m15 == null || !passes) continue;
-                        var coinRsG = SelectVariant(rsVariantsPt, m15) ?? rsGenoPt;
+                        var coinRsG = StrategyPipeline.SelectVariant(rsVariantsPt, m15) ?? rsGenoPt;
                         var st = RipShortSimulator.GetRipShortTradeState(coinRsG, h1, m15);
                         if (!st.InTrade) continue;
                         double px = m15[^1].Close;

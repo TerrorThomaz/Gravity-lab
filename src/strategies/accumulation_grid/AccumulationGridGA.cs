@@ -2,6 +2,7 @@ using TradingGA;
 
 namespace GravityGen2.Strategies.AccumulationGrid;
 
+// AccumulationGrid GA: regime-gated EMA-anchored dynamic accumulation grid.
 public class AccumulationGridGA
 {
     public record CoinData(ReadOnlyMemory<Candle> TrainCandles, ReadOnlyMemory<Candle> ValCandles, double Weight = 1.0);
@@ -22,16 +23,7 @@ public class AccumulationGridGA
     private const double FitPosFrac = 0.03;
     private const int D = 8;   // genotype parameter count — see RandomGenotype()
 
-    // NOTE: unlike the other GAs in this repo, eliteCount here IS the real elitism knob — this
-    // GA has no reporting slice / BO seed set, and eliteCount is the number of individuals
-    // copied unchanged into the next generation (and the number that survives a cataclysm). Its
-    // 15-of-60 default (25%) is left unchanged so a retrain of the committed accumulation-grid
-    // genotype is not silently re-based; the knob to turn if that proves too greedy is right
-    // here rather than buried in a literal.
-    //
-    // tournamentK was a defaulted method parameter of 3 that no call site overrode; it defaults
-    // to GaSearch.DefaultTournamentK = 2 now — see GaSearch for the takeover-time argument.
-    // seed: null draws one explicitly and prints it, so any run can be reproduced.
+    // eliteCount = real elitism knob (no separate reporting slice). seed=null = random.
     public AccumulationGridGA(
         MarketRegime targetRegime,
         int populationSize = 60,
@@ -54,11 +46,6 @@ public class AccumulationGridGA
         (_rng, _seed, _seedSupplied) = GaSearch.CreateRng(seed);
     }
 
-    // Canonical fold score under the Grid-family shape transform — see
-    // FoldScoreHelper.GridShape for which divergences from the canonical formula are
-    // preserved (win-rate slope, drawdown divisor, no frequency bonus) and which are not.
-    // Previously a hand-inlined third copy of the same drifted formula, which left the six
-    // FitnessConfig term weights inert and skipped CVaRPenalty/TailRatioBonus entirely.
     private static double FoldScore(List<double> returns, FitnessConfig cfg)
         => FoldScoreHelper.Canonical(
             returns, FitPosFrac, MinTradesPerFold,
@@ -80,23 +67,10 @@ public class AccumulationGridGA
             return FoldScore(all, _cfg);
         }
 
-        // Walk-forward folds, cut PER COIN on that coin's OWN array via
-        // FoldScoreHelper.PerCoinFoldRange (which also applies the embargo gap the
-        // hand-rolled splitter here skipped entirely).
-        //
-        // Two further bugs fixed while routing this through the shared helpers:
-        //  · the loop sliced coin.TrainCandles regardless of `useValidation`, so the
-        //    validation path silently re-scored the TRAINING array;
-        //  · every fold — including ones that produced no trades at all — was pushed into
-        //    a raw `mean - 0.75*std`, so the constant -1.0 sentinel returned by a dead
-        //    fold was averaged in as if it were a real score.
+        // Per-coin walk-forward folds via shared helpers.
         var foldScores = new List<double>();
         var foldCounts = new List<int>();
-        // Folds ATTEMPTED, including the thin ones skipped below — the aggregator scales
-        // Every attempted fold is scored -- a thin one enters at ThinFoldScore -- so that
-        // concentrating all activity into one favourable
-        // market window can no longer beat trading consistently across all of them.
-        int attemptedFolds = 0;
+        int attemptedFolds = 0;  // includes thin folds
         for (int f = 0; f < folds; f++)
         {
             attemptedFolds++;
@@ -110,9 +84,6 @@ public class AccumulationGridGA
                     .Select(t => t.Return));
             }
 
-            // Only folds that actually reached MinTradesPerFold trades take part in the
-            // aggregation; the rest still count toward attemptedFolds, so skipping a fold
-            // costs coverage rather than being free.
             if (foldReturns.Count < MinTradesPerFold) continue;
 
             foldScores.Add(FoldScore(foldReturns, _cfg));
@@ -170,8 +141,6 @@ public class AccumulationGridGA
         };
     }
 
-    // Tournament size comes from the constructor (default GaSearch.DefaultTournamentK = 2), not
-    // from a defaulted method parameter that no call site ever overrode.
     internal AccumulationGridGenotype Tournament(IReadOnlyList<(AccumulationGridGenotype g, double f)> pop) =>
         GaSearch.Tournament(pop, _tournamentK, _rng, x => x.f).g;
 
@@ -190,10 +159,6 @@ public class AccumulationGridGA
         {
             if (GaSearch.ShouldCataclysm(stagnantGens, _cataclysmStagnantGens))
             {
-                // CHC restart. `scored` is sorted best-first, so the survivors are exactly the
-                // individuals the elitism path would have carried over — the best-so-far
-                // genotype lives through the restart. RandomGenotype() is this GA's own uniform
-                // draw over the whole bounds box (it has no seeded variant to fall into).
                 population = GaSearch.Cataclysm(scored.Select(s => s.g).ToList(),
                                                 _populationSize, _eliteCount,
                                                 RandomGenotype, ref stagnantGens);

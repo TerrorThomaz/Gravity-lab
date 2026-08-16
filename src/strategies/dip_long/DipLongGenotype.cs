@@ -1,69 +1,27 @@
 namespace TradingGA;
 
-// Dip-long genotype — regime-gated bull pullback strategy.
-//
-// Fires only when a bull market is detected via a dual-EMA slope filter.
-// Complement of FadeShort: both operate within the same uptrend, but at
-// opposite ends of the RSI cycle. FadeShort fades overbought extensions;
-// DipLong buys oversold/neutral pullbacks.
-//
-// Entry (1h setup + 15m trigger):
-//   1. Bull regime  — close > RegimeLongEma AND RegimeLongEma is rising
-//   2. Trend gate   — close > EmaPeriod EMA AND ADX ≥ threshold
-//   3. Dip setup    — RSI(7) ≤ RsiDipThreshold (pullback within uptrend)
-//   4. Bullish BoS  — 15m close > previous 15m high (committed buyers)
-//
-// Stop: recentSwingLow − StopLossAtrMult × h4ATR (lowest low in last 20 h1 bars)
-//
-// Fixed: RsiPeriod=7, AdxPeriod=7, SwingLowLookback=20 (consistent with swing).
+// DipLong genotype: bull-regime RSI dip + bullish BoS. Mirror of RipShort.
+// Fixed: RsiPeriod=7, AdxPeriod=7, SwingLowLookback=20.
 public class DipLongGenotype
 {
-    // ── Regime genes ──────────────────────────────────────────────────────────────
-    public int    RegimeLongEmaPeriod { get; set; }   // 100–500  bull market gate EMA
-    public int    RegimeSlopeLookback { get; set; }   // 10–60    bars to measure EMA slope direction
+    public int    RegimeLongEmaPeriod { get; set; }   // 100–500  bull-regime gate EMA
+    public int    RegimeSlopeLookback { get; set; }   // 10–60    EMA slope direction window
     public int    EmaPeriod           { get; set; }   // 20–100   short-term trend EMA
     public double AdxThreshold        { get; set; }   // 15–35    trend strength gate
-
-    // ── Entry signal genes ────────────────────────────────────────────────────────
-    public double RsiDipThreshold { get; set; }   // 35–55  RSI ceiling for dip entry (pullback zone)
-
-    // ── Exit genes ────────────────────────────────────────────────────────────────
-    public double StopLossAtrMult           { get; set; }   // 0.5–2.0   ATR buffer below recent swing low
-    public double TakeProfitAtrMult         { get; set; }   // 2.0–15.0  fixed profit target above entry
-    public double TrailingActivationAtrMult { get; set; }   // 1.5–5.0   arm trail after this profit
-    public double TrailingStopAtrMult       { get; set; }   // 1.0–5.0   trail distance from peak
-    public int    MaxHoldCandles            { get; set; }   // 10–60     h1 bars before forced exit
-    public double PositionSizePct           { get; set; }   // 0.01–0.05 fraction of capital per trade
-
-    // ── Time-decay stop genes ────────────────────────────────────────────────────
-    // After TimeStopBars h1 bars, the max tolerated loss from entry tightens linearly
-    // from TimeStopLossPct (at bar TimeStopBars) down to 0% (at bar MaxHoldCandles).
-    // Prevents slow-bleeding positions that never hit the hard stop.
-    public int    TimeStopBars     { get; set; }   // 5–50    h1 bars before time-decay activates
-    public double TimeStopLossPct  { get; set; }   // 0.02–0.25  max loss allowed at TimeStopBars (ratio)
-
-    // ── Regime-conditional fitness gene ──────────────────────────────────────────
-    public int    RegimeSustainedBars  { get; set; }   // 10–100    min consecutive bull-regime h1 bars before a trade counts
-    // Protection mode (ProfitLockThreshold, DrawbackTolerance, ProtectedSizeFactor) moved to DynamicGuardGenotype.
+    public double RsiDipThreshold     { get; set; }   // 35–55    RSI ceiling for dip entry
+    public double StopLossAtrMult     { get; set; }   // 0.5–2.0  ATR buffer below swing low
+    public double TakeProfitAtrMult   { get; set; }   // 2.0–15.0 fixed TP above entry
+    public double TrailingActivationAtrMult { get; set; } // 1.5–5.0 arm trail
+    public double TrailingStopAtrMult { get; set; }   // 1.0–5.0  trail distance
+    public int    MaxHoldCandles      { get; set; }   // 10–60    h1 bars before forced exit
+    public double PositionSizePct     { get; set; }   // 0.01–0.05 capital fraction
+    public int    TimeStopBars        { get; set; }   // 5–50     h1 bars before time-decay
+    public double TimeStopLossPct     { get; set; }   // 0.02–0.25 max loss at TimeStopBars
+    public int    RegimeSustainedBars { get; set; }   // 10–100   min bull-regime bars before trade counts
 
     public double Fitness { get; set; } = double.MinValue;
 
-    // ── Seeded initialisation ────────────────────────────────────────────────────
-    // Probability that a seeded Random* draw returns a LOOSE mutant of the seed
-    // rather than an independent uniform draw. Matches RegimeRouterGenotype.Random,
-    // which sits on the identical GA Run skeleton; one number across the whole
-    // strategy suite keeps the initial-diversity mix comparable between GAs.
-    //
-    // Resulting population mix at popSize 80 with a seed (the GA's Run block
-    // installs the clamped seed at index 0 and tight rate-0.25 mutants at 1..16):
-    //   1  exact seed
-    //   16 tight  (rate 0.25) mutants  — the seed's immediate neighbourhood
-    //   ~19 loose (rate 0.50) mutants  — 30% of the remaining 63 slots
-    //   ~44 fully independent random genotypes
-    // ≈ 45% anchored on the incumbent, ≈ 55% genuine exploration. Before this
-    // change the last 63 slots were byte-identical copies of the seed, leaving
-    // at most 17 distinct starting points (78.75% duplicates) — a hill-climb,
-    // not a GA.
+    // Seeded init: 30% loose mutant, ~45% anchored / ~55% exploration.
     private const double SeedMutantProbability = 0.3;
 
     public static DipLongGenotype Random(System.Random rng, DipLongGenotype? seed = null)
@@ -162,8 +120,6 @@ public class DipLongGenotype
         Fitness = Fitness,
     };
 
-    // ── Bayesian optimiser interface ──────────────────────────────────────────
-    // [gene, 0]=min  [gene, 1]=max — mirrors the Clamp bounds above.
     public static readonly double[,] Bounds =
     {
         { 100,  500 }, // RegimeLongEmaPeriod
@@ -229,10 +185,7 @@ public class DipLongGenotype
         "RegimeSustainedBars",
     ];
 
-    // Same seeded-init contract as Random (see SeedMutantProbability), but the
-    // seed-mutant branch is confined to BoundsHighVol via ClampToBoundsHighVol +
-    // MutateHighVol — never the normal-regime Mutate, which would propose
-    // genotypes outside the region the high-vol variant is defined on.
+    // High-vol variant: seed-mutant uses HighVol clamp+mutate.
     public static DipLongGenotype RandomHighVol(System.Random rng, DipLongGenotype? seed = null)
     {
         if (seed != null && rng.NextDouble() < SeedMutantProbability)
@@ -257,11 +210,7 @@ public class DipLongGenotype
         };
     }
 
-    // ── High-vol variant operators ───────────────────────────────────────────────
-    // The low-vol variant already had ClampToBoundsLowVol / MutateLowVol; the
-    // high-vol variant had only BoundsHighVol, so seeded RandomHighVol had no
-    // in-region mutation operator to call. Both are driven off the BoundsHighVol
-    // table so they can never drift out of the high-vol region.
+    // High-vol variant operators — driven off BoundsHighVol.
     public static DipLongGenotype FromVectorHighVol(double[] v) => new()
     {
         RegimeLongEmaPeriod       = (int)Math.Clamp(Math.Round(v[0]),  BoundsHighVol[0, 0],  BoundsHighVol[0, 1]),
@@ -346,9 +295,7 @@ public class DipLongGenotype
         RegimeSustainedBars       = Math.Clamp((int)Math.Round(v[13]), 10, 100),
     };
 
-    // Same seeded-init contract as Random (see SeedMutantProbability), but the
-    // seed-mutant branch uses the low-vol clamp + mutate pair so it stays inside
-    // BoundsLowVol.
+    // Low-vol variant: seed-mutant uses LowVol clamp+mutate.
     public static DipLongGenotype RandomLowVol(System.Random rng, DipLongGenotype? seed = null)
     {
         if (seed != null && rng.NextDouble() < SeedMutantProbability)

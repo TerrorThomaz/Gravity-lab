@@ -1,86 +1,30 @@
 namespace TradingGA;
 
-// Rip-short genotype — regime-gated bear trend-continuation strategy.
-//
-// Direction-mirror of DipLong. DipLong buys RSI dips in established uptrends;
-// RipShort shorts relief rallies ("rips") in established downtrends. Both are
-// trend-continuation plays, opposite in direction and regime.
-//
-// Entry (1h setup + 15m trigger):
-//   1. Bear regime  — close < RegimeLongEma AND RegimeLongEma is falling
-//   2. Trend gate   — close < EmaPeriod EMA AND ADX ≥ threshold
-//   3. Rally setup  — RSI(7) ≥ RsiRallyThreshold (relief rally within downtrend)
-//   4. Bearish BoS  — 15m close < previous 15m low (committed sellers)
-//
-// Stop: recentSwingHigh + StopLossAtrMult × h4ATR (highest high in last 20 h1 bars)
-//
-// Fixed: RsiPeriod=7, AdxPeriod=7, SwingHighLookback=20 (consistent with siblings).
+// RipShort genotype: bear-regime RSI relief-rally short. Mirror of DipLong.
+// Fixed: RsiPeriod=7, AdxPeriod=7, SwingHighLookback=20.
 public class RipShortGenotype
 {
-    // ── Regime genes ──────────────────────────────────────────────────────────────
-    public int    RegimeLongEmaPeriod { get; set; }   // 100–500  bear market gate EMA
-    public int    RegimeSlopeLookback { get; set; }   // 10–60    bars to measure EMA slope direction
+    public int    RegimeLongEmaPeriod { get; set; }   // 100–500  bear-regime gate EMA
+    public int    RegimeSlopeLookback { get; set; }   // 10–60    EMA slope direction window
     public int    EmaPeriod           { get; set; }   // 20–100   short-term trend EMA
     public double AdxThreshold        { get; set; }   // 15–35    trend strength gate
-
-    // ── Entry signal genes ────────────────────────────────────────────────────────
-    public double RsiRallyThreshold { get; set; }   // 40–60  RSI floor for relief-rally entry (short the bounce)
-
-    // ── Exit genes ────────────────────────────────────────────────────────────────
-    public double StopLossAtrMult           { get; set; }   // 0.5–2.0   ATR buffer above recent swing high
-    public double TakeProfitAtrMult         { get; set; }   // 2.0–15.0  fixed profit target below entry
-    public double TrailingActivationAtrMult { get; set; }   // 1.5–5.0   arm trail after this profit
-    public double TrailingStopAtrMult       { get; set; }   // 1.0–5.0   trail distance from trough
-    // 10–160 h1 bars before forced exit. Widened from 10–60 on measured evidence: the trained
-    // value sat at 53 against a ceiling of 60, median realised hold was 48h, and trade anatomy
-    // showed hold time is IDENTICAL for the best and worst deciles (47h vs 48h) — i.e. nearly
-    // every trade was closing on the TIME limit rather than on stop or target. MaxHold was the
-    // dominant exit while being bounded below where the GA wanted it.
-    public int    MaxHoldCandles            { get; set; }   // 10–160    h1 bars before forced exit
-    public double PositionSizePct           { get; set; }   // 0.01–0.05 fraction of capital per trade
-
-    // ── Time-decay stop genes ────────────────────────────────────────────────────
-    // After TimeStopBars h1 bars, the max tolerated adverse move from entry tightens linearly
-    // from TimeStopLossPct (at bar TimeStopBars) down to 0% (at bar MaxHoldCandles).
-    // Prevents slow-bleeding positions that never hit the hard stop.
-    public int    TimeStopBars     { get; set; }   // 5–50    h1 bars before time-decay activates
-    public double TimeStopLossPct  { get; set; }   // 0.02–0.25  max adverse move allowed at TimeStopBars (ratio)
-
-    // ── Regime-conditional fitness gene ──────────────────────────────────────────
-    public int    RegimeSustainedBars  { get; set; }   // 10–100    min consecutive bear-regime h1 bars before a trade counts
-
-    // ── Regime-adaptive parameters (PILOT) ──────────────────────────────────────────
-    // Lets the strategy scale its own entry threshold and stop with how ESTABLISHED the bear
-    // regime is, instead of using one fixed setting from a fresh downturn to a mature one.
-    //
-    // The question these exist to answer is whether the GA WANTS this. RegimeAdaptStrength = 0
-    // is a bit-for-bit no-op — not "approximately neutral", exactly the old code path — so if
-    // adaptation does not pay, selection drives the gene to zero and that is the answer. A gene
-    // that cannot be switched off would only tell us the GA found SOME value for it.
-    //
-    // Signed on purpose. Positive tightens when the regime is young (stricter RSI, tighter stop);
-    // negative loosens. Which direction helps is exactly what is unknown, so it is not assumed.
-    public int    RegimeAdaptPivotBars { get; set; }   // 20–300    bars of bear regime counted as "mature"
-    public double RegimeAdaptStrength  { get; set; }   // -0.4–0.4  0 = disabled (exact no-op)
+    public double RsiRallyThreshold   { get; set; }   // 40–60    RSI floor for relief-rally entry
+    public double StopLossAtrMult     { get; set; }   // 0.5–2.0  ATR buffer above swing high
+    public double TakeProfitAtrMult   { get; set; }   // 2.0–15.0 fixed TP below entry
+    public double TrailingActivationAtrMult { get; set; } // 1.5–5.0 arm trail after this profit
+    public double TrailingStopAtrMult { get; set; }   // 1.0–5.0  trail distance from trough
+    public int    MaxHoldCandles      { get; set; }   // 10–160   h1 bars before forced exit
+    public double PositionSizePct     { get; set; }   // 0.01–0.05 capital fraction per trade
+    public int    TimeStopBars        { get; set; }   // 5–50     h1 bars before time-decay activates
+    public double TimeStopLossPct     { get; set; }   // 0.02–0.25 max adverse move at TimeStopBars
+    public int    RegimeSustainedBars { get; set; }   // 10–100   min bear-regime bars before trade counts
+    public int    RegimeAdaptPivotBars { get; set; }  // 20–300   bear bars to reach "mature"
+    public double RegimeAdaptStrength  { get; set; }  // -0.4–0.4 0=disabled (exact no-op); +tightens young regime
 
     public double Fitness { get; set; } = double.MinValue;
 
-    // ── Seeded initialisation ────────────────────────────────────────────────────
-    // Probability that a seeded Random* draw returns a LOOSE mutant of the seed
-    // rather than an independent uniform draw. Matches RegimeRouterGenotype.Random,
-    // which sits on the identical GA Run skeleton; one number across the whole
-    // strategy suite keeps the initial-diversity mix comparable between GAs.
-    //
-    // Resulting population mix at popSize 80 with a seed (the GA's Run block
-    // installs the clamped seed at index 0 and tight rate-0.25 mutants at 1..16):
-    //   1  exact seed
-    //   16 tight  (rate 0.25) mutants  — the seed's immediate neighbourhood
-    //   ~19 loose (rate 0.50) mutants  — 30% of the remaining 63 slots
-    //   ~44 fully independent random genotypes
-    // ≈ 45% anchored on the incumbent, ≈ 55% genuine exploration. Before this
-    // change the last 63 slots were byte-identical copies of the seed, leaving
-    // at most 17 distinct starting points (78.75% duplicates) — a hill-climb,
-    // not a GA.
+    // Seeded init: 30% chance of loose mutant (rate 0.5) instead of uniform random.
+    // ~45% anchored on seed, ~55% exploration.
     private const double SeedMutantProbability = 0.3;
 
     public static RipShortGenotype Random(System.Random rng, RipShortGenotype? seed = null)
@@ -176,12 +120,7 @@ public class RipShortGenotype
         StopLossAtrMult           = Math.Clamp(StopLossAtrMult,           0.5,  2.0),
         TakeProfitAtrMult         = Math.Clamp(TakeProfitAtrMult,         2.0, 15.0),
         TrailingActivationAtrMult = Math.Clamp(TrailingActivationAtrMult, 1.5,  5.0),
-        // The trail must stay BELOW its own activation distance, else arming it still permits a
-        // LOSS: measured live at activation 2.13A / trail 3.20A, so a trade could move 2.13A in
-        // favour, arm the trail, and still stop out 1.07A down. The other four strategies satisfy
-        // this by accident of their trained values; RipShort — which carries the worst tail — did
-        // not. Enforced here rather than left to the GA, because it is a geometric invariant, not
-        // a preference: TrailingActivationAtrMult is clamped first, so this reads the clamped value.
+        // Trail must stay below activation distance, else arming permits a loss.
         TrailingStopAtrMult       = Math.Min(Math.Clamp(TrailingStopAtrMult, 1.0, 5.0),
                                              Math.Clamp(TrailingActivationAtrMult, 1.5, 5.0) * 0.9),
         MaxHoldCandles            = Math.Clamp(MaxHoldCandles,            10,  160),
@@ -189,16 +128,11 @@ public class RipShortGenotype
         TimeStopBars              = Math.Clamp(TimeStopBars,               5,   50),
         TimeStopLossPct           = Math.Clamp(TimeStopLossPct,           0.02, 0.25),
         RegimeSustainedBars  = Math.Clamp(RegimeSustainedBars,  10,  100),
-        // Omitting a field from this initialiser silently RESETS it to 0. For RegimeAdaptStrength
-        // that means the gene is disabled on every clamp, and the GA would look like it rejected
-        // adaptation when in fact the plumbing threw it away.
         RegimeAdaptPivotBars = Math.Clamp(RegimeAdaptPivotBars, (int)Lo(IdxAdaptPivot), (int)Hi(IdxAdaptPivot)),
         RegimeAdaptStrength  = Math.Clamp(RegimeAdaptStrength, Lo(IdxAdaptStrength), Hi(IdxAdaptStrength)),
         Fitness = Fitness,
     };
 
-    // ── Bayesian optimiser interface ──────────────────────────────────────────
-    // [gene, 0]=min  [gene, 1]=max — mirrors the Clamp bounds above.
     private const int IdxAdaptPivot = 14, IdxAdaptStrength = 15;
     private static double Lo(int i) => Bounds[i, 0];
     private static double Hi(int i) => Bounds[i, 1];
@@ -214,7 +148,7 @@ public class RipShortGenotype
         { 2.0, 15.0 }, // TakeProfitAtrMult
         { 1.5,  5.0 }, // TrailingActivationAtrMult
         { 1.0,  5.0 }, // TrailingStopAtrMult
-        {  10,  160 }, // MaxHoldCandles — widened, see the field comment
+        {  10,  160 }, // MaxHoldCandles
         { 0.01,0.05 }, // PositionSizePct
         {   5,   50 }, // TimeStopBars
         { 0.02,0.25 }, // TimeStopLossPct
@@ -274,10 +208,7 @@ public class RipShortGenotype
         "RegimeSustainedBars",
     ];
 
-    // Same seeded-init contract as Random (see SeedMutantProbability), but the
-    // seed-mutant branch is confined to BoundsHighVol via ClampToBoundsHighVol +
-    // MutateHighVol — never the normal-regime Mutate, which would propose
-    // genotypes outside the region the high-vol variant is defined on.
+    // High-vol variant: seed-mutant branch uses HighVol clamp+mutate to stay in-region.
     public static RipShortGenotype RandomHighVol(System.Random rng, RipShortGenotype? seed = null)
     {
         if (seed != null && rng.NextDouble() < SeedMutantProbability)
@@ -304,11 +235,7 @@ public class RipShortGenotype
         };
     }
 
-    // ── High-vol variant operators ───────────────────────────────────────────────
-    // The low-vol variant already had ClampToBoundsLowVol / MutateLowVol; the
-    // high-vol variant had only BoundsHighVol, so seeded RandomHighVol had no
-    // in-region mutation operator to call. Both are driven off the BoundsHighVol
-    // table so they can never drift out of the high-vol region.
+    // High-vol variant operators — all driven off BoundsHighVol.
     public static RipShortGenotype FromVectorHighVol(double[] v) => new()
     {
         RegimeLongEmaPeriod       = (int)Math.Clamp(Math.Round(v[0]),  BoundsHighVol[0, 0],  BoundsHighVol[0, 1]),
@@ -376,10 +303,7 @@ public class RipShortGenotype
         TimeStopBars              = Math.Clamp((int)Math.Round(v[11]),   5,  50),
         TimeStopLossPct           = Math.Clamp(v[12], 0.02, 0.25),
         RegimeSustainedBars       = Math.Clamp((int)Math.Round(v[13]), 10, 100),
-        // Older vectors (13 genes) predate these — they read as 0, which disables adaptation.
-        // Carried through the variant paths too: ClampToBoundsHighVol is FromVectorHighVol(ToVector()),
-        // so a gene missing there is silently zeroed on every clamp — which is how the diversity
-        // test caught a pivot of 0 sitting outside its own [20,300] bound.
+        // Older vectors (13 genes) predate these — missing genes read as 0 (disabled).
         RegimeAdaptPivotBars      = v.Length > IdxAdaptPivot    ? Math.Clamp((int)Math.Round(v[IdxAdaptPivot]), (int)Lo(IdxAdaptPivot), (int)Hi(IdxAdaptPivot)) : 0,
         RegimeAdaptStrength       = v.Length > IdxAdaptStrength ? Math.Clamp(v[IdxAdaptStrength], Lo(IdxAdaptStrength), Hi(IdxAdaptStrength)) : 0.0,
     };
@@ -407,9 +331,7 @@ public class RipShortGenotype
         RegimeAdaptStrength       = v.Length > IdxAdaptStrength ? Math.Clamp(v[IdxAdaptStrength], Lo(IdxAdaptStrength), Hi(IdxAdaptStrength)) : 0.0,
     };
 
-    // Same seeded-init contract as Random (see SeedMutantProbability), but the
-    // seed-mutant branch uses the low-vol clamp + mutate pair so it stays inside
-    // BoundsLowVol.
+    // Low-vol variant: seed-mutant branch uses LowVol clamp+mutate.
     public static RipShortGenotype RandomLowVol(System.Random rng, RipShortGenotype? seed = null)
     {
         if (seed != null && rng.NextDouble() < SeedMutantProbability)
@@ -452,7 +374,6 @@ public class RipShortGenotype
         TimeStopBars              = Math.Clamp(TimeStopBars,               20,  80),
         TimeStopLossPct           = Math.Clamp(TimeStopLossPct,           0.02, 0.20),
         RegimeSustainedBars  = Math.Clamp(RegimeSustainedBars,  10,  100),
-        // Carried, not dropped — see the note on ClampToBounds.
         RegimeAdaptPivotBars = Math.Clamp(RegimeAdaptPivotBars, (int)Lo(IdxAdaptPivot), (int)Hi(IdxAdaptPivot)),
         RegimeAdaptStrength  = Math.Clamp(RegimeAdaptStrength, Lo(IdxAdaptStrength), Hi(IdxAdaptStrength)),
         Fitness = Fitness,
@@ -499,9 +420,6 @@ public class RipShortGenotype
         $"MaxH={MaxHoldCandles}bars Pos={PositionSizePct:P0} " +
         $"TStop({TimeStopBars}bars/{TimeStopLossPct:P0}) " +
         $"RegSust={RegimeSustainedBars} " +
-        // Printed so a generation log SHOWS whether the GA is exploring adaptation or has already
-        // collapsed it. Without this the only readout is the saved JSON at the very end, which
-        // cannot distinguish "converged to zero early" from "never varied".
         $"Adapt(pivot={RegimeAdaptPivotBars} str={RegimeAdaptStrength:+0.00;-0.00;0.00}) " +
         $"F={Fitness:F4}";
 }

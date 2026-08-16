@@ -1,11 +1,7 @@
 namespace TradingGA;
 
-// Thin adapters over the concrete simulators, plus a registry the conformance test enumerates.
-//
-// The backtests keep calling the concrete simulators directly — these adapters exist so that a
-// test can iterate every strategy uniformly and assert each one honours the ExecContext fields
-// it claims to. Adding a strategy without registering it here is itself caught, because the
-// registry count is asserted against the number of genotype files the commands load.
+// Adapters for the conformance test. Backtests call concrete simulators directly.
+// Registry count is asserted against genotype file count — adding a strategy without registering is caught.
 public static class StrategyRegistry
 {
     private sealed class FadeShortAdapter : IStrategySimulator
@@ -41,7 +37,7 @@ public static class StrategyRegistry
         public string Label => "diplong";
         public bool IsLong => true;
         public bool UsesM15 => true;
-        // The only multi-leg strategy today; the rest are single-position by construction.
+        // Only multi-leg strategy today.
         public ExecFields Honours => ExecFields.All;
         public IReadOnlyList<SimTrade> Run(ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, in ExecContext ctx)
             => DipLongSimulator.GetDipLongReturns(_g, h1, m15, ctx)
@@ -61,9 +57,7 @@ public static class StrategyRegistry
                 .Select(t => new SimTrade(t.Time, t.Return, t.Kind, t.EntryTime, t.EntryPrice, t.RegimeBarsActive)).ToList();
     }
 
-    // Grid is h1-only — GridSimulator.GetGridSessionReturns takes no m15 span at all — and has no
-    // ratchet path, so it declares Funding only. Declaring less is not a free pass: the test also
-    // checks that a simulator does NOT silently ignore something it claims to honour.
+    // Grid is h1-only, no ratchet — declares Funding only.
     private sealed class GridAdapter : IStrategySimulator
     {
         private readonly GridGenotype _g;

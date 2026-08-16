@@ -1,43 +1,20 @@
 namespace TradingGA;
 
-// Grid trading simulator — SHORT grid in ranging markets on 1h candles.
-// Direction-mirror of GridSimulator: same ADX/BB compression regime gate, same laddered
-// level/TP/stop/bailout structure, flipped to sell above the EMA anchor instead of
-// buying below it. Reuses GridGenotype as-is — the gene set is directionally symmetric
-// (spacing, levels, TP, stop, bailout, hold); only the simulator's price math flips.
-//
-// Grid mechanics:
-//   Anchor  = EMA at the candle where level-1 fills (fixed for the life of the grid).
-//   Levels  = sell-limit orders at anchor + n × GridStepAtrMult × ATR  (n = 1..GridLevels).
-//   TP      = entry − TakeProfitAtrMult × ATR_at_anchor  (independent per level).
-//   Stop    = anchor + HardStopAtrMult × ATR_at_anchor   (closes ALL levels on breach — range broke UP).
-//   Timeout = MaxHoldCandles h1 bars from first fill → close all at current price.
-//
-// Fill detection: candle.High ≥ level price → filled at level price (limit sell).
-// TP  detection: candle.Low  ≤ tp           → closed at tp.
-// Stop detection: candle.High ≥ hard_stop   → closed at hard_stop.
+// GridShort simulator: SHORT grid in ranging markets. Mirror of GridSimulator.
+// Direction: SHORT (profit when price falls). Funding: isLong=false.
 public static class GridShortSimulator
 {
     private const int    AtrPeriod    = 14;
     private const int    AdxPeriod    = 14;
     private const int    MaxLevels    = 5;
 
-    // Cost model: see TradeCosts in src/core/Simulator.cs. Same as GridSimulator's — the two
-    // are direction mirrors and must price a round trip identically.
-    private const double StopGapAtrK = 0.18;
+    private const double StopGapAtrK = 0.18;  // same as GridSimulator (direction mirrors)
 
-    // isTp is retained on the signature (call sites read better with it) but no longer changes
-    // the cost: the per-exit-quality slip constants it used to select are gone, because they
-    // were an independent slippage magnitude competing with Config.SlippageBps. See the note
-    // in GridSimulator.TradeCost on why the limit-fill discount is deliberately not modelled.
     internal static double TradeCost(double atrAtStart, double entryPx, bool isStop, bool isTp = false,
                                      double barNotional = 0.0, double posFrac = 0.0)
         => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrAtStart, entryPx), isStop, StopGapAtrK,
                                    barNotional, posFrac);
 
-    // EntryTime/EntryPrice: `Time` is the EXIT bar. For a session-level row the entry is the
-    // session's start and the mean of its filled levels — a grid has no single entry.
-    // Appended as NAMED fields so existing consumers compile unchanged.
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetGridShortReturns(
         GridGenotype g, ReadOnlySpan<Candle> h1, FundingRateSession? funding = null)
     {
@@ -45,9 +22,6 @@ public static class GridShortSimulator
         return trades;
     }
 
-    // EntryTime/EntryPrice: `Time` is the EXIT bar. For a session-level row the entry is the
-    // session's start and the mean of its filled levels — a grid has no single entry.
-    // Appended as NAMED fields so existing consumers compile unchanged.
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetGridShortSessionReturns(
         GridGenotype g, ReadOnlySpan<Candle> h1, FundingRateSession? funding = null)
     {
@@ -105,9 +79,6 @@ public static class GridShortSimulator
             else              result.Add((times[i], ret, kind, gridStartTime, entryPx));
         }
 
-        // Running mean of the session's filled entries, captured AS levels fill. Computing it in
-        // FlushSession is too late: the exits that trigger the flush clear filled[] first, so the
-        // mean came back 0. Caught by the conformance test's positive-EntryPrice invariant.
         double sessionEntrySum = 0; int sessionEntryN = 0;
 
         static double MeanFilled(double[] px, bool[] fl)
@@ -125,7 +96,6 @@ public static class GridShortSimulator
             sessionFills.Clear();
         }
 
-        // Short PnL: (entry - exit) / entry × 100 — profit when price falls.
         void CloseAllFilled(int i, double exitPx, bool isStop = false)
         {
             double fundingPnl = FundingRateSession.PnlPct(gridStartTime, times[i], funding, isLong: false);
@@ -149,7 +119,6 @@ public static class GridShortSimulator
             {
                 holdCount++;
 
-                // Hard stop: range broke UPSIDE — close all
                 if (highs[i] >= hardStop)
                 {
                     CloseAllFilled(i, hardStop, isStop: true);
@@ -158,7 +127,6 @@ public static class GridShortSimulator
                     continue;
                 }
 
-                // Bail-out: close all when price rises too far above the highest filled level.
                 {
                     double highestFill = double.MinValue;
                     for (int n = 0; n < levels; n++)
@@ -176,7 +144,6 @@ public static class GridShortSimulator
                     }
                 }
 
-                // Regime change: ADX went trending — get out cleanly
                 if (adxNow >= g.AdxThreshold)
                 {
                     CloseAllFilled(i, closes[i]);
@@ -185,7 +152,6 @@ public static class GridShortSimulator
                     continue;
                 }
 
-                // Timeout
                 if (holdCount >= g.MaxHoldCandles)
                 {
                     CloseAllFilled(i, closes[i]);
@@ -194,19 +160,10 @@ public static class GridShortSimulator
                     continue;
                 }
 
-                // Check TPs for filled levels (candle.Low hit TP — price fell to target)
                 for (int n = 0; n < levels; n++)
                 {
                     if (!filled[n]) continue;
-                    // Rung-to-rung cover, mirroring GridSimulator. GridShort SHARES GridGenotype,
-                    // so RungSellFrac was already in its genome and already being searched — it
-                    // just was not read here, which is why it trained to 0.00: a gene with no
-                    // effect on the objective drifts wherever mutation leaves it.
-                    //
-                    // The legacy target (entry - TakeProfitAtrMult x ATR) sits further away than
-                    // the whole ladder is deep, so a fill needs a sustained downtrend to cover —
-                    // while the Ranging gate exists to select trends OUT. Same defect that held
-                    // Grid at PF 0.94 before the rung mechanic took it to 2.16 OOS.
+                    // Rung-to-rung cover when RungSellFrac>0; else legacy TP.
                     double tp = g.RungSellFrac > 0
                         ? entryPrice[n] - g.RungSellFrac * g.GridStepAtrMult * atrAtStart
                         : entryPrice[n] - g.TakeProfitAtrMult * atrAtStart;
@@ -221,7 +178,6 @@ public static class GridShortSimulator
                     }
                 }
 
-                // Fill unfilled levels if price rallied up to them
                 for (int n = 0; n < levels; n++)
                 {
                     if (filled[n]) continue;
@@ -249,7 +205,6 @@ public static class GridShortSimulator
                 double proposedStop   = proposedAnchor + g.HardStopAtrMult * proposedAtr;
                 double level1Price    = proposedAnchor + g.GridStepAtrMult * proposedAtr;
 
-                // Only start a grid when price actually rallies up to level 1
                 if (level1Price >= proposedStop || highs[i] < level1Price) continue;
 
                 anchor       = proposedAnchor;

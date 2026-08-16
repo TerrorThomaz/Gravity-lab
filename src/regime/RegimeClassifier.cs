@@ -1,29 +1,13 @@
 namespace TradingGA;
 
-// Ensemble market regime classifier — replaces the per-strategy hard-coded EMA slope rule
-// with a multi-signal voting system that produces a regime label + confidence score.
-//
-// Regime taxonomy:
-//   Bull     — sustained uptrend, EMA stack aligned, ADX trending, momentum positive
-//   Bear     — sustained downtrend, EMA stack inverted, momentum negative
-//   Ranging  — low ADX, price oscillating around EMAs, no clear directional bias
-//   HighVol  — ATR spike >2× historical average, regardless of trend (crash/blow-off)
-//
-// Confidence (0–1): fraction of the weighted vote that agrees on the winning regime.
-// Low confidence = conflicting signals = reduce position sizes.
-//
-// Features() returns a normalised feature vector suitable as MLP/XGBoost input later —
-// the same signals the voting uses, just in numeric form.
+// Multi-signal weighted-vote regime classifier. Produces Bull/Bear/Ranging/HighVol + confidence (0–1).
+// ClassifySeriesWithDuration is O(n) with a per-bar consecutive-regime duration counter.
 public enum MarketRegime { Bull, Bear, Ranging, HighVol }
 
 // One bar of the pre-computed regime series produced by ClassifySeriesWithDuration.
 public record RegimeBar(DateTime Time, MarketRegime Regime, double Confidence, int Duration);
 
-// Tags arbitrary trade timestamps with the BTC regime active at that moment.
-// Used to bucket held-out validation results by regime instead of blending them into one
-// number — a single time window can be net-Bull or net-Bear, which silently favors whichever
-// strategy direction matches it (e.g. a Bull-heavy embargo window flatters long strategies and
-// understates short strategies purely from regime mix, not real generalization).
+// Tags trade timestamps with the BTC regime active at that moment, for per-regime held-out bucketing.
 public static class RegimeBarLookup
 {
     public static MarketRegime[] TagRegimes(RegimeBar[] series, IReadOnlyList<DateTime> times)
@@ -49,7 +33,8 @@ public static class RegimeBarLookup
 
 public static class RegimeClassifier
 {
-    private const int Warmup = 220; // bars needed before any classification is valid
+    // Public: PredictiveDistribution conditions on the same warmup the classifier uses.
+    public const int Warmup = 220;
 
     // Classify the regime at the last bar of h1.
     public static (MarketRegime Regime, double Confidence) Classify(ReadOnlySpan<Candle> h1)
@@ -57,51 +42,47 @@ public static class RegimeClassifier
         if (h1.Length < Warmup) return (MarketRegime.Ranging, 0.0);
         var f = ComputeFeatures(h1);
 
-        // ── High-volatility override — checked first ──────────────────────────
-        // When ATR spikes far above its 100-bar mean the market is in a regime
-        // where directional bets are unreliable (crash, blow-off, flash spike).
+        // High-vol override: ATR far above its 100-bar mean → directional bets unreliable.
         if (f.AtrRatio > 2.5)
         {
             double conf = Math.Min(1.0, (f.AtrRatio - 2.5) / 1.5);
             return (MarketRegime.HighVol, conf);
         }
 
-        // ── Weighted vote across four signal groups ───────────────────────────
         double bullScore = 0, bearScore = 0, rangingScore = 0;
 
-        // 1. EMA stack alignment (weight=3): the most reliable long-horizon signal.
-        //    Full stack: EMA20 > EMA50 > EMA200 = unambiguous bull.
+        // 1. EMA stack (weight=3): EMA20 > EMA50 > EMA200 = bull.
         if (f.EmaStack == 3)       bullScore   += 3.0;
         else if (f.EmaStack == -3) bearScore   += 3.0;
         else if (f.EmaStack == 1)  bullScore   += 1.0;  // partial
         else if (f.EmaStack == -1) bearScore   += 1.0;
         else                       rangingScore += 1.5;
 
-        // 2. EMA50 slope (weight=1.5): medium-term momentum direction.
+        // 2. EMA50 slope (weight=1.5)
         if      (f.Slope50 >  0.002) bullScore   += 1.5;
         else if (f.Slope50 < -0.002) bearScore   += 1.5;
         else                         rangingScore += 1.0;
 
-        // 3. ADX level (weight=1): trend strength gate.
+        // 3. ADX (weight=1)
         if (f.Adx > 25)
         {
-            // Trending — reinforce whichever direction the EMA says
+            // Trending — reinforce EMA direction
             if (f.PriceVsEma50 > 0) bullScore   += 1.0;
             else                     bearScore   += 1.0;
         }
         else if (f.Adx < 18)         rangingScore += 2.0;  // clearly non-trending
 
-        // 4. 20-bar momentum (weight=0.5): short-term confirmation.
+        // 4. 20-bar momentum (weight=0.5)
         if      (f.Momentum20 >  0.04) bullScore   += 0.5;
         else if (f.Momentum20 < -0.04) bearScore   += 0.5;
 
-        // 5. ATR moderate elevation — slightly trending, not crash (weight=0.5).
-        if (f.AtrRatio > 1.5) bearScore += 0.5; // elevated vol in non-HighVol usually = sell pressure
+        // 5. ATR moderate elevation (weight=0.5)
+        if (f.AtrRatio > 1.5) bearScore += 0.5;
 
         if (f.AtrRatio < 0.8 && Math.Abs(f.Slope50) < 0.001)
             rangingScore += 1.5;
 
-        // ── Determine winner ─────────────────────────────────────────────────
+        // Determine winner
         double total = bullScore + bearScore + rangingScore;
         if (total < 0.5) return (MarketRegime.Ranging, 0.0);
 
@@ -112,8 +93,7 @@ public static class RegimeClassifier
         return (MarketRegime.Ranging, rangingScore / total);
     }
 
-    // Classify every bar in the series. Returns regime per bar (index < Warmup → Ranging).
-    // NOTE: O(n²) — fine for diagnostics, not suitable for hot paths. Use ClassifySeriesWithDuration for training.
+    // O(n²) per-bar classification. Use ClassifySeriesWithDuration for training.
     public static (MarketRegime Regime, double Confidence)[] ClassifySeries(ReadOnlySpan<Candle> h1)
     {
         int n      = h1.Length;
@@ -127,10 +107,8 @@ public static class RegimeClassifier
         return result;
     }
 
-    // O(n) full-series classifier with consecutive-regime duration counter.
-    // Computes all indicator arrays once, then classifies each bar in O(1).
-    // Duration resets to 1 on every regime change — so duration=200 means the
-    // current regime has been active for 200 consecutive h1 bars (~8 days).
+    // O(n) full-series classifier. Computes indicators once, classifies each bar in O(1).
+    // Duration = consecutive h1 bars in the current regime.
     public static RegimeBar[] ClassifySeriesWithDuration(ReadOnlySpan<Candle> h1)
     {
         int n = h1.Length;
@@ -170,8 +148,7 @@ public static class RegimeClassifier
         return result;
     }
 
-    // Single-bar classification using pre-computed indicator arrays (used by ClassifySeriesWithDuration).
-    // Mirrors the voting logic in Classify() exactly so both paths stay consistent.
+    // Single-bar classification from pre-computed arrays. Mirrors Classify() voting exactly.
     private static (MarketRegime, double) ClassifyBar(
         int i, double[] closes,
         double[] ema20, double[] ema50, double[] ema200,
@@ -231,17 +208,7 @@ public static class RegimeClassifier
         return                                        (MarketRegime.Ranging, ranging / total);
     }
 
-    // Numeric feature vector for ML consumption.
-    // All values are normalised so an MLP or XGBoost can use them without scaling.
-    //   [0] (price − EMA20) / EMA20          trend position (short)
-    //   [1] (price − EMA50) / EMA50          trend position (medium)
-    //   [2] (price − EMA200) / EMA200        trend position (long)
-    //   [3] EMA50 slope (20-bar return)       medium trend momentum
-    //   [4] ATR14 / ATR100                   vol regime ratio
-    //   [5] ADX14 / 50                       normalised trend strength
-    //   [6] 20-bar price momentum             short momentum
-    //   [7] (EMA20 − EMA50) / EMA50          EMA separation
-    //   [8] (EMA50 − EMA200) / EMA200        EMA separation (long)
+    // Normalised 9-element feature vector for ML. Same signals as the vote, numeric form.
     public static double[] Features(ReadOnlySpan<Candle> h1)
     {
         if (h1.Length < Warmup) return new double[9];
@@ -259,8 +226,6 @@ public static class RegimeClassifier
             Math.Clamp(f.Ema50VsEma200, -0.5, 0.5),
         ];
     }
-
-    // ── Private ───────────────────────────────────────────────────────────────
 
     private record FeatureSet(
         double PriceVsEma20, double PriceVsEma50, double PriceVsEma200,
@@ -290,25 +255,25 @@ public static class RegimeClassifier
         double atr100  = atr100Arr[n - 1];
         double adx     = adxArr[n - 1];
 
-        // EMA50 slope: 20-bar return of EMA50 (normalised)
+
         double ema50Prev = ema50Arr[Math.Max(0, n - 21)];
         double slope50   = ema50Prev > 1e-10 ? (ema50 - ema50Prev) / ema50Prev : 0;
 
-        // 20-bar momentum
+
         double pricePrev20 = closes[Math.Max(0, n - 21)];
         double momentum20  = pricePrev20 > 1e-10 ? (price - pricePrev20) / pricePrev20 : 0;
 
-        // ATR vol ratio
+
         double atrRatio = atr100 > 1e-10 ? atr14 / atr100 : 1.0;
 
-        // EMA relative positions (signed %)
+
         double priceVsEma20  = ema20  > 1e-10 ? (price - ema20)  / ema20  : 0;
         double priceVsEma50  = ema50  > 1e-10 ? (price - ema50)  / ema50  : 0;
         double priceVsEma200 = ema200 > 1e-10 ? (price - ema200) / ema200 : 0;
         double ema20VsEma50  = ema50  > 1e-10 ? (ema20 - ema50)  / ema50  : 0;
         double ema50VsEma200 = ema200 > 1e-10 ? (ema50 - ema200) / ema200 : 0;
 
-        // EMA stack: +3 = fully bullish aligned, -3 = fully bearish, others partial
+
         int stack = 0;
         if (price > ema20)  stack++; else stack--;
         if (ema20 > ema50)  stack++; else stack--;

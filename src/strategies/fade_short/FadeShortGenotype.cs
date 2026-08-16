@@ -1,91 +1,29 @@
 namespace TradingGA;
 
-// Swing trading genotype — 1h setup + 15m entry/exit.
-//
-// Setup (1h candles): strong uptrend (ADX + EMA) · min rally from recent low
-//   · RSI bearish divergence (new price high but lower RSI = buyers losing steam)
-// Entry (15m candles): close below previous 15m candle's low (BoS on 15m precision)
-// Exit  (15m candles): ATR hard stop · ATR fixed target · trailing stop · hold timeout
-//
-// Gene units:
-//   LookbackCandles / MaxHoldCandles  in h1 bars (24 = 1d, 120 = 5d)
-//   ATR multiples for exits (SL, TP, trail) use the h4 ATR at entry — matches
-//     the multi-day holding timeframe and restores the original 4h-strategy scale.
-//   MinRallyAtrMult uses h1 ATR — right scale for detecting h1 price structure.
-//
-// Fixed (not genes): RsiPeriod=7 and AdxPeriod=7 — GA always converges to these.
-//   ADX(7) is faster than ADX(14) and better at catching trend onset. Grid uses
-//   ADX(14) for regime but also requires BB compression, making practical overlap
-//   with swing nearly impossible despite different ADX periods.
+// FadeShort genotype: fades overbought rallies in uptrends. 1h setup + 15m entry/exit.
+// Exit ATR uses h4; MinRally uses h1. Fixed: RsiPeriod=7, AdxPeriod=7.
 public class FadeShortGenotype
 {
-    // ── Regime genes ──────────────────────────────────────────────────────────────
     public int    EmaPeriod     { get; set; }   // 20–100   trend-direction EMA
-    public double AdxThreshold  { get; set; }   // 10–45    uptrend gate (widened down from 22: the GA pinned at 22 for a full run)
-
-    // ── Entry signal genes ────────────────────────────────────────────────────────
-    public int    LookbackCandles  { get; set; }   // 12–300  h1 bars to locate swing high (widened from 120; GA pinned at the old ceiling)
-    public double RsiOverbought    { get; set; }   // 65–80   RSI floor the swing high must clear (65 = genuinely elevated, not just mid-range)
-    public double RsiDivThreshold  { get; set; }   // 5–15    RSI must be this many pts below swing-high RSI (5 = real divergence, not noise)
-    public double MinRallyAtrMult  { get; set; }   // 5–30    min rally (h1 ATR units) from recent low to high (widened from 12; GA pinned at the old ceiling)
-
-    // ── Exit genes ────────────────────────────────────────────────────────────────
-    public double StopLossAtrMult           { get; set; }   // 0.3–2.0   ATR buffer above the swing high (stop = swingHigh + mult×ATR; invalidates thesis if exceeded)
-    public double MaeAtrMult                { get; set; }   // 1.5–4.0   max adverse excursion ceiling = entry + mult×ATR; caps slow-grind rally losses
-    public double TakeProfitAtrMult         { get; set; }   // 2.0–25.0  target (widened from 10; GA pinned at the old ceiling)
-    public double TrailingActivationAtrMult { get; set; }   // 1.0–4.0   arm trail after this profit (was 1–8; 8A=15% almost never fired)
-    public double TrailingStopAtrMult       { get; set; }   // 1.0–5.0   trail distance from peak (1.0A min to breathe)
-    public int    MaxHoldCandles            { get; set; }   // 24–120    h1 bars: 24=1d, 48=2d, 120=5d
-    public double PositionSizePct           { get; set; }   // 0.01–0.05 fraction of capital per trade in fitness sim
-
-    // ── Selectivity gene ──────────────────────────────────────────────────────────
-    // Consecutive h1 bars the coin's own uptrend must have been established before a fade is
-    // eligible. Trades entered before this are DISCARDED by FoldScoreHelper.CanonicalRegime —
-    // not penalised, discarded, so they never reach `gain` at all.
-    //
-    // This is the mechanism the four best strategies already have and the two worst lack:
-    //   FadeLong RegSust=10 (OOS PF 7.35) · RipShort 10 (4.50) · DipLong 10 (2.64) · AccumGrid (2.76)
-    //   FadeShort NONE (1.25) · GridShort NONE (1.37)
-    // That is the entire ranking with no exceptions, which is why this is worth copying rather
-    // than inventing a new fitness penalty.
-    //
-    // 0 = disabled, preserving the historical behaviour exactly. The SIGN of the effect is not
-    // assumed: a longer-established uptrend could mean more exhaustion (better fade) or a
-    // stronger trend (worse fade). The GA searches it rather than the author guessing.
-    public int    RegimeSustainBars         { get; set; }   // 0–120 h1 bars
-
-    // The regime must be DEFINABLE, not just waitable. The first attempt gave FadeShort only
-    // RegimeSustainBars and hardcoded the other two — reusing EmaPeriod (20–100, the SIGNAL ema)
-    // as the regime ema and fixing the slope window at 5. A 5-bar slope on a 20-period ema
-    // flickers, so the sustain counter reset constantly and could never accumulate. The GA
-    // answered RegSust=1, i.e. "waiting longer for this buys nothing" — correctly, because the
-    // signal it was handed was noise. That was an implementation gap, not a verdict on the
-    // mechanism, and it nearly became a wrong conclusion about the whole approach.
-    //
-    // Regime and signal are different questions at different timescales: "is this a bull market"
-    // wants a long ema, "is this coin trending now" wants a short one. RipShort separates them
-    // (RegimeLongEmaPeriod 100–500 vs EmaPeriod) and is one of the best strategies in the suite.
-    public int    RegimeEmaPeriod           { get; set; }   // 100–500 regime-defining EMA
-    public int    RegimeSlopeLookback       { get; set; }   // 10–60   bars to measure its slope
+    public double AdxThreshold  { get; set; }   // 10–45    uptrend gate
+    public int    LookbackCandles  { get; set; }   // 12–300  h1 bars to locate swing high
+    public double RsiOverbought    { get; set; }   // 65–80   RSI floor for swing high
+    public double RsiDivThreshold  { get; set; }   // 5–15    min RSI drop from swing high
+    public double MinRallyAtrMult  { get; set; }   // 5–30    min rally size (h1 ATR)
+    public double StopLossAtrMult  { get; set; }   // 0.3–2.0  ATR buffer above swing high
+    public double MaeAtrMult       { get; set; }   // 1.5–4.0  max adverse excursion ceiling
+    public double TakeProfitAtrMult { get; set; }  // 2.0–25.0 fixed target
+    public double TrailingActivationAtrMult { get; set; } // 1.0–4.0 arm trail after this profit
+    public double TrailingStopAtrMult { get; set; }   // 1.0–5.0  trail distance from peak
+    public int    MaxHoldCandles   { get; set; }   // 24–120   h1 bars before forced exit
+    public double PositionSizePct  { get; set; }   // 0.01–0.05 capital fraction
+    public int    RegimeSustainBars { get; set; }  // 0–120   min uptrend bars before fade eligible (0=disabled)
+    public int    RegimeEmaPeriod   { get; set; }  // 100–500 regime-defining EMA (separate from signal EMA)
+    public int    RegimeSlopeLookback { get; set; } // 10–60   bars to measure regime slope
 
     public double Fitness { get; set; } = double.MinValue;
 
-    // ── Seeded initialisation ────────────────────────────────────────────────────
-    // Probability that a seeded Random* draw returns a LOOSE mutant of the seed
-    // rather than an independent uniform draw. Matches RegimeRouterGenotype.Random,
-    // which sits on the identical GA Run skeleton; one number across the whole
-    // strategy suite keeps the initial-diversity mix comparable between GAs.
-    //
-    // Resulting population mix at popSize 80 with a seed (the GA's Run block
-    // installs the clamped seed at index 0 and tight rate-0.25 mutants at 1..16):
-    //   1  exact seed
-    //   16 tight  (rate 0.25) mutants  — the seed's immediate neighbourhood
-    //   ~19 loose (rate 0.50) mutants  — 30% of the remaining 63 slots
-    //   ~44 fully independent random genotypes
-    // ≈ 45% anchored on the incumbent, ≈ 55% genuine exploration. Before this
-    // change the last 63 slots were byte-identical copies of the seed, leaving
-    // at most 17 distinct starting points (78.75% duplicates) — a hill-climb,
-    // not a GA.
+    // Seeded init: 30% loose mutant, ~45% anchored / ~55% exploration.
     private const double SeedMutantProbability = 0.3;
 
     public static FadeShortGenotype Random(System.Random rng, FadeShortGenotype? seed = null)
@@ -192,39 +130,27 @@ public class FadeShortGenotype
         Fitness = Fitness,
     };
 
-    // ── Bayesian optimiser interface ──────────────────────────────────────────
-    // Order matches ToVector / FromVector.
     public static readonly double[,] Bounds =
     {
         {  20, 100  }, // EmaPeriod
-        {  10,  45  }, // AdxThreshold — was [22,45], pinned LOW: wants a weaker trend filter
-        {  12, 300  }, // LookbackCandles — was [12,120], pinned HIGH
+        {  10,  45  }, // AdxThreshold
+        {  12, 300  }, // LookbackCandles
         {  65,  80  }, // RsiOverbought
         { 5.0, 15.0 }, // RsiDivThreshold
-        { 5.0, 30.0 }, // MinRallyAtrMult — was [5,12], pinned HIGH: wants far bigger rallies
+        { 5.0, 30.0 }, // MinRallyAtrMult
         { 0.3,  2.0 }, // StopLossAtrMult
         { 1.5,  4.0 }, // MaeAtrMult
-        { 2.0, 25.0 }, // TakeProfitAtrMult — was [2,10], pinned HIGH
+        { 2.0, 25.0 }, // TakeProfitAtrMult
         { 1.0,  4.0 }, // TrailingActivationAtrMult
         { 1.0,  5.0 }, // TrailingStopAtrMult
         {  24, 120  }, // MaxHoldCandles
         {0.01, 0.05 }, // PositionSizePct
-        {   0, 120  }, // RegimeSustainBars — 0 = disabled (historical behaviour)
+        {   0, 120  }, // RegimeSustainBars (0=disabled)
         { 100, 500  }, // RegimeEmaPeriod
         {  10,  60  }, // RegimeSlopeLookback
     };
 
-    // Bounds is the SINGLE source of truth for the base parameter box: Random, Mutate,
-    // ClampToBounds and FromVector all read it through these accessors rather than repeating
-    // literals. They used to repeat them, and it cost a whole training run — widening the box in
-    // Bounds/ClampToBounds while Mutate and FromVector kept the old numbers meant the GA could
-    // never PROPOSE a value outside the old box, so AdxThreshold sat at exactly 22.0 and
-    // TakeProfitAtrMult at exactly 10.0 for 120 generations while the log showed the new bounds.
-    // A partially-widened box is worse than an un-widened one: it looks like the search explored
-    // and declined the new range, when in fact it was never reachable.
-    //
-    // ponytail: base box only. The HighVol/LowVol boxes below are deliberately separate arrays
-    // (a different box IS the point of a variant), so they keep their own literals.
+    // Bounds is single source of truth; all operators read through these accessors.
     private static double Lo(int i) => Bounds[i, 0];
     private static double Hi(int i) => Bounds[i, 1];
     private static double Rand(System.Random rng, int i) => Lo(i) + rng.NextDouble() * (Hi(i) - Lo(i));
@@ -247,7 +173,7 @@ public class FadeShortGenotype
         { 2.5,  6.0 }, // TrailingStopAtrMult
         {  24,  72  }, // MaxHoldCandles
         {0.03, 0.07 }, // PositionSizePct
-        {   0, 120  }, // RegimeSustainBars — row must exist: Bounds* are indexed positionally
+        {   0, 120  }, // RegimeSustainBars
         { 100, 500  }, // RegimeEmaPeriod
         {  10,  60  }, // RegimeSlopeLookback
     };
@@ -261,10 +187,7 @@ public class FadeShortGenotype
         "MaxHoldCandles", "PositionSizePct",
     ];
 
-    // Same seeded-init contract as Random (see SeedMutantProbability), but the
-    // seed-mutant branch is confined to BoundsHighVol via ClampToBoundsHighVol +
-    // MutateHighVol — never the normal-regime Mutate, which would propose
-    // genotypes outside the region the high-vol variant is defined on.
+    // High-vol variant: seed-mutant uses HighVol clamp+mutate.
     public static FadeShortGenotype RandomHighVol(System.Random rng, FadeShortGenotype? seed = null)
     {
         if (seed != null && rng.NextDouble() < SeedMutantProbability)
@@ -291,11 +214,7 @@ public class FadeShortGenotype
         };
     }
 
-    // ── High-vol variant operators ───────────────────────────────────────────────
-    // The low-vol variant already had ClampToBoundsLowVol / MutateLowVol; the
-    // high-vol variant had only BoundsHighVol, so seeded RandomHighVol had no
-    // in-region mutation operator to call. Both are driven off the BoundsHighVol
-    // table so they can never drift out of the high-vol region.
+    // High-vol variant operators — driven off BoundsHighVol.
     public static FadeShortGenotype FromVectorHighVol(double[] v) => new()
     {
         EmaPeriod                 = (int)Math.Clamp(Math.Round(v[0]),  BoundsHighVol[0, 0],  BoundsHighVol[0, 1]),
@@ -350,7 +269,7 @@ public class FadeShortGenotype
         { 1.0,  3.0 }, // TrailingStopAtrMult (tighter for low-vol)
         {  72, 200  }, // MaxHoldCandles (longer for low-vol)
         {0.01, 0.03 }, // PositionSizePct (smaller for low-vol)
-        {   0, 120  }, // RegimeSustainBars — row must exist: Bounds* are indexed positionally
+        {   0, 120  }, // RegimeSustainBars
         { 100, 500  }, // RegimeEmaPeriod
         {  10,  60  }, // RegimeSlopeLookback
     };
@@ -404,9 +323,7 @@ public class FadeShortGenotype
         RegimeSlopeLookback       = (int)Math.Clamp(Math.Round(v[15]), 10, 60),
     };
 
-    // Same seeded-init contract as Random (see SeedMutantProbability), but the
-    // seed-mutant branch uses the low-vol clamp + mutate pair so it stays inside
-    // BoundsLowVol.
+    // Low-vol variant: seed-mutant uses LowVol clamp+mutate.
     public static FadeShortGenotype RandomLowVol(System.Random rng, FadeShortGenotype? seed = null)
     {
         if (seed != null && rng.NextDouble() < SeedMutantProbability)

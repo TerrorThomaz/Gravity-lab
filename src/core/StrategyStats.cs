@@ -4,12 +4,7 @@ using System.Linq;
 
 namespace TradingGA;
 
-// Statistical validation for trading strategy returns.
-// Answers: "Is this edge real, or could it be luck?"
-//
-// Usage:
-//   StrategyStats.Report("Swing", swingReturns, candleCount);
-//   StrategyStats.Compare("Grid", gridReturns, "Swing", swingReturns, candleCount);
+// Statistical validation for trading strategy returns. Is this edge real, or luck?
 public static class StrategyStats
 {
     // ── Result records ────────────────────────────────────────────────────────────
@@ -81,10 +76,7 @@ public static class StrategyStats
     }
 
     // ── 3. Return distribution statistics ────────────────────────────────────────
-    // Skewness: positive = right-tail fat (big wins more common than big losses) — good.
-    // Excess kurtosis: > 0 = fat tails (more extreme outcomes than normal).
-    // CVaR 5%: average loss in the worst 5% of trades (expected shortfall).
-    // Tail ratio: |P95| / |P5| — how big wins are relative to losses at extremes.
+    // Skewness, excess kurtosis, CVaR 5%, tail ratio (|P95|/|P5|).
     public static DistStats Distribution(List<double> returns)
     {
         if (returns.Count < 5) return new(0, 0, 0, 0);
@@ -102,7 +94,7 @@ public static class StrategyStats
         int tail5  = Math.Max(1, (int)(0.05 * returns.Count));
         double cvar = sorted.Take(tail5).Average();
 
-        // P95 / |P5| — values above 1 mean wins at the 95th pct outsize losses at 5th
+        // Tail ratio: |P95|/|P5|. >1 means wins outsize losses at extremes.
         double p5   = sorted[(int)(0.05 * (sorted.Count - 1))];
         double p95  = sorted[(int)(0.95 * (sorted.Count - 1))];
         double tail = Math.Abs(p5) > 1e-10 ? p95 / Math.Abs(p5) : 0;
@@ -125,15 +117,14 @@ public static class StrategyStats
         return (k, k / 2.0);
     }
 
-    // ── 5. Mann-Whitney U test: do the two return distributions differ? ──────────
-    // Non-parametric: does not assume normality.
-    // Tests H₀: returns from A and B come from the same distribution.
+    // ── 5. Mann-Whitney U test ────────────────────────────────────────────
+    // Non-parametric: H0 = A and B from same distribution.
     public static MannWhitneyResult MannWhitneyU(List<double> a, List<double> b)
     {
         int n1 = a.Count, n2 = b.Count;
         if (n1 < 5 || n2 < 5) return new(0, 0, 1);
 
-        // Rank all values, handling ties with average rank
+        // Rank all values (ties get average rank).
         var ranked = a.Select(v => (v, grp: 0))
                       .Concat(b.Select(v => (v, grp: 1)))
                       .OrderBy(x => x.v)
@@ -154,7 +145,7 @@ public static class StrategyStats
         double u1 = r1 - n1 * (n1 + 1.0) / 2.0;
         double u  = Math.Min(u1, n1 * n2 - u1);
 
-        // Tie correction for normal approximation
+        // Tie correction.
         var tieGroups = ranks.GroupBy(r => r).Select(g => (double)g.Count()).ToList();
         double tieCorr = tieGroups.Select(t => t * t * t - t).Sum();
         int N = n1 + n2;
@@ -173,7 +164,7 @@ public static class StrategyStats
     {
         double sr = Simulator.SharpeRatio(returns, candleCount);
         if (sr <= 0) return 0;
-        // Expected max Sharpe under null via extreme value theory
+        // Expected max Sharpe under null (extreme value theory).
         double expectedMax = Math.Sqrt(2 * Math.Log(nTrials)) -
                              (Math.Log(Math.Log(nTrials)) + Math.Log(4 * Math.PI)) /
                              (2 * Math.Sqrt(2 * Math.Log(nTrials)));
@@ -181,9 +172,7 @@ public static class StrategyStats
         return NormalCDF((sr - expectedMax) / sdSharpe);
     }
 
-    // ── Gene count per trained strategy (excludes Fitness field) ────────────────
-    // Source: count of JSON fields in each *_genotype.json (Fitness excluded).
-    // Used for VC-dimension-style generalization analysis (Abu-Mustafa / LFD).
+    // Gene count per strategy (excludes Fitness). For VC-dimension generalization analysis.
     private static readonly Dictionary<string, int> GenesPerStrategy =
         new(StringComparer.OrdinalIgnoreCase)
         {
@@ -193,13 +182,11 @@ public static class StrategyStats
             ["SwingLong"]    = 14,  // EmaPeriod..TimeStopLossPct
             ["Grid"]         =  9,  // AdxThreshold..MaxHoldCandles
             ["Router"]       = 10,  // BullMinBars..EarlyBullBearCarry
-            // DynamicGuardGenotype.GeneCount — 14 tuning genes + the DD-gate threshold + the
-            // DD-gate on/off switch. The switch is a real searched dimension, so it counts here.
+            // DynamicGuard: 14 tuning genes + DD-gate threshold + on/off switch.
             ["DynamicGuard"] = DynamicGuardGenotype.GeneCount,
         };
 
-    // N/d ratio — Abu-Mustafa rule of thumb for VC generalization:
-    // need N >> d_vc. Dangerous < 5, borderline 5–10, ok 10–20, good > 30.
+    // N/d ratio (Abu-Mustafa): dangerous <5, borderline 5-10, ok 10-20, good >30.
     private static (double Ratio, string Verdict) NdRatio(int n, int d)
     {
         double r = (double)n / d;
@@ -209,17 +196,14 @@ public static class StrategyStats
         return (r, v);
     }
 
-    // Hoeffding bound on mean: given N iid bounded samples, the true mean
-    // is within ±ε of the observed mean with probability ≥ 1-α.
-    // ε = (max-min) · sqrt(ln(2/α) / (2N))
+    // Hoeffding bound: true mean within ±ε of observed with prob ≥ 1-α. ε = range·sqrt(ln(2/α)/(2N)).
     private static double HoeffdingMeanBound(int n, double minR, double maxR, double alpha = 0.05)
     {
         if (n < 1) return double.PositiveInfinity;
         return (maxR - minR) * Math.Sqrt(Math.Log(2.0 / alpha) / (2.0 * n));
     }
 
-    // Minimum N to certify |observed_mean - true_mean| ≤ epsilon with prob ≥ 1-α.
-    // N = (max-min)² · ln(2/α) / (2ε²)
+    // Min N to certify |observed - true mean| ≤ ε with prob ≥ 1-α.
     public static int HoeffdingMinN(double minR, double maxR, double epsilon, double alpha = 0.05)
     {
         double range = maxR - minR;
@@ -267,10 +251,8 @@ public static class StrategyStats
             Console.WriteLine($"  ⚠  CVaR(5%) = {dist.CVaR5:F1}% — worst 5% of trades average this loss");
     }
 
-    // ── 8. Bayesian bootstrap: P(A beats B) on mean and Sharpe ───────────────────
-    // Uses Dirichlet(1,…,1) reweighting — the posterior under a flat prior.
-    // Each draw samples a different weight vector over the observed data points
-    // rather than resampling with replacement, giving a proper Bayesian posterior.
+    // ── 8. Bayesian bootstrap: P(A beats B) on mean, Sharpe, PF ────────────
+    // Dirichlet(1,...,1) reweighting = posterior under flat prior.
     public record BayesResult(double ProbMeanA, double ProbSharpeA, double ProbPFA)
     {
         public override string ToString() =>
@@ -290,7 +272,7 @@ public static class StrategyStats
 
         for (int d = 0; d < nDraws; d++)
         {
-            // Dirichlet(1,…,1) weights = normalised Exponential(1) draws
+            // Dirichlet weights = normalised Exponential(1) draws.
             double[] wA = DirichletWeights(arrA.Length, rng);
             double[] wB = DirichletWeights(arrB.Length, rng);
 
@@ -383,7 +365,7 @@ public static class StrategyStats
         Console.WriteLine($"  → Posterior favours {winner} on risk-adjusted return ({conf:P0} credibility)");
     }
 
-    // ── Internal: normal CDF (Zelen & Severo 1964, max error ~7.5×10⁻⁸) ─────────
+    // ── Internal: normal CDF (Zelen & Severo 1964) ─────────
     private static double NormalCDF(double x)
     {
         double t    = 1.0 / (1.0 + 0.2316419 * Math.Abs(x));
@@ -396,15 +378,13 @@ public static class StrategyStats
     private static double TwoTailedP(double z) => 2.0 * (1.0 - NormalCDF(Math.Abs(z)));
 }
 
-// ── Crash / stress-test analyser ─────────────────────────────────────────────────────────
-// Identifies historical crash windows from BTC price action, then for each window shows
-// which positions were open, total concurrent exposure, and realised outcome.
-// Also computes a synthetic "all stops hit simultaneously" worst-case scenario.
+// Crash/stress-test analyser: identifies BTC crash windows, shows open positions and outcomes.
+// Also computes synthetic "all stops hit simultaneously" worst-case scenario.
 public static class CrashAnalyser
 {
     public record CrashEvent(string Label, DateTime Start, DateTime End, double BtcDropPct, int DurationH);
 
-    // Rolling-peak drawdown: crash = BTC close > minDropPct below its high over peakLookbackH bars.
+    // Crash = BTC close > minDropPct below rolling peak.
     public static List<CrashEvent> DetectCrashes(
         Candle[] btcH1, double minDropPct = 0.15, int peakLookbackH = 168)
     {
@@ -463,7 +443,7 @@ public static class CrashAnalyser
         return merged;
     }
 
-    // For each detected crash window: show which trades were open, total exposure, realised outcome.
+    // Per crash window: open trades, exposure, realised outcome.
     public static void Report(
         List<CrashEvent> crashes,
         List<(DateTime Open, DateTime Close, double Return, double HalfKelly, string Strategy)> trades)
@@ -498,7 +478,7 @@ public static class CrashAnalyser
 
             double exposure = active.Sum(t => t.HalfKelly) * 100.0;
 
-            // Trades that closed within the crash window — we know their actual outcome
+            // Trades closed within crash window (known outcome).
             var resolved = trades
                 .Where(t => t.Open <= crash.Start && t.Close >= crash.Start && t.Close <= crash.End.AddHours(24))
                 .ToList();
@@ -507,7 +487,7 @@ public static class CrashAnalyser
             int losses = resolved.Count(t => t.Return <= 0);
             double avgRet = resolved.Count > 0 ? resolved.Average(t => t.Return) : double.NaN;
 
-            // Rough portfolio hit: sum of (halfKelly × return) for resolved trades
+            // Portfolio hit: sum of halfKelly × return for resolved trades.
             double portHit = resolved.Sum(t => t.HalfKelly * t.Return / 100.0) * 100.0;
             totalPortHit += portHit;
 
@@ -522,7 +502,7 @@ public static class CrashAnalyser
         PrintHistoricCrashes();
     }
 
-    // Find the moment of maximum concurrent half-Kelly exposure and compute all-stop-out scenario.
+    // Peak concurrent exposure + all-stop-out scenario.
     public static void SyntheticWorstCase(
         List<(DateTime Open, DateTime Close, double Return, double HalfKelly, string Strategy)> trades,
         double gridStopPct  = 1.5,   // 1.5 ATR × avg h1 ATR ~1%   → ~1.5% per grid position
@@ -530,7 +510,7 @@ public static class CrashAnalyser
     {
         if (trades.Count == 0) return;
 
-        // Sweep line to find the peak concurrent total half-Kelly
+        // Sweep line for peak concurrent exposure.
         const double MaxKellyPerPosition = 0.15;
         var events = new List<(DateTime T, double D, bool IsGrid)>();
         foreach (var t in trades)
@@ -566,7 +546,7 @@ public static class CrashAnalyser
         Console.WriteLine($"  Max portfolio hit (clean stops):  -{maxLossEur:F2}€  on €100  ({-maxLossEur:F1}%)");
         Console.WriteLine($"  With 3× ATR expansion (crash):   -{maxLossEur * 3:F2}€  on €100  ({-maxLossEur * 3:F1}%)");
 
-        // Historical scenario projections using actual crash ATR expansion multiples
+        // Historical crash projections.
         Console.WriteLine("\n  ── Historical crash projections (at peak exposure above) ──");
         Console.WriteLine($"  {"Scenario",-20}  {"BTC drop",9}  {"Duration",9}  {"ATR ×",6}  {"Clean stops",12}  {"With slippage",14}");
         Console.WriteLine($"  {new string('─', 80)}");
@@ -584,7 +564,7 @@ public static class CrashAnalyser
         }
     }
 
-    // Rolling-trough rally: rally = BTC close > minRisePct above its low over troughLookbackH bars.
+    // Rally = BTC close > minRisePct above rolling trough.
     public static List<CrashEvent> DetectRallies(
         Candle[] btcH1, double minRisePct = 0.15, int troughLookbackH = 168)
     {
@@ -624,7 +604,7 @@ public static class CrashAnalyser
         return MergeEvents(raw, mergeGapH: 72);
     }
 
-    // Same table format as Report() but for upward rally windows.
+    // Same table format as Report() for rally windows.
     public static void ReportRallies(
         List<CrashEvent> rallies,
         List<(DateTime Open, DateTime Close, double Return, double HalfKelly, string Strategy)> trades)

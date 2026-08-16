@@ -7,7 +7,7 @@ namespace TradingGA;
 // regime confidence + duration at entry time, to check whether the router's hard
 // Bear-confirmation gate (duration>=BearMinBars && conf>=BearMinConf) is cutting
 // off real edge in the "low confidence bear" zone, or correctly excluding noise.
-// Not wired into Program.cs — run manually, delete when done.
+// Wired into Program.cs as `ripconfdiag`.
 static class RipShortConfDiag
 {
     public static async Task Run(BybitRestClient client)

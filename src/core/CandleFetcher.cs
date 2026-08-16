@@ -5,7 +5,7 @@ namespace TradingGA;
 
 static class CandleFetcher
 {
-    // Fetch 4h candles from Bybit. batches=7 → ~3.2yr; batches=1 sufficient for papertrade warmup.
+    // 4h candles from Bybit. batches=7 ≈ 3.2yr.
     public static async Task<List<Candle>> FetchSwingCandles(BybitRestClient client, string symbol, int batches = 7)
     {
         var all = new List<Candle>();
@@ -46,7 +46,7 @@ static class CandleFetcher
         return all.GroupBy(c => c.Time).Select(g => g.First()).OrderBy(c => c.Time).ToList();
     }
 
-    // 15m candles with disk cache. batches=113 ≈ 3.2yr. Cache: candle_cache/{symbol}_15m.csv.
+    // 15m candles with disk cache (candle_cache/{symbol}_15m.csv). batches=113 ≈ 3.2yr. Incremental.
     public static async Task<List<Candle>> FetchFifteenMinCandlesCached(BybitRestClient client, string symbol, int batches = 113)
     {
         const string CacheDir = "candle_cache";
@@ -96,7 +96,7 @@ static class CandleFetcher
                     var dt = k.StartTime;
                     var newCandle = new Candle(dt, (double)k.OpenPrice, (double)k.HighPrice,
                                                (double)k.LowPrice, (double)k.ClosePrice, (double)k.Volume);
-                    // In-progress bar is cached but overwritten on each fetch; frozen partials are corrected.
+
                     if (!cached.TryGetValue(dt, out var existing) || !existing.Equals(newCandle))
                     {
                         cached[dt] = newCandle;
@@ -109,7 +109,7 @@ static class CandleFetcher
             return false;
         }
 
-        // Forward fill: fetch new candles from "now" back to the last cached entry.
+        // Forward fill from "now" back to last cached entry.
         DateTime now = DateTime.UtcNow;
         DateTime lastClosedStart = new DateTime(now.Ticks - now.Ticks % TimeSpan.FromMinutes(15).Ticks, DateTimeKind.Utc) - TimeSpan.FromMinutes(15);
         bool cacheIsFresh = cached.Count > 0 && cached.Keys.Max() >= lastClosedStart;
@@ -128,7 +128,7 @@ static class CandleFetcher
             }
         }
 
-        // Backward fill: extend history further back if needed.
+        // Backward fill to reach target count.
         int needed = batches * 1000;
         if (cached.Count < needed)
         {
@@ -145,10 +145,14 @@ static class CandleFetcher
 
         if (dirty)
         {
-            var tmpFile = cacheFile + ".tmp";
+            // Unique-per-process tmp name: combinedbacktest runs the same backtest under different
+            // GRAVITY_SIZING envs in parallel, and a shared `{symbol}.tmp` path makes those processes
+            // clobber each other's in-flight File.Move (FileNotFound / in-use). A per-process suffix
+            // keeps writes atomic last-writer-wins — both writers persist complete, valid data.
+            var tmpFile = cacheFile + ".tmp." + System.Guid.NewGuid().ToString("N");
             try
             {
-                using (var fs = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (var fs = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
                 using (var sw = new StreamWriter(fs))
                 {
                     foreach (var c in cached.Values)
@@ -167,7 +171,7 @@ static class CandleFetcher
             }
         }
 
-        // Exclude in-progress bar from returned list (cached for overwrite on next fetch).
+        // Exclude in-progress bar.
         DateTime nowFinal = DateTime.UtcNow;
         DateTime currentBarStart = new DateTime(nowFinal.Ticks - nowFinal.Ticks % TimeSpan.FromMinutes(15).Ticks, DateTimeKind.Utc);
         var series = cached.Where(kv => kv.Key < currentBarStart).Select(kv => kv.Value).ToList();
@@ -175,7 +179,7 @@ static class CandleFetcher
         return series;
     }
 
-    // Coin filter: median ATR% and USD volume over the candle window.
+    // Coin filter: median ATR% and USD volume.
     public static (bool Passes, double AtrPct, double VolUsdM) CheckSwingCriteria(
         IReadOnlyList<Candle> candles, double minAtrPct = 1.5, double minVolUsdM = 1.0)
     {
@@ -200,8 +204,7 @@ static class CandleFetcher
         return (medAtrPct >= minAtrPct && medVolM >= minVolUsdM, medAtrPct, medVolM);
     }
 
-    // Scan h1 backward for the last contiguous block of ≥ minBars where the fixed 200-EMA
-    // regime is confirmed. Returns (blockStart, blockEnd) indices, or (-1, -1) if none found.
+    // Scan h1 backward for last contiguous confirmed-regime block of ≥ minBars.
     public static (int Start, int End) FindLastRegimeBlock(
         Candle[] h1, bool wantBull, int emaPeriod = 200, int slopeLookback = 50, int minBars = 500)
     {
@@ -224,58 +227,17 @@ static class CandleFetcher
         return (-1, -1);
     }
 
-    // ── Funding rate ─────────────────────────────────────────────────────────
-    // Cache: candle_cache/{symbol}_funding.csv.
-    //
-    // ┌── THE SETTLEMENT INTERVAL IS NOT 8h FOR EVERY SYMBOL ──────────────────────────────┐
-    // │ Bybit settles BTCUSDT/ETHUSDT every 8h, but many alt perps settle every 4h or 2h,  │
-    // │ and a symbol auto-switches to HOURLY settlement while its rate is pinned at the    │
-    // │ cap. Two consequences, both of which used to be silent:                            │
-    // │                                                                                    │
-    // │  1. HISTORY DEPTH. This method used to backfill to a hardcoded `Needed = 3504`     │
-    // │     records, commented as "3.2yr at 8h". For a 4h symbol that is 1.6yr and for a   │
-    // │     2h symbol 0.8yr — so the funding cache silently stopped short of the candle    │
-    // │     history, and FundingRateSession's coverage rule then priced the uncovered      │
-    // │     leading window at the interest-rate floor. The target is now expressed in      │
-    // │     HOURS (TargetHistoryHours) and converted to a record count using the spacing   │
-    // │     actually observed in the returned timestamps.                                  │
-    // │                                                                                    │
-    // │  2. COST MODEL. FundingRateSession hardcodes an 8h settlement grid and charges one │
-    // │     interval per grid tick crossed. On a 4h symbol that books HALF the settlements │
-    // │     that really occurred, and during a capped-rate hourly window it books an        │
-    // │     eighth — i.e. it undercounts funding hardest exactly when the crowding gate     │
-    // │     says the position is most dangerous. This file cannot fix that (it does not     │
-    // │     own FundingRateSession); it DETECTS and REPORTS the mismatch via                │
-    // │     FundingSeriesInfo.MatchesModelGrid so no caller can consume a mispriced series  │
-    // │     without the discrepancy appearing in its own output.                            │
-    // └────────────────────────────────────────────────────────────────────────────────────┘
-
-    // How much funding history to try to hold, in hours. 28032h ≈ 3.2yr, matching the
-    // `batches: 113` candle depth the backtests fetch. Expressed in TIME, not in records,
-    // precisely because records-per-hour is per-symbol.
+    // Funding rate cache: candle_cache/{symbol}_funding.csv.
+    // WARNING: not all symbols settle at 8h — FundingSeriesInfo.MatchesModelGrid detects the mismatch.
+    // Target expressed in hours (not records) because records-per-hour is per-symbol.
     public const double TargetFundingHistoryHours = 28032.0;
 
-    // Hard ceiling on backfill records, so a 1h-settling symbol cannot spin 28k records
-    // (140 API calls) out of one call. 200 records per API call × 25 calls, as before — the
-    // per-symbol API budget is deliberately unchanged from when only BTCUSDT was fetched,
-    // because the callers now fetch ~190 symbols instead of one.
-    //
-    // CONSEQUENCE, AND IT IS REPORTED RATHER THAN HIDDEN: a sub-8h symbol will hit this ceiling
-    // before it reaches TargetFundingHistoryHours (4h ⇒ ~2.3yr, 2h ⇒ ~1.1yr). FundingSeriesInfo
-    // carries the real First/Last span so the shortfall shows up in the caller's own output, and
-    // FundingRateSession prices the uncovered leading window at the interest-rate floor rather
-    // than flat-extrapolating an invented rate over it.
+    // Hard ceiling so a 1h-settling symbol cannot spin 28k records. Sub-8h symbols hit this
+    // before TargetFundingHistoryHours — shortfall reported via FundingSeriesInfo.
     public const int MaxFundingRecords        = 5000;
     public const int MaxFundingBackfillCalls  = 25;
 
-    /// <summary>
-    /// What a fetched funding series actually looks like, as opposed to what the 8h model assumes.
-    /// <para><b>MedianIntervalHours</b> is the median spacing of consecutive prints — the robust
-    /// estimator, so an exchange outage or a burst of capped hourly settlements does not move it.</para>
-    /// <para><b>MatchesModelGrid</b> is false whenever that spacing disagrees with
-    /// <see cref="FundingRateSession.FundingIntervalHours"/>, which is the condition under which
-    /// every funding cost computed from this series is wrong by the ratio of the two.</para>
-    /// </summary>
+    /// Observed funding series properties. MatchesModelGrid=false means the 8h model misprices it.
     public readonly record struct FundingSeriesInfo(
         string Symbol,
         int Records,
@@ -286,8 +248,7 @@ static class CandleFetcher
         public bool MatchesModelGrid =>
             Records < 2 || Math.Abs(MedianIntervalHours - FundingRateSession.FundingIntervalHours) < 1e-6;
 
-        // Multiplicative error in booked funding cost: how many real settlements occur per
-        // settlement the 8h model counts. 2.0 on a 4h symbol means the model books half the cost.
+        // How many real settlements per 8h model tick. 2.0 on a 4h symbol = half the cost booked.
         public double CostUndercountFactor =>
             MedianIntervalHours > 1e-9 ? FundingRateSession.FundingIntervalHours / MedianIntervalHours : 1.0;
 
@@ -302,11 +263,7 @@ static class CandleFetcher
                                            $"funding cost undercounted ×{CostUndercountFactor:0.##}");
     }
 
-    /// <summary>
-    /// Median spacing, in hours, between consecutive funding prints. Returns 0 for fewer than
-    /// two records. Median rather than mean so gaps in the exchange's own history (which do
-    /// occur, and which appear as one enormous spacing) cannot drag the estimate.
-    /// </summary>
+    /// Median spacing in hours between funding prints. Median so gaps don't drag the estimate.
     public static double MedianFundingIntervalHours(IReadOnlyList<DateTime> times)
     {
         if (times.Count < 2) return 0.0;
@@ -322,11 +279,7 @@ static class CandleFetcher
         return gaps.Count % 2 == 1 ? gaps[mid] : (gaps[mid - 1] + gaps[mid]) / 2.0;
     }
 
-    /// <summary>
-    /// Records needed to cover <paramref name="targetHours"/> at the observed spacing. Falls back
-    /// to the 8h assumption only while too few records exist to measure a spacing at all, and is
-    /// clamped to <see cref="MaxFundingRecords"/> so a 1h-settling symbol cannot run away.
-    /// </summary>
+    /// Records needed for targetHours at observed spacing. Clamped to MaxFundingRecords.
     public static int RecordsNeededFor(double medianIntervalHours, double targetHours)
     {
         double interval = medianIntervalHours > 1e-9
@@ -367,16 +320,12 @@ static class CandleFetcher
 
         bool dirty = false;
 
-        // Spacing observed so far, refreshed as the cache grows. Every "step back one interval"
-        // below uses THIS rather than a literal 8, so a 4h/2h/1h symbol pages correctly instead
-        // of skipping over records it then has to re-request.
+        // Observed spacing, refreshed as cache grows. Used instead of hardcoded 8h.
         double Spacing() => cached.Count >= 2
             ? MedianFundingIntervalHours(cached.Keys.ToList())
             : FundingRateSession.FundingIntervalHours;
 
-        // Forward fill: catch up to "now" from the last cached record. Staleness is judged
-        // against the symbol's own spacing — an 8h staleness window on a 2h symbol would call
-        // a cache three settlements behind "fresh".
+        // Forward fill. Staleness judged against symbol's own spacing.
         bool isFresh = cached.Count > 0 && (DateTime.UtcNow - cached.Keys.Max()).TotalHours < Spacing();
         if (!isFresh)
         {
@@ -392,10 +341,7 @@ static class CandleFetcher
             }
         }
 
-        // Backward fill: extend to TargetFundingHistoryHours of WALL-CLOCK history. The record
-        // count that represents is derived from the spacing actually seen, and is recomputed each
-        // pass because the first pass may be the one that first reveals the symbol is not 8h.
-        // (Was: a hardcoded `Needed = 3504` commented "3.2yr" — true only at 8h.)
+        // Backward fill to TargetFundingHistoryHours of wall-clock history.
         {
             DateTime? endTime = cached.Count > 0 ? cached.Keys.Min().AddHours(-Spacing()) : null;
             for (int i = 0; i < MaxFundingBackfillCalls; i++)
@@ -403,7 +349,7 @@ static class CandleFetcher
                 if (cached.Count >= RecordsNeededFor(Spacing(), TargetFundingHistoryHours)) break;
                 int before = cached.Count;
                 if (!await FetchFundingBatch(cached, client, symbol, endTime)) break;
-                if (cached.Count == before) break;   // exchange has no more history
+                if (cached.Count == before) break;
                 dirty = true;
                 endTime = cached.Keys.Min().AddHours(-Spacing());
             }
@@ -411,10 +357,10 @@ static class CandleFetcher
 
         if (dirty)
         {
-            var tmpFile = cacheFile + ".tmp";
+            var tmpFile = cacheFile + ".tmp." + System.Guid.NewGuid().ToString("N");
             try
             {
-                using (var fs2 = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (var fs2 = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
                 using (var sw = new StreamWriter(fs2))
                 {
                     foreach (var (dt, rate) in cached)
@@ -435,24 +381,12 @@ static class CandleFetcher
         return [.. cached.Select(kv => new FundingBar(kv.Key, kv.Value))];
     }
 
-    // ── Per-symbol funding sessions ──────────────────────────────────────────────────────
-    //
-    // The two pre-existing call sites (FullTest, Papertrade) each fetched "BTCUSDT" alone and
-    // applied that one rate series to every one of ~190 symbols. That is wrong in both
-    // directions and not by a small amount: BTC funding is the market's calmest series, so an
-    // alt's crowded-long blow-off (rates several times BTC's) is priced at BTC's rate, and the
-    // FundingRateSession crowding gates — which are absolute thresholds in rate space — fire on
-    // BTC's crowding rather than on the crowding of the coin actually being traded.
-    //
-    // This builds one session per symbol. Symbols with no funding history map to null, which the
-    // simulators already accept and price at the interest-rate floor — the same one-sided
-    // "never book unprovable funding income" fallback FundingRateSession documents.
+    // Per-symbol funding sessions. Unknown symbols → null (floor fallback), not another symbol's rates.
     public sealed record FundingSessions(
         IReadOnlyDictionary<string, FundingRateSession> Sessions,
         IReadOnlyList<FundingSeriesInfo> Info)
     {
-        // Null for an unknown symbol, by design: a missing session must not silently borrow
-        // another symbol's rates, which is exactly the bug this replaces.
+
         public FundingRateSession? For(string symbol) =>
             Sessions.TryGetValue(symbol, out var s) ? s : null;
 
@@ -500,9 +434,7 @@ static class CandleFetcher
                 var bars = await FetchFundingRateCachedAsync(client, sym);
                 return (sym, bars);
             }
-            // A single symbol's funding fetch failing must not take down a whole backtest —
-            // it degrades that symbol to the floor fallback, which is the documented behaviour
-            // for "no rate series", not a new failure mode.
+            // Single-symbol failure → floor fallback, not a backtest abort.
             catch (Exception ex)
             {
                 Console.WriteLine($"    Funding fetch failed for {sym}: {ex.GetType().Name} — falling back to the interest-rate floor.");
@@ -588,17 +520,7 @@ static class CandleFetcher
         Console.WriteLine($"  {label,-12} Sh={sh:F2}  Sort={sort:F2}  PF={pf:F2}  WR={wr:P0}  Tr={r.Count}  Avg={avg:+0.00;-0.00}%");
     }
 
-    // Cache integrity check.
-    //
-    // candle_cache/{SYMBOL}_15m.csv is built INCREMENTALLY — each run appends only bars newer
-    // than the last write. If the exchange ever restates a historical bar, the cache silently
-    // keeps the stale value, so two backtests run weeks apart can disagree while both look
-    // correct and neither reports anything. Backtest reproducibility rests on historical bars
-    // being immutable, and nothing was checking that.
-    //
-    // Diagnostic only: never throws and never alters control flow. A corrupted cache should be
-    // visible, not fatal — the caller decides whether to delete and refetch.
-    // Timeframe-agnostic: spacing is derived from the data, so this works on 15m, 1h or 1m.
+    // Cache integrity check. Diagnostic only — never throws. Detects stale restated bars.
     public static void VerifyCacheIntegrity(string symbol, IReadOnlyList<Candle> candles)
     {
         if (candles.Count < 3) return;

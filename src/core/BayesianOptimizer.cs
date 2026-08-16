@@ -1,26 +1,13 @@
 namespace TradingGA;
 
-// TPE (Tree-structured Parzen Estimator) — the same algorithm used by Optuna's default sampler.
-//
-// How it works:
-//   1. All evaluated points are split into "good" (top γ=25% by fitness) and "bad" (rest).
-//   2. For each parameter dimension, two Gaussian KDEs are fitted: l(x) over good points,
-//      g(x) over bad points.
-//   3. The acquisition function is EI = l(x) / g(x).  Maximising this finds points that
-//      are likely in the good region AND unlikely in the bad region.
-//   4. Candidates are drawn by sampling from good-point distributions, then ranked by EI.
-//
-// Usage: call Suggest() to get the next point; call Observe() after evaluating it.
-// Refine() runs a full loop: seed from GA elites → N BO iterations → return best.
-//
-// Bounds: double[nGenes, 2] where [i,0]=min  [i,1]=max for gene i.
-// Integers: pass as doubles; caller rounds when converting back to genotype.
+// TPE Bayesian optimiser. Splits points into good (top 25%) / bad, fits KDEs, maximises EI = l(x)/g(x).
+// Refine(): seed from GA elites → N iterations → return best. Bounds: [nGenes, 2].
 public static class BayesianOptimizer
 {
     private const double GoodFraction = 0.25;
     private const int    NCandidates  = 48;
 
-    // Suggest the next point to evaluate given past observations.
+
     public static double[] Suggest(
         List<(double[] Params, double Fitness)> history,
         double[,] bounds,
@@ -35,7 +22,7 @@ public static class BayesianOptimizer
         var good   = sorted.Take(nGood).Select(h => h.Params).ToList();
         var bad    = sorted.Skip(nGood).Select(h => h.Params).ToList();
 
-        // Generate candidates by perturbing random good points
+
         var candidates = new List<double[]>(NCandidates);
         for (int i = 0; i < NCandidates; i++)
         {
@@ -50,14 +37,13 @@ public static class BayesianOptimizer
             candidates.Add(candidate);
         }
 
-        // Rank by EI = log l(x) - log g(x)  (log-space for numerical stability)
+
         return candidates
             .OrderByDescending(c => LogKde(c, good, bounds) - LogKde(c, bad, bounds))
             .First();
     }
 
-    // Run a full refinement loop seeded from initial observations.
-    // Returns all history (seed + new evaluations); caller extracts the best.
+
     public static List<(double[] Params, double Fitness)> Refine(
         IEnumerable<(double[] Params, double Fitness)> seedObs,
         double[,] bounds,
@@ -75,9 +61,7 @@ public static class BayesianOptimizer
         return history;
     }
 
-    // ── Internals ─────────────────────────────────────────────────────────────
-
-    // Log-space product-of-1D-KDEs (TPE assumes independence across dimensions)
+    // Log-space product-of-1D-KDEs (independence across dimensions assumed).
     private static double LogKde(double[] x, List<double[]> points, double[,] bounds)
     {
         if (points.Count == 0) return Math.Log(1e-10);
@@ -95,7 +79,7 @@ public static class BayesianOptimizer
         return logDensity;
     }
 
-    // Bandwidth = Silverman's rule on each dimension, clamped to [3%, 20%] of range.
+    // Silverman's rule, clamped to [3%, 20%] of range.
     private static double GoodBandwidth(List<double[]> pts, int d, double lo, double hi) =>
         Bandwidth(pts, d, lo, hi);
 
@@ -121,7 +105,7 @@ public static class BayesianOptimizer
     }
 }
 
-// Box-Muller Gaussian sampler extension
+// Box-Muller Gaussian sampler.
 internal static class RandomExtensions
 {
     public static double NextGaussian(this Random rng)

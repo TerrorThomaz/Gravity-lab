@@ -17,13 +17,9 @@ class FadeShortGenotypeDto
     public double TrailingStopAtrMult       { get; set; }
     public int    MaxHoldCandles            { get; set; }
     public double PositionSizePct           { get; set; }
-    // Nullable: a file written before this gene existed must restore 0 (disabled), and a plain
-    // int cannot tell "absent" from an explicit 0. Same trap BailOutAtrMult fell into — it was
-    // dropped on save and reloaded as 0, so every GridShort genotype written before that fix
-    // carried a disabled bail-out its GA had optimised to use.
+    // Nullable: absent must restore 0 (disabled); plain int can't distinguish "absent" from explicit 0.
     public int?   RegimeSustainBars         { get; set; }
-    // Nullable for the same reason: absent must restore the historical hardcoded values
-    // (regime ema = signal ema, slope window 5) rather than 0, which would be an invalid EMA.
+    // Nullable: absent must restore historical defaults (not 0, which would be invalid EMA).
     public int?   RegimeEmaPeriod           { get; set; }
     public int?   RegimeSlopeLookback       { get; set; }
     public double Fitness                   { get; set; }
@@ -264,9 +260,7 @@ class RipShortGenotypeDto
         TimeStopBars              = TimeStopBars        > 0 ? TimeStopBars        : 999,  // 0 in old JSON → disabled
         TimeStopLossPct           = TimeStopLossPct     > 0 ? TimeStopLossPct     : 0.99,
         RegimeSustainedBars       = RegimeSustainedBars > 0 ? RegimeSustainedBars : 30,
-        // NOT defaulted via `> 0`: RegimeAdaptStrength is signed, and 0 is a MEANING (adaptation
-        // off), not a missing value. The `> 0` idiom used above would silently rewrite every
-        // genotype that legitimately learned "do not adapt" into an invented default.
+        // Not defaulted via `> 0`: 0 is meaningful (adaptation off), not a missing value.
         RegimeAdaptPivotBars      = RegimeAdaptPivotBars > 0 ? RegimeAdaptPivotBars : 100,
         RegimeAdaptStrength       = RegimeAdaptStrength,
         Fitness                   = Fitness,
@@ -289,9 +283,7 @@ class SwingLongGenotypeDto
     public double PositionSizePct           { get; set; }
     public int    TimeStopBars              { get; set; }
     public double TimeStopLossPct           { get; set; }
-    // Serialised explicitly: a gene the DTO drops round-trips to 0, which for this gate means
-    // "ignore BTC" — training would save a learned routing preference and loading would silently
-    // discard it. Same failure that wrote AtrLow/AtrHigh = [0, 9999] into every high-vol genotype.
+    // Serialised explicitly: dropping this gene round-trips to 0 ("ignore BTC"), silently discarding learned routing.
     public double BtcAlignWeight           { get; set; }
     public double Fitness                   { get; set; }
     public double AtrLow                    { get; init; } = 0.0;
@@ -335,7 +327,7 @@ class SwingLongGenotypeDto
         PositionSizePct           = PositionSizePct           > 0 ? PositionSizePct           : 0.03,
         TimeStopBars              = TimeStopBars              > 0 ? TimeStopBars              : 999,  // 0 in old JSON → disabled
         TimeStopLossPct           = TimeStopLossPct           > 0 ? TimeStopLossPct           : 0.99,
-        // 0 is MEANINGFUL (gate off), so no `> 0 ? x : default` rewrite here.
+        // 0 is meaningful (gate off), so no `> 0` rewrite.
         BtcAlignWeight            = Math.Clamp(BtcAlignWeight, 0.0, 1.0),
         Fitness                   = Fitness,
     }.ClampToBounds();
@@ -352,16 +344,11 @@ class GridGenotypeDto
     public double TakeProfitAtrMult { get; set; }
     public double HardStopAtrMult   { get; set; }
     public int    MaxHoldCandles    { get; set; }
-    // BailOutAtrMult was MISSING from this DTO while being searched by the GA and consumed by the
-    // simulator, so it was discarded on every save and reloaded as 0 — a gene the GA optimised and
-    // the saved genotype never carried. Eleventh instance of the built-but-not-connected pattern.
+    // Was missing from DTO (discarded on save, reloaded as 0). Now persisted.
     public double BailOutAtrMult    { get; set; }
     public double RungSellFrac      { get; set; }
     public double ReanchorAlpha     { get; set; }
-    // Nullable on purpose: a missing JSON key must restore the LEGACY hardcoded -0.005, and a
-    // plain double cannot tell "absent" from an explicit 0.0. Defaulting to 0 silently made every
-    // pre-existing genotype STRICTER than it was (0 rejects any flat/falling bar, -0.005 tolerates
-    // a 0.5% decline), which changed Grid's behaviour on load and broke a funding test.
+    // Nullable: absent must restore legacy -0.005 (not 0, which rejects any flat/falling bar).
     public double? SlopeThreshold   { get; set; }
     public int    SlopeLookback     { get; set; }
     public double Fitness           { get; set; }
@@ -400,9 +387,9 @@ class GridGenotypeDto
         TakeProfitAtrMult = TakeProfitAtrMult > 0 ? TakeProfitAtrMult : 1.5,
         HardStopAtrMult   = HardStopAtrMult   > 0 ? HardStopAtrMult   : 2.2,
         MaxHoldCandles    = MaxHoldCandles    > 0 ? MaxHoldCandles    : 96,
-        // 2.0 mirrors the old default for genotypes saved before BailOutAtrMult was persisted.
+        // 2.0 = legacy default for pre-persistence genotypes.
         BailOutAtrMult    = BailOutAtrMult    > 0 ? BailOutAtrMult    : 2.0,
-        // 0 = legacy behaviour for all three new mechanics, so old files load unchanged.
+        // 0 = legacy behaviour, so old files load unchanged.
         RungSellFrac      = RungSellFrac,
         ReanchorAlpha     = ReanchorAlpha,
         SlopeThreshold    = SlopeThreshold ?? -0.005,

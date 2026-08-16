@@ -1,63 +1,28 @@
 namespace TradingGA;
 
-// Fade-long genotype — symmetric counterpart to FadeShortGenotype.
-//
-// Setup (1h): strong downtrend (ADX + EMA) · minimum drop from a recent swing low
-//   · RSI bullish divergence: RSI was oversold at the swing low, then recovered
-//     by at least RsiDivThreshold pts (sellers losing steam)
-// Entry (15m): close above previous 15m candle's high (bullish BoS)
-// Exit  (15m): ATR hard stop · MAE ceiling · fixed ATR target · trailing stop · hold timeout
-//
-// Gene units:
-//   LookbackCandles / MaxHoldCandles  in h1 bars
-//   ATR multiples use h4 ATR at entry — same scale as FadeShortGenotype.
-//   MinDropAtrMult uses h1 ATR — right scale for detecting h1 price structure.
-//
-// Fixed: RsiPeriod=7, AdxPeriod=7 (consistent with swing).
+// FadeLong genotype: bear-regime oversold bounce. Mirror of FadeShort.
+// Fixed: RsiPeriod=7, AdxPeriod=7. Exit ATR uses h4; MinDrop uses h1.
 public class FadeLongGenotype
 {
-    // ── Regime genes ──────────────────────────────────────────────────────────────
-    public int    RegimePeriod { get; set; }   // 100–300  slow EMA — long-term bear regime gate
-    public int    EmaPeriod    { get; set; }   // 20–100   medium-term trend EMA
+    public int    RegimePeriod { get; set; }   // 100–300  slow EMA for bear regime
+    public int    EmaPeriod    { get; set; }   // 20–100   trend EMA
     public double AdxThreshold { get; set; }   // 22–45    downtrend gate
-
-    // ── Entry signal genes ────────────────────────────────────────────────────────
-    public int    LookbackCandles { get; set; }   // 12–120  h1 bars to locate swing low
-    public double RsiOversold     { get; set; }   // 20–40   RSI ceiling the swing low must break
-    public double RsiDivThreshold { get; set; }   // 5–15    RSI must have recovered by this many pts from swing-low RSI
-    public double MinDropAtrMult  { get; set; }   // 5–12    min drop (h1 ATR) from swing high to low
-
-    // ── Exit genes ────────────────────────────────────────────────────────────────
-    public double StopLossAtrMult           { get; set; }   // 0.3–2.0   ATR buffer below swing low (stop invalidates thesis if broken)
-    public double MaeAtrMult                { get; set; }   // 1.5–4.0   max adverse excursion floor = entry − mult×ATR
-    public double TakeProfitAtrMult         { get; set; }   // 2.0–15.0  fixed profit target above entry
-    public double TrailingActivationAtrMult { get; set; }   // 1.0–4.0   arm trail after this profit
-    public double TrailingStopAtrMult       { get; set; }   // 1.0–5.0   trail distance from peak
-    public int    MaxHoldCandles            { get; set; }   // 24–120    h1 bars before forced exit
-    public double PositionSizePct           { get; set; }   // 0.01–0.05 fraction of capital per trade
-
-    // ── Regime-conditional fitness gene ──────────────────────────────────────────
-    public int    RegimeSustainedBars  { get; set; }   // 10–100    min consecutive bear-regime h1 bars before a trade counts
-    // Protection mode (ProfitLockThreshold, DrawbackTolerance, ProtectedSizeFactor) moved to DynamicGuardGenotype.
+    public int    LookbackCandles { get; set; } // 12–120  h1 bars to locate swing low
+    public double RsiOversold     { get; set; } // 20–40   RSI ceiling for swing low
+    public double RsiDivThreshold { get; set; } // 5–15    min RSI recovery from swing low
+    public double MinDropAtrMult  { get; set; } // 5–12    min drop (h1 ATR)
+    public double StopLossAtrMult { get; set; } // 0.3–2.0 ATR buffer below swing low
+    public double MaeAtrMult      { get; set; } // 1.5–4.0 max adverse excursion floor
+    public double TakeProfitAtrMult { get; set; } // 2.0–15.0 fixed target
+    public double TrailingActivationAtrMult { get; set; } // 1.0–4.0 arm trail
+    public double TrailingStopAtrMult { get; set; } // 1.0–5.0 trail distance
+    public int    MaxHoldCandles  { get; set; } // 24–120  h1 bars before forced exit
+    public double PositionSizePct { get; set; } // 0.01–0.05 capital fraction
+    public int    RegimeSustainedBars { get; set; } // 10–100 min bear-regime bars before trade counts
 
     public double Fitness { get; set; } = double.MinValue;
 
-    // ── Seeded initialisation ────────────────────────────────────────────────────
-    // Probability that a seeded Random draw returns a LOOSE mutant of the seed
-    // rather than an independent uniform draw. Matches RegimeRouterGenotype.Random,
-    // which sits on the identical GA Run skeleton; one number across the whole
-    // strategy suite keeps the initial-diversity mix comparable between GAs.
-    //
-    // Resulting population mix at popSize 80 with a seed (the GA's Run block
-    // installs the clamped seed at index 0 and tight rate-0.25 mutants at 1..16):
-    //   1  exact seed
-    //   16 tight  (rate 0.25) mutants  — the seed's immediate neighbourhood
-    //   ~19 loose (rate 0.50) mutants  — 30% of the remaining 63 slots
-    //   ~44 fully independent random genotypes
-    // ≈ 45% anchored on the incumbent, ≈ 55% genuine exploration. Before this
-    // change the last 63 slots were byte-identical copies of the seed, leaving
-    // at most 17 distinct starting points (78.75% duplicates) — a hill-climb,
-    // not a GA.
+    // Seeded init: 30% loose mutant, ~45% anchored / ~55% exploration.
     private const double SeedMutantProbability = 0.3;
 
     public static FadeLongGenotype Random(System.Random rng, FadeLongGenotype? seed = null)
@@ -160,7 +125,6 @@ public class FadeLongGenotype
         Fitness = Fitness,
     };
 
-    // ── Bayesian optimiser interface ──────────────────────────────────────────
     public static readonly double[,] Bounds =
     {
         { 100, 300 }, // RegimePeriod

@@ -19,40 +19,10 @@ public static class ExpandingWindowValidation
         int UsableWindows,
         bool IsInconclusive);
 
-    // ── Efficiency guards ────────────────────────────────────────────────────────
-    // (0) THE SHARPE USED HERE IS UN-NORMALISED (FoldScoreHelper.PerTradeSharpe =
-    //     mean/stdev of the trade returns). It used to be Simulator.SharpeRatio(all,
-    //     all.Count) — which multiplies by sqrt(candleCount / 288) and expects a count of
-    //     5-minute-equivalent CANDLES, not the TRADE count that was being passed.
-    //
-    //     That defect biased this report's core verdict, not just its printed numbers.
-    //     Efficiency is oosSharpe/isSharpe, and IS and OOS each carried the factor with
-    //     DIFFERENT n: the expanding schedule trains on 1/4..5/8 of a coin and tests on
-    //     1/8, so n_is / n_oos runs roughly 2x..5x. A strategy that generalises PERFECTLY
-    //     — identical return distribution in and out of sample — therefore measured
-    //         efficiency = sqrt(n_oos / n_is) = sqrt(1/2)..sqrt(1/5) = 0.707..0.447,
-    //     mean 0.558, against an OVERFIT THRESHOLD OF 0.5. The flag was sitting inside
-    //     its own bias band: perfect generalisation was one window-schedule away from
-    //     being reported as overfitting.
-    //
-    //     With the time-scaling removed, both sides are the same scale-free statistic, so
-    //     a perfectly-generalising strategy now has an EXPECTED EFFICIENCY OF 1.0 and the
-    //     0.5 threshold means what it says: "OOS risk-adjusted return is less than half
-    //     of in-sample". Absolute Sharpe values printed by this report are smaller than
-    //     they used to be (no sqrt(n/288) inflation) and are NOT comparable to any
-    //     efficiency figure recorded before this change.
-    //
-    // (1) PerTradeSharpe keeps Simulator.SharpeRatio's guards: it hard-returns 0 whenever
-    //     the in-sample profit factor is under 1.3. A window can therefore score
-    //     isSharpe == 0 for a reason that has nothing to do with overfitting, and the old
-    //     code turned that into efficiency = 0, dragging the 4-window mean below the 0.5
-    //     threshold and flagging OVERFIT spuriously. Such windows are now recorded but
-    //     excluded from the mean, and their count is surfaced via UsableWindows.
-    // (2) The ratio used to be unclamped: a small positive isSharpe against a negative
-    //     oosSharpe produces an arbitrarily large negative number that single-handedly
-    //     dominates a 4-window average. Per-window efficiency is clamped to [-1, 2]
-    //     before averaging — 2.0 already means "OOS twice as good as IS", and anything
-    //     below -1.0 is equally "fully broken out of sample".
+    // Efficiency = OOS Sharpe / IS Sharpe. Uses PerTradeSharpe (no time normalisation) so a
+    // perfectly-generalising strategy has expected efficiency 1.0. Overfit threshold: <0.5.
+    // Windows with isSharpe ≤ 0.05 (PF<1.3 guard) are excluded from mean (not evidence of overfit).
+    // Per-window efficiency clamped to [-1, 2] before averaging.
     private const double MinUsableIsSharpe = 0.05;
     private const double EfficiencyFloor   = -1.0;
     private const double EfficiencyCeiling =  2.0;
@@ -72,50 +42,22 @@ public static class ExpandingWindowValidation
         var usable = windows.Where(w => w.IsUsable).ToList();
         bool inconclusive = usable.Count == 0;
         double meanEff = inconclusive ? 0.0 : usable.Average(w => w.Efficiency);
-        // Never assert OVERFIT off an empty sample: "no window had a usable in-sample
-        // Sharpe" is inconclusive, not evidence of overfitting.
+        // No usable windows → inconclusive, not overfit.
         bool isOverfit = !inconclusive && meanEff < 0.5;
         return new(strategyName, windows, meanEff, isOverfit, usable.Count, inconclusive);
     }
 
-    // Embargo gap (in bars of the coin's own h1 array) inserted between that coin's
-    // training window and its test window, mirroring FitnessConfig.EmbargoPct used by the
-    // GA fold splitter. Without it the test window starts on the bar immediately after
-    // training ends, so a trade opened near the train boundary and indicators with
-    // multi-bar lookback leak straight across the seam. `stepSize` is the coin's OWN test
-    // block length, so the gap scales with that coin's history like every other bound here.
+    // Embargo gap (bars) between train and test windows, mirroring FitnessConfig.EmbargoPct.
     private static int EmbargoBars(int stepSize, FitnessConfig cfg)
         => Math.Max(0, (int)(stepSize * cfg.EmbargoPct));
 
     // ── Per-coin expanding windows ───────────────────────────────────────────────
-    // Window w (0..3) trains on the first (1/4 + w/8) of a coin's own history and tests on
-    // the following 1/8 of it, with an embargo gap in between. That is the same schedule
-    // the original code described — trainEnd = len/4 + w*len/8, test block len/8 — but the
-    // fractions are now evaluated against EACH COIN'S OWN array length instead of against
-    // `minLen`, the length of the shortest coin in the set.
-    //
-    // Why this had to change: an index is not a date. Deriving stepSize and trainEnd from
-    // the shortest coin and then applying those raw indices to every other coin meant
-    //   (a) "window w" covered a different calendar stretch on every symbol whose history
-    //       starts on a different day, so the windows were not a consistent stretch of
-    //       market history across the set, and
-    //   (b) every bar past minLen on every longer coin was unreachable, because the
-    //       schedule never advanced beyond the shortest array.
-    // The old `Math.Min(trainEnd, arr.Length)` clamps hid that mismatch instead of fixing
-    // it. This mirrors FoldScoreHelper.PerCoinFoldRange, which the per-coin GAs use, and
-    // the "NOTE ON INDEX SPACES" contract at the top of FoldScoreHelper's fold section.
-    //
-    // A coin whose own window would come out under MinWindowBars is skipped for that
-    // window (the < 40 convention used by the GAs) rather than dragging the whole
-    // schedule down for every other coin. Held-out coins carry empty training arrays and
-    // are therefore skipped everywhere, instead of collapsing minLen to 0 and killing the
-    // entire report as they used to.
+    // Window w (0..3): trains on first (1/4 + w/8) of coin's own history, tests on next 1/8.
+    // Each coin uses its own array length (not the shortest coin's). Coins with <40 bars in a window are skipped.
     private const int WindowCount   = 4;
     private const int MinWindowBars = 40;
 
-    // Returns the [0, TrainEnd) / [TestStart, TestEnd) split of a coin's own array for
-    // window `w`, or null when that coin's history is too short to support the window.
-    // Internal so the alignment contract can be unit-tested directly.
+    // [TrainEnd, TestStart, TestEnd) for window w on a coin's own array. Null if history too short.
     internal static (int TrainEnd, int TestStart, int TestEnd)? WindowForCoin(
         int totalBars, int w, FitnessConfig cfg)
     {
@@ -135,16 +77,8 @@ public static class ExpandingWindowValidation
     }
 
     // ── h1 → m15 index mapping ───────────────────────────────────────────────────
-    // ×4 arithmetic is only valid when the two arrays are the same slice of history at two
-    // resolutions. That holds for DipLong and SwingLong: their train arrays come from a
-    // plain percentage split of a full h1/m15 pair, and h1 is AggregateCandles(m15, 4), so
-    // h1[i].Time == m15[4i].Time by construction.
-    //
-    // It does NOT hold for FadeLong and RipShort. Their training arrays are bear-window
-    // FILTERED CONCATENATIONS produced independently for the two timeframes
-    // (LongTrainCommands.FilterToWindows, ~line 354): each timeframe drops a different
-    // number of candles at every window edge, so m15.Length != 4 * h1.Length and index
-    // 4*i on m15 is not the same moment as index i on h1. Those two map by TIMESTAMP.
+    // ×4 arithmetic valid only when arrays are same slice at two resolutions (DipLong, SwingLong).
+    // FadeLong/RipShort: bear-window filtered independently per timeframe → map by TIMESTAMP instead.
     private static (int Start, int Len) M15RangeByFactor(int h1Start, int h1End, int m15Len)
     {
         int start = Math.Min(h1Start * 4, m15Len);
@@ -152,10 +86,7 @@ public static class ExpandingWindowValidation
         return (start, len);
     }
 
-    // Maps the h1 index range [h1Start, h1End) onto the coin's own m15 array by calendar
-    // time, via the same binary-search helper the regime-gated GAs use for their folds.
-    // The window closes at DateTime.MaxValue when the h1 range runs to the end of the
-    // array, so trailing m15 candles are scored rather than silently dropped.
+    // Maps h1 index range to m15 by calendar time (binary search). Closes at MaxValue to score trailing candles.
     private static (int Start, int Len) M15RangeByTime(
         ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, int h1Start, int h1End)
     {
@@ -166,12 +97,7 @@ public static class ExpandingWindowValidation
         return (s, e - s);
     }
 
-    // Shared driver for all six strategies: one copy of the window schedule, with the
-    // strategy-specific parts (array length, slicing, GA run, Sharpe) passed in.
-    //
-    // TrainBars/TestBars in the result are the MEAN window lengths across the coins that
-    // took part in that window — the windows are per-coin now, so a single number can only
-    // ever be a summary.
+    // Shared driver for all strategies. TrainBars/TestBars are means across participating coins.
     private static ExpandingWindowReport RunExpanding<TCoin, TGeno>(
         string strategyName,
         IReadOnlyList<TCoin> coins,
@@ -202,8 +128,7 @@ public static class ExpandingWindowValidation
                 testBars.Add(testEnd - testStart);
             }
 
-            // No coin in the set is long enough for this window — record nothing rather
-            // than handing an empty coin list to the GA (which throws).
+            // No coin long enough for this window — skip (GA throws on empty list).
             if (trainCoins.Count == 0) continue;
 
             var geno = train(trainCoins);
@@ -217,8 +142,7 @@ public static class ExpandingWindowValidation
         return BuildReport(strategyName, windows);
     }
 
-    // ── FadeShort ────────────────────────────────────────────────────────────────
-    // Single-timeframe (CoinData carries one h1 array), so there is no h1→m15 mapping.
+    // ── FadeShort ── Single-timeframe, no h1→m15 mapping.
     public static ExpandingWindowReport RunFadeShort(
         IReadOnlyList<FadeShortGA.CoinData> coins,
         FitnessConfig? cfg = null)
@@ -235,9 +159,7 @@ public static class ExpandingWindowValidation
     private static FadeShortGA.CoinData SliceFadeShort(FadeShortGA.CoinData c, int start, int end)
         => new(c.TrainCandles.Slice(start, end - start), c.ValCandles, c.Weight);
 
-    // ── DipLong ──────────────────────────────────────────────────────────────────
-    // Train arrays are a plain percentage split of an aggregated h1/m15 pair, so the
-    // m15 index is exactly 4 x the h1 index (see M15RangeByFactor).
+    // ── DipLong ── Plain percentage split; m15 index = 4 × h1 index.
     public static ExpandingWindowReport RunDipLong(
         IReadOnlyList<DipLongGA.CoinData> coins,
         FitnessConfig? cfg = null)
@@ -259,8 +181,7 @@ public static class ExpandingWindowValidation
             c.TrainM15.Slice(m15Start, m15Len),  c.ValM15, c.Weight);
     }
 
-    // ── SwingLong ────────────────────────────────────────────────────────────────
-    // Same plain percentage split as DipLong — the x4 mapping holds.
+    // ── SwingLong ── Same as DipLong (x4 mapping holds).
     public static ExpandingWindowReport RunSwingLong(
         IReadOnlyList<SwingLongGA.CoinData> coins,
         FitnessConfig? cfg = null)
@@ -282,9 +203,7 @@ public static class ExpandingWindowValidation
             c.TrainM15.Slice(m15Start, m15Len),  c.ValM15, c.Weight);
     }
 
-    // ── RipShort ─────────────────────────────────────────────────────────────────
-    // Bear-window filtered concatenations: h1 and m15 are filtered independently, so the
-    // m15 range is derived from timestamps, not from h1index x 4.
+    // ── RipShort ── Bear-window filtered; m15 mapped by timestamp.
     public static ExpandingWindowReport RunRipShort(
         IReadOnlyList<RipShortGA.CoinData> coins,
         FitnessConfig? cfg = null)
@@ -306,8 +225,7 @@ public static class ExpandingWindowValidation
             c.TrainM15.Slice(m15Start, m15Len),  c.ValM15, c.Weight);
     }
 
-    // ── FadeLong ─────────────────────────────────────────────────────────────────
-    // Bear-window filtered concatenations, same as RipShort — timestamp mapping.
+    // ── FadeLong ── Bear-window filtered; m15 mapped by timestamp (same as RipShort).
     public static ExpandingWindowReport RunFadeLong(
         IReadOnlyList<FadeLongGA.CoinData> coins,
         FitnessConfig? cfg = null)
@@ -329,8 +247,7 @@ public static class ExpandingWindowValidation
             c.TrainM15.Slice(m15Start, m15Len),  c.ValM15, c.Weight);
     }
 
-    // ── Grid ─────────────────────────────────────────────────────────────────────
-    // Single-timeframe, like FadeShort — no h1→m15 mapping.
+    // ── Grid ── Single-timeframe, no h1→m15 mapping.
     public static ExpandingWindowReport RunGrid(
         IReadOnlyList<GridGeneticAlgorithm.CoinData> coins,
         FitnessConfig? cfg = null)

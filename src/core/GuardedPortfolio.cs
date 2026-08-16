@@ -2,46 +2,16 @@ using System.Text.Json;
 
 namespace TradingGA;
 
-// ── Shared application of the trained DynamicGuard to a portfolio trade list ──────────────
-//
-// WHY THIS EXISTS
-// The guard is trained (`dynamicguardtrain`), saved to genotypes/dynamic_guard_genotype.json,
-// printed in papertrade and compared in `fulltest` — but until now it was applied NOWHERE in
-// `combinedbacktest` / `oosbacktest`, the two commands CLAUDE.md tells you to run after any
-// simulator change. `grep -rn DynamicGuardSession commands/` returned hits only in FullTest.cs
-// and PapertradeCommands.cs. So the headline backtest numbers were unguarded while the guard
-// was reported as part of the system.
-//
-// The application logic previously lived as a local lambda `ToSimGuarded` inside FullTest.cs
-// (~:690). It is hoisted here verbatim so all three commands share ONE definition of "what the
-// guard does to a trade list". FullTest.cs still carries its own copy (that file is owned by
-// another change in flight); it should be pointed at GuardedPortfolio.Apply and the local
-// helper deleted — see the handoff note at the bottom of this file.
-//
-// TWO SEPARATE MECHANISMS, BOTH PART OF "THE GUARD"
-//   1. Trade-list level (`Apply`):   ATR entry gate (drops trades outright) + confidence
-//                                    scaling by the 4H stress multiplier.
-//   2. Simulator level (`PortfolioGuardConfig`): portfolio-DD long-entry gate, confidence-
-//                                    scaled loss cap and profit-protection sizing, all passed
-//                                    into Simulator.SimulatePortfolioExposureCapped.
-// Applying only (1) understates the guard; applying only (2) misses the ATR gate entirely.
-// `Compare` always applies both, or neither.
-//
-// REPORTING RULE — NEVER SILENTLY REPLACE THE HEADLINE
-// The guard has never run in these commands, so switching the headline number to the guarded
-// one would be indistinguishable from a performance regression in the diff. `Compare` prints
-// both columns and the delta, and leaves the caller's existing headline untouched.
+// Applies the trained DynamicGuard to a trade list. Two mechanisms: trade-list Apply (ATR gate +
+// conf scaling) + simulator-level PortfolioGuardConfig. Prints side-by-side, never replaces headline.
+// Handoff: FullTest.cs still has its own ToSimGuarded lambda — should point at GuardedPortfolio.Apply.
 public static class GuardedPortfolio
 {
-    // The trade shape every backtest command already has on hand before it builds its
-    // exposure-sim input: entry time, realised return %, sizing confidence, hold duration,
-    // strategy label. Strategy must survive into the simulator — the portfolio-DD gate and
-    // the loss cap key off it.
+    // Trade shape: strategy must survive into the simulator (DD gate and loss cap key off it).
     public readonly record struct Trade(
         DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy);
 
-    // The guard's PORTFOLIO-level knobs, already in the units
-    // Simulator.SimulatePortfolioExposureCapped expects (DdLongEntryGatePct is a FRACTION).
+    // Portfolio-level knobs in the units Simulator.SimulatePortfolioExposureCapped expects.
     public readonly record struct PortfolioGuardConfig(
         double DdLongEntryGatePct,
         double ConfLossCapMin,
@@ -50,12 +20,7 @@ public static class GuardedPortfolio
         double ProfitProtectDrawback,
         double ProfitProtectFactor)
     {
-        // Every field at its no-op value. Feeding these to the 5-tuple overload of
-        // SimulatePortfolioExposureCapped makes it bit-for-bit equal to the 4-tuple overload:
-        // `currentDd > 1.0` is never true, `confLossCapMin < 1.0` is false, and
-        // `profitProtectThreshold < 1.0` is false, so no branch fires. That equality is what
-        // lets the "unguarded" column below be compared against the caller's own headline
-        // number without re-deriving it.
+        // All fields at no-op values — makes the 5-tuple overload bit-equal to the 4-tuple.
         public static PortfolioGuardConfig Off =>
             new(DynamicGuardGenotype.DdGateDisabled, 1.0, 1.0, 1.0, 0.10, 1.0);
 
@@ -71,9 +36,7 @@ public static class GuardedPortfolio
         DynamicGuardGenotype Genotype,
         PortfolioGuardConfig Portfolio);
 
-    // Loads genotypes/dynamic_guard_genotype.json and builds the 4H stress session from BTC h1.
-    // Returns null (with a printed reason) when either half is unavailable — a missing guard
-    // must degrade to "no guarded column", never to a silently half-applied guard.
+    // Loads guard genotype + builds 4H session. Returns null (with reason) if either is unavailable.
     public static Context? TryLoad(Candle[]? btcH1, string? genoPath = null)
     {
         genoPath ??= Config.DynamicGuardGenoFile;
@@ -100,11 +63,7 @@ public static class GuardedPortfolio
         return new Context(new DynamicGuardSession(btcH1, geno), geno, PortfolioGuardConfig.From(geno));
     }
 
-    // Hoisted from FullTest.cs's local `ToSimGuarded`. Order matters and is load-bearing:
-    // the ATR entry gate REMOVES trades first (a blocked entry never happens, so it must not
-    // contribute a zero-size position to the exposure ledger), then the surviving trades are
-    // scaled by the 4H stress multiplier. Strategy is preserved so the simulator-level gates
-    // can still see it.
+    // ATR gate removes trades first, then surviving trades scaled by stress multiplier. Order matters.
     public static List<(DateTime, double, double, TimeSpan, string)> Apply(
         IEnumerable<Trade> trades, DynamicGuardSession gs) =>
         trades
@@ -128,9 +87,7 @@ public static class GuardedPortfolio
         public int TradesRemoved => UnguardedTrades - GuardedTrades;
     }
 
-    // Runs the four simulations (unguarded/guarded × 5%-cap/Kelly) over the SAME trade list and
-    // the SAME 5-tuple simulator overload, so the only difference between the columns is the
-    // guard itself — not a change of code path.
+    // Four simulations (unguarded/guarded × 5%-cap/Kelly). Same code path — only the guard differs.
     public static SideBySide Run(
         IReadOnlyList<Trade> trades,
         Context ctx,
@@ -168,9 +125,7 @@ public static class GuardedPortfolio
     public static double ReturnPct(Simulator.PortfolioResult p) =>
         p.StartBalance > 0 ? (p.EndBalance - p.StartBalance) / p.StartBalance * 100.0 : 0.0;
 
-    // Prints both columns and the delta. Never mutates or replaces the caller's headline.
-    // `ctx == null` prints the reason the guarded column is absent instead of printing nothing,
-    // so "no guarded numbers" is always visible rather than inferred from silence.
+    // Prints both columns + delta. Never replaces headline. ctx==null prints reason, not silence.
     public static void PrintComparison(
         string title,
         IReadOnlyList<Trade> trades,
@@ -219,10 +174,6 @@ public static class GuardedPortfolio
         }
     }
 
-    // ── HANDOFF ──────────────────────────────────────────────────────────────────────────
-    // FullTest.cs still defines its own `ToSimGuarded` lambda (~:690) with identical semantics.
-    // It was not edited here because that file is outside this change's ownership. The follow-up
-    // is mechanical: replace the lambda body with GuardedPortfolio.Apply(...) over the same
-    // trades, and replace its six hand-threaded ddGate/capMin/capMax/pp* locals with
-    // PortfolioGuardConfig.From(dgGeno). No number should move.
+    // HANDOFF: FullTest.cs has its own ToSimGuarded lambda — replace with GuardedPortfolio.Apply
+    // + PortfolioGuardConfig.From(dgGeno). No number should move.
 }

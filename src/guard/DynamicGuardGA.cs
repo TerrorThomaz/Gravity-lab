@@ -1,17 +1,7 @@
 namespace TradingGA;
 
-// NOT a GA in the sense the rest of this repo uses the word — it is a (mu + lambda) evolution
-// strategy: `pop[_rng.Next(Math.Min(10, pop.Count))]` is truncation selection over the top 10 of
-// 40 (truncation-25%), there is a single parent and NO crossover, and every child is a mutated
-// copy of one incumbent. The tournament-k and cataclysm changes made to the strategy GAs do not
-// transfer here without redesigning the reproduction operator, so this file keeps its structure.
-//
-// HANDOFF: the two things worth revisiting are (a) truncation-25 with a single parent is strong
-// pressure for a 60-generation budget, and (b) there is no stagnation handling at all, so a run
-// that plateaus early spends the rest of the budget creeping. Both are structural.
-//
-// It was already the ONLY seeded search in the repo (`new Random(42)`), so reproducibility was
-// never broken here; the change below only makes the seed settable and printed.
+// (mu+lambda) ES: truncation selection, single parent, no crossover. Seed defaults to 42.
+// No stagnation handling — a plateau spends the remaining budget creeping.
 public class DynamicGuardGA
 {
     private readonly int    _populationSize;
@@ -19,8 +9,7 @@ public class DynamicGuardGA
     private readonly Random _rng;
     private readonly string _seedLabel;
 
-    // seed: used only when `rng` is null. Defaults to the historical hardcoded 42 so an
-    // unseeded run reproduces the previously trained guard genotype exactly.
+    // seed defaults to 42 for reproducibility.
     public DynamicGuardGA(int populationSize = 40, int generations = 60, Random? rng = null, int? seed = null)
     {
         _populationSize = populationSize;
@@ -40,7 +29,7 @@ public class DynamicGuardGA
 
     internal const int DefaultSeed = 42;
 
-    // trainTrades MUST come from the train slice. See Evaluate for what happens when it doesn't.
+    // trainTrades MUST come from the train slice.
     public DynamicGuardGenotype Run(
         Candle[] btcH1,
         List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> trainTrades)
@@ -86,40 +75,8 @@ public class DynamicGuardGA
         return best;
     }
 
-    // ONE trade list, and it must be the TRAIN slice.
-    //
-    // This previously took (valTrades, oosTrades) and returned `(valCalmar + oosCalmar) / 2` — the
-    // guard was selected directly on the validation window AND on the never-trained OOS coins that
-    // exist to be the clean arbiter. Routing the boundary through DataSplit fixed which bars were
-    // CALLED validation while the GA went on optimising against them, so the leak survived the fix
-    // that was supposed to remove it.
-    //
-    // The damage was not subtle: every "guarded vs unguarded" comparison in fulltest and
-    // oosbacktest showed a guard being scored on the data it was fit to, which is why guarding
-    // appeared to more than double the OOS return (+29071% → +61271%) rather than trading a little
-    // return for a lot of drawdown, which is what a guard is for.
-    //
-    // Collapsing to a single parameter is deliberate: a caller that still has a val or OOS list to
-    // hand now has to decide which one to pass instead of silently averaging both.
-    // Segments the train book into contiguous time slices and weights the WORST ones, instead of
-    // scoring one aggregate Calmar over the whole history.
-    //
-    // WHY THE AGGREGATE CALMAR PRODUCED AN INERT GUARD
-    // A single Calmar over the full train book is dominated by its numerator. Cutting exposure
-    // always costs return immediately, while the max-drawdown denominator only improves if the
-    // guard happens to fire during the one worst event in six years — and that event contributes
-    // the same single number whether the guard clipped it or not, because max-DD is a
-    // single-point statistic. So the GA learned to switch the guard off: the retrained genotype
-    // set atrGate=4.13 against a market that reached 1.535x, and was idle for 29/29 entries in the
-    // worst drawdown window.
-    //
-    // Scoring per segment and then taking a CVaR-weighted aggregate makes protection pay. A guard
-    // that sleeps through the worst slice now carries that slice's bad score into the tail term,
-    // where averaging previously hid it. This is the same aggregation FoldScoreHelper uses for the
-    // strategy GAs (lambda*CVaR + (1-lambda)*mean), for the same reason.
-    //
-    // lambda is higher here than for a strategy: a drawdown guard that only helps on average is
-    // not doing its job, so the bad segments carry most of the weight.
+    // CVaR-weighted segment scoring. lambda=0.6 (bad segments carry most weight).
+    // A single aggregate Calmar produced an inert guard (GA learned to switch it off).
     internal const int    FitnessSegments = 10;
     internal const double FitnessLambda   = 0.6;
     internal const double FitnessCVaRAlpha = 0.4;
@@ -141,9 +98,7 @@ public class DynamicGuardGA
             var slice = capped.GetRange(start, Math.Min(per, capped.Count - start));
             if (slice.Count < 10) continue;
 
-            // ddLongEntryGatePct takes a DD fraction. g.DdEntryGatePct is the EFFECTIVE gate:
-            // either a live threshold in [0.02, 0.15] or DdGateDisabled (1.0) when the search
-            // turned the gate off. Both are already fraction units — do not rescale here.
+            // DdEntryGatePct is a DD fraction — pass straight through.
             var r = Simulator.SimulatePortfolioExposureCapped(
                 ApplyGuard(slice, session), Config.MaxTotalExposurePct, maxPositionFrac: 0.05,
                 ddLongEntryGatePct: g.DdEntryGatePct, confLossCapMin: g.ConfLossCapMin,
@@ -161,14 +116,13 @@ public class DynamicGuardGA
         return FitnessLambda * cvar + (1.0 - FitnessLambda) * seg.Average();
     }
 
-    // Apply concurrent position cap — identical to fulltest ApplyCap, so GA sees same trade set.
+    // Concurrent position cap — identical to fulltest.
     internal static List<PortfolioReplay.Trade> ApplyCap(
         List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> trades) =>
         PortfolioReplay.FilterByConcurrentCap(
             trades.Select(t => new PortfolioReplay.Trade(t.Strategy, t.Time, t.Hold, t.Return, t.Conf)));
 
-    // Applies dynamic guard: ATR entry gate first (blocks high-ATR entries), then confidence scaling.
-    // Strategy is preserved in output so the simulator can apply the portfolio-DD entry gate.
+    // ATR entry gate + confidence scaling. Strategy preserved for simulator-level gates.
     internal static List<(DateTime, double, double, TimeSpan, string)> ApplyGuard(
         IEnumerable<PortfolioReplay.Trade> trades,
         DynamicGuardSession session) =>
@@ -180,12 +134,7 @@ public class DynamicGuardGA
             t.HoldDuration, t.Strategy))
         .OrderBy(t => t.Item1).ToList();
 
-    // Per-gene mutation. Continuous genes take a Gaussian step scaled to their own bounds;
-    // the DD-gate ON/OFF switch (DdGateEnableGeneIndex) is binary, so a Gaussian step around
-    // its canonical 0.25/0.75 would cross the 0.5 decision boundary far too rarely to let the
-    // population revisit the other state — it gets an explicit Bernoulli toggle instead.
-    // Without this the GA would lock in whichever state the initial population happened to
-    // favour, which is the same failure mode as not being able to express "off" at all.
+    // Per-gene mutation. DD-gate switch gets an explicit Bernoulli toggle (binary gene).
     internal const double DdGateFlipRate = 0.15;
 
     internal static double MutateGene(int d, double value, Random rng)
@@ -202,10 +151,7 @@ public class DynamicGuardGA
         return Math.Clamp(value + rng.NextGaussian() * (hi - lo) * 0.1, lo, hi);
     }
 
-    // Uniform draw inside Bounds — the entire space initialisation can reach. Internal (not
-    // private) so the tests can assert on the REAL initialiser instead of a copy of it: the
-    // claim under test is that a random population contains both DD-gate states, and a test
-    // that re-implements the draw would keep passing after this method changed.
+    // Uniform draw inside Bounds. Internal so tests assert on the real initialiser.
     internal static double[] RandomGenes(int nDim, Random rng)
     {
         var g = new double[nDim];

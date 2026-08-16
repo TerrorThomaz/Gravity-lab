@@ -59,8 +59,7 @@ static class DynamicGuardTrainCommands
             session = new RegimeRouterSession(btcSeries, ethSeries, routerG);
         }
 
-        // trainTrades is the ONLY list the GA sees. val and oos are built to be reported against
-        // afterwards; feeding either of them to Run is what this change exists to prevent.
+        // trainTrades is the ONLY list the GA sees. val/oos are report-only.
         var trainTrades = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>();
         var valTrades   = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>();
         var oosTrades   = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>();
@@ -74,14 +73,7 @@ static class DynamicGuardTrainCommands
             var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
             if (volUsd.Count == 0 || volUsd[volUsd.Count / 2] < Config.MinMedianVolUsdM) continue;
 
-            // Routed through DataSplit rather than an ad-hoc 0.8. The old boundary differed from
-            // TrainCommands' 0.75/0.875 and GridCommands' 0.8, so "validation" meant a different
-            // window depending on which trainer you ran — and a genotype trained by one and
-            // reported by another could be scored on bars it had trained on.
-            //
-            // The m15 slice is aligned to the SAME INSTANT as the h1 boundary, not the same index
-            // fraction. The old `h1Split * 4` assumed a perfect 4:1 bar ratio; a single gap in
-            // either series breaks that and silently shifts the boundary.
+            // DataSplit ensures consistent train/val boundary. m15 aligned to h1 boundary by time, not index.
             var h1s      = DataSplit.Split(h1);
             var m15s     = DataSplit.SplitAligned(m15, h1s);
             if (!h1s.IsUsable) continue;
@@ -90,19 +82,12 @@ static class DynamicGuardTrainCommands
             var m15Train = m15s.Train;
             var m15Val   = m15s.Val;
 
-            // Emit this coin's portfolio trades over an arbitrary slice, into an arbitrary list.
-            // The slice used to be hardcoded to Val everywhere below, which is how the GA ended up
-            // optimising on the validation window. Now the SAME code fills the train objective and
-            // the val report, so the two cannot drift apart.
-            //
-            // Every screen and every confidence is computed on TRAIN regardless of which slice is
-            // being emitted. DipLong and SwingLong previously derived confidence from the val
-            // trades themselves — a second, quieter val dependency that survived the boundary fix.
+            // Same Emit fills train objective and val report — screens/confidence always computed on TRAIN.
             void Emit(Candle[] hs, Candle[] ms, List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)> target)
             {
                 if (hs.Length < 100) return;
 
-                // FadeShort — exempt from guard; tighter screen matches FullTest
+                // FadeShort — exempt from guard
                 {
                     var screenH1  = h1Train.Length >= 4380 ? h1Train : h1;
                     var screenM15 = screenH1.Length == h1.Length ? m15 : m15Train;
@@ -116,7 +101,7 @@ static class DynamicGuardTrainCommands
                             target.Add((t, ret, conf, TimeSpan.FromHours(swingG.MaxHoldCandles), "swing"));
                     }
                 }
-                // Grid — guarded
+                // Grid
                 {
                     var gTr = GridSimulator.GetGridReturns(gridG, h1Train).Select(t => t.Return).ToList();
                     if (gTr.Count >= 5 && gTr.Average() > 0 && Simulator.ProfitFactor(gTr) >= 1.2)
@@ -128,7 +113,7 @@ static class DynamicGuardTrainCommands
                             target.Add((t.Time, t.Return, conf, TimeSpan.FromHours(gridG.MaxHoldCandles), "grid"));
                     }
                 }
-                // DipLong — guarded
+                // DipLong
                 if (dlG != null && ms.Length >= 400 && m15Train.Length >= 400)
                 {
                     double conf = Simulator.ComputeConfidence(
@@ -138,7 +123,7 @@ static class DynamicGuardTrainCommands
                     foreach (var t in gated)
                         target.Add((t.Time, t.Return, conf, TimeSpan.FromHours(dlG.MaxHoldCandles), "diplong"));
                 }
-                // SwingLong — guarded
+                // SwingLong
                 if (slG != null && ms.Length >= 400 && m15Train.Length >= 400)
                 {
                     double conf = Simulator.ComputeConfidence(
@@ -150,8 +135,8 @@ static class DynamicGuardTrainCommands
                 }
             }
 
-            Emit(h1Train, m15Train, trainTrades);   // the GA objective
-            Emit(h1Val,   m15Val,   valTrades);     // report only
+            Emit(h1Train, m15Train, trainTrades);
+            Emit(h1Val,   m15Val,   valTrades);
         }
 
         foreach (var sym in Config.OosCoins)
@@ -160,7 +145,7 @@ static class DynamicGuardTrainCommands
             var (_, m15, h1) = entry;
             if (h1.Length < 300) continue;
 
-            // FadeShort — exempt; OOS screen on first 80%
+            // FadeShort — exempt
             {
                 int split   = DataSplit.Split(h1).Train.Length;
                 var scrRets = FadeShortSimulator.GetFadeShortReturns(swingG, h1[..split], m15[..Math.Min(split*4, m15.Length)])
@@ -178,7 +163,7 @@ static class DynamicGuardTrainCommands
                     }
                 }
             }
-            // Grid — guarded
+            // Grid
             {
                 var raw   = GridSimulator.GetGridReturns(gridG, h1);
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList() : raw;
@@ -189,7 +174,7 @@ static class DynamicGuardTrainCommands
                         oosTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(gridG.MaxHoldCandles), "grid"));
                 }
             }
-            // DipLong — guarded
+            // DipLong
             if (dlG != null && m15.Length >= 1200)
             {
                 var raw   = DipLongSimulator.GetDipLongReturns(dlG, h1, m15);
@@ -201,7 +186,7 @@ static class DynamicGuardTrainCommands
                         oosTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(dlG.MaxHoldCandles), "diplong"));
                 }
             }
-            // SwingLong — guarded
+            // SwingLong
             if (slG != null && m15.Length >= 1200)
             {
                 var raw   = SwingLongSimulator.GetSwingLongReturns(slG, h1, m15);
@@ -229,7 +214,7 @@ static class DynamicGuardTrainCommands
         var ga   = new DynamicGuardGA(populationSize: 40, generations: 60);
         var best = ga.Run(btcH1, trainTrades);
 
-        // Show before/after — use ApplyCap so baseline matches fulltest exactly
+
         var dgSession  = new DynamicGuardSession(btcH1, best);
         var valCapped  = DynamicGuardGA.ApplyCap(valTrades);
         var oosCapped  = DynamicGuardGA.ApplyCap(oosTrades);
@@ -240,7 +225,7 @@ static class DynamicGuardTrainCommands
         var oosBase = Simulator.SimulatePortfolioExposureCapped(
             oosCapped.Select(t => (t.EntryTime, t.Return, t.Conf, t.HoldDuration)).OrderBy(t => t.Item1).ToList(),
             Config.MaxTotalExposurePct, maxPositionFrac: 0.05);
-        // best.DdEntryGatePct is a DD fraction (bounds {0.02, 0.15}) — passed straight through.
+
         var valGuarded = Simulator.SimulatePortfolioExposureCapped(
             DynamicGuardGA.ApplyGuard(valCapped, dgSession), Config.MaxTotalExposurePct, maxPositionFrac: 0.05, ddLongEntryGatePct: best.DdEntryGatePct, confLossCapMin: best.ConfLossCapMin, confLossCapMax: best.ConfLossCapMax, profitProtectThreshold: best.ProfitProtectThreshold, profitProtectDrawback: best.ProfitProtectDrawback, profitProtectFactor: best.ProfitProtectFactor);
         var oosGuarded = Simulator.SimulatePortfolioExposureCapped(

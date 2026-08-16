@@ -6,92 +6,6 @@ namespace TradingGA;
 static class OosBacktest
 {
 
-    // GRAVITY_ATRCAP=1 puts the ATR-scaled loss cap on RipShort's PRODUCTION path.
-    //
-    // clamp(2.5 x ATR%, 3%, 10%): scales with the coin's own volatility so it sits outside the
-    // noise (a flat 6% cap raised trade count 48% and halved return by being brushed), but a
-    // short's downside is unbounded so it still meets an absolute ceiling.
-    // Trades tail risk for a little return; the exit-override table prints the current numbers.
-    // Note CVaR5 moves the OTHER way (-7.61% -> -9.67%): it truncates the catastrophic trade
-    // while letting the average bad trade run further. That is the deliberate trade.
-    static RipShortSimulator.ExitOverrideConfig? ProdRipCap() =>
-        Environment.GetEnvironmentVariable("GRAVITY_ATRCAP") == "1"
-            ? new RipShortSimulator.ExitOverrideConfig(RipShortSimulator.ExitOverrideMode.None,
-                  MaxLossPct: 10.0, MaxLossAtrMult: 2.5, MaxLossPctFloor: 3.0)
-            : null;
-    // ── Variant loading helpers (mirrors CombinedBacktest) ────────────────────
-    static VariantSpec<TG>[] LoadVariants<TDto, TG>(
-        string strategyKey,
-        Func<TDto, TG> toGenotype,
-        Func<TDto, (double Low, double High)> getRange)
-        where TG : class
-    {
-        var files = Directory.Exists("genotypes")
-            ? Directory.GetFiles("genotypes", $"{strategyKey}_*_genotype.json")
-            : Array.Empty<string>();
-        string defaultFile = $"genotypes/{strategyKey}_genotype.json";
-        if (File.Exists(defaultFile))
-            files = files.Append(defaultFile).Distinct().ToArray();
-        if (files.Length == 0) return Array.Empty<VariantSpec<TG>>();
-        return files.Select(f =>
-        {
-            var dto = JsonSerializer.Deserialize<TDto>(File.ReadAllText(f))!;
-            var (lo, hi) = getRange(dto);
-            string variantId = Path.GetFileNameWithoutExtension(f)
-                .Replace($"{strategyKey}_", "").Replace("_genotype", "");
-            return new VariantSpec<TG>(variantId, lo, hi, toGenotype(dto));
-        }).ToArray();
-    }
-
-    static TG? SelectVariant<TG>(VariantSpec<TG>[] variants, Candle[] m15)
-        where TG : class
-    {
-        if (variants.Length == 0) return null;
-        double[] highs  = m15.Select(c => c.High).ToArray();
-        double[] lows   = m15.Select(c => c.Low).ToArray();
-        double[] closes = m15.Select(c => c.Close).ToArray();
-        double[] atr    = Volatility.Atr(highs, lows, closes, 14);
-        int      bar    = atr.Length - 1;
-        return VariantRouter.Select(atr, bar, variants) ?? variants[0].Genotype;
-    }
-
-    static (TG? Genotype, string Label) SelectVariantLabeled<TG>(VariantSpec<TG>[] variants, Candle[] m15)
-        where TG : class
-    {
-        if (variants.Length == 0) return (null, "base");
-        double[] highs  = m15.Select(c => c.High).ToArray();
-        double[] lows   = m15.Select(c => c.Low).ToArray();
-        double[] closes = m15.Select(c => c.Close).ToArray();
-        double[] atr    = Volatility.Atr(highs, lows, closes, 14);
-        int      bar    = atr.Length - 1;
-        if (bar < 100 || atr.Length <= bar)
-            return (variants[0].Genotype, LabelForVariant(variants[0]));
-        double baseline = 0;
-        for (int j = bar - 100; j < bar; j++) baseline += atr[j];
-        baseline /= 100;
-        if (baseline < 1e-10)
-            return (variants[0].Genotype, LabelForVariant(variants[0]));
-        double ratio = atr[bar] / baseline;
-        VariantSpec<TG>? best = null;
-        double bestWidth = double.MaxValue;
-        foreach (var v in variants)
-        {
-            if (v.Genotype == null) continue;
-            if (ratio < v.AtrLow || ratio >= v.AtrHigh) continue;
-            double width = v.AtrHigh - v.AtrLow;
-            if (width < bestWidth) { bestWidth = width; best = v; }
-        }
-        var selected = best ?? variants[0];
-        return (selected.Genotype, LabelForVariant(selected));
-    }
-
-    static string LabelForVariant<T>(VariantSpec<T> v) where T : class
-    {
-        if (v.AtrLow >= 1.0) return "highvol";
-        if (v.AtrHigh <= 1.0) return "lowvol";
-        return "base";
-    }
-
     // ── OOS position sizing: leading-slice Kelly (look-ahead guard) ────────────
     //
     // Simulator.ComputeConfidence returns a half-Kelly fraction that is used DIRECTLY as
@@ -205,17 +119,17 @@ static class OosBacktest
         if (!File.Exists(Config.GridGenoFile))      { Console.WriteLine("Missing grid genotype — run 'gridtrain' first.");     return; }
 
         // Load variant arrays (currently one entry each; infrastructure ready for multi-variant)
-        var fsVariants   = LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(
+        var fsVariants   = StrategyPipeline.LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(
             "fade_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var gridVariants = LoadVariants<GridGenotypeDto, GridGenotype>(
+        var gridVariants = StrategyPipeline.LoadVariants<GridGenotypeDto, GridGenotype>(
             "grid_best", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var flVariants   = LoadVariants<FadeLongGenotypeDto, FadeLongGenotype>(
+        var flVariants   = StrategyPipeline.LoadVariants<FadeLongGenotypeDto, FadeLongGenotype>(
             "fade_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var dlVariants   = LoadVariants<DipLongGenotypeDto, DipLongGenotype>(
+        var dlVariants   = StrategyPipeline.LoadVariants<DipLongGenotypeDto, DipLongGenotype>(
             "dip_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var slVariants   = LoadVariants<SwingLongGenotypeDto, SwingLongGenotype>(
+        var slVariants   = StrategyPipeline.LoadVariants<SwingLongGenotypeDto, SwingLongGenotype>(
             "swing_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var rsVariants   = LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
+        var rsVariants   = StrategyPipeline.LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
             "rip_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
 
         // Representative single genotypes (for logging and hold-time calcs)
@@ -246,59 +160,25 @@ static class OosBacktest
 
         var allSyms = Config.OosCoins.Concat(new[] { "BTCUSDT", "ETHUSDT" }).Distinct().ToArray();
         Console.WriteLine($"  Fetching {Config.OosCoins.Length} OOS coins + BTC/ETH for router (15m → 1h, ~3yr)...");
-        var sem = new SemaphoreSlim(4);
-        var fetchTasks = allSyms.Select(async sym =>
-        {
-            await sem.WaitAsync();
-            try
-            {
-                var m15 = await CandleFetcher.FetchFifteenMinCandlesCached(client, sym, batches: 113);
-                var h1  = FadeShortSimulator.AggregateCandles(m15.ToArray(), 4);
-                return (sym, m15: m15.ToArray(), h1);
-            }
-            finally { sem.Release(); }
-        });
-        var fetched = await Task.WhenAll(fetchTasks);
+        var fetched = await StrategyPipeline.FetchFifteenMinAsync(client, allSyms, batches: 113);
         Console.WriteLine($"  Done.\n");
 
         // ── Funding rate sessions, ONE PER SYMBOL ────────────────────────────────────────
-        // This command previously constructed no FundingRateSession at all, so every simulator
-        // took the `funding == null` branch and paid the flat interest-rate floor. These are
-        // never-seen coins over full history — the longest holds in the suite — so the floor
-        // understates the true cost most here. Real rates make these numbers WORSE, which is
-        // the correction rather than a regression.
         Console.WriteLine("  Fetching per-symbol funding rate history...");
-        var funding = await CandleFetcher.FetchFundingSessionsAsync(client, fetched.Select(f => f.sym));
-        funding.PrintSummary();
+        var funding = await StrategyPipeline.FetchFundingAsync(client, fetched);
         Console.WriteLine();
 
         // ── DynamicGuard session ─────────────────────────────────────────────────────────
-        // Applied at the portfolio-summary step, alongside the unguarded numbers rather than
-        // replacing them. Before this change the guard never ran in this command.
         var btcH1ForGuard = fetched.FirstOrDefault(f => f.sym == "BTCUSDT").h1;
         var guardCtx      = GuardedPortfolio.TryLoad(btcH1ForGuard);
         if (guardCtx != null) Console.WriteLine($"  Guard: {guardCtx.Genotype}\n");
 
-        RegimeRouterSession? session = null;
-        // Hoisted out of the router block so the central evaluator can bucket the final book by
-        // regime. It is the same classification the router gates on — recomputing it at the report
-        // site would risk grading against a different series than the one that did the gating.
-        RegimeBar[]? btcRegimeSeries = null;
-        if (routerG != null)
-        {
-            var btcEntry = fetched.FirstOrDefault(f => f.sym == "BTCUSDT");
-            if (btcEntry.h1 != null && btcEntry.h1.Length >= 200)
-            {
-                var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcEntry.h1);
-                btcRegimeSeries = btcSeries;
-                var ethEntry  = fetched.FirstOrDefault(f => f.sym == "ETHUSDT");
-                RegimeBar[]? ethSeries = ethEntry.h1 != null && ethEntry.h1.Length >= 200
-                    ? RegimeClassifier.ClassifySeriesWithDuration(ethEntry.h1) : null;
-                session = new RegimeRouterSession(btcSeries, ethSeries, routerG);
-                Console.WriteLine($"  Router session: BTC {btcSeries.Length} bars  ETH {(ethSeries != null ? ethSeries.Length.ToString() : "none")} bars\n");
-            }
-            else Console.WriteLine("  ⚠ BTC data insufficient for regime session — router gate disabled\n");
-        }
+        // Hoisted out of the router build so the central evaluator can bucket the final book by
+        // regime. It is the same classification the router gates on — recomputing it at the
+        // report site would risk grading against a different series than the one that gated.
+        var router = StrategyPipeline.BuildRouterSession(routerG, fetched, btcH1ForGuard);
+        RegimeRouterSession? session  = router.Session;
+        RegimeBar[]?         btcRegimeSeries = router.BtcRegimeSeries;
 
         var oosFetched = fetched.Where(f => Config.OosCoins.Contains(f.sym)).ToArray();
 
@@ -442,7 +322,7 @@ static class OosBacktest
                 }
             }
 
-            var (coinFsG, fsVarLabel) = SelectVariantLabeled(fsVariants, m15);
+            var (coinFsG, fsVarLabel) = StrategyPipeline.SelectVariantLabeled(fsVariants, m15);
             coinFsG ??= swingG;
             var rawFs  = FadeShortSimulator.GetFadeShortReturns(coinFsG, h1, m15, ctx.With(funding.For(sym)));
             // Router-gated, like every other strategy on this path. FadeShort was the ONLY one
@@ -512,7 +392,7 @@ static class OosBacktest
             double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
             if (medVol < oosMinVol) continue;
 
-            var (coinGridG, gridVarLabel) = SelectVariantLabeled(gridVariants, m15Grid);
+            var (coinGridG, gridVarLabel) = StrategyPipeline.SelectVariantLabeled(gridVariants, m15Grid);
             coinGridG ??= gridG;
             var raw   = GridSimulator.GetGridReturns(coinGridG, h1, funding.For(sym));
             var gated = session != null
@@ -565,7 +445,7 @@ static class OosBacktest
                 double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
                 if (medVol < oosMinVol) continue;
 
-                var (coinFlG, flVarLabel) = SelectVariantLabeled(flVariants, m15);
+                var (coinFlG, flVarLabel) = StrategyPipeline.SelectVariantLabeled(flVariants, m15);
                 coinFlG ??= flG;
                 var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlG, h1, m15, ctx.With(funding.For(sym)));
                 var gated = session != null
@@ -621,7 +501,7 @@ static class OosBacktest
                 double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
                 if (medVol < oosMinVol) continue;
 
-                var (coinDlG, dlVarLabel) = SelectVariantLabeled(dlVariants, m15);
+                var (coinDlG, dlVarLabel) = StrategyPipeline.SelectVariantLabeled(dlVariants, m15);
                 coinDlG ??= dlG;
                 var raw   = DipLongSimulator.GetDipLongReturns(coinDlG, h1, m15, ctx.With(funding.For(sym)));
                 var gated = session != null
@@ -677,7 +557,7 @@ static class OosBacktest
                 double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
                 if (medVol < oosMinVol) continue;
 
-                var (coinSlG, slVarLabel) = SelectVariantLabeled(slVariants, m15);
+                var (coinSlG, slVarLabel) = StrategyPipeline.SelectVariantLabeled(slVariants, m15);
                 coinSlG ??= slG;
                 var raw   = SwingLongSimulator.GetSwingLongReturns(coinSlG, h1, m15, ctx.With(funding.For(sym)));
                 var gated = session != null
@@ -733,9 +613,9 @@ static class OosBacktest
                 double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
                 if (medVol < oosMinVol) continue;
 
-                var (coinRsG, rsVarLabel) = SelectVariantLabeled(rsVariants, m15);
+                var (coinRsG, rsVarLabel) = StrategyPipeline.SelectVariantLabeled(rsVariants, m15);
                 coinRsG ??= rsG;
-                var raw   = RipShortSimulator.GetRipShortReturns(coinRsG, h1, m15, funding.For(sym), ProdRipCap(),
+                var raw   = RipShortSimulator.GetRipShortReturns(coinRsG, h1, m15, funding.For(sym), StrategyPipeline.ProdRipCap(),
                                 ExitRatchet.ForStrategy("ripshort"));
                 var gated = session != null
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList()
@@ -1122,15 +1002,15 @@ static class OosBacktest
         if (!File.Exists(Config.GridGenoFile))      { Console.WriteLine("Missing grid genotype.");      return; }
 
         // Variant arrays (reuse the class-level LoadVariants helper)
-        var fsVariantsAC   = LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(
+        var fsVariantsAC   = StrategyPipeline.LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(
             "fade_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var gridVariantsAC = LoadVariants<GridGenotypeDto, GridGenotype>(
+        var gridVariantsAC = StrategyPipeline.LoadVariants<GridGenotypeDto, GridGenotype>(
             "grid_best", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var flVariantsAC   = LoadVariants<FadeLongGenotypeDto, FadeLongGenotype>(
+        var flVariantsAC   = StrategyPipeline.LoadVariants<FadeLongGenotypeDto, FadeLongGenotype>(
             "fade_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var dlVariantsAC   = LoadVariants<DipLongGenotypeDto, DipLongGenotype>(
+        var dlVariantsAC   = StrategyPipeline.LoadVariants<DipLongGenotypeDto, DipLongGenotype>(
             "dip_long", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
-        var rsVariantsAC   = LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
+        var rsVariantsAC   = StrategyPipeline.LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
             "rip_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
 
         var swingG = fsVariantsAC.Length   > 0 ? fsVariantsAC[0].Genotype!   : null;
@@ -1152,43 +1032,19 @@ static class OosBacktest
 
         var allSyms = Config.BacktestCoins.Concat(Config.OosCoins).Concat(new[] { "BTCUSDT", "ETHUSDT" }).Distinct().ToArray();
         Console.WriteLine($"  Fetching {allSyms.Length} symbols (15m → 1h, ~3yr)...");
-        var sem = new SemaphoreSlim(4);
-        var fetchedAll = await Task.WhenAll(allSyms.Select(async sym =>
-        {
-            await sem.WaitAsync();
-            try
-            {
-                var m15 = await CandleFetcher.FetchFifteenMinCandlesCached(client, sym, batches: 113);
-                var h1  = FadeShortSimulator.AggregateCandles(m15.ToArray(), 4);
-                return (sym, m15: m15.ToArray(), h1);
-            }
-            finally { sem.Release(); }
-        }));
+        var fetchedAll = await StrategyPipeline.FetchFifteenMinAsync(client, allSyms, batches: 113);
         Console.WriteLine($"  Done.\n");
 
         // Per-symbol funding, same rationale as RunOosBacktest above: this command previously
         // priced every position at the flat interest-rate floor.
         Console.WriteLine("  Fetching per-symbol funding rate history...");
-        var funding = await CandleFetcher.FetchFundingSessionsAsync(client, fetchedAll.Select(f => f.sym));
-        funding.PrintSummary();
+        var funding = await StrategyPipeline.FetchFundingAsync(client, fetchedAll);
         Console.WriteLine();
 
-        RegimeRouterSession? session = null;
-        RegimeBar[]? btcRegimeSeries = null;   // hoisted for the central evaluator, as in RunOosBacktest
-        if (routerG != null)
-        {
-            var btcEntry = fetchedAll.FirstOrDefault(f => f.sym == "BTCUSDT");
-            if (btcEntry.h1 != null && btcEntry.h1.Length >= 200)
-            {
-                var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcEntry.h1);
-                btcRegimeSeries = btcSeries;
-                var ethEntry  = fetchedAll.FirstOrDefault(f => f.sym == "ETHUSDT");
-                RegimeBar[]? ethSeries = ethEntry.h1 != null && ethEntry.h1.Length >= 200
-                    ? RegimeClassifier.ClassifySeriesWithDuration(ethEntry.h1) : null;
-                session = new RegimeRouterSession(btcSeries, ethSeries, routerG);
-                Console.WriteLine($"  Router session: BTC {btcSeries.Length} bars  ETH {(ethSeries != null ? ethSeries.Length.ToString() : "none")} bars\n");
-            }
-        }
+        // Hoisted for the central evaluator, as in RunOosBacktest.
+        var router = StrategyPipeline.BuildRouterSession(routerG, fetchedAll, null);
+        RegimeRouterSession? session  = router.Session;
+        RegimeBar[]?         btcRegimeSeries = router.BtcRegimeSeries;
 
         var allTrades = new List<(DateTime Time, double Return, double Conf, string Strategy, DateTime Entry, string Sym)>();
 
@@ -1244,7 +1100,7 @@ static class OosBacktest
                 else
                 {
                     var (screenH1, screenM15) = screenWin.Value;
-                    var coinFsGAC = SelectVariant(fsVariantsAC, screenM15) ?? swingG;
+                    var coinFsGAC = StrategyPipeline.SelectVariant(fsVariantsAC, screenM15) ?? swingG;
                     var tRet = FadeShortSimulator.GetFadeShortReturns(coinFsGAC, screenH1, screenM15, funding.For(sym)).Select(t => t.Return).ToList();
                     if (tRet.Count >= 5 && tRet.Average() > 0 && Simulator.ProfitFactor(tRet) >= 1.2 && Simulator.SortinoRatio(tRet, screenH1.Length * 12) >= 0.3)
                     {
@@ -1259,7 +1115,7 @@ static class OosBacktest
 
             // Grid — screen already reads h1Train only; variant selection now does too.
             {
-                var coinGridGAC = SelectVariant(gridVariantsAC, m15Train) ?? gridG;
+                var coinGridGAC = StrategyPipeline.SelectVariant(gridVariantsAC, m15Train) ?? gridG;
                 var tRet = GridSimulator.GetGridReturns(coinGridGAC, h1Train, funding.For(sym)).Select(t => t.Return).ToList();
                 if (tRet.Count >= 5 && tRet.Average() > 0 && Simulator.ProfitFactor(tRet) >= 1.2 && Simulator.SortinoRatio(tRet, h1Train.Length) >= 0.3)
                 {
@@ -1280,7 +1136,7 @@ static class OosBacktest
             // so size from the leading slice of the coin's own val trades and score the rest.
             if (flG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
-                var coinFlGAC = SelectVariant(flVariantsAC, m15Train) ?? flG;
+                var coinFlGAC = StrategyPipeline.SelectVariant(flVariantsAC, m15Train) ?? flG;
                 var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlGAC, h1Val, m15Val, funding.For(sym));
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
@@ -1296,7 +1152,7 @@ static class OosBacktest
             // DipLong
             if (dlG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
-                var coinDlGAC = SelectVariant(dlVariantsAC, m15Train) ?? dlG;
+                var coinDlGAC = StrategyPipeline.SelectVariant(dlVariantsAC, m15Train) ?? dlG;
                 var raw   = DipLongSimulator.GetDipLongReturns(coinDlGAC, h1Val, m15Val, funding.For(sym));
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
@@ -1312,8 +1168,8 @@ static class OosBacktest
             // RipShort
             if (rsG != null && h1Val.Length >= 100 && m15Val.Length >= 400)
             {
-                var coinRsGAC = SelectVariant(rsVariantsAC, m15Train) ?? rsG;
-                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGAC, h1Val, m15Val, funding.For(sym), ProdRipCap(),
+                var coinRsGAC = StrategyPipeline.SelectVariant(rsVariantsAC, m15Train) ?? rsG;
+                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGAC, h1Val, m15Val, funding.For(sym), StrategyPipeline.ProdRipCap(),
                                 ExitRatchet.ForStrategy("ripshort"));
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
@@ -1358,7 +1214,7 @@ static class OosBacktest
 
             // FadeShort
             {
-                var coinFsGOos = SelectVariant(fsVariantsAC, m15) ?? swingG;
+                var coinFsGOos = StrategyPipeline.SelectVariant(fsVariantsAC, m15) ?? swingG;
                 var trades = FadeShortSimulator.GetFadeShortReturns(coinFsGOos, h1, m15, funding.For(sym));
                 var split  = SizeThenScore(trades, t => t.Time, t => t.Return);
                 if (split.Scored.Count >= 5)
@@ -1372,7 +1228,7 @@ static class OosBacktest
 
             // Grid
             {
-                var coinGridGOos = SelectVariant(gridVariantsAC, m15) ?? gridG;
+                var coinGridGOos = StrategyPipeline.SelectVariant(gridVariantsAC, m15) ?? gridG;
                 var raw   = GridSimulator.GetGridReturns(coinGridGOos, h1, funding.For(sym));
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
@@ -1388,7 +1244,7 @@ static class OosBacktest
             // FadeLong
             if (flG != null && m15.Length >= 1200)
             {
-                var coinFlGOos = SelectVariant(flVariantsAC, m15) ?? flG;
+                var coinFlGOos = StrategyPipeline.SelectVariant(flVariantsAC, m15) ?? flG;
                 var raw   = FadeLongSimulator.GetFadeLongReturns(coinFlGOos, h1, m15, funding.For(sym));
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
@@ -1404,7 +1260,7 @@ static class OosBacktest
             // DipLong
             if (dlG != null && m15.Length >= 1200)
             {
-                var coinDlGOos = SelectVariant(dlVariantsAC, m15) ?? dlG;
+                var coinDlGOos = StrategyPipeline.SelectVariant(dlVariantsAC, m15) ?? dlG;
                 var raw   = DipLongSimulator.GetDipLongReturns(coinDlGOos, h1, m15, funding.For(sym));
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
@@ -1420,8 +1276,8 @@ static class OosBacktest
             // RipShort
             if (rsG != null && m15.Length >= 1200)
             {
-                var coinRsGOos = SelectVariant(rsVariantsAC, m15) ?? rsG;
-                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGOos, h1, m15, funding.For(sym), ProdRipCap());
+                var coinRsGOos = StrategyPipeline.SelectVariant(rsVariantsAC, m15) ?? rsG;
+                var raw   = RipShortSimulator.GetRipShortReturns(coinRsGOos, h1, m15, funding.For(sym), StrategyPipeline.ProdRipCap());
                 var gated = session != null ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList() : raw;
                 var split = SizeThenScore(gated, t => t.Time, t => t.Return);
                 if (split.Scored.Count > 0)

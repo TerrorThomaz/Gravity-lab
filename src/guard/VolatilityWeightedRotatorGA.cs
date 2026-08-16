@@ -3,11 +3,7 @@ using Bybit.Net.Clients;
 
 namespace TradingGA;
 
-// GA for VolatilityWeightedRotator: trains weights for guard/ATR/regime signals,
-// BTC/ETH allocation split, and rotation speed.
-//
-// Fitness: portfolio Sharpe × drawdown penalty × frequency bonus
-// Co-evolves with DynamicGuard (shares fitness function, complementary signals).
+// Trains VolatilityWeightedRotator genotype. Fitness: return × drawdown penalty.
 public class VolatilityWeightedRotatorGA
 {
     private readonly int _populationSize;
@@ -31,8 +27,7 @@ public class VolatilityWeightedRotatorGA
         _eliteCount = eliteCount;
     }
 
-    // Signature mirrors DynamicGuardGA.Run: the rotator and the guard now optimise against the
-    // same object — the portfolio's trade list — instead of the rotator scoring a private toy.
+    // Same trade-list objective as DynamicGuardGA.
     public VolatilityWeightedRotatorGenotype Run(
         Candle[] btcH1,
         RegimeBar[] btcSeries,
@@ -88,16 +83,7 @@ public class VolatilityWeightedRotatorGA
         return best!;
     }
 
-    // Score the object the rotator is actually DEPLOYED against: the portfolio's own trade
-    // list, sized through the rotator, run through the same exposure simulator the backtest
-    // uses. Paired with the guard, whose session supplies two of the three input signals.
-    //
-    // The previous objective simulated BUY-AND-HOLD BETA on synthetic proxies —
-    //     altRet = (close[i] - close[i-4]) / close[i-4];  btcRet = altRet * 0.6;
-    // — so "rotating to safety" only ever meant "scale the same coin's move by 0.6". It
-    // measured market direction, not rotation skill, and it is why two independent runs drove
-    // GuardWeight and AtrWeight to exactly 0: the beta term drowned both signals. It was also
-    // direction-blind, which cost -35.7pp until ComputeSafetyScore learned about isLong.
+    // Scores against the portfolio's own trade list through the exposure simulator.
     private double Evaluate(
         VolatilityWeightedRotatorGenotype geno,
         DynamicGuardSession gs,
@@ -112,17 +98,11 @@ RegimeBar[] btcSeries,
         var regimes = RegimeBarLookup.TagRegimes(btcSeries, times);
 
         var sized = new List<(DateTime, double, double, TimeSpan, string)>(trades.Count);
-        // Rotation is not free: shifting capital between alts and BTC/ETH sells one and buys the
-        // other, a round trip on the fraction moved. Without this the GA sees churn as costless,
-        // which is why RotationSpeed sits pinned at its 1.0 maximum — bang-bang rebalancing —
-        // in direct contradiction of the class comment promising "gradual ... to avoid whipsaw
-        // and reduce slippage". Charging the move is what gives that gene a reason to be < 1.
+        // Rotation costs a round-trip fee on the fraction moved.
         double prevAlt = 1.0;      // start fully in alts
         double rotationCostPct = 0.0;
         var safeShareAt = new List<(DateTime Time, double Share)>(trades.Count);
-        // BTC's trailing 24h move at each trade instant. The GA must see the SAME signal the
-        // backtest serves, or the weight it selects for BtcStressWeight is fitted to a different
-        // input than the one that runs — the train/serve split this repo keeps finding.
+        // BTC trailing 24h move — must match the signal the backtest serves.
         static double BtcMove(Candle[] bars, DateTime t, int lookbackBars = 24)
         {
             if (bars is not { Length: > 1 }) return 0.0;
@@ -138,13 +118,13 @@ RegimeBar[] btcSeries,
         for (int i = 0; i < trades.Count; i++)
         {
             var t = trades[i];
-            // Unknown label => treat as long, matching PortfolioReplay's conservative convention.
+            // Unknown label => treat as long.
             bool isLong = PortfolioReplay.IsLong(t.Strategy) ?? true;
             double safety = rotator.ComputeSafetyScore(gs.GetMult(t.Time), gs.GetAtrRatio(t.Time),
                                                        regimes[i], isLong,
                                                        BtcMove(btcH1, t.Time));
             var (altShare, btcShare, ethShare) = rotator.ComputeAllocation(safety);
-            // Deadband: hold the previous allocation unless the target has moved materially.
+
             double stepped = rotator.StepAltShare(prevAlt, altShare);
             rotationCostPct += Math.Abs(stepped - prevAlt) * TradeCosts.FeeRoundTripPct;
             prevAlt = stepped; altShare = stepped;
@@ -154,15 +134,7 @@ RegimeBar[] btcSeries,
             safeShareAt.Add((t.Time, btcShare + ethShare));
         }
 
-        // ── Credit the destination ──────────────────────────────────────────────────────
-        // Without this the fitness charges rotation cost and shrinks alt exposure while never
-        // crediting what the rotated capital EARNS — so rotating is pure loss in the model and
-        // the GA correctly sets every rotation weight it can to zero. BtcStressWeight came back
-        // as exactly 0 on the first run for precisely this reason: the right answer to the wrong
-        // question.
-        //
-        // Time-weighted, not summed per trade: rotated-out capital is one continuously-held
-        // sleeve, and summing it across overlapping trades over-counts by the average concurrency.
+        // Credit the destination sleeve (time-weighted, not per-trade summed).
         double benchPct = 0.0;
         if (btcH1 is { Length: > 1 } && safeShareAt.Count > 1)
         {
@@ -196,13 +168,9 @@ RegimeBar[] btcSeries,
 
         var p = Simulator.SimulatePortfolioExposureCapped(sized, Config.MaxTotalExposurePct,
                                                           maxPositionFrac: 0.05);
-        // Charged against the portfolio, not per trade: the rotation moves the whole book's
-        // allocation, so its cost scales with capital shifted rather than with any one position.
+
         double ret = (p.EndBalance - p.StartBalance) / p.StartBalance - rotationCostPct / 100.0 + benchPct / 100.0;
-        // Same shape as the guard's objective: return scaled by a drawdown penalty, so a
-        // rotator that buys return with drawdown cannot win. Capital rotated out is modelled
-        // as FLAT here, exactly as in the combinedbacktest comparison — a de-risk-to-cash
-        // lower bound, consistent between training and reporting rather than differing.
+        // Return × drawdown penalty.
         double ddPenalty = Math.Max(0.1, 1.0 - p.MaxDrawdownPct / 100.0);
         return ret * ddPenalty;
     }
@@ -257,7 +225,7 @@ RegimeBar[] btcSeries,
             RotationSpeed: p1.RotationSpeed * alpha + p2.RotationSpeed * (1 - alpha)
         );
 
-        // Mutation
+
         if (_rng.NextDouble() < 0.1)
             child = child with { GuardWeight = Clamp(child.GuardWeight + (_rng.NextDouble() - 0.5) * 0.2, GuardWeightMin, GuardWeightMax) };
         if (_rng.NextDouble() < 0.1)
@@ -311,9 +279,7 @@ RegimeBar[] btcSeries,
             return;
         }
 
-        // Build the portfolio trade list the rotator is deployed against. Previously Train()
-        // handed the GA raw candles and the GA scored buy-and-hold beta on them; the rotator
-        // never sizes a coin, it sizes STRATEGY TRADES, so that is what it must be scored on.
+        // Build the portfolio trade list the rotator sizes.
         var swingG = File.Exists(Config.FadeShortGenoFile)
             ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(Config.FadeShortGenoFile))!.ToGenotype() : null;
         var gridG  = File.Exists(Config.GridGenoFile)
@@ -331,9 +297,7 @@ RegimeBar[] btcSeries,
         var trades = new List<(DateTime Time, double Return, double Conf, TimeSpan Hold, string Strategy)>();
         foreach (var (sym, (fullH1, fullM15)) in coinData)
         {
-            // TRAIN SLICE ONLY. This trainer previously fit on the full series — including the
-            // bars combinedbacktest reports as validation — so every rotator result was leakage by
-            // construction, and five rounds of tuning were scored on data the GA had already seen.
+            // TRAIN SLICE ONLY.
             var h1s  = DataSplit.Split(fullH1);
             var m15s = DataSplit.SplitAligned(fullM15, h1s);
             if (!h1s.IsUsable) continue;
@@ -344,7 +308,7 @@ RegimeBar[] btcSeries,
                     trades.Add((t.Time, t.Return, swingG.PositionSizePct, TimeSpan.FromHours(swingG.MaxHoldCandles), "fade_short"));
             if (gridG != null)
                 foreach (var t in GridSimulator.GetGridSessionReturns(gridG, h1))
-                    // GridGenotype has no position-size gene; GridGA scores at a fixed 0.03 (FitPosFrac).
+
                     trades.Add((t.Time, t.Return, 0.03, TimeSpan.FromHours(gridG.MaxHoldCandles), "grid"));
             if (dlG != null)
                 foreach (var t in DipLongSimulator.GetDipLongReturns(dlG, h1, m15))

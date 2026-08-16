@@ -58,7 +58,9 @@ src/
   core/           Shared infrastructure: Config, Indicators, Simulator, CandleFetcher,
                   CoinCluster, Pumpsegmenter, FundingRateSession, PortfolioReplay,
                   RankedPortfolioSim, TradeEnricher, StatisticalTests, GenotypeDto,
-                  BayesianOptimizer
+BayesianOptimizer, StrategyPipeline (shared backtest bootstrap: variant
+                  loading/selection, parallel candle fetch, regime/funding/guard session
+                  builds — the reproducer-of-record consumed by the backtest commands)
   regime/         RegimeClassifier, RegimeRouter, RegimeRouterGA, RegimeRouterGenotype
   strategies/
     fade_short/   FadeShortGA, FadeShortGenotype
@@ -80,7 +82,7 @@ commands/         Program (CLI entry), TrainCommands, LongTrainCommands, GridCom
 
 genotypes/        All trained parameter JSON files (see table below)
 bot/              discord_bot.py, knowledge_bot.py, gather_genes.py, swing_autotrain.py, api_server.py
-legacy/           Archived: DrawdownGuard*, ExitModifier*, Scenario*, StressTestCommands, test.cs
+docs/legacy/      Archived: DrawdownGuard*, ExitModifier*, Scenario*, StressTestCommands, test.cs
 docs/             README.md, REGIME_ARCHITECTURE.md, superpowers/plans+specs
 
 Gravity-gen2.Tests/
@@ -112,7 +114,7 @@ Most strategies use a dual-timeframe setup: **1h candles** for regime/setup dete
 
 Several strategies additionally have low-vol (ATR ratio < 0.8) variant genotypes, selected by `VariantRouter.Select`, which picks the **narrowest ATR band** containing the current ratio — fitness plays no part in that choice. Note that `StrategyActivation` also carries `*LowVolActive` / `*HighVolActive` flags and `RegimeRouterGA.StrategyKind` has matching entries — **nothing calls `IsActive` with those kinds**, so the vol variants are chosen by `VariantRouter`, not by the router.
 
-**High-vol variants are RETIRED** (2026-08; files and trainer in `legacy/`). A genotype tuned to trade *harder* when ATR spikes works directly against `DynamicGuard`, whose entire purpose is to cut exposure under exactly that condition, and high vol is where being wrong costs most. High-vol bars are now served by the base genotype with the guard in charge. `fade_short_hival_genotype.json` went with them: despite its "high-value screen" name its band was `[1.5, 9999]`, so it only ever activated in the high-vol regime.
+**High-vol variants are RETIRED** (2026-08; files and trainer in `docs/legacy/`). A genotype tuned to trade *harder* when ATR spikes works directly against `DynamicGuard`, whose entire purpose is to cut exposure under exactly that condition, and high vol is where being wrong costs most. High-vol bars are now served by the base genotype with the guard in charge. `fade_short_hival_genotype.json` went with them: despite its "high-value screen" name its band was `[1.5, 9999]`, so it only ever activated in the high-vol regime.
 
 **If high-vol is ever reintroduced**, the variant must be *more selective* than the base, never more aggressive — the failure mode was a genotype with free rein in exactly the regime the guard exists to throttle. Two admission criteria, both with machinery already half in place:
 
@@ -195,7 +197,7 @@ Both terms are monotone non-decreasing in every fold score, so the sum is monoto
 
 ### DynamicGuard
 
-`src/guard/DynamicGuardSession.cs` — per-strategy drawdown guard, trained by `DynamicGuardGA` on the portfolio trade distribution. Supersedes the older DrawdownGuard and ExitModifier (archived in `legacy/`).
+`src/guard/DynamicGuardSession.cs` — per-strategy drawdown guard, trained by `DynamicGuardGA` on the portfolio trade distribution. Supersedes the older DrawdownGuard and ExitModifier (archived in `docs/legacy/`).
 
 **Where it is actually applied:**
 - `combinedbacktest`, `oosbacktest`: applied via the shared `src/core/GuardedPortfolio.cs` (`TryLoad` → `Apply` → `PrintComparison`). Guarded and unguarded are reported **side by side**; the headline row stays unguarded. That is deliberate — the guard had never been applied here, so swapping the headline would be indistinguishable from a regression. `GuardedPortfolio` also carries the six simulator-level knobs (`DdEntryGatePct`, conf loss caps, profit protection) that `FullTest`'s old local lambda hand-threaded as loose locals and never passed through.
@@ -231,8 +233,8 @@ Both terms are monotone non-decreasing in every fold score, so the sum is monoto
 | `genotypes/accumulation_grid_genotype.json` | AccumulationGrid (Bull + Bear sub-objects) |
 | `genotypes/vol_rotator_genotype.json` | VolatilityWeightedRotator |
 | `genotypes/{fade_short,dip_long,swing_long,rip_short}_lowvol_genotype.json` | low-vol variants |
-| `genotypes/{drawdown_guard,exit_modifier}_genotype.json` | archived (`legacy/`), not loaded by any live path |
-| `legacy/genotypes/*_highvol_genotype.json`, `fade_short_hival_genotype.json` | **retired** — see the high-vol note above |
+| `genotypes/{drawdown_guard,exit_modifier}_genotype.json` | archived (`docs/legacy/`), not loaded by any live path |
+| `docs/legacy/genotypes/*_highvol_genotype.json`, `fade_short_hival_genotype.json` | **retired** — see the high-vol note above |
 
 **Caution — a GA retrain overwrites the genotype in place and GA runs are non-deterministic.** A rerun can land in a worse basin and silently regress an already-validated genotype (observed: RipShort held-out PF dropped from profitable to 0.95, overfit flag tripped, after a routine retrain). Every file above is now tracked in git, so `git checkout genotypes/<file>` *can* recover the last committed version — but only what was committed. Commit or `cp` aside any genotype you care about before retraining.
 

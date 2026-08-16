@@ -1,40 +1,16 @@
 namespace TradingGA;
 
-// Fade-long simulator — symmetric counterpart to FadeShortSimulator.
-//
-// Fades oversold drops in downtrends (the FadeShort fades overbought rallies in uptrends).
-// Catches violent oversold bounces that are common during bear markets.
-//
-// Entry: all of the following must align:
-//   1. Strong downtrend    — ADX(7) ≥ threshold AND close < EMA
-//   2. Min drop filter     — recent low is ≥ MinDropAtrMult × h1ATR below the recent high
-//                            (confirms a real extended drop to fade, not noise)
-//   3. RSI divergence      — RSI at the swing low was ≤ RsiOversold AND current RSI has
-//                            recovered by at least RsiDivThreshold pts (sellers losing steam)
-//   4. Bullish BoS         — 15m close above the previous 15m candle's high (committed reversal)
-//
-// Exit: swing-low stop · MAE ceiling · fixed ATR target · trailing stop · max-hold timeout.
-//   Stop = swingLow − StopLossAtrMult × h4ATR: price breaking the swing low invalidates thesis.
-//   MAE  = entry − MaeAtrMult × h4ATR: caps slow-grind down that stays above the hard stop.
-//   ATR multiples use h4 ATR at entry — same scale as FadeShortSimulator.
-//
-// RegimeBarsActive returned with each trade: consecutive h1 bars where the STRUCTURAL bear
-// regime was confirmed at trade entry (EMA conditions only, not ADX — ADX is entry-level,
-// the EMA structure is the regime). Used by FadeLongGA for regime-conditional FoldScore filtering.
+// FadeLong simulator: bear-regime oversold bounce. Mirror of FadeShort.
+// Regime = EMA structure (close < EMA AND declining), not ADX.
 public static class FadeLongSimulator
 {
     private const int AtrPeriod = 14;
     private const int RsiPeriod = 7;
     private const int AdxPeriod = 7;
 
-    // Cost model: see TradeCosts in src/core/Simulator.cs. Fee + slippage on BOTH sides
-    // (magnitude from Config.SlippageBps alone) + this gap premium on stop exits only.
-    private const double StopGapAtrK = 0.015;
+    private const double StopGapAtrK = 0.015;  // gap premium on stop exits
 
-    // EntryTime/EntryPrice: `Time` is the EXIT bar on every simulator here. Appended as NAMED
-    // fields so existing t.Time / t.Return consumers compile unchanged. See DipLongSimulator
-    // for the four consumers that need the entry rather than the exit.
-    // ExecContext overload — see DipLongSimulator for the rationale.
+    // Time = EXIT bar. ExecContext overload delegates to parameterised form.
     public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)> GetFadeLongReturns(
         FadeLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, in ExecContext ctx)
         => GetFadeLongReturns(g, h1, m15, ctx.Funding, ctx.Ratchet);
@@ -98,10 +74,7 @@ public static class FadeLongSimulator
         var m15Closes = CandleExt.Closes(m15);
         var m15Highs  = CandleExt.Highs(m15);
 
-        // Precompute consecutive structural bear-regime bar count at each h1 bar.
-        // Uses EMA conditions only (not ADX) — the EMA structure is the persistent regime;
-        // ADX is a trade-entry gate, not a regime definition.
-        // A bar qualifies when: close < EMA AND close < RegimeEma AND RegimeEma declining.
+        // Consecutive structural bear-regime bars (EMA conditions only, not ADX).
         int[] bearRegimeBarsAtBar = new int[h1.Length];
         int bearRunning = 0;
         int slopeLen = g.RegimePeriod / 4;
@@ -159,13 +132,11 @@ public static class FadeLongSimulator
 
                     double atrH1 = h1Atr[h1Ref] > 1e-10 ? h1Atr[h1Ref] : h1Closes[h1Ref] * 0.02;
 
-                    // Use the previous completed h4 bar — the current h4 bar aggregates future h1 bars
-                    int h4Ref = Math.Max(0, h1Ref / 4 - 1);
+                    int h4Ref = Math.Max(0, h1Ref / 4 - 1);  // previous completed h4 bar
                     double atrH4 = h4Ref < h4Atr.Length && h4Atr[h4Ref] > 1e-10
                                  ? h4Atr[h4Ref]
                                  : atrH1 * 4;
 
-                    // Regime: sustained downtrend — below fast EMA, below declining slow EMA
                     bool regimeOk = h1Adx[h1Ref] >= g.AdxThreshold
                                  && h1Closes[h1Ref] < h1Ema[h1Ref]
                                  && h1Closes[h1Ref] < h1RegimeEma[h1Ref]
@@ -177,11 +148,8 @@ public static class FadeLongSimulator
                         var (swingLow, _, _) = Signals.SwingLowLookback(
                             h1Closes, h1Highs, h1Lows, h1Ref, g.LookbackCandles);
 
-                        // Min drop: the fall from recent high to swing low must be meaningful
                         bool bigDrop = bigDropArr[h1Ref];
                         if (!bigDrop) continue;
-
-                        // RSI divergence: RSI was oversold at the swing low AND has now recovered
                         bool diverging  = bullDiv[h1Ref];
                         if (!diverging) continue;
 
@@ -192,8 +160,7 @@ public static class FadeLongSimulator
                     }
                 }
 
-                // 15m bullish BoS: close above previous 15m high.
-                // Enter at the OPEN of the next 15m bar — the BoS is only confirmed at bar close.
+                // 15m bullish BoS trigger; enter at next bar's open.
                 if (cachedSetupMet && m15Closes[im15] > m15Highs[im15 - 1])
                 {
                     int nextBar = im15 + 1;

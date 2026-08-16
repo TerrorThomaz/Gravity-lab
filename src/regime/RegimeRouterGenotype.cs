@@ -1,30 +1,8 @@
 namespace TradingGA;
 
-// Genotype for the RegimeRouterGA.
-// Twelve genes that control when each strategy is activated based on BTC regime state.
-//
-// Interpretation:
-//   BullMinBars          — DipLong/SwingLong only activates after BTC has been in Bull for ≥N h1 bars
-//   BullMinConf          — and the blended BTC+ETH confidence ≥ this value
-//   BearMinBars          — FadeLong: same pattern for Bear regime
-//   BearMinConf
-//   RipShortBearMinBars  — RipShort's own confirmed-bear gate (kept separate from FadeLong's
-//   RipShortBearMinConf    since sharing one gene pair let a disabled FadeLong drag the threshold)
-//   GridMaxConf          — Grid fires when blended confidence < GridMaxConf (ambiguous market)
-//   EthBlendWeight       — how much ETH agreement/disagreement adjusts BTC confidence
-//
-// The four "Mult"/"Carry" genes below are ON/OFF switches at routing time — the router asks only
-// `gene > 0`, never multiplies by the value. Their magnitude is read in exactly one place:
-// RegimeRouterGA.FilterActive scales the trade's capital fraction by it while scoring candidate
-// routers, so the value still shapes the GA's own fitness landscape. No live or backtest path
-// sizes on it. (StrategyActivation.SizeMult, which did multiply by them, was deleted as unused.)
-//   TransitionSizeMult   — > 0 forces Grid/GridShort ON during the early-regime window
-//                          (duration < MinBars), Bull or Bear
-//   EarlyBullFromBearMult    — > 0 lets DipLong/SwingLong fire in the early-bull window
-//                              ONLY when previous regime was Bear (genuine reversal)
-//   EarlyBullFromRangingMult — same for Ranging→Bull transition (range breakout)
-//   EarlyBullBearCarry       — > 0 keeps FadeLong on in early-bull when it came from Bear
-//                              (bearish carry-over: dead-cat fades before the bull confirms)
+// Router genotype: regime thresholds + transition/ETH-blend genes.
+// The four "Mult"/"Carry" genes are ON/OFF switches at routing time (read as > 0 only).
+// Their magnitude is used only by RegimeRouterGA.FilterActive for GA scoring.
 public class RegimeRouterGenotype
 {
     public double BullMinBars             { get; set; }  // [50, 500]
@@ -34,24 +12,8 @@ public class RegimeRouterGenotype
     public double RipShortBearMinBars     { get; set; }  // [50, 500]  — RipShort's own confirmed-bear gate
     public double RipShortBearMinConf     { get; set; }  // [0.10, 0.80]
 
-    // FadeShort's own confirmed-bear gate. Separate from RipShort's and FadeLong's for the same
-    // reason those two were split: one shared threshold gets dragged to a compromise that suits
-    // none of them.
-    //
-    // FadeShort's edge is REGIME-SPLIT, not weak. Measured on the time-embargoed held-out window,
-    // six retrains running (widened bounds, router gate, FreqW=0, WrW x2, RegimeSustain, and the
-    // corrected three-gene regime):
-    //     Bear  PF 5.28  WR 71%  45 trades  +2.28%/trade
-    //     Bull  PF 0.38  WR 13%  84 trades  -0.86%/trade
-    // The blended PF near 1.2 is those two cancelling. Bull carries ~65% of the trades and
-    // subtracts 72 points from a 102-point gross.
-    //
-    // The old gate was `NOT (Bull AND confident)`, i.e. FadeShort ran in Bear, Ranging, HighVol
-    // AND unconfident Bull — which is where most of the losses are, since "unconfident Bull" is
-    // exactly the ambiguous tape a fade gets run over in. FadeShortBearOnly (a >0 ON/OFF switch,
-    // like the other transition genes) flips it to "only in confirmed Bear", with the bar/conf
-    // thresholds TRAINED rather than assumed: how strict "confirmed" should be is precisely what
-    // routertrain is for.
+    // FadeShort's own confirmed-bear gate. Separate so one shared threshold doesn't compromise all three.
+    // FadeShortBearOnly: >0 = Bear-only mode; 0 = legacy not-confirmed-Bull.
     public double FadeShortBearMinBars    { get; set; }  // [20, 400]
     public double FadeShortBearMinConf    { get; set; }  // [0.10, 0.80]
     public double FadeShortBearOnly       { get; set; }  // >0 = Bear-only; 0 = legacy not-confirmed-Bull
@@ -64,7 +26,7 @@ public class RegimeRouterGenotype
 
     public double Fitness { get; set; }
 
-    // ── Search space ─────────────────────────────────────────────────────────
+
     public static readonly double[,] Bounds =
     {
         {  50, 500 },   // BullMinBars
@@ -84,7 +46,7 @@ public class RegimeRouterGenotype
         { 0.00, 1.00 }, // FadeShortBearOnly — >0 = ON/OFF switch, like the transition genes
     };
 
-    // ── BO / vector interface ─────────────────────────────────────────────────
+
     public double[] ToVector() =>
     [
         BullMinBars, BullMinConf, BearMinBars, BearMinConf,
@@ -113,7 +75,7 @@ public class RegimeRouterGenotype
         EarlyBullBearCarry       = Math.Clamp(v[11], 0.00, 1.00),
     };
 
-    // ── GA operators ─────────────────────────────────────────────────────────
+
     public static RegimeRouterGenotype Random(System.Random rng, RegimeRouterGenotype? seed = null)
     {
         if (seed != null && rng.NextDouble() < 0.3)
@@ -198,7 +160,7 @@ public class RegimeRouterGenotype
         $"F={Fitness:F4}";
 }
 
-// ── JSON DTO ─────────────────────────────────────────────────────────────────
+
 
 public record RegimeRouterGenotypeDto(
     double BullMinBars,
@@ -212,21 +174,15 @@ public record RegimeRouterGenotypeDto(
     double EarlyBullFromBearMult    = 0.0,
     double EarlyBullFromRangingMult = 0.0,
     double EarlyBullBearCarry       = 0.0,
-    // FadeShortBearOnly defaults to 0 = the legacy not-confirmed-Bull gate, so a router genotype
-    // saved before these genes existed deserializes to bit-identical behaviour.
+    // FadeShortBearOnly defaults to 0 (legacy gate) for backward compat.
     double FadeShortBearMinBars = 60.0,
     double FadeShortBearMinConf = 0.30,
     double FadeShortBearOnly    = 0.0,
-    // Defaults match the old shared BearMinBars/BearMinConf so genotype files saved
-    // before RipShort got its own gate keep their exact prior behavior on load.
+    // Defaults match the old shared gate for backward compat.
     double RipShortBearMinBars = 143.0,
     double RipShortBearMinConf = 0.74)
 {
-    // NOTE: EarlyBearFromBullMult / EarlyBearFromRangingMult were removed along with
-    // StrategyActivation.SizeMult — they only ever scaled that (never-consumed) multiplier
-    // and never gated activation. Genotype JSON written before the removal still carries
-    // those two keys; System.Text.Json ignores unmapped members by default, so such files
-    // continue to deserialize unchanged. Do not re-add them without a consumer.
+    // EarlyBearFromBullMult/EarlyBearFromRangingMult + SizeMult were deleted (never consumed). Old JSON files still load.
     public RegimeRouterGenotype ToGenotype() => new()
     {
         BullMinBars              = BullMinBars,

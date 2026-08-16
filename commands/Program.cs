@@ -35,6 +35,9 @@ switch (mode)
     // exposure under exactly that condition — and it is the regime where being wrong is most
     // expensive. High-vol bars are now served by the base genotype with the guard in charge.
     case "lowvoltrain":      await LowVolTrainCommands.RunLowVolTrain(client, args);            break;
+    case "disttest":         await Disttest.Run(client, args);                                   break;
+    case "walkforward":      await WalkForwardCommand.Run(client);                              break;
+    case "hyperliquid-papertrade": await HyperliquidPaperTrade.Run();                           break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
         Console.WriteLine("  dotnet run -- train              Train FadeShort GA (~10 min)");
@@ -60,5 +63,8 @@ switch (mode)
         Console.WriteLine("  dotnet run -- rotatortrain       Train volatility-weighted rotator (co-evolves with guard)");
         Console.WriteLine("  dotnet run -- accumgridtrain     Train AccumulationGrid (EMA-based dynamic grid, replaces FadeShort)");
         Console.WriteLine("  dotnet run -- lowvoltrain        Train low-volatility optimized variants (ATR<0.8, 5-fold WFV)");
+        Console.WriteLine("  dotnet run -- disttest           Calibrate + separate predictive distribution (edge & risk)");
+        Console.WriteLine("  dotnet run -- walkforward          Walk-forward validation of committed genotypes on never-seen coins");
+        Console.WriteLine("  dotnet run -- hyperliquid-papertrade Paper trade via Hyperliquid (requires HYPERLIQUID_PRIVATE_KEY)");
         break;
 }

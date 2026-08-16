@@ -48,14 +48,7 @@ static class BacktestCommands
         Console.WriteLine();
 
         Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins (15m candles, ~3yr)...");
-        var sem = new SemaphoreSlim(4);
-        var fetchTasks = Config.BacktestCoins.Select(async sym =>
-        {
-            await sem.WaitAsync();
-            try { var m15 = await CandleFetcher.FetchFifteenMinCandlesCached(client, sym, batches: 113); return (sym, m15); }
-            finally { sem.Release(); }
-        });
-        var fetchedArr = await Task.WhenAll(fetchTasks);
+        var fetchedArr = await StrategyPipeline.FetchFifteenMinAsync(client, Config.BacktestCoins, batches: 113);
         Console.WriteLine();
 
         var fsTrades   = new List<(string Coin, DateTime Time, double Return, double Frac)>();
@@ -73,11 +66,12 @@ static class BacktestCommands
 
         int fsVCC = 0, gridVCC = 0, dlVCC = 0, flVCC = 0;
 
-        foreach (var (sym, m15List) in fetchedArr)
+        foreach (var f in fetchedArr)
         {
-            if (m15List.Count < 600) continue;
-            var m15 = m15List.ToArray();
-            var h1  = FadeShortSimulator.AggregateCandles(m15, 4);
+            string sym = f.sym;
+            if (f.m15.Length < 600) continue;
+            var m15 = f.m15;
+            var h1  = f.h1;
 
             var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
             if (volUsd.Count == 0 || volUsd[volUsd.Count / 2] < Config.MinMedianVolUsdM) continue;
@@ -198,10 +192,10 @@ static class BacktestCommands
         {
             var btcEntry = fetchedArr.FirstOrDefault(x => x.sym == "BTCUSDT");
             var ethEntry = fetchedArr.FirstOrDefault(x => x.sym == "ETHUSDT");
-            if (btcEntry.m15 is { Count: > 200 })
+            if (btcEntry.m15 is { Length: > 200 })
             {
                 var btcH1  = FadeShortSimulator.AggregateCandles(btcEntry.m15.ToArray(), 4);
-                Candle[]? ethH1 = ethEntry.m15 is { Count: > 200 }
+                Candle[]? ethH1 = ethEntry.m15 is { Length: > 200 }
                     ? FadeShortSimulator.AggregateCandles(ethEntry.m15.ToArray(), 4) : null;
 
                 StrategyActivation routing;
@@ -298,10 +292,10 @@ static class BacktestCommands
         {
             var btcEntry2 = fetchedArr.FirstOrDefault(x => x.sym == "BTCUSDT");
             var ethEntry2 = fetchedArr.FirstOrDefault(x => x.sym == "ETHUSDT");
-            if (btcEntry2.m15 is { Count: > 200 })
+            if (btcEntry2.m15 is { Length: > 200 })
             {
                 var btcH1r  = FadeShortSimulator.AggregateCandles(btcEntry2.m15.ToArray(), 4);
-                var ethH1r  = ethEntry2.m15 is { Count: > 200 }
+                var ethH1r  = ethEntry2.m15 is { Length: > 200 }
                     ? FadeShortSimulator.AggregateCandles(ethEntry2.m15.ToArray(), 4) : null;
                 var btcSerR = RegimeClassifier.ClassifySeriesWithDuration(btcH1r);
                 var ethSerR = ethH1r != null ? RegimeClassifier.ClassifySeriesWithDuration(ethH1r) : null;
@@ -367,14 +361,7 @@ static class BacktestCommands
             : null;
 
         Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins...");
-        var sem = new SemaphoreSlim(4);
-        var fetchTasks = Config.BacktestCoins.Select(async sym =>
-        {
-            await sem.WaitAsync();
-            try { var m15 = await CandleFetcher.FetchFifteenMinCandlesCached(client, sym, batches: 113); return (sym, m15); }
-            finally { sem.Release(); }
-        });
-        var fetched = await Task.WhenAll(fetchTasks);
+        var fetched = await StrategyPipeline.FetchFifteenMinAsync(client, Config.BacktestCoins, batches: 113);
         Console.WriteLine();
 
         const double RiskBudget = 0.004;
@@ -385,11 +372,12 @@ static class BacktestCommands
         var gridTrades = new List<(DateTime Time, double Return, double Conf, double RiskCap)>();
         var coinDiag   = new List<(string Sym, int Trades, double WL, double RC, double FullKPos)>();
 
-        foreach (var (sym, m15List) in fetched)
+        foreach (var f in fetched)
         {
-            if (m15List.Count < 600) continue;
-            var m15 = m15List.ToArray();
-            var h1  = FadeShortSimulator.AggregateCandles(m15, 4);
+            string sym = f.sym;
+            if (f.m15.Length < 600) continue;
+            var m15 = f.m15;
+            var h1  = f.h1;
 
             var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
             double medVol = volUsd.Count > 0 ? volUsd[volUsd.Count / 2] : 0;
@@ -566,14 +554,7 @@ static class BacktestCommands
         }
 
         Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins (15m candles, reading from cache)...");
-        var sem = new SemaphoreSlim(4);
-        var fetchTasks = Config.BacktestCoins.Select(async sym =>
-        {
-            await sem.WaitAsync();
-            try { return (sym, await CandleFetcher.FetchFifteenMinCandlesCached(client, sym, batches: 113)); }
-            finally { sem.Release(); }
-        });
-        var fetched = await Task.WhenAll(fetchTasks);
+        var fetched = await StrategyPipeline.FetchFifteenMinAsync(client, Config.BacktestCoins, batches: 113);
         Console.WriteLine();
 
         var swingRet = new List<double>();
@@ -584,11 +565,12 @@ static class BacktestCommands
 
         var crashTrades = new List<(DateTime Open, DateTime Close, double Return, double HalfKelly, string Strategy)>();
 
-        foreach (var (sym, m15List) in fetched)
+        foreach (var f in fetched)
         {
-            if (m15List.Count < 600) continue;
-            var m15 = m15List.ToArray();
-            var h1  = FadeShortSimulator.AggregateCandles(m15, 4);
+            string sym = f.sym;
+            if (f.m15.Length < 600) continue;
+            var m15 = f.m15;
+            var h1  = f.h1;
 
             var volUsd = h1.Select(c => c.Close * c.Volume / 1_000_000.0).OrderBy(v => v).ToList();
             if (volUsd.Count == 0 || volUsd[volUsd.Count / 2] < Config.MinMedianVolUsdM) continue;

@@ -1,34 +1,10 @@
 namespace TradingGA;
 
-// Dip-long simulator — regime-gated bull pullback strategy.
-//
-// Structural complement of FadeShort: both fire in the same uptrend regime but
-// at opposite ends of the RSI cycle. FadeShort fades overbought extensions;
-// DipLong buys oversold/neutral pullbacks and rides the next leg up.
-//
-// The bull regime filter (RegimeLongEma must be rising AND close above it)
-// ensures the strategy is silent during bear markets and dead-cat bounces —
-// the exact periods where FadeLong or FadeShort operate.
-//
-// Entry (1h setup + 15m trigger):
-//   1. Bull regime  — close > RegimeLongEma AND RegimeLongEma[now] > RegimeLongEma[slopeLookback bars ago]
-//   2. Trend gate   — close > EmaPeriod EMA AND ADX(7) ≥ threshold
-//   3. Dip setup    — RSI(7) ≤ RsiDipThreshold (pullback to 35–55 zone within uptrend)
-//   4. Bullish BoS  — 15m close > previous 15m high (buyers committed to reversal)
-//
-// Exit (15m):
-//   · Hard stop : recentSwingLow − StopLossAtrMult × h4ATR  (lowest low in last 20 h1 bars)
-//   · Fixed TP  : entry + TakeProfitAtrMult × h4ATR
-//   · Trailing  : armed after TrailingActivationAtrMult × ATR profit; trails at TrailingStopAtrMult × ATR
-//   · Timeout   : MaxHoldCandles h1 bars
-//
-// RegimeBarsActive returned with each trade: consecutive h1 bars where the bull
-// regime was confirmed at trade entry (used by DipLongGA for regime-conditional
-// FoldScore filtering).
+// DipLong simulator: bull-regime RSI dip + bullish BoS. Mirror of RipShort.
+// Supports multi-leg pyramiding (maxLegs>1) with ratchet-gated adds.
 public static class DipLongSimulator
 {
-    // One open position. Multi-leg state must live at class scope — C# has no local structs.
-    private struct Leg
+    private struct Leg  // multi-leg state at class scope (C# has no local structs)
     {
         public double   Entry, HardStop, Target, TrailHigh, AtrEntry;
         public bool     TrailArmed, LockArmed;
@@ -39,23 +15,10 @@ public static class DipLongSimulator
     private const int AtrPeriod        = 14;
     private const int RsiPeriod        = 7;
     private const int AdxPeriod        = 7;
-    private const int SwingLowLookback = 20;   // h1 bars to locate the recent pullback low for stop placement
+    private const int SwingLowLookback = 20;   // h1 bars for stop-placement swing low
+    private const double StopGapAtrK = 0.015;  // gap premium on stop exits
 
-    // Cost model: see TradeCosts in src/core/Simulator.cs. Fee + slippage on BOTH sides
-    // (magnitude from Config.SlippageBps alone) + this gap premium on stop exits only.
-    // DipLong stops sit inside an established uptrend's pullback band, so the gap shape is
-    // half the swing family's — that is a stop-placement difference, not a slippage knob.
-    private const double StopGapAtrK = 0.015;
-
-    // EntryTime/EntryPrice are exposed because `Time` is the EXIT bar on every simulator in this
-    // repo, and four separate things need the ENTRY instead: variant selection by entry ATR,
-    // leading-slice OOS sizing (aba8c1b documents the seam), accumulator acquisition quality,
-    // and 1m execution. Appended as NAMED fields so existing t.Time / t.Return consumers are
-    // untouched — the same low-risk shape already proven on AccumulationGridSimulator.
-    // ratchet: opt-in minimum-profit floor (see src/core/ExitRatchet.cs). Default is disabled,
-    // so production behaviour is bit-identical unless a caller asks for it.
-    // ExecContext overload — the single point of contact. Delegates to the parameterised form
-    // so behaviour is identical by construction; `default` reproduces production exactly.
+    // Time = EXIT bar. EntryPrice/EntryTime exposed for variant selection, OOS sizing, execution.
     public static List<(DateTime Time, double Return, string Kind, int RegimeBarsActive, DateTime EntryTime, double EntryPrice)> GetDipLongReturns(
         DipLongGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, in ExecContext ctx)
         => GetDipLongReturns(g, h1, m15, ctx.Funding, ctx.Ratchet, ctx.MaxLegs);
@@ -119,9 +82,7 @@ public static class DipLongSimulator
         var m15Closes = CandleExt.Closes(m15);
         var m15Highs  = CandleExt.Highs(m15);
 
-        // Precompute consecutive bull-regime bar count at each h1 bar.
-        // A bar qualifies when: close > RegimeLongEma AND RegimeLongEma rising over slopeLookback bars.
-        // Counter resets to 0 on the first bar that breaks the regime condition.
+        // Consecutive bull-regime bars: close > RegimeLongEma AND EMA rising.
         int[] bullRegimeBarsAtBar = new int[h1.Length];
         int bullRunning = 0;
         int slopeLen = g.RegimeSlopeLookback;
@@ -135,19 +96,8 @@ public static class DipLongSimulator
 
         var result = new List<(DateTime, double, string, int, DateTime, double)>();
 
-        // ── Multi-leg position state ──────────────────────────────────────────────
-        // maxLegs == 1 reproduces the previous single-position behaviour EXACTLY; that is the
-        // regression check for this refactor, since the unit suite does not cover strategy P&L.
-        //
-        // A new leg is only permitted once EVERY open leg has armed its profit ratchet, i.e. is
-        // already locked above breakeven and can no longer lose. That is what makes adding
-        // near-risk-free: the incremental risk is the new leg's own stop, not compounded exposure
-        // on an underwater position. This is pyramiding AFTER de-risking, the opposite of
-        // averaging down, and is why it is safe on a long where DcaAndWait was not on a short.
-        //
-        // Legs are emitted as SEPARATE trades so PortfolioReplay counts each one against the
-        // per-strategy, per-symbol and directional caps. A single trade secretly worth N legs is
-        // the exact accounting hole that keeps RipShort's DcaAndWait disabled.
+        // Multi-leg: new leg only when all open legs armed ratchet (locked above breakeven).
+        // Legs emitted separately for correct concurrency accounting.
         var legs = new List<Leg>(Math.Max(1, maxLegs));
         int    cachedH1Ref    = -1;
         bool   cachedSetupMet = false;
@@ -167,9 +117,6 @@ public static class DipLongSimulator
 
             double m15Price = m15Closes[im15];
 
-            // Entry is permitted when flat, or when every open leg is already locked in profit
-            // and the leg budget allows another. Evaluated BEFORE exits above have run this bar's
-            // removals, so a leg closing and a new one opening on the same bar are independent.
             bool canAdd = legs.Count < Math.Max(1, maxLegs)
                           && (legs.Count == 0 || legs.TrueForAll(l => l.LockArmed));
             if (canAdd)
@@ -179,26 +126,19 @@ public static class DipLongSimulator
                     cachedH1Ref    = h1Ref;
                     cachedSetupMet = false;
 
-                    // Use the previous completed h4 bar — the current h4 bar aggregates future h1 bars
-                    int    h4Ref = Math.Max(0, h1Ref / 4 - 1);
+                    int    h4Ref = Math.Max(0, h1Ref / 4 - 1);  // previous completed h4 bar
                     double atrH4 = h4Ref < h4Atr.Length && h4Atr[h4Ref] > 1e-10
                                  ? h4Atr[h4Ref]
                                  : h1Closes[h1Ref] * 0.08;
 
-                    // Bull regime: close above long EMA AND long EMA is trending upward
                     bool regimeOk = h1Closes[h1Ref] > h1RegimeEma[h1Ref]
                                  && h1RegimeEma[h1Ref] > h1RegimeEma[h1Ref - slopeLen];
-
-                    // Short-term trend: confirmed uptrend with momentum
                     bool trendOk = h1Closes[h1Ref] > h1Ema[h1Ref]
                                 && h1Adx[h1Ref] >= g.AdxThreshold;
-
-                    // Dip zone: RSI pulled back into 35–55 range (correcting, not reversing)
                     bool dipOk = h1Rsi[h1Ref] <= g.RsiDipThreshold;
 
                     if (regimeOk && trendOk && dipOk)
                     {
-                        // Stop below the recent pullback low — if price breaks this, the dip became a trend reversal
                         int    lbStart  = Math.Max(0, h1Ref - SwingLowLookback);
                         double swingLow = h1Lows[lbStart];
                         for (int j = lbStart + 1; j <= h1Ref; j++)
@@ -211,8 +151,7 @@ public static class DipLongSimulator
                     }
                 }
 
-                // 15m bullish BoS: close above previous 15m candle's high.
-                // Enter at the OPEN of the next 15m bar — the BoS is only confirmed at bar close.
+                // 15m bullish BoS trigger; enter at next bar's open.
                 if (cachedSetupMet && m15Closes[im15] > m15Highs[im15 - 1])
                 {
                     int nextBar = im15 + 1;
@@ -233,7 +172,6 @@ public static class DipLongSimulator
                     });
                 }
             }
-            // ── Exits: every open leg is evaluated independently ──────────────────────
             for (int li = legs.Count - 1; li >= 0; li--)
             {
                 var leg = legs[li];
@@ -243,12 +181,7 @@ public static class DipLongSimulator
 
                 int holdH1 = ih1 - leg.EntryIH1;
 
-                // Minimum-profit ratchet: once armed the stop only moves UP, so this leg can no
-                // longer come back through breakeven — which is also the precondition for adding.
-                // FloorsTrailOnly: the ratchet may only arm once the TRAIL has armed, and it
-                // floors the trail's exit level rather than the hard stop — so the gene-tuned trail
-                // still decides when to exit and the ratchet only stops it giving back past
-                // breakeven. Otherwise (legacy) it floors the hard stop and pre-empts the trail.
+                // Min-profit ratchet: FloorsTrailOnly = arm after trail, floor trail level (not hard stop).
                 bool mayArm = ratchet.FloorsTrailOnly ? leg.TrailArmed : true;
                 if (ratchet.Enabled && mayArm && !leg.LockArmed
                     && ExitRatchet.ShouldArm(true, leg.Entry, leg.AtrEntry, leg.TrailHigh, ratchet))
@@ -298,9 +231,7 @@ public static class DipLongSimulator
             result.Add((m15[^1].Time, ret, "dip_long", leg.EntryRegimeBars, leg.EntryTime, leg.Entry));
         }
 
-        // Live state reports the OLDEST open leg, which is the one papertrade would be managing
-        // first; with maxLegs == 1 this is identical to the previous single-position state.
-        var st = legs.Count > 0 ? legs[0] : default;
+        var st = legs.Count > 0 ? legs[0] : default;  // oldest leg for papertrade
         int finalHold = legs.Count > 0 ? h1.Length - 1 - st.EntryIH1 : 0;
         return (result, new DipLongTradeState(legs.Count > 0, st.Entry, st.HardStop, st.Target,
                                               st.TrailArmed, st.TrailHigh, finalHold));

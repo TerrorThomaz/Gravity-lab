@@ -1,20 +1,9 @@
 namespace TradingGA;
 
 // Multiple-testing corrections for GA-optimised trading systems.
-//
-// DSR  — Deflated Sharpe Ratio (Bailey & López de Prado, 2014).
-//         Adjusts the reported Sharpe for (a) non-normality via skewness/kurtosis and
-//         (b) selection bias across T independent GA trials.  DSR > 0.95 means the
-//         edge survives both corrections.
-//
-// PBO  — Probability of Backtest Overfitting (Bailey, Borwein, LdP, Zhu, 2015).
-//         Combinatorial Purged CV: across all C(S,S/2) IS/OOS time-split
-//         combinations, fraction of splits where the IS-optimal coin falls below the
-//         OOS median.  PBO < 0.25 is low-risk; PBO > 0.50 = likely overfit.
-//
-// WRC  — White's Reality Check (White, 2000).
-//         Circular block-bootstrap test of H₀: no model in the universe beats zero.
-//         p < 0.05 = genuine edge unlikely to be a data-snooping artifact.
+// DSR: Deflated Sharpe Ratio — adjusts for non-normality + selection bias across T trials.
+// PBO: Probability of Backtest Overfitting — combinatorial purged CV.
+// WRC: White's Reality Check — block-bootstrap test that no model beats zero.
 public static class StatisticalTests
 {
     // ── Normal distribution ───────────────────────────────────────────────
@@ -78,28 +67,10 @@ public static class StatisticalTests
     }
 
     // ── 1. Deflated Sharpe Ratio ──────────────────────────────────────────
-
-    // Returns (DSR, PSR_vs_zero, E_max_SR_hat, SR_hat).
-    //
-    // SR_hat            per-trade Sharpe of the observed return series
-    // E_max_SR          expected max per-trade Sharpe from T i.i.d. null trials
-    // PSR_vs_zero       P(SR_true > 0) ignoring selection (classical significance)
-    // DSR               P(SR_true > 0) after non-normality + selection correction
-    //
-    // numTrials: approximate independent candidate evaluations during optimisation
-    // (e.g. GA population × generations).  GA trials are correlated, so treat this
-    // as an upper bound — the true effective T is lower.
-    // effectiveN: the number of INDEPENDENT observations, which is not returns.Count here.
-    //
-    // This system trades ~100 correlated crypto perps gated by a shared BTC regime, so trades
-    // cluster hard: many simultaneous positions inside one regime episode are close to ONE
-    // observation. DSR's sqrt(n-1) term therefore divides by a wildly inflated sample and will
-    // read "significant" almost regardless of the data. Passing an effective count -- e.g. the
-    // number of contiguous regime blocks the trades fall into, or a bootstrap-derived figure --
-    // makes the verdict honest. Expect verdicts to flip from significant to not; that is the
-    // correct outcome, not a regression.
-    //
-    // Defaults to returns.Count so existing call sites are unchanged until they opt in.
+    // Returns (DSR, PSR_vs_zero, E_max_SR, SR_hat).
+    // numTrials: approx independent candidate evaluations (upper bound; GA trials are correlated).
+    // effectiveN: independent observation count (not returns.Count — trades cluster by regime).
+    // Defaults to returns.Count for backward compatibility.
     public static (double Dsr, double PsrVsZero, double EMaxSr, double SrHat)
         DeflatedSharpeRatio(List<double> returns, int numTrials, int? effectiveN = null)
     {
@@ -111,17 +82,13 @@ public static class StatisticalTests
 
         double srHat = m.Mean / m.Std;
 
-        // Non-normality correction (BLP 2014, eq. 3).
-        // m.Kurt is the non-excess kurtosis: Gaussian = 3 → (3-1)/4 = 0.5.
+        // Non-normality correction. m.Kurt is non-excess (Gaussian=3).
         double denom = Math.Sqrt(Math.Max(1e-10,
             1.0 - m.Skew * srHat + (m.Kurt - 1.0) / 4.0 * srHat * srHat));
 
         double psrVsZero = NormCdf(srHat * Math.Sqrt(n - 1) / denom);
 
-        // E[max SR̂] over numTrials i.i.d. candidates (BLP 2014, eq. 11).
-        // E[max Z_T] ≈ (1−γ_E)·Φ⁻¹(1−1/T) + γ_E·Φ⁻¹(1−1/(T·e))
-        // γ_E = Euler–Mascheroni constant ≈ 0.5772
-        // Divide by √(n−1) to convert from Z-score units to per-trade SR units.
+        // E[max SR] over T i.i.d. candidates. γ_E = Euler-Mascheroni ≈ 0.5772.
         const double gammaE = 0.5772156649;
         double T      = Math.Max(2, numTrials);
         double eMaxZ  = (1 - gammaE) * NormInv(1 - 1.0 / T)
@@ -133,12 +100,8 @@ public static class StatisticalTests
     }
 
     // ── 2. Probability of Backtest Overfitting (CPCV) ─────────────────────
-
-    // configs[j] = (label, time-ordered val returns for one coin or config).
-    // Algorithm: enumerate C(S, S/2) IS/OOS splits; for each split identify the
-    // IS-optimal config and record whether its OOS rank falls below the OOS median.
-    // PBO = fraction of splits where IS-best < OOS median.
-    // Sparse configs (< S*2 trades) are filtered out before evaluation.
+    // Enumerate C(S, S/2) IS/OOS splits; PBO = fraction where IS-best < OOS median.
+    // Sparse configs (< S*2 trades) filtered out.
     public static (double Pbo, int Combos, double MeanLogitLambda)
         ProbabilityOfBacktestOverfitting(
             IReadOnlyList<(string Label, List<double> Returns)> configs,
@@ -147,13 +110,13 @@ public static class StatisticalTests
         int S     = numSplits;
         int halfS = S / 2;
 
-        // Only include configs with enough trades for meaningful splits.
+        // Filter sparse configs.
         var dense = configs.Where(c => c.Returns.Count >= S * 2).ToList();
         if (dense.Count < 2) return (double.NaN, 0, 0);
 
         int J = dense.Count;
 
-        // Period boundaries per config (split by trade count, not calendar time).
+        // Period boundaries per config (by trade count).
         int[][] bounds = dense.Select(c =>
             Enumerable.Range(0, S + 1).Select(i => i * c.Returns.Count / S).ToArray()
         ).ToArray();
@@ -181,7 +144,7 @@ public static class StatisticalTests
             double rank     = oosSr.Count(s => s <= winOosSr);     // 1..J
             double lambda   = rank / J - 0.5;                       // ∈ (−0.5, +0.5]
 
-            // Logit(λ + 0.5): positive → IS-best is above OOS median; negative → below.
+            // Logit(λ + 0.5): positive = IS-best above OOS median.
             double hi = Math.Clamp(lambda + 0.5, 1e-9, 1 - 1e-9);
             sumLogit += Math.Log(hi / (1 - hi));
 
@@ -194,12 +157,7 @@ public static class StatisticalTests
     }
 
     // ── 3. White's Reality Check ──────────────────────────────────────────
-
-    // H₀: max_k E[f_k] ≤ 0 (no model beats zero return).
-    // Test statistic: V = max_k(f̄_k).
-    // Null distribution via circular block bootstrap (preserves serial correlation).
-    // Centred statistic (White 2000): V* = max_k(f̄*_k − f̄_k).
-    // blockSize = 0 → auto (√n of the largest config, Politis & Romano 1994).
+    // H0: max_k E[f_k] ≤ 0. Null via circular block bootstrap. blockSize=0 → auto (√n).
     public static double WhitesRealityCheck(
         IReadOnlyList<(string Label, List<double> Returns)> configs,
         int     bootstrapSamples = 1000,
@@ -228,7 +186,7 @@ public static class StatisticalTests
                 int n   = ret.Count;
                 if (n == 0) continue;
 
-                // Circular block bootstrap resample.
+                // Circular block bootstrap.
                 double sum = 0;
                 int    cnt = 0;
                 int    nb  = (int)Math.Ceiling((double)n / blockSize);
@@ -249,11 +207,7 @@ public static class StatisticalTests
     }
 
     // ── Formatted multi-strategy report ──────────────────────────────────
-
-    // Runs DSR (at three T levels), PBO, and WRC and prints results.
-    // gaTrials: approximate number of candidate genotype evaluations during training
-    //   used as the nominal T in DSR.  GA generations are correlated so treat as
-    //   an upper bound; T=1,000 (optimistic lower bound) is also shown.
+    // DSR at three T levels + PBO + WRC. gaTrials: nominal T for DSR (upper bound).
     public static void PrintReport(
         IReadOnlyList<(string Label, List<double> Returns)> configs,
         string  strategyName,
@@ -272,7 +226,7 @@ public static class StatisticalTests
             return;
         }
 
-        // DSR at three T values: optimistic / nominal / conservative upper bound.
+        // DSR at T = 1000 / gaTrials / 100000.
         Console.WriteLine("  DSR  (H₀: true SR ≤ 0 after selection from T trials)");
         Console.WriteLine($"  {"T (trials)",12}  {"SR̂",7}  {"E[maxSR]",9}  {"PSR₀",6}  {"DSR",6}  verdict");
         foreach (int T in new[] { 1_000, gaTrials, 100_000 })
@@ -284,7 +238,7 @@ public static class StatisticalTests
             Console.WriteLine($"  {T,12:N0}  {srHat,+7:F4}  {eMaxSr,+9:F4}  {psr0,6:F3}  {dsr,6:F3}  {v}");
         }
 
-        // PBO across coins — shows how reliably IS-optimal coin wins OOS.
+        // PBO: how reliably IS-optimal coin wins OOS.
         {
             var (pbo, combos, logitMean) = ProbabilityOfBacktestOverfitting(configs);
             if (!double.IsNaN(pbo))
@@ -301,7 +255,7 @@ public static class StatisticalTests
             }
         }
 
-        // WRC — tests whether the best coin's edge survives the full-universe null.
+        // WRC: does best coin's edge survive full-universe null?
         {
             double pVal = WhitesRealityCheck(configs, rng: rng);
             if (!double.IsNaN(pVal))
@@ -316,12 +270,8 @@ public static class StatisticalTests
     }
 
     // ── Holm-Bonferroni step-down correction ──────────────────────────────
-    // Controls family-wise error rate (FWER) across multiple strategy tests.
-    // Given m p-values sorted ascending, the adjusted threshold for the i-th
-    // p-value is α/(m-i+1). Returns which hypotheses are rejected at the given α.
-    //
-    // CALL SITE: commands/CombinedBacktest.cs (line ~1345+) — wires per-strategy
-    // Monte Carlo p-values to correct for multiple testing across 6 strategies.
+    // FWER control: threshold for i-th sorted p-value = α/(m-i+1).
+    // Used in CombinedBacktest for 6-strategy family.
     public static bool[] HolmBonferroni(double[] pValues, double alpha = 0.05)
     {
         int m = pValues.Length;
@@ -356,8 +306,7 @@ public static class StatisticalTests
     }
 
     // ── CVaR (Expected Shortfall) ─────────────────────────────────────────
-    // Average loss in the worst α% of returns. Coherent risk measure (subadditive).
-    // alpha=0.05 → average of worst 5% of returns.
+    // Average loss in worst α% of returns. Coherent (subadditive).
     public static double CVaR(List<double> returns, double alpha = 0.05)
     {
         if (returns.Count == 0) return 0;
@@ -376,16 +325,8 @@ public static class StatisticalTests
                 yield return [items[i], .. rest];
     }
 
-    // Effective independent sample size for a clustered trade series.
-    //
-    // Counts CONTIGUOUS BLOCKS of trades separated by more than `gapHours` of inactivity, rather
-    // than counting trades. Rationale: entries are regime-gated, so trades arrive in bursts inside
-    // a regime episode and are anything but independent — 20 simultaneous alt longs in one Bull leg
-    // carry roughly the information of one bet, not twenty. Every t-statistic, DSR and iid
-    // bootstrap in this repo assumes independence it does not have.
-    //
-    // Deliberately crude: a block count is a defensible LOWER bound on independence and needs no
-    // model. A correlation-matrix eigenvalue approach would be sharper and is the natural upgrade.
+    // Effective independent sample size: counts contiguous blocks of trades separated by >gapHours.
+    // Trades cluster by regime, so trade count overstates independence. Block count is a defensible lower bound.
     public static int EffectiveSampleSize(IReadOnlyList<DateTime> entryTimes, double gapHours = 24.0)
     {
         if (entryTimes.Count == 0) return 0;

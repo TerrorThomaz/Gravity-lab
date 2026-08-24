@@ -3,6 +3,7 @@ namespace TradingGA;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Globalization;
 
 /// <summary>
 /// Async HTTP client for Gravity-gen2 paper trading via Hyperliquid's Python bridge.
@@ -180,26 +181,167 @@ public sealed class HyperliquidClient : IDisposable
     /// Convenience: fetch h1 candles aggregated from 15m (matches CandleFetcher behavior).
     /// Supports arbitrary depth via pagination — no artificial cap.
     /// </summary>
+    // ── Incremental 15m disk cache ────────────────────────────────────────────────────────────────
+    //
+    // This path had NO caching of any kind, unlike CandleFetcher.FetchFifteenMinCandlesCached which
+    // has done incremental fetching for the Bybit/backtest path all along. The live loop therefore
+    // re-downloaded ~125 days of history for every coin every 15 minutes to obtain ONE new candle:
+    // 64 coins x 3 pages = 192 requests and 768,000 candles per cycle, ~18,400 requests/day, a
+    // 12,000x waste factor. That is what drove the rate limiting that starved the loop of data
+    // (45-56% of fetches failing) and left live_journal.json unwritten for a week.
+    //
+    // Cache is keyed by the normalised Hyperliquid coin name so kBONK/kPEPE/kSHIB do not collide
+    // with their 1000-prefixed exchange-agnostic aliases.
+    // Hyperliquid retains ~5000 15m candles per symbol. Requesting more than it has means the
+    // cache can never reach its target, so the backward-extension re-fires every cycle forever and
+    // each coin costs 2 requests instead of 1. 5000 x 15m = 1250 h1 bars — 4.9x the
+    // warmup(200) + BullMinBars(53) the regime duration gate actually needs.
+    public const int LiveBatches = 5;
+
+    private const string HlCacheDir = "candle_cache";
+
+    private static string HlCachePath(string symbol) =>
+        Path.Combine(HlCacheDir, $"hl_{NormalizeToHyperliquidCoin(symbol)}_15m.csv");
+
+    private static SortedDictionary<long, Candle> ReadHlCache(string symbol)
+    {
+        var res = new SortedDictionary<long, Candle>();
+        string path = HlCachePath(symbol);
+        if (!File.Exists(path)) return res;
+        try
+        {
+            foreach (var line in File.ReadLines(path).Skip(1))
+            {
+                var f = line.Split(',');
+                if (f.Length < 6) continue;
+                if (!long.TryParse(f[0], out long ms)) continue;
+                res[ms] = new Candle(
+                    DateTimeOffset.FromUnixTimeMilliseconds(ms).UtcDateTime,
+                    double.Parse(f[1], CultureInfo.InvariantCulture),
+                    double.Parse(f[2], CultureInfo.InvariantCulture),
+                    double.Parse(f[3], CultureInfo.InvariantCulture),
+                    double.Parse(f[4], CultureInfo.InvariantCulture),
+                    double.Parse(f[5], CultureInfo.InvariantCulture));
+            }
+        }
+        catch { return new SortedDictionary<long, Candle>(); }   // corrupt cache → refetch, never throw
+        return res;
+    }
+
+    private static void WriteHlCache(string symbol, SortedDictionary<long, Candle> candles)
+    {
+        try
+        {
+            Directory.CreateDirectory(HlCacheDir);
+            string tmp = HlCachePath(symbol) + ".tmp";
+            using (var w = new StreamWriter(tmp, false))
+            {
+                w.WriteLine("T,o,h,l,c,v");
+                foreach (var (ms, c) in candles)
+                    w.WriteLine($"{ms},{c.Open.ToString(CultureInfo.InvariantCulture)}," +
+                                $"{c.High.ToString(CultureInfo.InvariantCulture)},{c.Low.ToString(CultureInfo.InvariantCulture)}," +
+                                $"{c.Close.ToString(CultureInfo.InvariantCulture)},{c.Volume.ToString(CultureInfo.InvariantCulture)}");
+            }
+            // Atomic replace so a crash mid-write cannot leave a truncated cache behind.
+            File.Move(tmp, HlCachePath(symbol), overwrite: true);
+        }
+        catch { /* cache is an optimisation — never fail the fetch over it */ }
+    }
+
     public async Task<List<Candle>> FetchH1CandlesAsync(string symbol, int batches = 113)
     {
-        // Fetch 15m candles at scale (each batch ~ 1000 candles ~ 4 days)
-        int candlesNeeded = batches * 1000;
-        var raw = await FetchOhlcvPaginatedAsync(symbol, "15m", candlesNeeded);
-        
-        var candles = new List<Candle>(raw.Count);
-        foreach (var r in raw)
+        int wantCandles = batches * 1000;
+        var cache = ReadHlCache(symbol);
+
+        if (cache.Count > 0)
         {
-            // /api/candleSnapshot returns raw HL keys (T,o,h,l,c,v,n), not a normalized shape.
-            if (!r.TryGetValue("T", out var tObj) || !r.TryGetValue("c", out var cObj)) continue;
-            long ms = AsLong(tObj);
-            double close = AsDouble(cObj);
-            double open = r.TryGetValue("o", out var oObj) ? AsDouble(oObj) : close;
-            double high = r.TryGetValue("h", out var hObj) ? AsDouble(hObj) : close;
-            double low = r.TryGetValue("l", out var lObj) ? AsDouble(lObj) : close;
-            double vol = r.TryGetValue("v", out var vObj) ? AsDouble(vObj) : 0;
-            candles.Add(new Candle(DateTimeOffset.FromUnixTimeMilliseconds(ms).UtcDateTime, open, high, low, close, vol));
+            // Refetch from one candle BEFORE the last cached bar: the most recent cached candle may
+            // have been captured mid-formation, so its OHLC is provisional and must be overwritten
+            // rather than trusted. Keyed by timestamp, so the re-fetch simply replaces it.
+            long lastMs = cache.Keys.Last();
+            long fromMs = lastMs - 15 * 60_000L;
+            var fresh = await FetchOhlcvRangeAsync(symbol, "15m", fromMs);
+            foreach (var r in fresh)
+                if (TryParseCandle(r, out long ms, out var c)) cache[ms] = c;
+
+            // Trim to the requested depth so the cache cannot grow without bound.
+            while (cache.Count > wantCandles) cache.Remove(cache.Keys.First());
+
+            // A short cache must GROW, not trigger a full re-fetch. The cold path costs 3 pages and
+            // is exactly what the rate limiter rejects, so a coin that fails its first fetch would
+            // otherwise retry the expensive path every cycle forever and never bootstrap — measured
+            // as only 37 of 64 coins ever building a cache. Extending backwards one page per cycle
+            // fills the history in a few cycles at 1/3 the per-cycle cost, and cheaply enough that
+            // it succeeds while the burst does not.
+            if (cache.Count < wantCandles)
+            {
+                long oldestMs = cache.Keys.First();
+                long backFrom = oldestMs - 5000L * 15 * 60_000L;
+                var older = await FetchOhlcvRangeAsync(symbol, "15m", backFrom, oldestMs - 1);
+                foreach (var r in older)
+                    if (TryParseCandle(r, out long ms, out var c) && ms < oldestMs) cache[ms] = c;
+            }
+
+            while (cache.Count > wantCandles) cache.Remove(cache.Keys.First());
+            WriteHlCache(symbol, cache);
+
+            // Serve whatever we have. The caller already screens on length (`< 200 candles` → skip),
+            // so a still-growing cache degrades to "this coin sits out a cycle" rather than to a
+            // full re-fetch storm.
+            return cache.Values.ToList();
         }
-        return candles;
+
+        // Cold path: no usable cache, fetch the full window.
+        int candlesNeeded = wantCandles;
+        var raw = await FetchOhlcvPaginatedAsync(symbol, "15m", candlesNeeded);
+        foreach (var r in raw)
+            if (TryParseCandle(r, out long ms, out var c)) cache[ms] = c;
+        if (cache.Count > 0) WriteHlCache(symbol, cache);
+
+        return cache.Values.ToList();
+    }
+
+    // /api/candleSnapshot returns raw HL keys (T,o,h,l,c,v,n), not a normalised shape.
+    private static bool TryParseCandle(Dictionary<string, object> r, out long ms, out Candle candle)
+    {
+        ms = 0; candle = default;
+        if (!r.TryGetValue("T", out var tObj) || !r.TryGetValue("c", out var cObj)) return false;
+        ms = AsLong(tObj);
+        double close = AsDouble(cObj);
+        double open  = r.TryGetValue("o", out var oObj) ? AsDouble(oObj) : close;
+        double high  = r.TryGetValue("h", out var hObj) ? AsDouble(hObj) : close;
+        double low   = r.TryGetValue("l", out var lObj) ? AsDouble(lObj) : close;
+        double vol   = r.TryGetValue("v", out var vObj) ? AsDouble(vObj) : 0;
+        candle = new Candle(DateTimeOffset.FromUnixTimeMilliseconds(ms).UtcDateTime, open, high, low, close, vol);
+        return true;
+    }
+
+    // Single-page fetch of everything from `fromMs` to now. The incremental path needs at most a
+    // handful of candles, so this deliberately does NOT paginate backwards like the cold path.
+    // toMs defaults to "now". It MUST be passed explicitly when extending backwards: HL caps the
+    // response and returns the most RECENT candles in the requested window, so a backward fetch left
+    // open-ended returns data already held, every one of which the `ms < oldest` filter then drops —
+    // a wasted request per coin per cycle and a cache that never grows (measured: 0 of 53 coins
+    // reached full depth over 5 runs).
+    private async Task<List<Dictionary<string, object>>> FetchOhlcvRangeAsync(
+        string symbol, string interval, long fromMs, long? toMs = null)
+    {
+        var payload = new Dictionary<string, object>
+        {
+            ["symbol"]    = NormalizeToHyperliquidCoin(symbol),
+            ["interval"]  = interval,
+            ["startTime"] = fromMs,
+            ["endTime"]   = toMs ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        };
+        for (int attempt = 0; ; attempt++)
+        {
+            try { return await PostJsonListAsync("/api/candleSnapshot", payload) ?? []; }
+            catch when (attempt < 4)
+            {
+                await Task.Delay((int)(400 * Math.Pow(2, attempt) * (0.75 + Random.Shared.NextDouble() * 0.5)));
+            }
+            catch { return []; }   // exhausted: serve stale cache rather than drop the coin entirely
+        }
     }
 
     /// <summary>
@@ -217,7 +359,18 @@ public sealed class HyperliquidClient : IDisposable
     /// </summary>
     public async Task<Dictionary<string, object>> FetchUniverseAsync()
     {
-        return await GetJsonObjectAsync($"{_baseUrl}/api/universe");
+        // Same rate limiter as candleSnapshot, and this is the FIRST call every command makes —
+        // so a 429 here aborted `hyperliquid-lookback` outright before it touched a single candle
+        // (observed twice while validating the cache, and it masqueraded as "the cache made it fast"
+        // because a crashed run issues almost no requests). Retry it for the same reason.
+        for (int attempt = 0; ; attempt++)
+        {
+            try { return await GetJsonObjectAsync($"{_baseUrl}/api/universe"); }
+            catch when (attempt < 4)
+            {
+                await Task.Delay((int)(400 * Math.Pow(2, attempt) * (0.75 + Random.Shared.NextDouble() * 0.5)));
+            }
+        }
     }
 
     /// <summary>

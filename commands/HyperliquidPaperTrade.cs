@@ -273,7 +273,7 @@ static class HyperliquidPaperTrade
                 await sem.WaitAsync(cts.Token);
                 try
                 {
-                    var h1Candles = await client.FetchH1CandlesAsync(sym, batches: 12);
+                    var h1Candles = await client.FetchH1CandlesAsync(sym, batches: HyperliquidClient.LiveBatches);
                     if (h1Candles.Count < 200) return (sym, (Candle[]?)null, (Candle[]?)null, false, 0.0, 0.0);
                     
                     // Aggregate to 1h (4 x 15m)

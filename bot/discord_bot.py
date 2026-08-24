@@ -16,9 +16,17 @@ Slash commands:
   /autoevolve     Overnight optimizer: fitness-based GA, profit-based candidate selection
   /stopevolve     Stop the background optimizer
   /journal        Live paper trade stats vs backtest baseline
+  /portfolio      Current live portfolio status with equity, DD, WR, Sharpe
+  /killswitch     Show killswitch drawdown threshold and halt status
   /info           Dump full output buffer
 
 Text in command channel: forwarded to Claude Code for live code edits.
+
+Auto-alerts (posted to output channel):
+  - Trade entries/exits (immediate embeds)
+  - Killswitch trigger (urgent red alert when DD exceeds threshold)
+  - Periodic portfolio snapshots (every N cycles)
+  - Auto-promote events during livetrain
 
 Env vars:
   DISCORD_TOKEN           – bot token
@@ -26,6 +34,7 @@ Env vars:
   DISCORD_COMMAND_CHANNEL – channel ID for Claude + slash commands
   DISCORD_GUILD_ID        – (optional) guild ID for instant slash command sync
   GRAVITY_MODE            – starting mode: papertrade (default) or livetrain
+  GRAVITY_KILLDD          – drawdown threshold % for killswitch (default: 7)
 """
 
 import asyncio
@@ -33,6 +42,9 @@ import json
 import os
 import re
 import sys
+sys.stdout.reconfigure(line_buffering=True)  # redirected to a log file otherwise block-buffers,
+                                              # hiding print() diagnostics (e.g. watchdog restarts)
+                                              # until the buffer fills or the process exits.
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -70,6 +82,14 @@ score_history:    deque[float]                      = deque(maxlen=6)
 autoevolve_task:  asyncio.Task | None               = None
 live_journal:     list[dict]                        = []
 backtest_baseline: dict                             = {}
+
+# ── Portfolio / killswitch state ──────────────────────────────────────────────
+portfolio_equity: float = 100_000.0          # Running equity estimate
+peak_equity:     float = 100_000.0           # Peak equity for DD calc
+killswitch_halted: bool = False              # Whether killswitch has tripped
+cycle_count:     int = 0                     # Cycle counter for periodic snapshots
+last_snapshot_cycle: int = 0                 # Last cycle we posted a snapshot
+SNAPSHOT_EVERY_N_CYCLES = 5                  # Post portfolio snapshot every N cycles
 
 # ── ANSI stripper ─────────────────────────────────────────────────────────────
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\[2J|\x1b\[H|\r")
@@ -149,19 +169,143 @@ def add_journal_entry(line: str) -> None:
     })
     save_journal()
 
+# live_journal.json is written by TWO producers with DIFFERENT schemas, and they overwrite each
+# other's file:
+#   bot schema  (add_journal_entry, parses the Bybit papertrade console table)
+#                 -> key, win, open_time, close_time, coin, entry, exit, ret_pct, pnl_eur
+#   C#  schema  (HyperliquidPaperTrade.cs writes the file directly)
+#                 -> time, evt(entry|exit|halt), strat, sym, dir, entry, mark, pnl, regime,
+#                    routed, guardMult
+# hyperliquid-papertrade never prints the console line the bot's parser expects, so under that
+# mode every stats call filtered on "ret_pct" matched zero rows and /journal rendered empty while
+# 98 real events sat in the file. Normalise both shapes to the bot's internal keys instead.
+#
+# Only evt == "exit" rows are realised trades. "entry" rows are still-open positions and must not
+# be counted, or an open position books its unrealised mark as a closed result.
+JOURNAL_NOTIONAL_USD = float(os.environ.get("HYPERLIQUID_USD_SIZE", "1000"))
+
+def normalized_journal() -> list[dict]:
+    """Both journal schemas as the bot's internal shape. Unknown rows are skipped, not guessed."""
+    out: list[dict] = []
+    for e in live_journal:
+        if "ret_pct" in e and "pnl_eur" in e:      # native bot schema
+            out.append(e)
+            continue
+        if e.get("evt") != "exit":                  # C# schema: skip entry/halt events
+            continue
+        pnl = e.get("pnl")
+        if pnl is None:
+            continue
+        ts = str(e.get("time", ""))
+        out.append({
+            "key":        f"{e.get('sym','?')}|{ts}",
+            "win":        pnl > 0,
+            "open_time":  ts[:16].replace("T", " "),
+            "close_time": ts[:16].replace("T", " "),
+            "coin":       f"{e.get('sym','?')} {e.get('strat','')}".strip(),
+            "entry":      float(e.get("entry", 0) or 0),
+            "exit":       float(e.get("mark", 0) or 0),
+            "ret_pct":    float(pnl),
+            # C# exit events carry no size, so EUR is the % applied to the configured notional —
+            # a derived display figure, not an exchange-reported amount.
+            "pnl_eur":    float(pnl) / 100.0 * JOURNAL_NOTIONAL_USD,
+        })
+    return out
+
 def compute_live_stats() -> dict:
-    if not live_journal:
+    valid = normalized_journal()
+    if not valid:
         return {}
-    rets  = [e["ret_pct"] for e in live_journal]
-    pnls  = [e["pnl_eur"] for e in live_journal]
-    wins  = sum(1 for e in live_journal if e["win"])
-    n     = len(live_journal)
+    rets  = [e["ret_pct"] for e in valid]
+    pnls  = [e["pnl_eur"] for e in valid]
+    wins  = sum(1 for e in valid if e.get("win", False))
+    n     = len(valid)
     avg   = sum(rets) / n
     total = sum(pnls)
     wr    = wins / n * 100
     std   = (sum((r - avg) ** 2 for r in rets) / n) ** 0.5 if n >= 2 else 0.0
-    sharpe = (avg / std) if std > 0 else 0.0  # per-trade ratio (not annualised)
+    sharpe = (avg / std) if std > 0 else 0.0
     return {"n": n, "wins": wins, "wr": wr, "avg_ret": avg, "total_pnl": total, "sharpe": sharpe}
+
+def load_live_state() -> dict | None:
+    """Load live_state.json for open position tracking."""
+    try:
+        with open(os.path.join(PROJECT_DIR, "live_state.json"), "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+def build_status_embed(state: dict) -> discord.Embed:
+    """Build detailed status embed from live_state.json."""
+    positions = state.get("positions", [])
+    regime = state.get("regime", {})
+    guard = state.get("guard", {})
+    rotator = state.get("rotator", {})
+    
+    routed = [p for p in positions if p.get("routed")]
+    shadow = [p for p in positions if not p.get("routed")]
+    
+    # Group by strategy
+    from collections import Counter
+    strat_counts = Counter(p["strat"] for p in positions)
+    
+    embed = discord.Embed(
+        title="🔍 Papertrade Status",
+        color=discord.Color.blue(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    
+    # Regime & routing info
+    reg_str = f"**{regime.get('state', '?')}** conf={regime.get('confidence', 0):.0%}"
+    gates = []
+    for k in ['FadeShort','Grid','SwingLong','DipLong','FadeLong','RipShort']:
+        val = regime.get(k, False)
+        gates.append(f"{k}: {'✓' if val else '✗'}")
+    gates_str = " • ".join(gates)
+    
+    desc = f"Regime {reg_str}  •  {len(routed)} routed / {len(shadow)} shadow\n{gates_str}"
+    if guard:
+        desc += f"\nGuard mult: {guard.get('mult', '?')} ATR ratio: {guard.get('atrRatio', '?')}"
+    if rotator:
+        alloc = rotator.get("allocation", {})
+        desc += f"\nRotator safety: {rotator.get('safetyScore', '?')} → alts={alloc.get('alts', '?')} BTC={alloc.get('btc', '?')} ETH={alloc.get('eth', '?')}"
+    
+    embed.description = desc
+    
+    # Position summary
+    pos_summary = []
+    for s, c in sorted(strat_counts.items(), key=lambda x: -x[1]):
+        pos_summary.append(f"{s}: {c}")
+    embed.add_field(name="Shadow Positions", value="\n".join(pos_summary) or "None", inline=False)
+    
+    # Top positions by P&L
+    sorted_pos = sorted(positions, key=lambda x: x["pnl"])[:5]
+    top_lines = []
+    for p in sorted_pos:
+        trail = "TRL" if p.get("trailArmed") else ""
+        top_lines.append(f"{p['sym'][:12]:12} {p['strat'][:10]:10} {p['dir']} pnl={p['pnl']:+6.2f}% {trail}".strip())
+    
+    embed.add_field(
+        name="Worst 5 P&L",
+        value="\n".join(top_lines) if top_lines else "No positions",
+        inline=False,
+    )
+    
+    # Best positions
+    best_pos = sorted(positions, key=lambda x: -x["pnl"])[:5]
+    best_lines = []
+    for p in best_pos:
+        trail = "TRL" if p.get("trailArmed") else ""
+        best_lines.append(f"{p['sym'][:12]:12} {p['strat'][:10]:10} {p['dir']} pnl={p['pnl']:+6.2f}% {trail}".strip())
+    
+    embed.add_field(
+        name="Best 5 P&L",
+        value="\n".join(best_lines) if best_lines else "No positions",
+        inline=False,
+    )
+    
+    embed.set_footer(text=f"Timestamp: {state.get('timestamp', '?')[:19]} UTC")
+    return embed
 
 # ── Backtest baseline parsing ─────────────────────────────────────────────────
 def parse_and_save_baseline(raw: str) -> None:
@@ -353,6 +497,80 @@ GRID_ROW_RE = re.compile(
     r"\s{2,}(\S+)"   # current price
     r"\s{2,}(\S+)"   # unrealised %
 )
+
+# ── Trade alert patterns (entry/exit detection) ───────────────────────────────
+# Matches journal lines: ✓1   05-30 12:34→12:39  ADAUSDT          0.350000    0.355000    +1.43%     +2.15€
+TRADE_EXIT_RE = re.compile(
+    r"^[\s]*([✓✗])(\d+)\s+"
+    r"(\d{2}-\d{2} \d{2}:\d{2})→(\d{2}:\d{2})\s+"
+    r"(\w+USDT)\s+"
+    r"([\d.]+)\s+([\d.]+)\s+"
+    r"([+-][\d.]+)%\s+"
+    r"([+-][\d.]+)"
+)
+# Matches papertrade entry output: [ENTRY] BTCUSDT SHORT b0 @ 63244.0000 pnl=-0.85%
+TRADE_ENTRY_RE = re.compile(
+    r"\[ENTRY\]\s+(\w+USDT)\s+(Short|Long)", re.IGNORECASE
+)
+# Matches papertrade order placement: Order placed: {...}
+ORDER_PLACED_RE = re.compile(r"Order placed.*coin.*?\"?(\w+)\"?.*?side.*?\"?([BbAa])")
+# Matches killswitch halt: TRADING HALTED: DD=7.5% ≥ 7%
+KILLSWITCH_RE = re.compile(r"TRADING HALTED.*DD=([\d.]+)%\s+[≥>]?\s*([\d.]+)%")
+# Matches resume: [RESUME] Trading resumed
+KILLSWITCH_RESUME_RE = re.compile(r"\[RESUME\].*Trading resumed")
+# Matches equity snapshot: equity=101234.56 peak_equity=102000.00 ddPct=1.23
+EQUITY_SNAPSHOT_RE = re.compile(r"equity\s*=\s*([\d.]+).*peakEquity\s*=\s*([\d.]+).*ddPct\s*=\s*([\d.]+)")
+
+# ── Alert helpers ─────────────────────────────────────────────────────────────
+async def send_trade_alert(channel: discord.TextChannel, embed: discord.Embed) -> None:
+    """Send a trade alert embed immediately (not waiting for cycle summary)."""
+    try:
+        await channel.send(embed=embed)
+    except Exception as exc:
+        print(f"[bot] send_trade_alert failed: {exc}")
+
+async def send_killswitch_alert(channel: discord.TextChannel, reason: str, dd_pct: float) -> None:
+    """Send an urgent killswitch alert."""
+    color = discord.Color.red()
+    embed = discord.Embed(
+        title="🛑 KILLSWITCH TRIGGERED",
+        description=f"**Portfolio drawdown exceeded threshold.**\n\n"
+                    f"- Current DD: **{dd_pct:.2f}%**\n"
+                    f"- Threshold: **{float(os.environ.get('GRAVITY_KILLDD', '7')):.0f}%**\n"
+                    f"- Action: All trading halted\n"
+                    f"- Resume with `GRAVITY_RESUME=1` env var",
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="Set GRAVITY_RESUME=1 to resume trading")
+    await send_trade_alert(channel, embed)
+
+async def send_portfolio_snapshot(channel: discord.TextChannel, stats: dict) -> None:
+    """Send a periodic portfolio snapshot embed."""
+    color = discord.Color.green() if stats.get("total_pnl", 0) >= 0 else discord.Color.red()
+    embed = discord.Embed(
+        title="📊 Portfolio Snapshot",
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+    n = stats.get("n", 0)
+    wins = stats.get("wins", 0)
+    wr = stats.get("wr", 0)
+    avg_ret = stats.get("avg_ret", 0)
+    total_pnl = stats.get("total_pnl", 0)
+    sharpe = stats.get("sharpe", 0)
+
+    embed.description = (
+        f"**Live Performance**  •  {n} trades  •  WR {wr:.0f}%\n"
+        f"Avg return `{avg_ret:+.2f}%`  •  Sharpe `{sharpe:.2f}`\n"
+        f"Total P&L `{total_pnl:+.2f} €`"
+    )
+    embed.add_field(name="Win Rate", value=f"{wins}W / {n - wins}L ({wr:.0f}%)", inline=True)
+    embed.add_field(name="Avg Return", value=f"`{avg_ret:+.2f}%`", inline=True)
+    embed.add_field(name="Sharpe", value=f"`{sharpe:.2f}`", inline=True)
+    embed.add_field(name="Total P&L", value=f"`{total_pnl:+.2f} €`", inline=True)
+    embed.set_footer(text="Portfolio snapshots every 5 cycles")
+    await send_trade_alert(channel, embed)
 
 def build_summary(lines: list[str]) -> discord.Embed:
     geno_str, fitness = "", ""
@@ -580,9 +798,24 @@ async def start_mode(mode: str | None = None) -> None:
         status_message = None
         score_history.clear()
     current_cycle = []
-    cmd = (["dotnet", "exec", DOTNET_DLL, current_mode]
+
+    # Defensive guard: only one dotnet trading process should ever exist. Observed in practice
+    # (network blip around a watchdog restart) — trade_proc lost track of a still-alive child while
+    # a new one was spawned, leaving two processes racing writes to live_state.json/live_journal.json.
+    # Kill anything matching the DLL before spawning, regardless of what trade_proc thinks is running.
+    try:
+        pkill = await asyncio.create_subprocess_exec(
+            "pkill", "-f", f"dotnet exec {DOTNET_DLL}",
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await pkill.wait()
+        await asyncio.sleep(1)
+    except Exception as exc:
+        print(f"[bot] stray-process guard failed: {exc}")
+
+    cmd = (["stdbuf", "-oL", "dotnet", "exec", DOTNET_DLL, current_mode]
            if os.path.exists(DOTNET_DLL)
-           else ["dotnet", "run", "--", current_mode])
+           else ["stdbuf", "-oL", "dotnet", "run", "--", current_mode])
     trade_proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=PROJECT_DIR,
@@ -606,12 +839,37 @@ async def stop_mode() -> None:
     status_message = None
     print("[bot] process stopped")
 
-PAPERTRADE_HEADER = re.compile(r"=== Gravity-gen2 \| PAPER TRADE")
+# Modes that trade live and get full Discord treatment (journal parsing, trade/killswitch
+# alerts, snapshots, watchdog auto-restart). "papertrade" = simulator, "hyperliquid-papertrade"
+# = same loop but places real (possibly testnet) orders via the Hyperliquid bridge.
+LIVE_MODES = {"papertrade", "hyperliquid-papertrade"}
+
+PAPERTRADE_HEADER = re.compile(r"=== Gravity-gen2 \| (PAPER TRADE|Hyperliquid Paper Trade)")
 COMPARE_HEADER    = re.compile(r"=== Gravity-gen2 \| COMPARE")
-CYCLE_HEADER      = re.compile(r"=== Gravity-gen2 \| (PAPER TRADE|LIVE TRAIN|COMPARE)")
+CYCLE_HEADER      = re.compile(r"=== Gravity-gen2 \| (PAPER TRADE|Hyperliquid Paper Trade|LIVE TRAIN|COMPARE)")
+
+# The child's stdout was consumed by this reader and written nowhere. Only parsed cycle summaries
+# reached Discord, so a 56% candle-fetch failure rate ran for a week with no way to see it — the
+# process looked healthy from every artefact anyone could actually read. Tee the raw stream to a
+# file so the next failure is diagnosable without attaching to a live process.
+CHILD_LOG = os.environ.get("GRAVITY_CHILD_LOG", "/tmp/opencode/gravity_child.log")
+CHILD_LOG_MAX_BYTES = 50 * 1024 * 1024
+
+
+def tee_child_line(line: str) -> None:
+    """Append one child stdout line to CHILD_LOG. Never let logging break the reader."""
+    try:
+        # Cheap size cap: rotate once past the limit rather than growing without bound.
+        if os.path.exists(CHILD_LOG) and os.path.getsize(CHILD_LOG) > CHILD_LOG_MAX_BYTES:
+            os.replace(CHILD_LOG, CHILD_LOG + ".1")
+        with open(CHILD_LOG, "a", encoding="utf-8") as fh:
+            fh.write(f"{datetime.now(timezone.utc):%Y-%m-%dT%H:%M:%S} {line}\n")
+    except Exception:
+        pass
+
 
 async def read_stdout() -> None:
-    global current_cycle, status_message
+    global current_cycle, status_message, cycle_count, last_snapshot_cycle, killswitch_halted
     if trade_proc is None or trade_proc.stdout is None:
         return
     try:
@@ -620,16 +878,60 @@ async def read_stdout() -> None:
             if not line:
                 continue
             full_buffer.append(line)
+            tee_child_line(line)
 
             # Parse closed-trade journal lines from papertrade output
-            if current_mode == "papertrade":
+            if current_mode in LIVE_MODES:
                 add_journal_entry(line)
+
+            # ── Trade entry detection ───────────────────────────────────────
+            if current_mode in LIVE_MODES and command_channel is not None:
+                em = TRADE_ENTRY_RE.search(line)
+                if em:
+                    coin, side = em.group(1), em.group(2)
+                    color = discord.Color.green() if side == "Long" else discord.Color.orange()
+                    embed = discord.Embed(
+                        title=f"📈 {coin} {side}",
+                        description=f"**Trade opened** — {coin} {side}\n"
+                                    f"`{line.strip()}`",
+                        color=color,
+                        timestamp=datetime.now(timezone.utc),
+                    )
+                    embed.set_footer(text="Gravity-gen2 | Papertrade")
+                    await send_trade_alert(command_channel, embed)
+
+                # Killswitch alert
+                km = KILLSWITCH_RE.search(line)
+                if km and not killswitch_halted:
+                    killswitch_halted = True
+                    dd_pct = float(km.group(1))
+                    threshold = float(os.environ.get("GRAVITY_KILLDD", "7"))
+                    await send_killswitch_alert(command_channel, f"DD={dd_pct:.2f}% ≥ {threshold:.0f}%", dd_pct)
+                    print(f"[bot] ⚠ KILLSWITCH TRIGGERED: DD={dd_pct:.2f}%")
+
+                # Killswitch resume
+                if KILLSWITCH_RESUME_RE.search(line):
+                    killswitch_halted = False
+                    print("[bot] ✅ Trading resumed (killswitch cleared)")
 
             # Alert on auto-promote events
             if AUTO_PROMOTE_RE.search(line) and command_channel:
                 await command_channel.send(f"🚀 **AUTO-PROMOTE**: `{line.strip()}`")
 
+            # Detect cycle boundaries → post summary
             if CYCLE_HEADER.search(line):
+                # Increment cycle counter
+                cycle_count += 1
+
+                # Post periodic portfolio snapshot
+                if current_mode in LIVE_MODES and command_channel is not None:
+                    if cycle_count - last_snapshot_cycle >= SNAPSHOT_EVERY_N_CYCLES:
+                        stats = compute_live_stats()
+                        if stats and stats.get("n", 0) > 0:
+                            await send_portfolio_snapshot(command_channel, stats)
+                            last_snapshot_cycle = cycle_count
+
+                # Post cycle summary (existing behavior)
                 if current_cycle:
                     first = current_cycle[0]
                     if PAPERTRADE_HEADER.search(first):
@@ -659,9 +961,9 @@ async def read_stdout() -> None:
 # ── One-shot dotnet commands ──────────────────────────────────────────────────
 async def run_dotnet_oneshot(mode: str, timeout: int = 300) -> str:
     if os.path.exists(DOTNET_DLL):
-        cmd = ["dotnet", "exec", DOTNET_DLL, mode]
+        cmd = ["stdbuf", "-oL", "dotnet", "exec", DOTNET_DLL, mode]
     else:
-        cmd = ["dotnet", "run", "--", mode]
+        cmd = ["stdbuf", "-oL", "dotnet", "run", "--", mode]
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=PROJECT_DIR,
@@ -815,6 +1117,13 @@ async def slash_papertrade(interaction: discord.Interaction) -> None:
     await start_mode("papertrade")
     await interaction.followup.send("Switched to **papertrade** mode.")
 
+@client.tree.command(name="hyperliquid-papertrade", description="Switch to live papertrade mode with real order placement on the Hyperliquid bridge")
+async def slash_hyperliquid_papertrade(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(thinking=True)
+    await stop_mode()
+    await start_mode("hyperliquid-papertrade")
+    await interaction.followup.send("Switched to **hyperliquid-papertrade** mode.")
+
 @client.tree.command(name="compare", description="Side-by-side live comparison of all candidates (refreshes every 5 min)")
 async def slash_compare(interaction: discord.Interaction) -> None:
     await interaction.response.defer(thinking=True)
@@ -843,6 +1152,160 @@ async def slash_autoevolve(interaction: discord.Interaction) -> None:
         "`best_genotype.json` is never touched. An embed is posted here after each iteration. "
         "Use `/stopevolve` to stop."
     )
+
+# ── Portfolio / Killswitch slash commands ─────────────────────────────────────
+@client.tree.command(name="portfolio", description="Current live portfolio status with equity, DD, WR, Sharpe")
+async def slash_portfolio(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(thinking=True)
+    
+    # Compute live stats from journal
+    stats = compute_live_stats()
+    n = stats.get("n", 0)
+    
+    color = discord.Color.green() if stats.get("total_pnl", 0) >= 0 else discord.Color.red()
+    embed = discord.Embed(
+        title="📊 Live Portfolio Status",
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+    
+    if n > 0:
+        wins = stats["wins"]
+        embed.description = (
+            f"**{n} trades**  •  WR **{stats['wr']:.0f}%** ({wins}W/{n - wins}L)\n"
+            f"Avg return `{stats['avg_ret']:+.2f}%`  •  Total P&L `{stats['total_pnl']:+.2f} €`\n"
+            f"Sharpe `{stats['sharpe']:.2f}`"
+        )
+        embed.add_field(name="Win Rate", value=f"{wins}W / {n - wins}L ({stats['wr']:.0f}%)", inline=True)
+        embed.add_field(name="Avg Return", value=f"`{stats['avg_ret']:+.2f}%`", inline=True)
+        embed.add_field(name="Total P&L", value=f"`{stats['total_pnl']:+.2f} €`", inline=True)
+        embed.add_field(name="Sharpe", value=f"`{stats['sharpe']:.2f}`", inline=True)
+    else:
+        embed.description = "*No closed trades yet.*\n\nWaiting for first trade cycle..."
+    
+    # Killswitch status
+    ks_status = "✅ Trading active" if not killswitch_halted else "🛑 HALTED — DD threshold exceeded"
+    embed.add_field(name="Killswitch", value=ks_status, inline=False)
+    
+    embed.set_footer(text="Portfolio snapshots posted every 5 cycles")
+    await interaction.followup.send(embed=embed)
+
+@client.tree.command(name="papertrade-status", description="Detailed papertrade status: regime, guard, shadow positions")
+async def slash_papertrade_status(interaction: discord.Interaction) -> None:
+    """Show detailed papertrade state from live_state.json."""
+    await interaction.response.defer(thinking=True)
+    
+    state = load_live_state()
+    if not state:
+        await interaction.followup.send("No live_state.json found — is papertrade running?")
+        return
+    
+    embed = build_status_embed(state)
+    await interaction.followup.send(embed=embed)
+
+@client.tree.command(name="health", description="One-stop vacation health check: processes, live state, journal, killswitch")
+async def slash_health(interaction: discord.Interaction) -> None:
+    """Comprehensive health dashboard for remote monitoring."""
+    await interaction.response.defer(thinking=True)
+    now = datetime.now(timezone.utc)
+    problems: list[str] = []
+
+    # ── 1. Process liveness ───────────────────────────────────────────────────
+    # The harness runs the dotnet papertrade subprocess directly (child of this bot
+    # when started via /papertrade) OR independently (manual nohup). Check both.
+    dotnet_alive = trade_proc is not None and trade_proc.returncode is None
+    proc_line = "**dotnet papertrade:** " + ("✅ running" if dotnet_alive else "⬜ not tracked as subprocess")
+    if not dotnet_alive:
+        problems.append("dotnet subprocess not tracked")
+
+    # ── 2. live_state.json (regime / routing / guard / positions) ────────────
+    state = load_live_state()
+    state_age = None
+    if state and state.get("timestamp"):
+        try:
+            ts = datetime.fromisoformat(state["timestamp"].replace("Z", "+00:00"))
+            state_age = round((now - ts).total_seconds() / 60, 1)
+        except Exception:
+            state_age = None
+    if state is None:
+        problems.append("live_state.json MISSING — papertrade not writing state")
+    elif state_age is not None and state_age > 30:
+        problems.append(f"live_state.json stale ({state_age:.0f} min old)")
+
+    # ── 3. Journal stats ─────────────────────────────────────────────────────
+    stats = compute_live_stats()
+    n_trades = stats.get("n", 0)
+
+    # ── 4. Killswitch ────────────────────────────────────────────────────────
+    kd = float(os.environ.get("GRAVITY_KILLDD", "7"))
+    ks_status = ("🛑 HALTED" if killswitch_halted else "✅ ACTIVE")
+
+    color = discord.Color.red() if problems or killswitch_halted else discord.Color.green()
+    embed = discord.Embed(
+        title="🩺 Harness Health",
+        description="\n".join(f"⚠ {p}" for p in problems) if problems else "All systems nominal.",
+        color=color,
+        timestamp=now,
+    )
+
+    # Mode / process block
+    mode_str = f"**Mode:** `{current_mode}`\n{proc_line}\n**Bot:** ✅ online"
+    embed.add_field(name="Processes", value=mode_str, inline=False)
+
+    # State block (reuse build_status_embed body info)
+    if state:
+        regime = state.get("regime", {})
+        guard = state.get("guard", {})
+        positions = state.get("positions", [])
+        routed = sum(1 for p in positions if p.get("routed"))
+        total = len(positions)
+        age_str = f" ({state_age:.0f}m old)" if state_age is not None else ""
+        reg_str = f"**{regime.get('state', '?')}** conf={regime.get('confidence', 0):.0%}"
+        gates = " ".join(f"{k}{'✓' if regime.get(k) else '✗'}" for k in ['FadeShort','Grid','SwingLong','DipLong','FadeLong','RipShort'])
+        guard_str = f"{guard.get('mult', '?')}× ATR={guard.get('atrRatio', '?')}" if guard else "—"
+        embed.add_field(
+            name=f"Live State{age_str}",
+            value=f"{reg_str}\n{gates}\nRouted **{routed}** / Shadow **{total}**\nGuard {guard_str}",
+            inline=False,
+        )
+    else:
+        embed.add_field(name="Live State", value="*No state available*", inline=False)
+
+    # Journal block
+    jcolor = "🟢" if n_trades and stats.get("total_pnl", 0) >= 0 else "⚪"
+    if n_trades:
+        embed.add_field(
+            name=f"Journal — {n_trades} trade{'s' if n_trades > 1 else ''}",
+            value=(f"WR **{stats['wr']:.0f}%** • Avg **{stats['avg_ret']:+.2f}%**\n"
+                   f"Total **{stats['total_pnl']:+.2f} €** • Sharpe **{stats['sharpe']:.2f}**"),
+            inline=True,
+        )
+    else:
+        embed.add_field(name="Journal", value="*No closed trades yet*", inline=True)
+
+    # Killswitch block
+    embed.add_field(name="Killswitch", value=f"{ks_status} (DD ≥ {kd:.0f}%)", inline=True)
+
+    embed.set_footer(text="/health • auto-alerts on: trade entries, killswitch, every 5 cycles")
+    await interaction.followup.send(embed=embed)
+
+@client.tree.command(name="killswitch", description="Show or set killswitch drawdown threshold")
+async def slash_killswitch(interaction: discord.Interaction, action: str = "status") -> None:
+    """Action: 'status' (default) or 'set <threshold>'"""
+    await interaction.response.defer(thinking=True)
+    
+    current_threshold = float(os.environ.get("GRAVITY_KILLDD", "7"))
+    status_text = f"🛑 **HALTED** — DD threshold at **{current_threshold:.0f}%**" if killswitch_halted else f"✅ **Active** — DD threshold at **{current_threshold:.0f}%**"
+    
+    embed = discord.Embed(
+        title="🛡️ Killswitch Status",
+        description=status_text,
+        color=discord.Color.red() if killswitch_halted else discord.Color.green(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Threshold", value=f"**{current_threshold:.0f}%** drawdown from peak", inline=True)
+    embed.add_field(name="Resume", value="Set env var `GRAVITY_RESUME=1` to resume trading", inline=False)
+    await interaction.followup.send(embed=embed)
 
 @client.tree.command(name="stopevolve", description="Stop the background autoevolve optimizer")
 async def slash_stopevolve(interaction: discord.Interaction) -> None:
@@ -903,7 +1366,9 @@ async def slash_journal(interaction: discord.Interaction) -> None:
                 inline=True,
             )
 
-        recent = live_journal[-10:]
+        # normalized_journal(), not live_journal: raw rows may be C#-schema (no ret_pct/win) and
+        # would KeyError here. Also filters entry/halt events, which are not closed trades.
+        recent = normalized_journal()[-10:]
         rows = []
         for e in recent:
             icon = "✓" if e["win"] else "✗"
@@ -911,8 +1376,8 @@ async def slash_journal(interaction: discord.Interaction) -> None:
                 f"`{icon}` `{e['open_time']}` `{e['coin']:<16}` **{e['ret_pct']:+.2f}%**  {e['pnl_eur']:+.2f} €"
             )
         embed.add_field(
-            name=f"Last {len(recent)} trades",
-            value="\n".join(rows),
+            name=f"Last {len(recent)} trades" if rows else "Last trades",
+            value="\n".join(rows) if rows else "*No closed trades yet.*",
             inline=False,
         )
 
@@ -1061,6 +1526,8 @@ async def on_ready() -> None:
     print(f"[bot] journal: {len(live_journal)} trades loaded")
     print(f"[bot] baseline: {'loaded (' + str(backtest_baseline.get('timestamp','')[:10]) + ')' if backtest_baseline else 'not found'}")
     await start_mode()
+    asyncio.create_task(watchdog_loop(), name="watchdog")
+    print("[bot] watchdog armed")
 
 @client.event
 async def on_message(message: discord.Message) -> None:
@@ -1099,6 +1566,66 @@ async def on_message(message: discord.Message) -> None:
         await start_mode()
     finally:
         claude_busy = False
+
+# ── Watchdog: auto-restart a dead/hung papertrade ────────────────────────────
+# On vacation you can't SSH in, so the bot must keep the harness alive itself.
+# Every WATCHDOG_INTERVAL we check:
+#   1. trade_proc (the bot-owned dotnet subprocess) is alive,
+#   2. live_state.json was written recently (papertrade isn't wedged).
+# If either fails we restart via start_mode() and post an alert to the output
+# channel so there's a trace in chat. Keeps running as long as the bot lives.
+
+WATCHDOG_INTERVAL   = 60            # seconds between checks
+LIVE_STATE_MAX_AGE  = 20 * 60       # ≤20 min stale → treat as hung (cycles are 15 min)
+watchdog_armed: bool = True
+
+async def watchdog_loop() -> None:
+    global watchdog_armed
+    while True:
+        await asyncio.sleep(WATCHDOG_INTERVAL)
+        try:
+            if not watchdog_armed:
+                continue
+            if current_mode not in LIVE_MODES:
+                continue  # only babysit the live papertrade modes
+
+            # ── 1. Process liveness ─────────────────────────────────────────
+            proc_dead = trade_proc is None or trade_proc.returncode is not None
+
+            # ── 2. State freshness (hung detection) ─────────────────────────
+            state_age_s = None
+            state = load_live_state()
+            if state and state.get("timestamp"):
+                try:
+                    ts = datetime.fromisoformat(state["timestamp"].replace("Z", "+00:00"))
+                    state_age_s = (datetime.now(timezone.utc) - ts).total_seconds()
+                except Exception:
+                    state_age_s = None
+            stale = state_age_s is not None and state_age_s > LIVE_STATE_MAX_AGE
+
+            if not proc_dead and not stale:
+                continue  # healthy
+
+            reason = ("process dead" if proc_dead else
+                      f"state stale ({state_age_s/60:.0f} min)" if stale else
+                      "unknown")
+            print(f"[watchdog] ⚠ restarting {current_mode}: {reason}")
+
+            # Kill any leftover to avoid duplicate equity tracking.
+            await stop_mode()
+            await start_mode()
+
+            if output_channel is not None:
+                embed = discord.Embed(
+                    title="🔄 Watchdog Restart",
+                    description=f"`{current_mode}` was {reason} and has been restarted.",
+                    color=discord.Color.orange(),
+                    timestamp=datetime.now(timezone.utc),
+                )
+                embed.set_footer(text="Auto-restarted by bot watchdog")
+                await output_channel.send(embed=embed)
+        except Exception as exc:
+            print(f"[watchdog] error: {exc}")
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":

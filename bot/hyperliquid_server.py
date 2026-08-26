@@ -11,15 +11,24 @@ This bridge handles:
   - Order placement & cancellation (EIP-712 signing via Python SDK)
   - Real-time candle streaming via WebSocket (zero REST weight cost)
 
-Env vars:
-  HYPERLIQUID_PRIVATE_KEY  - wallet private key (hex, no 0x prefix)
-  HYPERLIQUID_API_URL      - HL API URL (default https://api.hyperliquid.xyz)
-  HYPERLIQUID_TESTNET      - set to "1" to use testnet instead of mainnet
+Env vars (read from ../.env, or the process environment which takes precedence):
+  HYPERLIQUID_PRIVATE_KEY      - signing key, 64 hex chars (0x prefix optional).
+                                 HYPERLIQUID_API_KEY is accepted as an alias.
+                                 This is a KEY, not an address — an address cannot sign.
+  HYPERLIQUID_ACCOUNT_ADDRESS  - the FUNDED master account, required when the key above is an
+                                 API/agent wallet. Agent wallets sign for an account but hold
+                                 nothing, so without this every balance and position query
+                                 targets the empty signer and reads zero.
+  HYPERLIQUID_TESTNET          - "1" for testnet. Anything else means MAINNET, REAL FUNDS.
+                                 Startup refuses to proceed if this is unset while a
+                                 misspelled look-alike exists.
+  HYPERLIQUID_API_URL          - override the API URL (defaults follow HYPERLIQUID_TESTNET)
 """
 
 import asyncio
 import json
 import logging
+import re
 import os
 import time
 from datetime import datetime, timezone
@@ -75,11 +84,13 @@ if _TESTNET_RAW is None and _LOOKALIKES:
 
 IS_MAINNET = (_TESTNET_RAW or "").lower() != "1"
 BASE_URL = os.environ.get("HYPERLIQUID_API_URL", MAINNET_API_URL if IS_MAINNET else TESTNET_API_URL)
-PRIVATE_KEY = os.environ.get("HYPERLIQUID_PRIVATE_KEY", "")
+# HYPERLIQUID_API_KEY is accepted as an alias: Hyperliquid's own term for these is "API wallet",
+# so that is the name people reach for. PRIVATE_KEY wins if both are set.
+PRIVATE_KEY = os.environ.get("HYPERLIQUID_PRIVATE_KEY") or os.environ.get("HYPERLIQUID_API_KEY", "")
 
 if not PRIVATE_KEY:
     raise RuntimeError(
-        "HYPERLIQUID_PRIVATE_KEY environment variable is required. "
+        "HYPERLIQUID_PRIVATE_KEY (or HYPERLIQUID_API_KEY) is required. "
         "Note this is the API/agent wallet's PRIVATE KEY (64 hex chars), not its ADDRESS (40 hex)."
     )
 
@@ -99,9 +110,32 @@ logger.info("Hyperliquid bridge: %s", "MAINNET — REAL FUNDS" if IS_MAINNET els
 wallet = Account.from_key(PRIVATE_KEY)
 logger.info(f"Loaded wallet address: {wallet.address}")
 
+# AGENT/API WALLETS: the signing key and the funded account are DIFFERENT addresses.
+#
+# An API wallet signs on behalf of a master account but holds nothing itself. Deriving the address
+# from the key — which is all this did before — therefore queries the agent, so balance reads empty
+# and open positions read zero no matter what the account actually holds. That would silently
+# defeat the exchange-authoritative reconciliation in HyperliquidPaperTrade ("[RECON] exchange
+# reports N open position(s)"), which is designed to trust the venue over local state: it would
+# faithfully report 0 forever.
+#
+# Set HYPERLIQUID_ACCOUNT_ADDRESS to the MASTER account when signing with an agent key. Unset is
+# still correct for a plain wallet that signs for itself, which is the previous behaviour.
+ACCOUNT_ADDRESS = (os.environ.get("HYPERLIQUID_ACCOUNT_ADDRESS", "") or "").strip() or None
+if ACCOUNT_ADDRESS and not re.fullmatch(r"0x[0-9a-fA-F]{40}", ACCOUNT_ADDRESS):
+    raise RuntimeError(f"HYPERLIQUID_ACCOUNT_ADDRESS must be a 0x-prefixed 40-hex address, got {ACCOUNT_ADDRESS!r}")
+
 # Initialize SDK components
 info = Info(base_url=BASE_URL, skip_ws=False)
-exchange = Exchange(wallet=wallet, base_url=BASE_URL)
+exchange = Exchange(wallet=wallet, base_url=BASE_URL, account_address=ACCOUNT_ADDRESS)
+
+# Every balance/position query must use the FUNDED account, not the signer.
+QUERY_ADDRESS = ACCOUNT_ADDRESS or wallet.address
+if ACCOUNT_ADDRESS and ACCOUNT_ADDRESS.lower() != wallet.address.lower():
+    logger.info("Agent mode: signing with %s on behalf of %s", wallet.address, ACCOUNT_ADDRESS)
+else:
+    logger.info("Self-signing mode: %s (set HYPERLIQUID_ACCOUNT_ADDRESS if this is an API wallet)",
+                wallet.address)
 ws_manager = info.ws_manager  # Background thread started by Info constructor
 
 # Hyperliquid's own coin names are the source of truth (e.g. "BTC", "kBONK") — the caller sends
@@ -450,7 +484,7 @@ async def get_all_mids():
 async def get_user_info():
     """Fetch account state: positions, margin, leverage, open orders."""
     try:
-        user_state = await asyncio.to_thread(info.user_state, wallet.address)
+        user_state = await asyncio.to_thread(info.user_state, QUERY_ADDRESS)
         # Extract position summary
         positions = []
         for pos in user_state.get("assetPositions", []):
@@ -463,10 +497,11 @@ async def get_user_info():
                 "leverage": float(p.get("leverage", {}).get("value", 1)),
             })
         return {
-            "address": wallet.address,
+            "address": QUERY_ADDRESS,
+            "signer": wallet.address,
             "marginValue": float(user_state.get("marginSummary", {}).get("totalUsd", 0)),
             "positions": positions,
-            "openOrders": await asyncio.to_thread(info.open_orders, wallet.address),
+            "openOrders": await asyncio.to_thread(info.open_orders, QUERY_ADDRESS),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"User info error: {str(e)}")

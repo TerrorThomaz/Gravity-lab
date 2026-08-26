@@ -47,12 +47,54 @@ logger = logging.getLogger(__name__)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-IS_MAINNET = os.environ.get("HYPERLIQUID_TESTNET", "").lower() != "1"
+# Load .env from the repo root. Until this existed the bridge read os.environ ONLY, so the key had
+# to be exported by whatever shell launched it — which meant it lived nowhere but that process's
+# memory. The running instance was started 2026-08-16 with no supervisor and its key was not in
+# .env, so a reboot would have destroyed it permanently. Existing environment wins over .env
+# (override=False), so an explicit export still takes precedence.
+try:
+    from dotenv import load_dotenv
+    _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+    load_dotenv(_ENV_PATH, override=False)
+except ImportError:
+    logger.warning("python-dotenv not installed — .env will NOT be read, env vars must be exported")
+
+# FAIL LOUDLY ON A MISSPELLED TESTNET FLAG.
+# The old logic was `getenv("HYPERLIQUID_TESTNET","") != "1"` → anything unset or misspelled
+# silently selected MAINNET. A typo is not a reason to point an automated trader at real money,
+# and this exact typo (HYPRLIQUID_TESTNET, missing the E) was in .env when this was written.
+_TESTNET_RAW = os.environ.get("HYPERLIQUID_TESTNET")
+_LOOKALIKES = [k for k in os.environ
+               if k != "HYPERLIQUID_TESTNET" and k.upper().replace("_", "").endswith("TESTNET")]
+if _TESTNET_RAW is None and _LOOKALIKES:
+    raise RuntimeError(
+        f"HYPERLIQUID_TESTNET is unset but found look-alike var(s): {_LOOKALIKES}. "
+        "Refusing to default to MAINNET on what is almost certainly a typo. "
+        "Set HYPERLIQUID_TESTNET=1 (testnet) or HYPERLIQUID_TESTNET=0 (mainnet, real funds)."
+    )
+
+IS_MAINNET = (_TESTNET_RAW or "").lower() != "1"
 BASE_URL = os.environ.get("HYPERLIQUID_API_URL", MAINNET_API_URL if IS_MAINNET else TESTNET_API_URL)
 PRIVATE_KEY = os.environ.get("HYPERLIQUID_PRIVATE_KEY", "")
 
 if not PRIVATE_KEY:
-    raise RuntimeError("HYPERLIQUID_PRIVATE_KEY environment variable is required")
+    raise RuntimeError(
+        "HYPERLIQUID_PRIVATE_KEY environment variable is required. "
+        "Note this is the API/agent wallet's PRIVATE KEY (64 hex chars), not its ADDRESS (40 hex)."
+    )
+
+# An address cannot sign. Catching it here turns a confusing downstream signing failure into one
+# clear line at startup — a 40-hex value in this slot is always the address pasted by mistake.
+_pk = PRIVATE_KEY[2:] if PRIVATE_KEY.lower().startswith("0x") else PRIVATE_KEY
+if len(_pk) == 40:
+    raise RuntimeError(
+        "HYPERLIQUID_PRIVATE_KEY looks like an ADDRESS (40 hex chars), not a private key (64 hex). "
+        "Use the API wallet's private key from app.hyperliquid.xyz/API."
+    )
+if len(_pk) != 64:
+    raise RuntimeError(f"HYPERLIQUID_PRIVATE_KEY should be 64 hex chars, got {len(_pk)}.")
+
+logger.info("Hyperliquid bridge: %s", "MAINNET — REAL FUNDS" if IS_MAINNET else "TESTNET")
 
 wallet = Account.from_key(PRIVATE_KEY)
 logger.info(f"Loaded wallet address: {wallet.address}")

@@ -268,3 +268,67 @@ DISCORD_COMMAND_CHANNEL=
 DISCORD_GUILD_ID=
 GRAVITY_MODE=papertrade
 ```
+
+### Hyperliquid live trading (testnet)
+
+`dotnet run -- hyperliquid-papertrade` — distinct from plain `papertrade` (pure simulation, no order
+placement). Architecture: `src/core/HyperliquidClient.cs` (C#, HTTP) → `bot/hyperliquid_server.py`
+(FastAPI bridge, holds `HYPERLIQUID_PRIVATE_KEY`, does EIP-712 signing) → Hyperliquid's own API.
+Currently runs against **testnet** (`HYPERLIQUID_TESTNET=1`) — no real money at risk regardless of
+account balance shown. `discord_bot.py`'s `LIVE_MODES` set and watchdog cover this mode identically
+to `papertrade` (cycle summaries, trade/killswitch alerts, auto-restart on crash or hang).
+
+Runs the same 6 strategies `papertrade` does (FadeShort, Grid, SwingLong, DipLong, FadeLong,
+RipShort — GridShort/AccumGrid aren't wired into either live path yet, a pre-existing gap).
+Shadow mode: every strategy is evaluated every cycle regardless of router gating and recorded with
+`routed: true/false`, but only `routed==true` signals ever reach `PlaceOrderAsync`.
+
+**Position sizing is flat, not risk-adjusted, and ignores each genotype's own `PositionSizePct`
+gene entirely.** Every strategy sizes at the same flat USD amount (`HYPERLIQUID_USD_SIZE` env var,
+default 1000) × the DynamicGuard multiplier — `PositionSizePct` is recorded as metadata (`sizeBase`
+in the position JSON) but never consumes it for the real order size. **`PositionSizePct` should be
+removed from the strategy genotypes once risk-adjustable sizing (e.g. volatility-target or
+Kelly-based, sized against actual account equity) replaces this flat model** — keeping a gene the
+GA still optimizes but live trading ignores is exactly the kind of drift that made the router's
+`SizeMult` dead weight before it was deleted (see "The router does not size anything" above).
+
+Diagnostics (read-only, no orders): `hyperliquid-lookback [hours]` scans real recent history
+through every strategy's actual trade-generation function and reports both the raw shadow set and
+which of those the router would have gated on. `hyperliquid-griddiag` prints candle-data health
+(length, staleness, recency) plus Grid's raw ADX/BB-width/EMA-slope values against the live
+genotype's thresholds, coin by coin — built to verify "no signal fired" against real numbers
+instead of trusting the pipeline blind.
+
+**Caution — `HyperliquidClient.FetchOhlcvPaginatedAsync` returned stale data for its entire
+lifetime until 2026-08-20.** Pagination accumulates in whole 5000-candle chunks that rarely divide
+evenly into the requested total, so the pool almost always overshoots; sorting ascending then
+`.Take(totalCandles)` grabbed the *oldest* candles from that overshoot and silently discarded the
+most recent ones — every signal, regime call, and would-be order price was computed against
+history lagging real time by \~10+ days. Fixed to `.TakeLast(totalCandles)`. Also fixed in the same
+pass: `PlaceOrderAsync`/`CancelOrderAsync` sent the raw exchange-agnostic symbol (e.g. `"BTCUSDT"`)
+with zero normalization — the bridge's order endpoint expects the bare Hyperliquid name (`"BTC"`)
+and does no stripping of its own, so every order this pipeline ever attempted would have been
+rejected; and Hyperliquid's `"k"`-prefix meme-coin names (`kBONK`/`kPEPE`/`kSHIB`) were being
+re-uppercased server-side in `hyperliquid_server.py`, mangling them to `"KBONK"` etc. No real orders
+were ever placed before these fixes landed, so nothing was lost — the system was blind, not wrong.
+
+**The bridge wallet has zero balance and cannot currently place real orders.** `marginValue: 0.0`
+via `/api/user/info`. Hyperliquid's testnet faucet requires the *same* address to have already
+received ≥$5 real USDC on Arbitrum mainnet (confirmed directly: `claimDrip` on
+`api.hyperliquid-testnet.xyz/info` returns `"user ... does not exist on mainnet"`) — this wallet has
+no mainnet history, so funding it means a real deposit on mainnet from this exact address, a
+decision for a human with the funds/keys, not something to automate. Until that happens, treat
+`hyperliquid-papertrade` as percentage-tracking only: every signal (shadow or router-gated) already
+gets a `pnl` percentage written to `live_state.json`/`live_journal.json` regardless of whether the
+order would fill, so the pipeline's evaluative value doesn't depend on the account being funded —
+only the "did a real order actually happen" question does, and the honest answer to that is no.
+
+**Fees/slippage on the live `pnl` field**: Hyperliquid's real published base-tier fees are 0.015%
+maker / 0.045% taker — cheaper than the Bybit-calibrated `TradeCosts.FeeRoundTripPct = 0.11` every
+backtest in this repo assumes, and a different exchange entirely. `HyperliquidPaperTrade.cs` charges
+a flat `HlFeeRoundTripPct = 0.09` (worst case, both legs taker) against every `pnl` figure it writes
+— applied in full up front rather than split entry/exit, a deliberate simplification for a single
+running percentage. **Slippage doesn't apply the way the backtest model prices it**: every order
+here is `isLimit: true` (GTC), so there's no market-order price degradation on the fill — the real
+equivalent risk is fill-or-no-fill (price runs past the entry before the resting order gets touched),
+which isn't priced or tracked anywhere yet.

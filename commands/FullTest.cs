@@ -84,7 +84,7 @@ static class FullTest
             var btcFunding = await CandleFetcher.FetchFundingRateCachedAsync(client, "BTCUSDT");
             if (btcFunding.Length > 0)
             {
-                fundingSession = new FundingRateSession(btcFunding);
+                fundingSession = new FundingRateSession(btcFunding, 8.0);
                 Console.WriteLine($"  BTC funding: {btcFunding.Length} 8h records · current={fundingSession.CurrentRate:+0.0000%;-0.0000%;0.0000%}/8h\n");
             }
         }

@@ -38,6 +38,8 @@ switch (mode)
     case "disttest":         await Disttest.Run(client, args);                                   break;
     case "walkforward":      await WalkForwardCommand.Run(client);                              break;
     case "hyperliquid-papertrade": await HyperliquidPaperTrade.Run();                           break;
+    case "hyperliquid-lookback":   await HyperliquidLookback.Run(args.Length > 1 && int.TryParse(args[1], out var lbh) ? lbh : 48); break;
+    case "hyperliquid-griddiag":   await HyperliquidGridDiag.Run();                             break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
         Console.WriteLine("  dotnet run -- train              Train FadeShort GA (~10 min)");

@@ -447,10 +447,26 @@ static class CandleFetcher
         var info     = new List<FundingSeriesInfo>();
         foreach (var (sym, bars) in results)
         {
-            info.Add(DescribeFundingSeries(sym, bars));
-            if (bars.Length > 0) sessions[sym] = new FundingRateSession(bars);
+            // Compute actual settlement spacing BEFORE constructing session so we can pass it in.
+            var times = bars.Select(f => f.Time).OrderBy(t => t).ToList();
+            double medianSpacing = MedianFundingIntervalHours(times);
+            var seriesInfo = DescribeFundingSeries(sym, bars, medianSpacing);
+            info.Add(seriesInfo);
+            
+            if (bars.Length > 0)
+                sessions[sym] = new FundingRateSession(bars, medianSpacing > 1e-9 ? medianSpacing : 8.0);
         }
         return new FundingSessions(sessions, info);
+    }
+
+    private static FundingSeriesInfo DescribeFundingSeries(string symbol, FundingBar[] bars, double medianIntervalHours)
+    {
+        return new FundingSeriesInfo(
+            symbol,
+            bars.Length,
+            medianIntervalHours,
+            bars.Length > 0 ? bars.OrderBy(f => f.Time).First().Time : DateTime.MinValue,
+            bars.Length > 0 ? bars.OrderBy(f => f.Time).Last().Time : DateTime.MinValue);
     }
 
     private static async Task<bool> FetchFundingBatch(

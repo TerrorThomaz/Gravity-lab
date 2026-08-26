@@ -24,13 +24,22 @@ public static class ExpandingWindowValidation
     // Windows with isSharpe ≤ 0.05 (PF<1.3 guard) are excluded from mean (not evidence of overfit).
     // Per-window efficiency clamped to [-1, 2] before averaging.
     private const double MinUsableIsSharpe = 0.05;
+
+    // Below this many trades a window has no opinion. Previously it returned 0, which is
+    // indistinguishable from PerTradeSharpe's OWN 0 for profit-factor < 1.3 — so "never traded here"
+    // and "traded badly here" both scored efficiency 0 and both counted as evidence of overfit.
+    // Measured cost: FadeShort's committed genotype reported mean efficiency 0.473 (OVERFIT) off two
+    // stages showing OOS Sharpe of exactly 0.0000. NaN now marks "no opinion" and those windows are
+    // excluded from the mean, exactly as the in-sample guard already does.
+    private const int MinWindowTrades = 10;
     private const double EfficiencyFloor   = -1.0;
     private const double EfficiencyCeiling =  2.0;
 
     private static WindowResult MakeWindow(
         int windowIndex, double trainBars, double testBars, double isSharpe, double oosSharpe)
     {
-        bool usable = isSharpe > MinUsableIsSharpe;
+        bool usable = !double.IsNaN(isSharpe) && !double.IsNaN(oosSharpe)
+                      && isSharpe > MinUsableIsSharpe;
         double efficiency = usable
             ? Math.Clamp(oosSharpe / isSharpe, EfficiencyFloor, EfficiencyCeiling)
             : 0.0;
@@ -275,7 +284,7 @@ public static class ExpandingWindowValidation
             foreach (var t in FadeShortSimulator.GetFadeShortReturns(ind, c.TrainCandles.Span))
                 all.Add(t.Return);
         }
-        return all.Count >= 10 ? FoldScoreHelper.PerTradeSharpe(all) : 0;
+        return all.Count >= MinWindowTrades ? FoldScoreHelper.PerTradeSharpe(all) : double.NaN;
     }
 
     private static double ComputeSharpeDipLong(DipLongGenotype ind, IReadOnlyList<DipLongGA.CoinData> coins)
@@ -287,7 +296,7 @@ public static class ExpandingWindowValidation
             foreach (var t in DipLongSimulator.GetDipLongReturns(ind, c.TrainH1.Span, c.TrainM15.Span))
                 all.Add(t.Return);
         }
-        return all.Count >= 10 ? FoldScoreHelper.PerTradeSharpe(all) : 0;
+        return all.Count >= MinWindowTrades ? FoldScoreHelper.PerTradeSharpe(all) : double.NaN;
     }
 
     private static double ComputeSharpeSwingLong(SwingLongGenotype ind, IReadOnlyList<SwingLongGA.CoinData> coins)
@@ -299,7 +308,7 @@ public static class ExpandingWindowValidation
             foreach (var t in SwingLongSimulator.GetSwingLongReturns(ind, c.TrainH1.Span, c.TrainM15.Span))
                 all.Add(t.Return);
         }
-        return all.Count >= 10 ? FoldScoreHelper.PerTradeSharpe(all) : 0;
+        return all.Count >= MinWindowTrades ? FoldScoreHelper.PerTradeSharpe(all) : double.NaN;
     }
 
     private static double ComputeSharpeRipShort(RipShortGenotype ind, IReadOnlyList<RipShortGA.CoinData> coins)
@@ -311,7 +320,7 @@ public static class ExpandingWindowValidation
             foreach (var t in RipShortSimulator.GetRipShortReturns(ind, c.TrainH1.Span, c.TrainM15.Span))
                 all.Add(t.Return);
         }
-        return all.Count >= 10 ? FoldScoreHelper.PerTradeSharpe(all) : 0;
+        return all.Count >= MinWindowTrades ? FoldScoreHelper.PerTradeSharpe(all) : double.NaN;
     }
 
     private static double ComputeSharpeFadeLong(FadeLongGenotype ind, IReadOnlyList<FadeLongGA.CoinData> coins)
@@ -323,7 +332,7 @@ public static class ExpandingWindowValidation
             foreach (var t in FadeLongSimulator.GetFadeLongReturns(ind, c.TrainH1.Span, c.TrainM15.Span))
                 all.Add(t.Return);
         }
-        return all.Count >= 10 ? FoldScoreHelper.PerTradeSharpe(all) : 0;
+        return all.Count >= MinWindowTrades ? FoldScoreHelper.PerTradeSharpe(all) : double.NaN;
     }
 
     private static double ComputeSharpeGrid(GridGenotype ind, IReadOnlyList<GridGeneticAlgorithm.CoinData> coins)
@@ -335,7 +344,7 @@ public static class ExpandingWindowValidation
             foreach (var t in GridSimulator.GetGridReturns(ind, c.TrainCandles.Span))
                 all.Add(t.Return);
         }
-        return all.Count >= 10 ? FoldScoreHelper.PerTradeSharpe(all) : 0;
+        return all.Count >= MinWindowTrades ? FoldScoreHelper.PerTradeSharpe(all) : double.NaN;
     }
 
     public static void PrintReport(ExpandingWindowReport report)
@@ -360,7 +369,14 @@ public static class ExpandingWindowValidation
         foreach (var w in report.Windows)
         {
             string eff = w.IsUsable ? w.Efficiency.ToString("F3") : "—";
-            Console.WriteLine($"  {w.WindowIndex,8} {w.TrainBars,12:F0} {w.TestBars,10:F0} {w.InSampleSharpe,10:F4} {w.OutOfSampleSharpe,11:F4} {eff,11} {(w.IsUsable ? "yes" : "no"),8}");
+            // NaN means the window had too few trades to have an opinion. Printing it as 0.0000
+            // is what made "never traded" look identical to "traded and lost".
+            string isS  = double.IsNaN(w.InSampleSharpe)     ? "no trades" : w.InSampleSharpe.ToString("F4");
+            string oosS = double.IsNaN(w.OutOfSampleSharpe)  ? "no trades" : w.OutOfSampleSharpe.ToString("F4");
+            string why  = w.IsUsable ? "yes"
+                        : double.IsNaN(w.InSampleSharpe) || double.IsNaN(w.OutOfSampleSharpe) ? "no-data"
+                        : "thin-IS";
+            Console.WriteLine($"  {w.WindowIndex,8} {w.TrainBars,12:F0} {w.TestBars,10:F0} {isS,10} {oosS,11} {eff,11} {why,8}");
         }
         Console.WriteLine("    (bar counts are per-coin means — each coin expands through its OWN history,");
         Console.WriteLine("     so window w is 1/4 + w/8 of that coin's array, not a shared bar index)");

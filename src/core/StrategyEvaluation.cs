@@ -5,7 +5,7 @@ namespace TradingGA;
 public static class StrategyEvaluation
 {
     public readonly record struct Trade(
-        DateTime Entry, DateTime Exit, double ReturnPct, string Strategy, string Symbol, MarketRegime Regime);
+        DateTime Entry, DateTime Exit, double ReturnPct, string Strategy, string Symbol, MarketRegime Regime, double Conf = 0f);
 
     public record Result(
         int    N,
@@ -245,7 +245,7 @@ public static class StrategyEvaluation
 
         return trades.Select((t, i) => new Trade(
             t.EntryTime, t.EntryTime + t.HoldDuration, t.Return, t.Strategy, t.Symbol,
-            tags is null ? MarketRegime.Ranging : tags[i])).ToList();
+            tags is null ? MarketRegime.Ranging : tags[i], t.Conf)).ToList();
     }
 
     // Evaluate + Print + optional CSV export in one call.
@@ -281,10 +281,10 @@ public static class StrategyEvaluation
     // Raw per-trade CSV for third-party evaluators (no summary — external tool should have its own view).
     public static void ExportCsv(IReadOnlyList<Trade> trades, string path)
     {
-        var lines = new List<string> { "entry_time,exit_time,symbol,strategy,regime,return_pct" };
+        var lines = new List<string> { "entry_time,exit_time,symbol,strategy,regime,conf,return_pct" };
         foreach (var t in trades.OrderBy(t => t.Entry))
             lines.Add($"{t.Entry:yyyy-MM-dd HH:mm:ss},{t.Exit:yyyy-MM-dd HH:mm:ss},{t.Symbol},"
-                    + $"{t.Strategy},{t.Regime},{t.ReturnPct:F4}");
+                    + $"{t.Strategy},{t.Regime},{t.Conf:F4},{t.ReturnPct:F4}");
         File.WriteAllLines(path, lines);
         Console.WriteLine($"  Trade log → {path}  ({trades.Count} trades)");
     }

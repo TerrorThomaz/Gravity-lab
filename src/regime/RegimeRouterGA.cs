@@ -300,6 +300,13 @@ public class RegimeRouterGA
                 frac *= router.EarlyBullFromRangingMult;
             else if (t.Kind == StrategyKind.FadeLong && bearCarry)
                 frac *= router.EarlyBullBearCarry;
+            // SwingLong is the one strategy whose per-trade confidence predicts returns
+            // (measured IC Spearman +0.154, p<0.001 on OOS — positive; the other four ≈ 0).
+            // Size it with the router's blended confidence so the fitness pays it to take
+            // high-conviction SwingLong entries at full size and low-conviction ones smaller,
+            // rather than flat-sizing every entry regardless of conviction.
+            else if (t.Kind == StrategyKind.SwingLong)
+                frac *= GradedScale(blendedConf);
             result.Add(t with { Frac = frac });
         }
         return result;
@@ -339,6 +346,14 @@ public class RegimeRouterGA
         double coverageRatio = (double)trades.Count / Math.Max(trades.Count, 50);
 
         return calmar * coverageRatio;
+    }
+
+    // Confidence → size multiplier, matching the live session's graded sizing
+    // (ramps from GradedSizeFloor to 1.0 across [GradedConfStart, GradedConfFull]).
+    private static double GradedScale(double conf)
+    {
+        double t = (conf - Config.GradedConfStart) / (Config.GradedConfFull - Config.GradedConfStart);
+        return Config.GradedSizeFloor + (1.0 - Config.GradedSizeFloor) * Math.Clamp(t, 0.0, 1.0);
     }
 
     // Hour-level ticks as dictionary key — avoids DateTimeKind mismatches.

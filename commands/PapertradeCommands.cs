@@ -194,7 +194,7 @@ static class PapertradeCommands
                 var btcFunding = await CandleFetcher.FetchFundingRateCachedAsync(client, "BTCUSDT");
                 if (btcFunding.Length > 0)
                 {
-                    fundingSession = new FundingRateSession(btcFunding);
+                    fundingSession = new FundingRateSession(btcFunding, 8.0);
                     Console.WriteLine($"  Funding: {fundingSession.CurrentRate:+0.0000%;-0.0000%} (current rate)");
                 }
             }
@@ -609,6 +609,10 @@ static class PapertradeCommands
                     DipLong    = ptRouting.DipLongActive,
                     FadeLong   = ptRouting.FadeLongActive,
                     RipShort   = ptRouting.RipShortActive,
+                    // Report-only continuous sizing ramp (0-1). Nothing consumes it —
+                    // the router returns boolean gates only. Surfaced for observability
+                    // per the quant soft-gating research (capital ramps as duration/conf build).
+                    sizingMult = Math.Round(ptRouting.SizingMult, 2),
                 } : null;
 
                 var guardInfo = guardSession != null ? new

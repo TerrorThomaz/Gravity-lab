@@ -394,6 +394,32 @@ public sealed class HyperliquidClient : IDisposable
     /// Fetch account state: wallet value, open positions, open orders.
     /// Requires HYPERLIQUID_PRIVATE_KEY set on the bridge server.
     /// </summary>
+    // Positions the EXCHANGE says we hold. Authoritative — the live loop reconciles its simulated
+    // view against this rather than the other way round, because the simulator's idea of "open" is
+    // derived from strategy state and can silently diverge from reality (missed fill, partial fill,
+    // manual intervention, liquidation).
+    //
+    // Returns coin -> (signed size, entry price, unrealised pnl). Signed size: >0 long, <0 short.
+    public async Task<Dictionary<string, (double Size, double Entry, double UnrealizedPnl)>> FetchOpenPositionsAsync()
+    {
+        var res = new Dictionary<string, (double, double, double)>(StringComparer.OrdinalIgnoreCase);
+        var state = await FetchUserStateAsync();
+        if (!state.TryGetValue("positions", out var posObj) || posObj is not JsonElement { ValueKind: JsonValueKind.Array } arr)
+            return res;
+
+        foreach (var p in arr.EnumerateArray())
+        {
+            string coin = p.TryGetProperty("coin", out var c) ? c.GetString() ?? "" : "";
+            if (string.IsNullOrEmpty(coin)) continue;
+            double szi = p.TryGetProperty("szi", out var z) ? z.GetDouble() : 0;
+            if (Math.Abs(szi) < 1e-12) continue;              // flat is not a position
+            res[coin] = (szi,
+                         p.TryGetProperty("entryPx", out var e) ? e.GetDouble() : 0,
+                         p.TryGetProperty("unrealizedPnl", out var u) ? u.GetDouble() : 0);
+        }
+        return res;
+    }
+
     public async Task<Dictionary<string, object>> FetchUserStateAsync()
     {
         return await GetJsonObjectAsync($"{_baseUrl}/api/user/info");

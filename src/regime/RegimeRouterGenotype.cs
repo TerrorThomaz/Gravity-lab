@@ -29,11 +29,11 @@ public class RegimeRouterGenotype
 
     public static readonly double[,] Bounds =
     {
-        {  50, 500 },   // BullMinBars
+        {  20, 100 },   // BullMinBars  (quant research: cap intraday regime gates at ~72-100h; 500h is ~21 days)
         { 0.10, 0.80 }, // BullMinConf
-        {  24, 200 },   // BearMinBars
+        {  20, 100 },   // BearMinBars  (was [24,200]; 200h ≈ 8 days was unusually conservative)
         { 0.10, 0.80 }, // BearMinConf
-        {  50, 500 },   // RipShortBearMinBars
+        {  20, 100 },   // RipShortBearMinBars (was [50,500]; aligns with RegimeSustainedBars bound)
         { 0.10, 0.80 }, // RipShortBearMinConf
         { 0.10, 0.70 }, // GridMaxConf
         { 0.00, 0.50 }, // EthBlendWeight
@@ -41,7 +41,7 @@ public class RegimeRouterGenotype
         { 0.00, 1.00 }, // EarlyBullFromBearMult
         { 0.00, 1.00 }, // EarlyBullFromRangingMult
         { 0.00, 1.00 }, // EarlyBullBearCarry
-        {  20, 400 },   // FadeShortBearMinBars
+        {  20, 100 },   // FadeShortBearMinBars (was [20,400])
         { 0.10, 0.80 }, // FadeShortBearMinConf
         { 0.00, 1.00 }, // FadeShortBearOnly — >0 = ON/OFF switch, like the transition genes
     };
@@ -58,18 +58,18 @@ public class RegimeRouterGenotype
 
     public static RegimeRouterGenotype FromVector(double[] v) => new()
     {
-        BullMinBars              = Math.Clamp(v[0],  50, 500),
+        BullMinBars              = Math.Clamp(v[0],  20, 100),
         BullMinConf              = Math.Clamp(v[1], 0.10, 0.80),
-        BearMinBars              = Math.Clamp(v[2],  24, 200),
+        BearMinBars              = Math.Clamp(v[2],  20, 100),
         BearMinConf              = Math.Clamp(v[3], 0.10, 0.80),
-        RipShortBearMinBars      = Math.Clamp(v[4],  50, 500),
+        RipShortBearMinBars      = Math.Clamp(v[4],  20, 100),
         RipShortBearMinConf      = Math.Clamp(v[5], 0.10, 0.80),
         GridMaxConf              = Math.Clamp(v[6], 0.10, 0.70),
         EthBlendWeight           = Math.Clamp(v[7], 0.00, 0.50),
         TransitionSizeMult       = Math.Clamp(v[8], 0.00, 1.00),
         EarlyBullFromBearMult    = Math.Clamp(v[9], 0.00, 1.00),
         EarlyBullFromRangingMult = Math.Clamp(v[10], 0.00, 1.00),
-        FadeShortBearMinBars     = Math.Clamp(v[12],  20, 400),
+        FadeShortBearMinBars     = Math.Clamp(v[12],  20, 100),
         FadeShortBearMinConf     = Math.Clamp(v[13], 0.10, 0.80),
         FadeShortBearOnly        = Math.Clamp(v[14], 0.00, 1.00),
         EarlyBullBearCarry       = Math.Clamp(v[11], 0.00, 1.00),
@@ -83,14 +83,14 @@ public class RegimeRouterGenotype
 
         return new()
         {
-            BullMinBars              = rng.NextDouble() * 450 + 50,
+            BullMinBars              = rng.NextDouble() * 80  + 20,
             BullMinConf              = rng.NextDouble() * 0.70 + 0.10,
-            BearMinBars              = rng.NextDouble() * 176 + 24,
+            BearMinBars              = rng.NextDouble() * 80  + 20,
             BearMinConf              = rng.NextDouble() * 0.70 + 0.10,
-            FadeShortBearMinBars     = rng.NextDouble() * 380 + 20,
+            FadeShortBearMinBars     = rng.NextDouble() * 80  + 20,
             FadeShortBearMinConf     = rng.NextDouble() * 0.70 + 0.10,
             FadeShortBearOnly        = rng.NextDouble(),
-            RipShortBearMinBars      = rng.NextDouble() * 450 + 50,
+            RipShortBearMinBars      = rng.NextDouble() * 80  + 20,
             RipShortBearMinConf      = rng.NextDouble() * 0.70 + 0.10,
             GridMaxConf              = rng.NextDouble() * 0.60 + 0.10,
             EthBlendWeight           = rng.NextDouble() * 0.50,
@@ -113,14 +113,14 @@ public class RegimeRouterGenotype
 
         return new()
         {
-            BullMinBars              = G(BullMinBars,              50,  500),
+            BullMinBars              = G(BullMinBars,              20,  100),
             BullMinConf              = G(BullMinConf,             0.10, 0.80),
-            BearMinBars              = G(BearMinBars,              24,  200),
+            BearMinBars              = G(BearMinBars,              20,  100),
             BearMinConf              = G(BearMinConf,             0.10, 0.80),
-            FadeShortBearMinBars     = G(FadeShortBearMinBars,     20,  400),
+            FadeShortBearMinBars     = G(FadeShortBearMinBars,     20,  100),
             FadeShortBearMinConf     = G(FadeShortBearMinConf,    0.10, 0.80),
             FadeShortBearOnly        = G(FadeShortBearOnly,       0.00, 1.00),
-            RipShortBearMinBars      = G(RipShortBearMinBars,      50,  500),
+            RipShortBearMinBars      = G(RipShortBearMinBars,      20,  100),
             RipShortBearMinConf      = G(RipShortBearMinConf,     0.10, 0.80),
             GridMaxConf              = G(GridMaxConf,             0.10, 0.70),
             EthBlendWeight           = G(EthBlendWeight,          0.00, 0.50),

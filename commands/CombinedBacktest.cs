@@ -272,6 +272,22 @@ static class CombinedBacktest
         RegimeRouterSession? session  = router.Session;
         RegimeBar[]?         btcRegimeSeries = router.BtcRegimeSeries;
 
+        if (session != null && RegimeRouter.HmmEnabled && routerG is { IsHmmGenotype: true } && btcRegimeSeries is { Length: > 0 })
+        {
+            var lastBar = btcRegimeSeries[^1];
+            if (lastBar.HmmProbs != null)
+            {
+                Console.WriteLine("  HMM current-bar weights:");
+                foreach (var (kind, label) in new[] {
+                    (RegimeRouterGA.StrategyKind.FadeShort, "FadeShort"), (RegimeRouterGA.StrategyKind.Grid, "Grid"),
+                    (RegimeRouterGA.StrategyKind.GridShort, "GridShort"), (RegimeRouterGA.StrategyKind.DipLong, "DipLong"),
+                    (RegimeRouterGA.StrategyKind.FadeLong, "FadeLong"), (RegimeRouterGA.StrategyKind.RipShort, "RipShort"),
+                    (RegimeRouterGA.StrategyKind.SwingLong, "SwingLong"), (RegimeRouterGA.StrategyKind.AccumulationGrid, "AccumGrid") })
+                    Console.WriteLine($"    {label,-14} {session.Weight(kind, lastBar.Time):F2}");
+                Console.WriteLine();
+            }
+        }
+
         var swingTrades       = new List<(DateTime Time, double Return, double Conf)>();
         var gridTrades        = new List<(DateTime Time, double Return, double Conf)>();
         var flTrades          = new List<(DateTime Time, double Return, double Conf)>();
@@ -479,9 +495,11 @@ static class CombinedBacktest
             {
                 allTradesNoRouter.Add((t, ret, conf, "swing"));
                 if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.FadeShort, t)) continue;
-                swingTrades.Add((t, ret, conf));
-                allTrades.Add((t, ret, conf, "swing", et, sym));
-                RouteVolVariant(fsVarLabel, sym, t, ret, conf, "swing", vCC);
+                double sgFs = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.FadeShort, t) : 1.0;
+                double cFs = conf * sgFs;
+                swingTrades.Add((t, ret, cFs));
+                allTrades.Add((t, ret, cFs, "swing", et, sym));
+                RouteVolVariant(fsVarLabel, sym, t, ret, cFs, "swing", vCC);
             }
         }
 
@@ -546,10 +564,12 @@ static class CombinedBacktest
                 // gate admits ~508 windows averaging 5.5 bars. A grid ladder cannot fill and unwind
                 // in five hours, so what survives may be fragments that pay fees and never complete.
                 if (!gridUngated && session != null && !session.IsActive(RegimeRouterGA.StrategyKind.Grid, t)) continue;
-                gridTrades.Add((t, ret, conf));
-                allTrades.Add((t, ret, conf, "grid", et, sym));
+                double sgGr = (!gridUngated && session != null) ? session.SizeGate(RegimeRouterGA.StrategyKind.Grid, t) : 1.0;
+                double cGr = conf * sgGr;
+                gridTrades.Add((t, ret, cGr));
+                allTrades.Add((t, ret, cGr, "grid", et, sym));
                 gridGated.Add(ret);
-                RouteVolVariant(gridVarLabel, sym, t, ret, conf, "grid", vCC);
+                RouteVolVariant(gridVarLabel, sym, t, ret, cGr, "grid", vCC);
             }
             gridCoinRet.Add((sym, gridGated));
         }
@@ -609,9 +629,11 @@ static class CombinedBacktest
                     allTradesNoRouter.Add((t.Time, t.Return, conf, "fadelong"));
                 foreach (var t in gated)
                 {
-                    flTrades.Add((t.Time, t.Return, conf));
-                    allTrades.Add((t.Time, t.Return, conf, "fadelong", t.EntryTime, sym));
-                    RouteVolVariant(flVarLabel, sym, t.Time, t.Return, conf, "fadelong", vCC);
+                    double sgFl = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.FadeLong, t.Time) : 1.0;
+                    double cFl = conf * sgFl;
+                    flTrades.Add((t.Time, t.Return, cFl));
+                    allTrades.Add((t.Time, t.Return, cFl, "fadelong", t.EntryTime, sym));
+                    RouteVolVariant(flVarLabel, sym, t.Time, t.Return, cFl, "fadelong", vCC);
                 }
             }
         }
@@ -671,9 +693,11 @@ static class CombinedBacktest
                     allTradesNoRouter.Add((t.Time, t.Return, conf, "diplong"));
                 foreach (var t in gated)
                 {
-                    dlTrades.Add((t.Time, t.Return, conf));
-                    allTrades.Add((t.Time, t.Return, conf, "diplong", t.EntryTime, sym));
-                    RouteVolVariant(dlVarLabel, sym, t.Time, t.Return, conf, "diplong", vCC);
+                    double sgDl = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time) : 1.0;
+                    double cDl = conf * sgDl;
+                    dlTrades.Add((t.Time, t.Return, cDl));
+                    allTrades.Add((t.Time, t.Return, cDl, "diplong", t.EntryTime, sym));
+                    RouteVolVariant(dlVarLabel, sym, t.Time, t.Return, cDl, "diplong", vCC);
                 }
             }
         }
@@ -736,9 +760,11 @@ static class CombinedBacktest
                     allTradesNoRouter.Add((t.Time, t.Return, conf, "swing_long"));
                 foreach (var t in gated)
                 {
-                    slTrades.Add((t.Time, t.Return, conf));
-                    allTrades.Add((t.Time, t.Return, conf, "swing_long", t.EntryTime, sym));
-                    RouteVolVariant(slVarLabel, sym, t.Time, t.Return, conf, "swing_long", vCC);
+                    double sgSl = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time) : 1.0;
+                    double cSl = conf * sgSl;
+                    slTrades.Add((t.Time, t.Return, cSl));
+                    allTrades.Add((t.Time, t.Return, cSl, "swing_long", t.EntryTime, sym));
+                    RouteVolVariant(slVarLabel, sym, t.Time, t.Return, cSl, "swing_long", vCC);
                 }
             }
         }
@@ -916,9 +942,11 @@ static class CombinedBacktest
                     allTradesNoRouter.Add((t.Time, t.Return, conf, "ripshort"));
                 foreach (var t in gated)
                 {
-                    rsTrades.Add((t.Time, t.Return, conf));
-                    allTrades.Add((t.Time, t.Return, conf, "ripshort", t.EntryTime, sym));
-                    RouteVolVariant(rsVarLabel, sym, t.Time, t.Return, conf, "ripshort", vCC);
+                    double sgRs = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.RipShort, t.Time) : 1.0;
+                    double cRs = conf * sgRs;
+                    rsTrades.Add((t.Time, t.Return, cRs));
+                    allTrades.Add((t.Time, t.Return, cRs, "ripshort", t.EntryTime, sym));
+                    RouteVolVariant(rsVarLabel, sym, t.Time, t.Return, cRs, "ripshort", vCC);
                 }
             }
         }
@@ -994,9 +1022,9 @@ static class CombinedBacktest
                     allTradesNoRouter.Add((t.Time, t.Return, conf, "accumgrid"));
                 foreach (var t in gated)
                 {
-                    agTrades.Add((t.Time, t.Return, conf));
-                    // NOTE: AccumGrid excluded from allTrades — it's a capital accumulator, not a profit strategy
-                    // allTrades.Add((t.Time, t.Return, conf, "accumgrid"));
+                    double sgAg = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.AccumulationGrid, t.Time) : 1.0;
+                    double cAg = conf * sgAg;
+                    agTrades.Add((t.Time, t.Return, cAg));
                 }
             }
         }
@@ -1375,6 +1403,8 @@ static class CombinedBacktest
         // var | es | crra | covsize.
         string sizingRule = Environment.GetEnvironmentVariable("GRAVITY_SIZING")?.ToLowerInvariant()
                             ?? (Environment.GetEnvironmentVariable("GRAVITY_VOLTARGET") == "1" ? "voltarget" : "covsize");
+        if (Environment.GetEnvironmentVariable("GRAVITY_HMM_SIZE") == "1")
+            sizingRule = "hmmrisk";
 
         // ── Covariance matrix once, reused by risk parity and VaR/utility below. ──
         // Daily-aligned grids from CovarianceSizing (already the reproducible common grid).
@@ -1435,6 +1465,23 @@ static class CombinedBacktest
                     strategySizeWeight = w.For;
                 }
                 break;
+
+            case "hmmrisk":
+            {
+                var tradesByStrat = new Dictionary<string, IReadOnlyList<(DateTime Time, double Return)>>();
+                var stratLists = new Dictionary<string, List<(DateTime, double)>>();
+                foreach (var t in allTrades)
+                {
+                    if (!stratLists.ContainsKey(t.Strategy)) stratLists[t.Strategy] = new();
+                    stratLists[t.Strategy].Add((t.Time, t.Return));
+                }
+                foreach (var kv in stratLists) tradesByStrat[kv.Key] = kv.Value;
+                var alloc = StrategyAllocator.Compute(tradesByStrat);
+                StrategyAllocator.Print(alloc);
+                strategySizeWeight = s => alloc.RiskScale.TryGetValue(s, out var w) ? w : 1.0;
+                Console.WriteLine("  [SIZING=hmmrisk] covariance-aware risk scale (StrategyAllocator)");
+                break;
+            }
 
             // BLEND: geometric mix of a return-shape weight and a risk-cap weight, swept over alpha.
             // Solves the ES/vol-halves-DD-but-loses-return problem by keeping the return shape where
@@ -2137,7 +2184,8 @@ static class CombinedBacktest
             foreach (var (t, ret, _, _, _) in GridSimulator.GetGridReturns(gridG, h1f, funding.For(sym)))
             {
                 if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.Grid, t)) continue;
-                fullHistTrades.Add((t, ret, conf, TimeSpan.FromHours(gridG.MaxHoldCandles)));
+                double sgG = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.Grid, t) : 1.0;
+                fullHistTrades.Add((t, ret, conf * sgG, TimeSpan.FromHours(gridG.MaxHoldCandles)));
                 coinRet.Add(ret);
             }
             if (coinRet.Count > 0) gridFullCoinRet.Add((sym, coinRet));
@@ -2151,7 +2199,8 @@ static class CombinedBacktest
                 foreach (var t in FadeLongSimulator.GetFadeLongReturns(coinFlGFull, h1f, m15f, funding.For(sym)))
                 {
                     if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)) continue;
-                    fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(coinFlGFull.MaxHoldCandles)));
+                    double sgFlH = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.FadeLong, t.Time) : 1.0;
+                    fullHistTrades.Add((t.Time, t.Return, conf * sgFlH, TimeSpan.FromHours(coinFlGFull.MaxHoldCandles)));
                     coinRet.Add(t.Return);
                 }
                 if (coinRet.Count > 0) flFullCoinRet.Add((sym, coinRet));
@@ -2165,7 +2214,8 @@ static class CombinedBacktest
                 foreach (var t in DipLongSimulator.GetDipLongReturns(coinDlGFull, h1f, m15f, funding.For(sym)))
                 {
                     if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)) continue;
-                    fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(coinDlGFull.MaxHoldCandles)));
+                    double sgDlH = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time) : 1.0;
+                    fullHistTrades.Add((t.Time, t.Return, conf * sgDlH, TimeSpan.FromHours(coinDlGFull.MaxHoldCandles)));
                     coinRet.Add(t.Return);
                 }
                 if (coinRet.Count > 0) dlFullCoinRet.Add((sym, coinRet));
@@ -2179,7 +2229,8 @@ static class CombinedBacktest
                 foreach (var t in SwingLongSimulator.GetSwingLongReturns(coinSlGFull, h1f, m15f, funding.For(sym)))
                 {
                     if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.DipLong, t.Time)) continue;
-                    fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(coinSlGFull.MaxHoldCandles)));
+                    double sgSlH = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time) : 1.0;
+                    fullHistTrades.Add((t.Time, t.Return, conf * sgSlH, TimeSpan.FromHours(coinSlGFull.MaxHoldCandles)));
                     coinRet.Add(t.Return);
                 }
                 if (coinRet.Count > 0) slFullCoinRet.Add((sym, coinRet));
@@ -2193,7 +2244,8 @@ static class CombinedBacktest
                 foreach (var t in RipShortSimulator.GetRipShortReturns(coinRsGFull, h1f, m15f, funding.For(sym)))
                 {
                     if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)) continue;
-                    fullHistTrades.Add((t.Time, t.Return, conf, TimeSpan.FromHours(coinRsGFull.MaxHoldCandles)));
+                    double sgRsH = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.RipShort, t.Time) : 1.0;
+                    fullHistTrades.Add((t.Time, t.Return, conf * sgRsH, TimeSpan.FromHours(coinRsGFull.MaxHoldCandles)));
                     coinRet.Add(t.Return);
                 }
                 if (coinRet.Count > 0) rsFullCoinRet.Add((sym, coinRet));

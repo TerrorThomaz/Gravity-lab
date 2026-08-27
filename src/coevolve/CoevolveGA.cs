@@ -113,10 +113,10 @@ public class CoevolveGA
             Console.WriteLine($"\n  Router: {routerElite}");
             if (guardBest != null) Console.WriteLine($"  Guard:  {guardBest}");
 
-            // Soft gate (floor=0.10) — hard gate could starve a strategy into an unrecoverable score.
+            // Soft gate (floor=0.10) — continuous weight in HMM mode, 1.0/0.0 in legacy mode.
             var gateSession = new RegimeRouterSession(data.BtcSeries, data.EthSeries, routerElite);
             Func<RegimeRouterGA.StrategyKind, Func<DateTime, double>> gateFor =
-                kind => t => gateSession.IsActive(kind, t) ? 1.0 : GateFloor;
+                kind => t => Math.Max(gateSession.Weight(kind, t), GateFloor);
 
             int stratGens = Math.Max(20, RouterGens / 2);
             Console.WriteLine($"  [ADAPT] retraining strategies against Router[t] (gens={stratGens}, floor={GateFloor:F2})");

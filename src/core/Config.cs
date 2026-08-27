@@ -14,6 +14,8 @@ static class Config
     public const string DrawdownGuardGenoFile = "genotypes/drawdown_guard_genotype.json";
     public const string DynamicGuardGenoFile  = "genotypes/dynamic_guard_genotype.json";
     public const string RotatorGenoFile       = "genotypes/vol_rotator_genotype.json";
+    public const string HmmGenoFile           = "genotypes/regime_hmm_genotype.json";
+    public const string FamilyGateGenoFile    = "genotypes/strategy_family_gate.json";
 
     // Max gross notional as fraction of equity. 0.30 keeps liquidation model irrelevant.
     // Simulator throws above 1.0. Binds on ~70% of entries. Justified on tail loss (CorrelatedShock).

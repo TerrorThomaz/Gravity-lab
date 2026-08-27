@@ -302,13 +302,13 @@ static class BacktestCommands
                 var session = new RegimeRouterSession(btcSerR, ethSerR, routerGeno);
 
                 var routed = Enumerable.Empty<(DateTime Time, double Return, double Frac)>()
-                    .Concat(fsTrades  .Select(t => (t.Time, t.Return, t.Frac))
+                    .Concat(fsTrades  .Select(t => (Time: t.Time, Return: t.Return, Frac: t.Frac * session.SizeGate(RegimeRouterGA.StrategyKind.FadeShort, t.Time)))
                                        .Where(_ => session.IsActive(RegimeRouterGA.StrategyKind.FadeShort, _.Time)))
-                    .Concat(gridTrades.Select(t => (t.Time, t.Return, t.Frac))
+                    .Concat(gridTrades.Select(t => (Time: t.Time, Return: t.Return, Frac: t.Frac * session.SizeGate(RegimeRouterGA.StrategyKind.Grid, t.Time)))
                                        .Where(_ => session.IsActive(RegimeRouterGA.StrategyKind.Grid,      _.Time)))
-                    .Concat((dlInCombined ? dlTrades : []).Select(t => (t.Time, t.Return, t.Frac))
+                    .Concat((dlInCombined ? dlTrades : []).Select(t => (Time: t.Time, Return: t.Return, Frac: t.Frac * session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time)))
                                        .Where(_ => session.IsActive(RegimeRouterGA.StrategyKind.DipLong,   _.Time)))
-                    .Concat((flInCombined ? flTrades : []).Select(t => (t.Time, t.Return, t.Frac))
+                    .Concat((flInCombined ? flTrades : []).Select(t => (Time: t.Time, Return: t.Return, Frac: t.Frac * session.SizeGate(RegimeRouterGA.StrategyKind.FadeLong, t.Time)))
                                        .Where(_ => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong,  _.Time)))
                     .OrderBy(t => t.Time)
                     .Select(t => (t.Return, t.Frac))

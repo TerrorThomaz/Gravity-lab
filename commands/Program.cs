@@ -40,6 +40,7 @@ switch (mode)
     case "hyperliquid-papertrade": await HyperliquidPaperTrade.Run();                           break;
     case "hyperliquid-lookback":   await HyperliquidLookback.Run(args.Length > 1 && int.TryParse(args[1], out var lbh) ? lbh : 48); break;
     case "hyperliquid-griddiag":   await HyperliquidGridDiag.Run();                             break;
+    case "hmmtrain":               await HmmTrainCommands.Run(client, args);                    break;
     default:
         Console.WriteLine("Gravity-gen2 — usage:");
         Console.WriteLine("  dotnet run -- train              Train FadeShort GA (~10 min)");
@@ -68,5 +69,6 @@ switch (mode)
         Console.WriteLine("  dotnet run -- disttest           Calibrate + separate predictive distribution (edge & risk)");
         Console.WriteLine("  dotnet run -- walkforward          Walk-forward validation of committed genotypes on never-seen coins");
         Console.WriteLine("  dotnet run -- hyperliquid-papertrade Paper trade via Hyperliquid (requires HYPERLIQUID_PRIVATE_KEY)");
+        Console.WriteLine("  dotnet run -- hmmtrain             Train Gaussian HMM on BTC regime features (default 4 states)");
         break;
 }

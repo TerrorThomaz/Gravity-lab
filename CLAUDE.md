@@ -21,6 +21,7 @@ dotnet run -- swinglongtrain     # SwingLong GA: bull-regime RSI bullish diverge
 dotnet run -- accumgridtrain     # AccumulationGrid GA (separate Bull and Bear genotypes)
 dotnet run -- lowvoltrain        # Low-vol variant genotypes (ATR ratio < 0.8)
 dotnet run -- routertrain        # RegimeRouter GA: train routing thresholds + duration gates
+dotnet run -- hmmtrain           # Gaussian HMM on BTC regime features (Baum-Welch); saves regime_hmm_genotype.json
 dotnet run -- coevolvetrain      # Red-Queen coevolution of Router <-> DynamicGuard (8 rounds; strategies FROZEN)
 dotnet run -- rotatortrain       # VolatilityWeightedRotator GA
 dotnet run -- dynamicguardtrain  # DynamicGuard GA: portfolio drawdown guard
@@ -58,10 +59,13 @@ src/
   core/           Shared infrastructure: Config, Indicators, Simulator, CandleFetcher,
                   CoinCluster, Pumpsegmenter, FundingRateSession, PortfolioReplay,
                   RankedPortfolioSim, TradeEnricher, StatisticalTests, GenotypeDto,
-BayesianOptimizer, StrategyPipeline (shared backtest bootstrap: variant
+                  BayesianOptimizer, StrategyPipeline (shared backtest bootstrap: variant
                   loading/selection, parallel candle fetch, regime/funding/guard session
                   builds — the reproducer-of-record consumed by the backtest commands)
-  regime/         RegimeClassifier, RegimeRouter, RegimeRouterGA, RegimeRouterGenotype
+                  StrategyAllocator (Ledoit-Wolf covariance → ERC/inverse-vol riskScale,
+                  SIMFAM family clustering + cap, correlation-load haircut; mean-normalised)
+  regime/         RegimeClassifier, RegimeRouter, RegimeRouterGA, RegimeRouterGenotype,
+                  HiddenMarkovModel (Baum-Welch + HmmAnnotator), HmmGenotype
   strategies/
     fade_short/   FadeShortGA, FadeShortGenotype
                   (FadeShortSimulator actually lives in swing_long/SwingSimulator.cs)
@@ -89,8 +93,10 @@ Gravity-gen2.Tests/
   core/           Indicators, IndicatorLibrary, FitnessConfig, FoldScoreStatistics,
                   FundingRateSession, SlippageModel, CandleValidation, MonteCarlo,
                   HolmFamily, StatisticalTests, TradeEnricher, VariantRouter,
-                  ExpandingWindowValidation, OosSizingSplit, RefinementObjective
-  regime/         RegimeClassifierTests, RegimeRouterGenotypeDtoTests
+                  ExpandingWindowValidation, OosSizingSplit, RefinementObjective,
+                  StrategyAllocatorTests
+  regime/         RegimeClassifierTests, RegimeRouterGenotypeDtoTests,
+                  HiddenMarkovModelTests, RegimeRouterHmmTests
   guard/          DynamicGuardTests
   strategies/     FoldScoreCapTests, PerCoinFoldAlignmentTests, RipShortExitOverrideTests
 ```
@@ -135,7 +141,7 @@ Grid has an EMA slope gate: skips entries when 20-bar EMA slope < −0.5% (preve
 
 FadeLong uses the router's `BearMinBars`/`BearMinConf` confirmed-bear gate (bounds [24, 200] bars). **RipShort does not share it** — it has its own `RipShortBearMinBars`/`RipShortBearMinConf` pair (bounds [50, 500] / [0.10, 0.80]), split off because a since-disabled FadeLong was dragging the shared threshold away from RipShort's optimum. Only FadeLong (a bounce/reversal play) carries into the early-bull transition window (`EarlyBullBearCarry`); RipShort is with-trend and switches off the moment the regime tips toward Bull.
 
-**The router does not size anything.** It returns boolean activation flags only. There is no early-bear sizing ramp: the `EarlyBearFromBullMult`/`EarlyBearFromRangingMult` genes and the `StrategyActivation.SizeMult` they fed were deleted — nothing consumed the multiplier (every backtest gates via `RegimeRouterSession.IsActive`; papertrade only printed it) and the confidence scaling had never been validated. The four surviving transition genes (`TransitionSizeMult`, `EarlyBullFromBearMult`, `EarlyBullFromRangingMult`, `EarlyBullBearCarry`) are read as `> 0` ON/OFF switches at routing time; their magnitude is used in exactly one place, `RegimeRouterGA.FilterActive`, which scales the trade's capital fraction while scoring candidate routers during router training. Position sizing at execution time lives in `PortfolioReplay` and `Simulator.SimulatePortfolioExposureCapped`, not in the router.
+**The router does not size anything in legacy mode.** It returns boolean activation flags only. There is no early-bear sizing ramp: the `EarlyBearFromBullMult`/`EarlyBearFromRangingMult` genes and the `StrategyActivation.SizeMult` they fed were deleted — nothing consumed the multiplier (every backtest gates via `RegimeRouterSession.IsActive`; papertrade only printed it) and the confidence scaling had never been validated. The four surviving transition genes (`TransitionSizeMult`, `EarlyBullFromBearMult`, `EarlyBullFromRangingMult`, `EarlyBullBearCarry`) are read as `> 0` ON/OFF switches at routing time; their magnitude is used in exactly one place, `RegimeRouterGA.FilterActive`, which scales the trade's capital fraction while scoring candidate routers during router training. Position sizing at execution time lives in `PortfolioReplay` and `Simulator.SimulatePortfolioExposureCapped`, not in the router. **HMM mode changes this:** with a favorability genotype, `RegimeRouterSession.SizeGate` returns the continuous weight and backtests multiply it into trade `Conf`, so the router's conviction scales size (see "HMM regime router" below).
 
 ### RegimeClassifier + RegimeRouter
 
@@ -144,11 +150,22 @@ Signals: EMA stack (weight 3), EMA50 slope (1.5), ADX (1), 20-bar momentum (0.5)
 `ClassifySeriesWithDuration` is O(n) with per-bar duration counter (how many consecutive bars in current regime).
 
 `src/regime/RegimeRouter.cs` — BTC-anchored router (ETH as secondary confirmer, configurable blend weight).
-Returns `StrategyActivation`: per-strategy **boolean** flags plus `Regime`, `Confidence` and `AtrRatio`. It carries no size multiplier — see the note at the end of the strategy-suite section.
-Two overloads: rule-based fallback and trained-genotype path (`RegimeRouter.Route(btcH1, routerGeno, ethH1)`).
-Both paths delegate their gating to `RegimeRouter.ComputeActivation`, the single source of truth shared with the backtest path.
+Returns `StrategyActivation`: per-strategy **boolean** flags plus `Regime`, `Confidence` and `AtrRatio`.
+Two overloads: rule-based fallback and trained-genotype path (`RegimeRouter.Route(btcH1, routerGeno, ethH1)`), plus an HMM overload (`Route(btcH1, routerGeno, hmmGeno, ethH1, atrRatio)`) that fills `StrategyActivation.Weights`.
+Legacy (threshold) gating delegates to `RegimeRouter.ComputeActivation`; HMM gating delegates to `RegimeRouter.ComputeWeights`.
 
-`RegimeRouterSession` — pre-computed O(1) per-trade lookup for backtests. Build once, call `IsActive(kind, time)`.
+`RegimeRouterSession` — pre-computed O(1) per-trade lookup for backtests. Build once, call `IsActive(kind, time)`. In HMM mode also exposes `Weight(kind, time)` (continuous [0,1]) and `SizeGate(kind, time)` (0 when gated off, else the HMM weight; 1.0 in legacy mode) — backtests multiply `SizeGate` into trade `Conf` so the router's conviction scales size.
+
+### HMM regime router (favorability matrix)
+
+A Gaussian Hidden Markov Model replaces the argmax-discrete regime with a **probability vector** over latent states, and a GA-evolved **favorability matrix** turns that vector into continuous per-strategy weights — so routing is no longer constrained to Bull/Bear semantics. Two artifacts, trained separately:
+
+- `src/regime/HiddenMarkovModel.cs` — diagonal-covariance Gaussian HMM, hand-rolled Baum-Welch (scaled forward-backward, multi-restart). `HmmAnnotator.Annotate(h1, geno)` runs the causal forward filter over the same 9 normalized features as `RegimeClassifier.Features` and returns `RegimeBar[]` with a trailing `HmmProbs` probability vector per bar. States are latent; `HmmGenotype.LabelStates` maps each to a `MarketRegime` post-hoc **for display only** — routing reads the probabilities, never the label. Train with `hmmtrain` → `genotypes/regime_hmm_genotype.json`.
+- Favorability genes on `RegimeRouterGenotype`: `Favorability[8×6]` (strategy × state, padded to `MaxHmmStates=6`), `Biases[8]`, `HmmStatesN ∈ [3,6]`. `ComputeWeights` dots `probs · F[s]`, subtracts the bias, and passes through `sigmoid(6·x)` → `weight ∈ [0,1]`. BtcStress shock override floors the three short strategies at 0.9, same as legacy.
+
+Mode selection is automatic and backward-compatible: a router genotype with no `Favorability` (old JSON) or `GRAVITY_HMM=0` runs the exact legacy threshold path bit-identically. With an HMM genotype present, `RegimeRouterGA.Run` auto-detects hmmMode from the series, evolves the favorability matrix, and skips BO (48+ dims is hopeless for TPE). Training gates trades at `weight > 0.5` (exactly matching serve) and scales `frac` by the weight; a **retention factor** penalises genotypes that extinguish a whole strategy across the window, and the **diversification multiplier** normalises `EffectiveBets` by the strategies *available in the pool* (not just survivors) so concentration isn't free — without those two the GA collapses to 1–2 strategies.
+
+Sizing composition at execution: `finalSize = base × routerWeight × riskScale × guardMult`. `StrategyAllocator` (`src/core/StrategyAllocator.cs`) supplies `riskScale` — Ledoit-Wolf-shrunk covariance → ERC/inverse-vol, SIMFAM single-linkage family clustering with a family cap, correlation-load haircut, mean-normalised to 1.0 (redistributes only). Wire it via the `hmmrisk` sizing case in CombinedBacktest or `GRAVITY_HMM_SIZE=1`.
 
 ### Red-Queen coevolution (Router ↔ Guard only)
 
@@ -227,7 +244,8 @@ Both terms are monotone non-decreasing in every fold score, so the sum is monoto
 | `genotypes/swing_best_genotype.json` | SwingLong (best candidate) |
 | `genotypes/swing_best_genotype_liquid.json` | SwingLong – liquid coins |
 | `genotypes/swing_best_genotype_mid.json` | SwingLong – mid coins |
-| `genotypes/regime_router_genotype.json` | RegimeRouter |
+| `genotypes/regime_router_genotype.json` | RegimeRouter (threshold genes + optional HMM favorability/biases) |
+| `genotypes/regime_hmm_genotype.json` | Gaussian HMM (transition matrix, per-state Gaussian emissions, post-hoc state labels) |
 | `genotypes/dynamic_guard_genotype.json` | DynamicGuard |
 | `genotypes/grid_short_genotype.json` | GridShort |
 | `genotypes/accumulation_grid_genotype.json` | AccumulationGrid (Bull + Bear sub-objects) |

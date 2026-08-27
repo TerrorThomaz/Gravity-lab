@@ -121,6 +121,15 @@ static class HyperliquidPaperTrade
         }
         else Console.WriteLine("  (no router genotype - using rule-based routing)");
 
+        HmmGenotype? hmmGenoPt = null;
+        if (File.Exists(Config.HmmGenoFile))
+        {
+            hmmGenoPt = JsonSerializer.Deserialize<HmmGenotypeDto>(
+                File.ReadAllText(Config.HmmGenoFile))!.ToGenotype();
+            Console.WriteLine($"HMM genotype:      (trained)");
+        }
+        else Console.WriteLine("  (no HMM genotype - HMM routing disabled)");
+
         DynamicGuardGenotype? guardGenoPt = null;
         if (File.Exists(Config.DynamicGuardGenoFile))
         {
@@ -510,15 +519,20 @@ static class HyperliquidPaperTrade
                 if (btcPt.Item2 is { Length: > 220 })
                 {
                     Candle[]? ethH1Pt = ethPt.Item2 is { Length: > 220 } ? ethPt.Item2 : null;
-                    ptRouting = routerGenoPt != null
-                        ? RegimeRouter.Route(btcPt.Item2, routerGenoPt, ethH1Pt)
-                        : RegimeRouter.Route(btcPt.Item2, ethH1Pt);
+                    double hlAtrRatio = guardSession?.GetAtrRatio(DateTime.UtcNow) ?? 1.0;
+                    ptRouting = (hmmGenoPt != null && RegimeRouter.HmmEnabled && routerGenoPt != null)
+                        ? RegimeRouter.Route(btcPt.Item2, routerGenoPt, hmmGenoPt, ethH1Pt, hlAtrRatio)
+                        : routerGenoPt != null
+                            ? RegimeRouter.Route(btcPt.Item2, routerGenoPt, ethH1Pt, hlAtrRatio)
+                            : RegimeRouter.Route(btcPt.Item2, ethH1Pt, hlAtrRatio);
                     string routerTag = routerGenoPt != null ? "(trained)" : "(rule-based)";
                     var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcPt.Item2);
                     int bearDur = btcSeries[^1].Regime == MarketRegime.Bear ? btcSeries[^1].Duration : 0;
                     int bullDur = btcSeries[^1].Regime == MarketRegime.Bull ? btcSeries[^1].Duration : 0;
                     string durTag = bearDur > 0 ? $"  bear={bearDur}h" : bullDur > 0 ? $"  bull={bullDur}h" : "";
                     Console.WriteLine($"  Regime {routerTag}: {ptRouting.Regime}  conf={ptRouting.Confidence:P0}  ->  {RegimeRouter.Describe(ptRouting)}{durTag}");
+                    if (ptRouting.Weights is { Length: 8 })
+                        Console.WriteLine($"  weights: FS={ptRouting.Weights[0]:F2} Gr={ptRouting.Weights[1]:F2} GS={ptRouting.Weights[2]:F2} DL={ptRouting.Weights[3]:F2} FL={ptRouting.Weights[4]:F2} RS={ptRouting.Weights[5]:F2} SL={ptRouting.Weights[6]:F2} AG={ptRouting.Weights[7]:F2}");
                     // Which sizing bucket this cycle resolves to. Printed every cycle because a
                     // silent fall-through to "global" is indistinguishable from a working regime
                     // switch in the output, and that is exactly how the FadeShort/"swing" name trap
@@ -838,10 +852,6 @@ static class HyperliquidPaperTrade
             {
                 state = ptRouting.Regime.ToString(),
                 confidence = ptRouting.Confidence,
-                // These report whether a strategy CAN trade, so they must reflect the loaded
-                // genotype as well as the router flag. Reporting FadeLong=true off the router alone
-                // while its genotype is absent would show an active strategy that cannot fire —
-                // exactly the class of misleading status line that hid a dead pipeline for a week.
                 FadeShort = gUniversalPt != null && ptRouting.FadeShortActive,
                 Grid = gridGPt != null && ptRouting.GridActive,
                 SwingLong = slGenoPt != null && ptRouting.SwingLongActive,
@@ -849,7 +859,18 @@ static class HyperliquidPaperTrade
                 FadeLong = flGenoPt != null && ptRouting.FadeLongActive,
                 RipShort = rsGenoPt != null && ptRouting.RipShortActive,
                 sizeMult = 0.03,
-            } : new { state = "unknown", confidence = 0.0, FadeShort = false, Grid = false, SwingLong = false, DipLong = false, FadeLong = false, RipShort = false, sizeMult = 0.0 };
+                weights = (object?)(ptRouting.Weights is { Length: 8 } ww ? new
+                {
+                    FadeShort        = Math.Round(ww[0], 2),
+                    Grid             = Math.Round(ww[1], 2),
+                    GridShort        = Math.Round(ww[2], 2),
+                    DipLong          = Math.Round(ww[3], 2),
+                    FadeLong         = Math.Round(ww[4], 2),
+                    RipShort         = Math.Round(ww[5], 2),
+                    SwingLong        = Math.Round(ww[6], 2),
+                    AccumulationGrid = Math.Round(ww[7], 2),
+                } : null),
+            } : new { state = "unknown", confidence = 0.0, FadeShort = false, Grid = false, SwingLong = false, DipLong = false, FadeLong = false, RipShort = false, sizeMult = 0.0, weights = (object?)null };
 
             var guardInfo = guardSession != null ? new
             {

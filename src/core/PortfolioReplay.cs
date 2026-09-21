@@ -40,18 +40,34 @@ public static class PortfolioReplay
         string   Symbol = "");
 
 
+    // `crowding` is the correlation-aware directional cap. It is OPTIONAL and one-sided: when null
+    // — or built at strength 0 — this method behaves bit-for-bit as it did before, because
+    // SymbolCrowdingCap.Exceeds returns false without evaluating anything. When active it can only
+    // remove trades the headcount would have admitted, never add ones it rejected.
+    //
+    // It is applied to the DIRECTIONAL cap only, not the per-strategy or per-symbol caps. The
+    // directional cap is the one whose stated purpose is correlated exposure clustering; the
+    // per-strategy caps are about strategy concentration, which correlation between symbols does
+    // not speak to.
     public static List<Trade> FilterByConcurrentCap(
         IEnumerable<Trade> trades,
         Dictionary<string, int>? caps = null,
         int directionalCap = int.MaxValue,
-        int perSymbolCap   = int.MaxValue)
+        int perSymbolCap   = int.MaxValue,
+        SymbolCrowdingCap? crowding = null)
     {
         caps ??= DefaultCaps;
         var sorted  = trades.OrderBy(t => t.EntryTime).ToList();
         var result  = new List<Trade>(sorted.Count);
         var openClose = new Dictionary<string, List<DateTime>>(StringComparer.OrdinalIgnoreCase);
-        var longCloses  = new List<DateTime>();
-        var shortCloses = new List<DateTime>();
+        // Open positions per direction. Close time and symbol travel together so the expiry sweep
+        // cannot drift them out of alignment; .Count and RemoveAll behave exactly as they did when
+        // these were plain DateTime lists.
+        var longOpen  = new List<Open>();
+        var shortOpen = new List<Open>();
+        bool crowdOn = crowding is { Strength: > 0.0 };
+        int crowdSkipped = 0;
+        bool warnedCrowdNoSymbol = false;
         var warnedLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var warnedNoCap = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         // Per-coin open positions, keyed strategy|symbol. Only consulted when a cap is asked for.
@@ -77,8 +93,8 @@ public static class PortfolioReplay
             }
 
             closes.RemoveAll(ct => ct <= t.EntryTime);
-            longCloses.RemoveAll(ct => ct <= t.EntryTime);
-            shortCloses.RemoveAll(ct => ct <= t.EntryTime);
+            longOpen.RemoveAll(o => o.Close <= t.EntryTime);
+            shortOpen.RemoveAll(o => o.Close <= t.EntryTime);
 
             if (closes.Count >= cap) continue;
 
@@ -116,17 +132,57 @@ public static class PortfolioReplay
             bool countsLong  = knownLong  || unknownDir;
             bool countsShort = knownShort || unknownDir;
 
-            if (countsLong  && longCloses.Count  >= directionalCap) continue;
-            if (countsShort && shortCloses.Count >= directionalCap) continue;
+            if (countsLong  && longOpen.Count  >= directionalCap) continue;
+            if (countsShort && shortOpen.Count >= directionalCap) continue;
+
+            // Correlation-aware directional cap. Strictly additional: every trade rejected here
+            // had already passed the headcount above, which is what makes this tighten-only.
+            if (crowdOn)
+            {
+                if (string.IsNullOrEmpty(t.Symbol))
+                {
+                    if (!warnedCrowdNoSymbol)
+                    {
+                        warnedCrowdNoSymbol = true;
+                        Console.WriteLine("  !! PortfolioReplay: crowding cap requested but trades carry no Symbol — " +
+                                          "correlated exposure is NOT being charged for");
+                    }
+                }
+                else
+                {
+                    bool blocked =
+                        (countsLong  && crowding!.Exceeds(Symbols(longOpen),  t.Symbol, directionalCap)) ||
+                        (countsShort && crowding!.Exceeds(Symbols(shortOpen), t.Symbol, directionalCap));
+                    if (blocked) { crowdSkipped++; continue; }
+                }
+            }
 
             var closeTime = t.EntryTime + t.HoldDuration;
             closes.Add(closeTime);
             symCloses?.Add(closeTime);
-            if (countsLong)  longCloses.Add(closeTime);
-            if (countsShort) shortCloses.Add(closeTime);
+            if (countsLong)  longOpen.Add(new Open(closeTime, t.Symbol));
+            if (countsShort) shortOpen.Add(new Open(closeTime, t.Symbol));
             result.Add(t);
         }
 
+        if (crowdOn)
+        {
+            Console.WriteLine($"  Crowding cap (strength {crowding!.Strength:F2}, {crowding.Symbols} symbols): " +
+                              $"removed {crowdSkipped} further trades beyond the headcount cap");
+            if (crowding.UnknownSymbolHits > 0)
+                Console.WriteLine($"     {crowding.UnknownSymbolHits} candidate trades named a symbol absent from the " +
+                                  "correlation window — charged at correlation 1.0 (worst case)");
+        }
+
         return result;
+    }
+
+    private readonly record struct Open(DateTime Close, string Symbol);
+
+    private static List<string> Symbols(List<Open> open)
+    {
+        var s = new List<string>(open.Count);
+        foreach (var o in open) s.Add(o.Symbol);
+        return s;
     }
 }

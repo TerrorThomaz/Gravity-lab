@@ -1318,8 +1318,27 @@ static class CombinedBacktest
             int noEntry = allTrades.Count(t => t.Entry == default);
             if (noEntry > 0)
                 Console.WriteLine($"  !! {noEntry} trades carry no entry time — concurrency modelled with the legacy constant");
+            // Correlation-aware directional cap. OFF unless GRAVITY_CROWDING is set, and one-sided
+            // when on: it can only remove trades the headcount already admitted. The correlation is
+            // estimated STRICTLY BEFORE the first trade in the book — a cap fitted on the window it
+            // filters would be picking which clusters to avoid already knowing how they turned out.
+            double crowdStrength = SymbolCrowdingCap.ConfiguredStrength;
+            SymbolCrowdingCap? crowding = null;
+            if (crowdStrength > 0.0)
+            {
+                DateTime firstEntry = capInput.Min(t => t.EntryTime);
+                var daily = fetched
+                    .Select(f => SymbolCovariance.ToDaily(f.sym, f.h1))
+                    .Where(d => d != null).Select(d => d!).ToList();
+                crowding = SymbolCrowdingCap.Build(daily, crowdStrength, asOf: firstEntry);
+                Console.WriteLine(crowding != null
+                    ? $"  Crowding cap ON (GRAVITY_CROWDING={crowdStrength:F2}), correlation estimated on data before {firstEntry:yyyy-MM-dd}"
+                    : $"  Crowding cap requested (GRAVITY_CROWDING={crowdStrength:F2}) but too little history before {firstEntry:yyyy-MM-dd} — cap INACTIVE");
+            }
+
             var capFiltered = PortfolioReplay.FilterByConcurrentCap(capInput, directionalCap: Config.MaxDirectionalConcurrent,
-                                                                    perSymbolCap: Config.MaxPerSymbolConcurrent);
+                                                                    perSymbolCap: Config.MaxPerSymbolConcurrent,
+                                                                    crowding: crowding);
             int skipped = allTrades.Count - capFiltered.Count;
             if (skipped > 0)
                 Console.WriteLine($"  Concurrent cap removed {skipped} trades");

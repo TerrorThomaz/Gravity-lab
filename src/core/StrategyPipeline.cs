@@ -173,12 +173,41 @@ public static class StrategyPipeline
             Console.WriteLine("  ⚠ BTC data insufficient for regime session — router gate disabled\n");
             return default;
         }
-        var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcEntry.h1);
+
+        HmmGenotype? hmmG = null;
+        if (RegimeRouter.HmmEnabled && File.Exists(Config.HmmGenoFile))
+            hmmG = JsonSerializer.Deserialize<HmmGenotypeDto>(File.ReadAllText(Config.HmmGenoFile))!.ToGenotype();
+
+        RegimeBar[] btcSeries;
+        RegimeBar[]? legacySeries = null;
+        if (hmmG != null)
+        {
+            btcSeries = HmmAnnotator.Annotate(btcEntry.h1, hmmG);
+            legacySeries = RegimeClassifier.ClassifySeriesWithDuration(btcEntry.h1);
+            Console.WriteLine("  Regime mode: HMM regime probabilities (hybrid: legacy gate + HMM sizing)");
+        }
+        else
+        {
+            btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcEntry.h1);
+            Console.WriteLine("  Regime mode: legacy classifier");
+        }
+
         var ethEntry  = fetched.FirstOrDefault(f => f.sym == "ETHUSDT");
         RegimeBar[]? ethSeries = ethEntry.h1 != null && ethEntry.h1.Length >= 200
             ? RegimeClassifier.ClassifySeriesWithDuration(ethEntry.h1) : null;
         var session = new RegimeRouterSession(btcSeries, ethSeries, routerG);
         if (withBtcBars) session = session.WithBtcBars(btcH1ForGuard);
+        if (legacySeries != null) session = session.WithLegacyRegime(legacySeries);
+
+        // Load SIMFAM family gate (replaces favorability matrix when present).
+        if (File.Exists(Config.FamilyGateGenoFile))
+        {
+            var gateDto = JsonSerializer.Deserialize<StrategyFamilyGatingDto>(
+                File.ReadAllText(Config.FamilyGateGenoFile))!;
+            session = session.WithGate(gateDto.ToGate());
+            Console.WriteLine($"  SIMFAM family gate loaded from {Config.FamilyGateGenoFile}");
+        }
+
         Console.WriteLine($"  Router session: BTC {btcSeries.Length} bars  ETH {(ethSeries != null ? ethSeries.Length.ToString() : "none")} bars\n");
         return new RouterBootstrap(session, btcSeries);
     }

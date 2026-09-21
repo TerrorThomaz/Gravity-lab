@@ -21,6 +21,7 @@ dotnet run -- swinglongtrain     # SwingLong GA: bull-regime RSI bullish diverge
 dotnet run -- accumgridtrain     # AccumulationGrid GA (separate Bull and Bear genotypes)
 dotnet run -- lowvoltrain        # Low-vol variant genotypes (ATR ratio < 0.8)
 dotnet run -- routertrain        # RegimeRouter GA: train routing thresholds + duration gates
+dotnet run -- hmmtrain           # Gaussian HMM on BTC regime features (Baum-Welch); saves regime_hmm_genotype.json
 dotnet run -- coevolvetrain      # Red-Queen coevolution of Router <-> DynamicGuard (8 rounds; strategies FROZEN)
 dotnet run -- rotatortrain       # VolatilityWeightedRotator GA
 dotnet run -- dynamicguardtrain  # DynamicGuard GA: portfolio drawdown guard
@@ -58,10 +59,13 @@ src/
   core/           Shared infrastructure: Config, Indicators, Simulator, CandleFetcher,
                   CoinCluster, Pumpsegmenter, FundingRateSession, PortfolioReplay,
                   RankedPortfolioSim, TradeEnricher, StatisticalTests, GenotypeDto,
-BayesianOptimizer, StrategyPipeline (shared backtest bootstrap: variant
+                  BayesianOptimizer, StrategyPipeline (shared backtest bootstrap: variant
                   loading/selection, parallel candle fetch, regime/funding/guard session
                   builds — the reproducer-of-record consumed by the backtest commands)
-  regime/         RegimeClassifier, RegimeRouter, RegimeRouterGA, RegimeRouterGenotype
+                  StrategyAllocator (Ledoit-Wolf covariance → ERC/inverse-vol riskScale,
+                  SIMFAM family clustering + cap, correlation-load haircut; mean-normalised)
+  regime/         RegimeClassifier, RegimeRouter, RegimeRouterGA, RegimeRouterGenotype,
+                  HiddenMarkovModel (Baum-Welch + HmmAnnotator), HmmGenotype
   strategies/
     fade_short/   FadeShortGA, FadeShortGenotype
                   (FadeShortSimulator actually lives in swing_long/SwingSimulator.cs)
@@ -89,8 +93,10 @@ Gravity-gen2.Tests/
   core/           Indicators, IndicatorLibrary, FitnessConfig, FoldScoreStatistics,
                   FundingRateSession, SlippageModel, CandleValidation, MonteCarlo,
                   HolmFamily, StatisticalTests, TradeEnricher, VariantRouter,
-                  ExpandingWindowValidation, OosSizingSplit, RefinementObjective
-  regime/         RegimeClassifierTests, RegimeRouterGenotypeDtoTests
+                  ExpandingWindowValidation, OosSizingSplit, RefinementObjective,
+                  StrategyAllocatorTests
+  regime/         RegimeClassifierTests, RegimeRouterGenotypeDtoTests,
+                  HiddenMarkovModelTests, RegimeRouterHmmTests
   guard/          DynamicGuardTests
   strategies/     FoldScoreCapTests, PerCoinFoldAlignmentTests, RipShortExitOverrideTests
 ```
@@ -135,7 +141,7 @@ Grid has an EMA slope gate: skips entries when 20-bar EMA slope < −0.5% (preve
 
 FadeLong uses the router's `BearMinBars`/`BearMinConf` confirmed-bear gate (bounds [24, 200] bars). **RipShort does not share it** — it has its own `RipShortBearMinBars`/`RipShortBearMinConf` pair (bounds [50, 500] / [0.10, 0.80]), split off because a since-disabled FadeLong was dragging the shared threshold away from RipShort's optimum. Only FadeLong (a bounce/reversal play) carries into the early-bull transition window (`EarlyBullBearCarry`); RipShort is with-trend and switches off the moment the regime tips toward Bull.
 
-**The router does not size anything.** It returns boolean activation flags only. There is no early-bear sizing ramp: the `EarlyBearFromBullMult`/`EarlyBearFromRangingMult` genes and the `StrategyActivation.SizeMult` they fed were deleted — nothing consumed the multiplier (every backtest gates via `RegimeRouterSession.IsActive`; papertrade only printed it) and the confidence scaling had never been validated. The four surviving transition genes (`TransitionSizeMult`, `EarlyBullFromBearMult`, `EarlyBullFromRangingMult`, `EarlyBullBearCarry`) are read as `> 0` ON/OFF switches at routing time; their magnitude is used in exactly one place, `RegimeRouterGA.FilterActive`, which scales the trade's capital fraction while scoring candidate routers during router training. Position sizing at execution time lives in `PortfolioReplay` and `Simulator.SimulatePortfolioExposureCapped`, not in the router.
+**The router does not size anything in legacy mode.** It returns boolean activation flags only. There is no early-bear sizing ramp: the `EarlyBearFromBullMult`/`EarlyBearFromRangingMult` genes and the `StrategyActivation.SizeMult` they fed were deleted — nothing consumed the multiplier (every backtest gates via `RegimeRouterSession.IsActive`; papertrade only printed it) and the confidence scaling had never been validated. The four surviving transition genes (`TransitionSizeMult`, `EarlyBullFromBearMult`, `EarlyBullFromRangingMult`, `EarlyBullBearCarry`) are read as `> 0` ON/OFF switches at routing time; their magnitude is used in exactly one place, `RegimeRouterGA.FilterActive`, which scales the trade's capital fraction while scoring candidate routers during router training. Position sizing at execution time lives in `PortfolioReplay` and `Simulator.SimulatePortfolioExposureCapped`, not in the router. **HMM mode changes this:** with a favorability genotype, `RegimeRouterSession.SizeGate` returns the continuous weight and backtests multiply it into trade `Conf`, so the router's conviction scales size (see "HMM regime router" below).
 
 ### RegimeClassifier + RegimeRouter
 
@@ -144,11 +150,22 @@ Signals: EMA stack (weight 3), EMA50 slope (1.5), ADX (1), 20-bar momentum (0.5)
 `ClassifySeriesWithDuration` is O(n) with per-bar duration counter (how many consecutive bars in current regime).
 
 `src/regime/RegimeRouter.cs` — BTC-anchored router (ETH as secondary confirmer, configurable blend weight).
-Returns `StrategyActivation`: per-strategy **boolean** flags plus `Regime`, `Confidence` and `AtrRatio`. It carries no size multiplier — see the note at the end of the strategy-suite section.
-Two overloads: rule-based fallback and trained-genotype path (`RegimeRouter.Route(btcH1, routerGeno, ethH1)`).
-Both paths delegate their gating to `RegimeRouter.ComputeActivation`, the single source of truth shared with the backtest path.
+Returns `StrategyActivation`: per-strategy **boolean** flags plus `Regime`, `Confidence` and `AtrRatio`.
+Two overloads: rule-based fallback and trained-genotype path (`RegimeRouter.Route(btcH1, routerGeno, ethH1)`), plus an HMM overload (`Route(btcH1, routerGeno, hmmGeno, ethH1, atrRatio)`) that fills `StrategyActivation.Weights`.
+Legacy (threshold) gating delegates to `RegimeRouter.ComputeActivation`; HMM gating delegates to `RegimeRouter.ComputeWeights`.
 
-`RegimeRouterSession` — pre-computed O(1) per-trade lookup for backtests. Build once, call `IsActive(kind, time)`.
+`RegimeRouterSession` — pre-computed O(1) per-trade lookup for backtests. Build once, call `IsActive(kind, time)`. In HMM mode also exposes `Weight(kind, time)` (continuous [0,1]) and `SizeGate(kind, time)` (0 when gated off, else the HMM weight; 1.0 in legacy mode) — backtests multiply `SizeGate` into trade `Conf` so the router's conviction scales size.
+
+### HMM regime router (favorability matrix)
+
+A Gaussian Hidden Markov Model replaces the argmax-discrete regime with a **probability vector** over latent states, and a GA-evolved **favorability matrix** turns that vector into continuous per-strategy weights — so routing is no longer constrained to Bull/Bear semantics. Two artifacts, trained separately:
+
+- `src/regime/HiddenMarkovModel.cs` — diagonal-covariance Gaussian HMM, hand-rolled Baum-Welch (scaled forward-backward, multi-restart). `HmmAnnotator.Annotate(h1, geno)` runs the causal forward filter over the same 9 normalized features as `RegimeClassifier.Features` and returns `RegimeBar[]` with a trailing `HmmProbs` probability vector per bar. States are latent; `HmmGenotype.LabelStates` maps each to a `MarketRegime` post-hoc **for display only** — routing reads the probabilities, never the label. Train with `hmmtrain` → `genotypes/regime_hmm_genotype.json`.
+- Favorability genes on `RegimeRouterGenotype`: `Favorability[8×6]` (strategy × state, padded to `MaxHmmStates=6`), `Biases[8]`, `HmmStatesN ∈ [3,6]`. `ComputeWeights` dots `probs · F[s]`, subtracts the bias, and passes through `sigmoid(6·x)` → `weight ∈ [0,1]`. BtcStress shock override floors the three short strategies at 0.9, same as legacy.
+
+Mode selection is automatic and backward-compatible: a router genotype with no `Favorability` (old JSON) or `GRAVITY_HMM=0` runs the exact legacy threshold path bit-identically. With an HMM genotype present, `RegimeRouterGA.Run` auto-detects hmmMode from the series, evolves the favorability matrix, and skips BO (48+ dims is hopeless for TPE). Training gates trades at `weight > 0.5` (exactly matching serve) and scales `frac` by the weight; a **retention factor** penalises genotypes that extinguish a whole strategy across the window, and the **diversification multiplier** normalises `EffectiveBets` by the strategies *available in the pool* (not just survivors) so concentration isn't free — without those two the GA collapses to 1–2 strategies.
+
+Sizing composition at execution: `finalSize = base × routerWeight × riskScale × guardMult`. `StrategyAllocator` (`src/core/StrategyAllocator.cs`) supplies `riskScale` — Ledoit-Wolf-shrunk covariance → ERC/inverse-vol, SIMFAM single-linkage family clustering with a family cap, correlation-load haircut, mean-normalised to 1.0 (redistributes only). Wire it via the `hmmrisk` sizing case in CombinedBacktest or `GRAVITY_HMM_SIZE=1`.
 
 ### Red-Queen coevolution (Router ↔ Guard only)
 
@@ -231,7 +248,8 @@ Both terms are monotone non-decreasing in every fold score, so the sum is monoto
 | `genotypes/swing_best_genotype.json` | SwingLong (best candidate) |
 | `genotypes/swing_best_genotype_liquid.json` | SwingLong – liquid coins |
 | `genotypes/swing_best_genotype_mid.json` | SwingLong – mid coins |
-| `genotypes/regime_router_genotype.json` | RegimeRouter |
+| `genotypes/regime_router_genotype.json` | RegimeRouter (threshold genes + optional HMM favorability/biases) |
+| `genotypes/regime_hmm_genotype.json` | Gaussian HMM (transition matrix, per-state Gaussian emissions, post-hoc state labels) |
 | `genotypes/dynamic_guard_genotype.json` | DynamicGuard |
 | `genotypes/grid_short_genotype.json` | GridShort |
 | `genotypes/accumulation_grid_genotype.json` | AccumulationGrid (Bull + Bear sub-objects) |
@@ -272,3 +290,67 @@ DISCORD_COMMAND_CHANNEL=
 DISCORD_GUILD_ID=
 GRAVITY_MODE=papertrade
 ```
+
+### Hyperliquid live trading (testnet)
+
+`dotnet run -- hyperliquid-papertrade` — distinct from plain `papertrade` (pure simulation, no order
+placement). Architecture: `src/core/HyperliquidClient.cs` (C#, HTTP) → `bot/hyperliquid_server.py`
+(FastAPI bridge, holds `HYPERLIQUID_PRIVATE_KEY`, does EIP-712 signing) → Hyperliquid's own API.
+Currently runs against **testnet** (`HYPERLIQUID_TESTNET=1`) — no real money at risk regardless of
+account balance shown. `discord_bot.py`'s `LIVE_MODES` set and watchdog cover this mode identically
+to `papertrade` (cycle summaries, trade/killswitch alerts, auto-restart on crash or hang).
+
+Runs the same 6 strategies `papertrade` does (FadeShort, Grid, SwingLong, DipLong, FadeLong,
+RipShort — GridShort/AccumGrid aren't wired into either live path yet, a pre-existing gap).
+Shadow mode: every strategy is evaluated every cycle regardless of router gating and recorded with
+`routed: true/false`, but only `routed==true` signals ever reach `PlaceOrderAsync`.
+
+**Position sizing is flat, not risk-adjusted, and ignores each genotype's own `PositionSizePct`
+gene entirely.** Every strategy sizes at the same flat USD amount (`HYPERLIQUID_USD_SIZE` env var,
+default 1000) × the DynamicGuard multiplier — `PositionSizePct` is recorded as metadata (`sizeBase`
+in the position JSON) but never consumes it for the real order size. **`PositionSizePct` should be
+removed from the strategy genotypes once risk-adjustable sizing (e.g. volatility-target or
+Kelly-based, sized against actual account equity) replaces this flat model** — keeping a gene the
+GA still optimizes but live trading ignores is exactly the kind of drift that made the router's
+`SizeMult` dead weight before it was deleted (see "The router does not size anything" above).
+
+Diagnostics (read-only, no orders): `hyperliquid-lookback [hours]` scans real recent history
+through every strategy's actual trade-generation function and reports both the raw shadow set and
+which of those the router would have gated on. `hyperliquid-griddiag` prints candle-data health
+(length, staleness, recency) plus Grid's raw ADX/BB-width/EMA-slope values against the live
+genotype's thresholds, coin by coin — built to verify "no signal fired" against real numbers
+instead of trusting the pipeline blind.
+
+**Caution — `HyperliquidClient.FetchOhlcvPaginatedAsync` returned stale data for its entire
+lifetime until 2026-08-20.** Pagination accumulates in whole 5000-candle chunks that rarely divide
+evenly into the requested total, so the pool almost always overshoots; sorting ascending then
+`.Take(totalCandles)` grabbed the *oldest* candles from that overshoot and silently discarded the
+most recent ones — every signal, regime call, and would-be order price was computed against
+history lagging real time by \~10+ days. Fixed to `.TakeLast(totalCandles)`. Also fixed in the same
+pass: `PlaceOrderAsync`/`CancelOrderAsync` sent the raw exchange-agnostic symbol (e.g. `"BTCUSDT"`)
+with zero normalization — the bridge's order endpoint expects the bare Hyperliquid name (`"BTC"`)
+and does no stripping of its own, so every order this pipeline ever attempted would have been
+rejected; and Hyperliquid's `"k"`-prefix meme-coin names (`kBONK`/`kPEPE`/`kSHIB`) were being
+re-uppercased server-side in `hyperliquid_server.py`, mangling them to `"KBONK"` etc. No real orders
+were ever placed before these fixes landed, so nothing was lost — the system was blind, not wrong.
+
+**The bridge wallet has zero balance and cannot currently place real orders.** `marginValue: 0.0`
+via `/api/user/info`. Hyperliquid's testnet faucet requires the *same* address to have already
+received ≥$5 real USDC on Arbitrum mainnet (confirmed directly: `claimDrip` on
+`api.hyperliquid-testnet.xyz/info` returns `"user ... does not exist on mainnet"`) — this wallet has
+no mainnet history, so funding it means a real deposit on mainnet from this exact address, a
+decision for a human with the funds/keys, not something to automate. Until that happens, treat
+`hyperliquid-papertrade` as percentage-tracking only: every signal (shadow or router-gated) already
+gets a `pnl` percentage written to `live_state.json`/`live_journal.json` regardless of whether the
+order would fill, so the pipeline's evaluative value doesn't depend on the account being funded —
+only the "did a real order actually happen" question does, and the honest answer to that is no.
+
+**Fees/slippage on the live `pnl` field**: Hyperliquid's real published base-tier fees are 0.015%
+maker / 0.045% taker — cheaper than the Bybit-calibrated `TradeCosts.FeeRoundTripPct = 0.11` every
+backtest in this repo assumes, and a different exchange entirely. `HyperliquidPaperTrade.cs` charges
+a flat `HlFeeRoundTripPct = 0.09` (worst case, both legs taker) against every `pnl` figure it writes
+— applied in full up front rather than split entry/exit, a deliberate simplification for a single
+running percentage. **Slippage doesn't apply the way the backtest model prices it**: every order
+here is `isLimit: true` (GTC), so there's no market-order price degradation on the fill — the real
+equivalent risk is fill-or-no-fill (price runs past the entry before the resting order gets touched),
+which isn't priced or tracked anywhere yet.

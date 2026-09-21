@@ -212,7 +212,22 @@ static class LongTrainCommands
         { Console.WriteLine("BTCUSDT data insufficient — cannot build regime series."); return; }
 
         var ethEntry = coPassed.FirstOrDefault(x => x.Sym == "ETHUSDT");
-        var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcEntry.H1);
+
+        HmmGenotype? hmmG = null;
+        if (RegimeRouter.HmmEnabled && File.Exists(Config.HmmGenoFile))
+            hmmG = JsonSerializer.Deserialize<HmmGenotypeDto>(File.ReadAllText(Config.HmmGenoFile))!.ToGenotype();
+
+        RegimeBar[] btcSeries;
+        if (hmmG != null)
+        {
+            btcSeries = HmmAnnotator.Annotate(btcEntry.H1, hmmG);
+            Console.WriteLine("  Regime mode: HMM regime probabilities");
+        }
+        else
+        {
+            btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcEntry.H1);
+            Console.WriteLine("  Regime mode: legacy classifier");
+        }
         var ethSeries = ethEntry.H1 is { Length: > 200 }
             ? RegimeClassifier.ClassifySeriesWithDuration(ethEntry.H1) : null;
 
@@ -828,10 +843,10 @@ static class LongTrainCommands
 
         Console.WriteLine($"  FadeShort : {fsGeno}");
         if (gridGenoRt != null) Console.WriteLine($"  Grid      : {gridGenoRt}");
-        if (flGenoRt   != null) Console.WriteLine($"  FadeLong  : {flGenoRt}  {(flGenoRt.Fitness > 0 ? "✓ included" : "✗ excluded (F≤0)")}");
-        if (dlGenoRt   != null) Console.WriteLine($"  DipLong   : {dlGenoRt}  {(dlGenoRt.Fitness > 0 ? "✓ included" : "✗ excluded (F≤0)")}");
-        if (rsGenoRt   != null) Console.WriteLine($"  RipShort  : {rsGenoRt}  {(rsGenoRt.Fitness > 0 ? "✓ included" : "✗ excluded (F≤0)")}");
-        if (gsGenoRt   != null) Console.WriteLine($"  GridShort : {gsGenoRt}  {(gsGenoRt.Fitness > 0 ? "✓ included" : "✗ excluded (F≤0)")}");
+        if (flGenoRt   != null) Console.WriteLine($"  FadeLong  : {flGenoRt}  ✓ included");
+        if (dlGenoRt   != null) Console.WriteLine($"  DipLong   : {dlGenoRt}  ✓ included");
+        if (rsGenoRt   != null) Console.WriteLine($"  RipShort  : {rsGenoRt}  ✓ included");
+        if (gsGenoRt   != null) Console.WriteLine($"  GridShort : {gsGenoRt}  ✓ included");
         Console.WriteLine();
 
         Console.WriteLine($"  Fetching {Config.BacktestCoins.Length} coins (15m candles, ~3yr)...");
@@ -858,7 +873,21 @@ static class LongTrainCommands
         if (ethH1Rt != null) Console.WriteLine($"  ETH h1 series: {ethH1Rt.Length} bars");
 
         Console.WriteLine("  Computing regime series...");
-        var btcRegimeSeries = RegimeClassifier.ClassifySeriesWithDuration(btcH1Rt);
+        HmmGenotype? hmmGRt = null;
+        if (RegimeRouter.HmmEnabled && File.Exists(Config.HmmGenoFile))
+            hmmGRt = JsonSerializer.Deserialize<HmmGenotypeDto>(File.ReadAllText(Config.HmmGenoFile))!.ToGenotype();
+
+        RegimeBar[] btcRegimeSeries;
+        if (hmmGRt != null)
+        {
+            btcRegimeSeries = HmmAnnotator.Annotate(btcH1Rt, hmmGRt);
+            Console.WriteLine("  Regime mode: HMM regime probabilities");
+        }
+        else
+        {
+            btcRegimeSeries = RegimeClassifier.ClassifySeriesWithDuration(btcH1Rt);
+            Console.WriteLine("  Regime mode: legacy classifier");
+        }
         var ethRegimeSeries = ethH1Rt != null ? RegimeClassifier.ClassifySeriesWithDuration(ethH1Rt) : null;
 
         var regimeGroups = btcRegimeSeries.Where(b => b.Duration > 0).GroupBy(b => b.Regime);
@@ -910,7 +939,7 @@ static class LongTrainCommands
             }
             catch { }
 
-            if (gridGenoRt?.Fitness > 0)
+            if (gridGenoRt != null)
             {
                 try
                 {
@@ -921,7 +950,7 @@ static class LongTrainCommands
                 catch { }
             }
 
-            if (gsGenoRt?.Fitness > 0)
+            if (gsGenoRt != null)
             {
                 try
                 {
@@ -932,7 +961,7 @@ static class LongTrainCommands
                 catch { }
             }
 
-            if (flGenoRt?.Fitness > 0)
+            if (flGenoRt != null)
             {
                 try
                 {
@@ -944,7 +973,7 @@ static class LongTrainCommands
                 catch { }
             }
 
-            if (dlGenoRt?.Fitness > 0)
+            if (dlGenoRt != null)
             {
                 try
                 {
@@ -956,7 +985,7 @@ static class LongTrainCommands
                 catch { }
             }
 
-            if (rsGenoRt?.Fitness > 0)
+            if (rsGenoRt != null)
             {
                 try
                 {
@@ -998,6 +1027,25 @@ static class LongTrainCommands
             JsonSerializer.Serialize(RegimeRouterGenotypeDto.From(routerBest),
                 new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"  Saved → {genoPath}");
+
+        // ── SIMFAM strategy family gating ──────────────────────────────────────────────────────
+        // Compute empirical regime→family profitability from the training trades. This replaces
+        // the GA-evolved favorability matrix with an interpretable, data-driven mapping.
+        Console.WriteLine("\n─── SIMFAM strategy family gating ───");
+        var tradesByStrategy = allTrades
+            .GroupBy(t => t.Kind.ToString())
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<(DateTime Time, double Return)>)g.Select(t => (t.Time, t.Return)).ToList());
+        var familyGate = StrategyFamilyGating.Build(tradesByStrategy, btcRegimeSeries);
+        StrategyFamilyGating.Print(familyGate);
+
+        var gatePath = Config.FamilyGateGenoFile;
+        File.WriteAllText(gatePath,
+            JsonSerializer.Serialize(StrategyFamilyGatingDto.From(familyGate),
+                new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"  Saved → {gatePath}");
+
         Console.WriteLine($"\nNext: dotnet run -- backtest");
     }
 

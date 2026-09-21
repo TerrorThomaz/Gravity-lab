@@ -5,7 +5,7 @@ namespace TradingGA;
 public enum MarketRegime { Bull, Bear, Ranging, HighVol }
 
 // One bar of the pre-computed regime series produced by ClassifySeriesWithDuration.
-public record RegimeBar(DateTime Time, MarketRegime Regime, double Confidence, int Duration);
+public record RegimeBar(DateTime Time, MarketRegime Regime, double Confidence, int Duration, double[]? HmmProbs = null);
 
 // Tags trade timestamps with the BTC regime active at that moment, for per-regime held-out bucketing.
 public static class RegimeBarLookup

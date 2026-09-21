@@ -180,6 +180,22 @@ static class OosBacktest
         RegimeRouterSession? session  = router.Session;
         RegimeBar[]?         btcRegimeSeries = router.BtcRegimeSeries;
 
+        if (session != null && RegimeRouter.HmmEnabled && routerG is { IsHmmGenotype: true } && btcRegimeSeries is { Length: > 0 })
+        {
+            var lastBar = btcRegimeSeries[^1];
+            if (lastBar.HmmProbs != null)
+            {
+                Console.WriteLine("  HMM current-bar weights:");
+                foreach (var (kind, label) in new[] {
+                    (RegimeRouterGA.StrategyKind.FadeShort, "FadeShort"), (RegimeRouterGA.StrategyKind.Grid, "Grid"),
+                    (RegimeRouterGA.StrategyKind.GridShort, "GridShort"), (RegimeRouterGA.StrategyKind.DipLong, "DipLong"),
+                    (RegimeRouterGA.StrategyKind.FadeLong, "FadeLong"), (RegimeRouterGA.StrategyKind.RipShort, "RipShort"),
+                    (RegimeRouterGA.StrategyKind.SwingLong, "SwingLong"), (RegimeRouterGA.StrategyKind.AccumulationGrid, "AccumGrid") })
+                    Console.WriteLine($"    {label,-14} {session.Weight(kind, lastBar.Time):F2}");
+                Console.WriteLine();
+            }
+        }
+
         var oosFetched = fetched.Where(f => Config.OosCoins.Contains(f.sym)).ToArray();
 
         const double oosMinVol = 0.05;
@@ -356,9 +372,11 @@ static class OosBacktest
             swingCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
             foreach (var (t, ret, _, et, _) in scored)
             {
-                swingTrades.Add((t, ret, conf));
-                allTrades.Add((t, ret, conf, "swing", et, sym));
-                RouteVolVariant(fsVarLabel, sym, t, ret, conf, "swing", vCC);
+                double sgFs = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.FadeShort, t) : 1.0;
+                double cFs = conf * sgFs;
+                swingTrades.Add((t, ret, cFs));
+                allTrades.Add((t, ret, cFs, "swing", et, sym));
+                RouteVolVariant(fsVarLabel, sym, t, ret, cFs, "swing", vCC);
             }
             RecordAppliedConf(fsVarLabel, sym, conf);
         }
@@ -421,9 +439,11 @@ static class OosBacktest
             gridCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
             foreach (var t in scored)
             {
-                gridTrades.Add((t.Time, t.Return, conf));
-                allTrades.Add((t.Time, t.Return, conf, "grid", t.EntryTime, sym));
-                RouteVolVariant(gridVarLabel, sym, t.Time, t.Return, conf, "grid", vCC);
+                double sgGr = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.Grid, t.Time) : 1.0;
+                double cGr = conf * sgGr;
+                gridTrades.Add((t.Time, t.Return, cGr));
+                allTrades.Add((t.Time, t.Return, cGr, "grid", t.EntryTime, sym));
+                RouteVolVariant(gridVarLabel, sym, t.Time, t.Return, cGr, "grid", vCC);
             }
             RecordAppliedConf(gridVarLabel, sym, conf);
         }
@@ -476,9 +496,11 @@ static class OosBacktest
                 flCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
                 foreach (var t in scored)
                 {
-                    flTrades.Add((t.Time, t.Return, conf));
-                    allTrades.Add((t.Time, t.Return, conf, "fadelong", t.EntryTime, sym));
-                    RouteVolVariant(flVarLabel, sym, t.Time, t.Return, conf, "fadelong", vCC);
+                    double sgFl = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.FadeLong, t.Time) : 1.0;
+                    double cFl = conf * sgFl;
+                    flTrades.Add((t.Time, t.Return, cFl));
+                    allTrades.Add((t.Time, t.Return, cFl, "fadelong", t.EntryTime, sym));
+                    RouteVolVariant(flVarLabel, sym, t.Time, t.Return, cFl, "fadelong", vCC);
                 }
                 RecordAppliedConf(flVarLabel, sym, conf);
             }
@@ -532,9 +554,11 @@ static class OosBacktest
                 dlCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
                 foreach (var t in scored)
                 {
-                    dlTrades.Add((t.Time, t.Return, conf));
-                    allTrades.Add((t.Time, t.Return, conf, "diplong", t.EntryTime, sym));
-                    RouteVolVariant(dlVarLabel, sym, t.Time, t.Return, conf, "diplong", vCC);
+                    double sgDl = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time) : 1.0;
+                    double cDl = conf * sgDl;
+                    dlTrades.Add((t.Time, t.Return, cDl));
+                    allTrades.Add((t.Time, t.Return, cDl, "diplong", t.EntryTime, sym));
+                    RouteVolVariant(dlVarLabel, sym, t.Time, t.Return, cDl, "diplong", vCC);
                 }
                 RecordAppliedConf(dlVarLabel, sym, conf);
             }
@@ -588,9 +612,11 @@ static class OosBacktest
                 slCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
                 foreach (var t in scored)
                 {
-                    slTrades.Add((t.Time, t.Return, conf));
-                    allTrades.Add((t.Time, t.Return, conf, "swing_long", t.EntryTime, sym));
-                    RouteVolVariant(slVarLabel, sym, t.Time, t.Return, conf, "swing_long", vCC);
+                    double sgSl = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time) : 1.0;
+                    double cSl = conf * sgSl;
+                    slTrades.Add((t.Time, t.Return, cSl));
+                    allTrades.Add((t.Time, t.Return, cSl, "swing_long", t.EntryTime, sym));
+                    RouteVolVariant(slVarLabel, sym, t.Time, t.Return, cSl, "swing_long", vCC);
                 }
                 RecordAppliedConf(slVarLabel, sym, conf);
             }
@@ -645,9 +671,11 @@ static class OosBacktest
                 rsCoinStats.Add((sym, sh, sort, pf, vRet.Count, wr, avg, conf));
                 foreach (var t in scored)
                 {
-                    rsTrades.Add((t.Time, t.Return, conf));
-                    allTrades.Add((t.Time, t.Return, conf, "ripshort", t.EntryTime, sym));
-                    RouteVolVariant(rsVarLabel, sym, t.Time, t.Return, conf, "ripshort", vCC);
+                    double sgRs = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.RipShort, t.Time) : 1.0;
+                    double cRs = conf * sgRs;
+                    rsTrades.Add((t.Time, t.Return, cRs));
+                    allTrades.Add((t.Time, t.Return, cRs, "ripshort", t.EntryTime, sym));
+                    RouteVolVariant(rsVarLabel, sym, t.Time, t.Return, cRs, "ripshort", vCC);
                 }
                 RecordAppliedConf(rsVarLabel, sym, conf);
             }
@@ -1130,7 +1158,8 @@ static class OosBacktest
                     foreach (var (t, ret, _, et, _) in vRet)
                     {
                         if (session != null && !session.IsActive(RegimeRouterGA.StrategyKind.Grid, t)) continue;
-                        allTrades.Add((t, ret, conf, "grid", et, sym));
+                        double sgAc = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.Grid, t) : 1.0;
+                        allTrades.Add((t, ret, conf * sgAc, "grid", et, sym));
                     }
                 }
             }
@@ -1148,7 +1177,11 @@ static class OosBacktest
                     btFL++; btFLT += split.Scored.Count; btFLSize += split.SizingCount;
                     if (split.UsedFallback) btFLFb++;
                     NoteScoredSpan(h1, split.Scored[0].Time);
-                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "fadelong", t.EntryTime, sym));
+                    foreach (var t in split.Scored)
+                    {
+                        double sgFlBt = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.FadeLong, t.Time) : 1.0;
+                        allTrades.Add((t.Time, t.Return, split.Conf * sgFlBt, "fadelong", t.EntryTime, sym));
+                    }
                 }
             }
 
@@ -1164,7 +1197,11 @@ static class OosBacktest
                     btDL++; btDLT += split.Scored.Count; btDLSize += split.SizingCount;
                     if (split.UsedFallback) btDLFb++;
                     NoteScoredSpan(h1, split.Scored[0].Time);
-                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "diplong", t.EntryTime, sym));
+                    foreach (var t in split.Scored)
+                    {
+                        double sgDlBt = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time) : 1.0;
+                        allTrades.Add((t.Time, t.Return, split.Conf * sgDlBt, "diplong", t.EntryTime, sym));
+                    }
                 }
             }
 
@@ -1181,7 +1218,11 @@ static class OosBacktest
                     btRS++; btRST += split.Scored.Count; btRSSize += split.SizingCount;
                     if (split.UsedFallback) btRSFb++;
                     NoteScoredSpan(h1, split.Scored[0].Time);
-                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "ripshort", t.EntryTime, sym));
+                    foreach (var t in split.Scored)
+                    {
+                        double sgRsBt = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.RipShort, t.Time) : 1.0;
+                        allTrades.Add((t.Time, t.Return, split.Conf * sgRsBt, "ripshort", t.EntryTime, sym));
+                    }
                 }
             }
         }
@@ -1240,7 +1281,11 @@ static class OosBacktest
                     oGrid++; oGridT += split.Scored.Count; oGridS += split.SizingCount;
                     if (split.UsedFallback) oGridFb++;
                     NoteScoredSpan(h1, split.Scored[0].Time);
-                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "grid", t.EntryTime, sym));
+                    foreach (var t in split.Scored)
+                    {
+                        double sgGrO = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.Grid, t.Time) : 1.0;
+                        allTrades.Add((t.Time, t.Return, split.Conf * sgGrO, "grid", t.EntryTime, sym));
+                    }
                 }
             }
 
@@ -1256,7 +1301,11 @@ static class OosBacktest
                     oFL++; oFLT += split.Scored.Count; oFLS += split.SizingCount;
                     if (split.UsedFallback) oFLFb++;
                     NoteScoredSpan(h1, split.Scored[0].Time);
-                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "fadelong", t.EntryTime, sym));
+                    foreach (var t in split.Scored)
+                    {
+                        double sgFlO = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.FadeLong, t.Time) : 1.0;
+                        allTrades.Add((t.Time, t.Return, split.Conf * sgFlO, "fadelong", t.EntryTime, sym));
+                    }
                 }
             }
 
@@ -1272,7 +1321,11 @@ static class OosBacktest
                     oDL++; oDLT += split.Scored.Count; oDLS += split.SizingCount;
                     if (split.UsedFallback) oDLFb++;
                     NoteScoredSpan(h1, split.Scored[0].Time);
-                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "diplong", t.EntryTime, sym));
+                    foreach (var t in split.Scored)
+                    {
+                        double sgDlO = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time) : 1.0;
+                        allTrades.Add((t.Time, t.Return, split.Conf * sgDlO, "diplong", t.EntryTime, sym));
+                    }
                 }
             }
 
@@ -1288,7 +1341,11 @@ static class OosBacktest
                     oRS++; oRST += split.Scored.Count; oRSS += split.SizingCount;
                     if (split.UsedFallback) oRSFb++;
                     NoteScoredSpan(h1, split.Scored[0].Time);
-                    foreach (var t in split.Scored) allTrades.Add((t.Time, t.Return, split.Conf, "ripshort", t.EntryTime, sym));
+                    foreach (var t in split.Scored)
+                    {
+                        double sgRsO = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.RipShort, t.Time) : 1.0;
+                        allTrades.Add((t.Time, t.Return, split.Conf * sgRsO, "ripshort", t.EntryTime, sym));
+                    }
                 }
             }
         }

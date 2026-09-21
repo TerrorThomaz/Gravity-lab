@@ -25,13 +25,104 @@ public record StrategyActivation(
     bool         DipLongHighVolActive = false,
     bool         SwingLongHighVolActive = false,
     bool         RipShortHighVolActive = false,
-    double       AtrRatio = 0.0);
+    double       AtrRatio = 0.0,
+    double[]?    Weights = null)
+{
+    public double WeightOf(RegimeRouterGA.StrategyKind kind)
+    {
+        if (Weights is { Length: RegimeRouterGenotype.HmmStrategyRows })
+        {
+            int idx = kind switch
+            {
+                RegimeRouterGA.StrategyKind.FadeShort         => 0,
+                RegimeRouterGA.StrategyKind.Grid              => 1,
+                RegimeRouterGA.StrategyKind.GridShort         => 2,
+                RegimeRouterGA.StrategyKind.DipLong           => 3,
+                RegimeRouterGA.StrategyKind.FadeLong          => 4,
+                RegimeRouterGA.StrategyKind.RipShort          => 5,
+                RegimeRouterGA.StrategyKind.SwingLong         => 6,
+                RegimeRouterGA.StrategyKind.AccumulationGrid  => 7,
+                RegimeRouterGA.StrategyKind.FadeShortLowVol   => 0,
+                RegimeRouterGA.StrategyKind.DipLongLowVol     => 3,
+                RegimeRouterGA.StrategyKind.SwingLongLowVol   => 6,
+                RegimeRouterGA.StrategyKind.RipShortLowVol    => 5,
+                RegimeRouterGA.StrategyKind.FadeShortHighVol  => 0,
+                RegimeRouterGA.StrategyKind.DipLongHighVol    => 3,
+                RegimeRouterGA.StrategyKind.SwingLongHighVol  => 6,
+                RegimeRouterGA.StrategyKind.RipShortHighVol   => 5,
+                _ => -1,
+            };
+            return idx >= 0 ? Weights[idx] : 0.0;
+        }
+        bool active = kind switch
+        {
+            RegimeRouterGA.StrategyKind.FadeShort         => FadeShortActive,
+            RegimeRouterGA.StrategyKind.Grid              => GridActive,
+            RegimeRouterGA.StrategyKind.GridShort         => GridShortActive,
+            RegimeRouterGA.StrategyKind.DipLong           => DipLongActive,
+            RegimeRouterGA.StrategyKind.FadeLong          => FadeLongActive,
+            RegimeRouterGA.StrategyKind.RipShort          => RipShortActive,
+            RegimeRouterGA.StrategyKind.SwingLong         => SwingLongActive,
+            RegimeRouterGA.StrategyKind.AccumulationGrid  => AccumulationGridActive,
+            RegimeRouterGA.StrategyKind.FadeShortLowVol   => FadeShortLowVolActive,
+            RegimeRouterGA.StrategyKind.DipLongLowVol     => DipLongLowVolActive,
+            RegimeRouterGA.StrategyKind.SwingLongLowVol   => SwingLongLowVolActive,
+            RegimeRouterGA.StrategyKind.RipShortLowVol    => RipShortLowVolActive,
+            RegimeRouterGA.StrategyKind.FadeShortHighVol  => FadeShortHighVolActive,
+            RegimeRouterGA.StrategyKind.DipLongHighVol    => DipLongHighVolActive,
+            RegimeRouterGA.StrategyKind.SwingLongHighVol  => SwingLongHighVolActive,
+            RegimeRouterGA.StrategyKind.RipShortHighVol   => RipShortHighVolActive,
+            _ => false,
+        };
+        return active ? 1.0 : 0.0;
+    }
+}
 
 public static class RegimeRouter
 {
     // BtcStress level at which short strategies are force-activated. Constant, not a gene.
     public const double ShortOverrideStress = 0.5;
 
+    public static bool HmmEnabled => Environment.GetEnvironmentVariable("GRAVITY_HMM") != "0";
+
+    // Sigmoid steepness constant for HMM weight computation.
+    private const double WeightSteepness = 6.0;
+
+    // Short-strategy indices in HmmStrategies order: FadeShort=0, GridShort=2, RipShort=5.
+    private static readonly bool[] IsShortRow = [true, false, true, false, false, true, false, false];
+
+    internal static double[] ComputeWeights(double[] probs, RegimeRouterGenotype geno, double btcStress = 0.0, double[]? dailyPrior = null)
+    {
+        int maxR = Math.Min(probs.Length, RegimeRouterGenotype.MaxHmmStates);
+        var weights = new double[RegimeRouterGenotype.HmmStrategyRows];
+
+        var blendedProbs = probs;
+        if (dailyPrior != null && dailyPrior.Length >= maxR)
+        {
+            double blendFactor = geno.BlendFactor;
+            blendedProbs = new double[probs.Length];
+            for (int i = 0; i < maxR; i++)
+                blendedProbs[i] = blendFactor * probs[i] + (1 - blendFactor) * dailyPrior[i];
+            for (int i = maxR; i < probs.Length; i++)
+                blendedProbs[i] = probs[i];
+        }
+
+        double floorPct = geno.StrategyFloorPct;
+
+        for (int s = 0; s < RegimeRouterGenotype.HmmStrategyRows; s++)
+        {
+            double exposure = 0.0;
+            for (int r = 0; r < maxR; r++)
+                exposure += blendedProbs[r] * geno.Favorability![s * RegimeRouterGenotype.MaxHmmStates + r];
+            double bias = geno.Biases![s];
+            double rawW = 1.0 / (1.0 + Math.Exp(-WeightSteepness * (exposure - bias)));
+            double w = Math.Max(floorPct, rawW);
+            if (btcStress >= ShortOverrideStress && IsShortRow[s])
+                w = Math.Max(w, 0.9);
+            weights[s] = w;
+        }
+        return weights;
+    }
 
     private const double DirectionalMinConf = 0.45;
     private const double DefaultBullMinBars = 200;
@@ -59,6 +150,51 @@ public static class RegimeRouter
         int prevBar    = Math.Max(0, bar - btc.Duration);
         var prevRegime = btcSeries[prevBar].Regime;
         return ActivateWithGeno(btc.Regime, blendedConf, btc.Duration, geno, prevRegime, atrRatio);
+    }
+
+    // HMM-aware live route. When an HMM genotype is supplied and HMM mode is on, annotates the
+    // BTC series with state probabilities, computes continuous per-strategy weights from the
+    // favorability matrix, and returns them in StrategyActivation.Weights. The boolean flags are
+    // derived as weight > 0.5 so existing consumers keep working. Falls back to the threshold
+    // route when HMM is disabled or the genotype is absent.
+    public static StrategyActivation Route(Candle[] btcH1, RegimeRouterGenotype geno, HmmGenotype hmm, Candle[]? ethH1 = null, double atrRatio = 1.0, double[]? dailyPrior = null)
+    {
+        if (!HmmEnabled || !geno.IsHmmGenotype || btcH1.Length < RegimeClassifier.Warmup)
+            return Route(btcH1, geno, ethH1, atrRatio);
+
+        var series = HmmAnnotator.Annotate(btcH1, hmm, geno.SmoothingAlpha);
+        var btc    = series[^1];
+        if (btc.HmmProbs == null)
+            return Route(btcH1, geno, ethH1, atrRatio);
+
+        var weights = ComputeWeights(btc.HmmProbs, geno, 0.0, dailyPrior);
+
+        bool On(int row) => weights[row] > 0.5;
+        bool isLowVol  = atrRatio < 0.8;
+        bool isHighVol = atrRatio > 1.5;
+
+        return new StrategyActivation(
+            FadeShortActive: On(0),
+            GridActive: On(1),
+            GridShortActive: On(2),
+            DipLongActive: On(3),
+            FadeLongActive: On(4),
+            RipShortActive: On(5),
+            SwingLongActive: On(6),
+            AccumulationGridActive: On(7),
+            Regime: btc.Regime,
+            Confidence: btc.Confidence,
+            SizingMult: ComputeSizingMult(btc.Regime, btc.Confidence, btc.Duration),
+            FadeShortLowVolActive: isLowVol && On(0),
+            DipLongLowVolActive: isLowVol && On(3),
+            SwingLongLowVolActive: isLowVol && On(6),
+            RipShortLowVolActive: isLowVol && On(5),
+            FadeShortHighVolActive: isHighVol && On(0),
+            DipLongHighVolActive: isHighVol && On(3),
+            SwingLongHighVolActive: isHighVol && On(6),
+            RipShortHighVolActive: isHighVol && On(5),
+            AtrRatio: atrRatio,
+            Weights: weights);
     }
 
     // Rule-based fallback (no trained genotype).
@@ -347,12 +483,17 @@ public static class RegimeRouter
 public class RegimeRouterSession
 {
     private readonly RegimeBar[]              _btc;
-    // Optional BTC candles for BtcStress short override.
     private Candle[]?                         _btcBars;
     private double                            _shockLookbackBars = 24;
     private readonly RegimeBar[]?             _eth;
     private readonly RegimeRouterGenotype     _geno;
     private readonly Dictionary<long, int>   _idx;
+    private StrategyFamilyGating.Gate?        _gate;
+
+    private readonly bool[] _wasActive = new bool[RegimeRouterGenotype.HmmStrategyRows];
+    private readonly double[] _previousWeight = new double[RegimeRouterGenotype.HmmStrategyRows];
+    private double[]? _dailyPrior;
+    private RegimeBar[]? _legacyBtc;
 
     public RegimeRouterSession(RegimeBar[] btcSeries, RegimeBar[]? ethSeries, RegimeRouterGenotype geno)
     {
@@ -362,6 +503,28 @@ public class RegimeRouterSession
         _idx  = new Dictionary<long, int>(btcSeries.Length);
         for (int i = 0; i < btcSeries.Length; i++)
             _idx.TryAdd(HourKey(btcSeries[i].Time), i);
+        for (int i = 0; i < _wasActive.Length; i++) _wasActive[i] = true;
+        for (int i = 0; i < _previousWeight.Length; i++) _previousWeight[i] = 1.0;
+    }
+
+    public RegimeRouterSession WithDailyPrior(double[]? dailyPrior)
+    {
+        _dailyPrior = dailyPrior;
+        return this;
+    }
+
+    public RegimeRouterSession WithLegacyRegime(RegimeBar[]? legacyBtc)
+    {
+        _legacyBtc = legacyBtc;
+        return this;
+    }
+
+    // Attach a SIMFAM family gate. When present and HMM mode is on, routing uses the gate
+    // (empirical regime→family profitability) instead of the favorability matrix.
+    public RegimeRouterSession WithGate(StrategyFamilyGating.Gate? gate)
+    {
+        _gate = gate;
+        return this;
     }
 
     // Graded size in [0,1]. Returns 0 when gated off. Ramps from GradedSizeFloor to 1.0
@@ -399,8 +562,60 @@ public class RegimeRouterSession
 
     public bool IsActive(RegimeRouterGA.StrategyKind kind, DateTime tradeTime, double atrRatio = 1.0)
     {
+        if (RegimeRouter.HmmEnabled && _geno.IsHmmGenotype && _btc[Lookup(tradeTime)].HmmProbs != null)
+        {
+            if (_gate != null)
+            {
+                int bar = Lookup(tradeTime);
+                var regime = _btc[bar].Regime;
+                if (_gate.FamilyOf.ContainsKey(kind.ToString()))
+                    return StrategyFamilyGating.IsActive(_gate, kind.ToString(), regime);
+            }
+
+            bool legacyActive = LegacyIsActive(kind, tradeTime, atrRatio);
+            if (!legacyActive) return false;
+
+            double currentWeight = Weight(kind, tradeTime, atrRatio);
+            if (currentWeight < 0.50) return true;
+
+            int baseIdx = GetBaseIndex(kind);
+            if (baseIdx < 0) return false;
+
+            bool wasActive = _wasActive[baseIdx];
+            double threshold = wasActive ? _geno.DeactivateThreshold : _geno.ActivateThreshold;
+            bool isActive = currentWeight >= threshold;
+            _wasActive[baseIdx] = isActive;
+            return isActive;
+        }
+
+        return LegacyIsActive(kind, tradeTime, atrRatio);
+    }
+
+    private static int GetBaseIndex(RegimeRouterGA.StrategyKind kind) => kind switch
+    {
+        RegimeRouterGA.StrategyKind.FadeShort         => 0,
+        RegimeRouterGA.StrategyKind.Grid              => 1,
+        RegimeRouterGA.StrategyKind.GridShort         => 2,
+        RegimeRouterGA.StrategyKind.DipLong           => 3,
+        RegimeRouterGA.StrategyKind.FadeLong          => 4,
+        RegimeRouterGA.StrategyKind.RipShort          => 5,
+        RegimeRouterGA.StrategyKind.SwingLong         => 6,
+        RegimeRouterGA.StrategyKind.AccumulationGrid  => 7,
+        RegimeRouterGA.StrategyKind.FadeShortLowVol   => 0,
+        RegimeRouterGA.StrategyKind.DipLongLowVol     => 3,
+        RegimeRouterGA.StrategyKind.SwingLongLowVol   => 6,
+        RegimeRouterGA.StrategyKind.RipShortLowVol    => 5,
+        RegimeRouterGA.StrategyKind.FadeShortHighVol  => 0,
+        RegimeRouterGA.StrategyKind.DipLongHighVol    => 3,
+        RegimeRouterGA.StrategyKind.SwingLongHighVol  => 6,
+        RegimeRouterGA.StrategyKind.RipShortHighVol   => 5,
+        _ => -1,
+    };
+
+    private bool LegacyIsActive(RegimeRouterGA.StrategyKind kind, DateTime tradeTime, double atrRatio = 1.0)
+    {
         int bar = Lookup(tradeTime);
-        var btc = _btc[bar];
+        var btc = _legacyBtc != null ? _legacyBtc[bar] : _btc[bar];
         double conf = Blend(btc, bar);
 
         bool inBullTransition = btc.Regime == MarketRegime.Bull
@@ -411,7 +626,7 @@ public class RegimeRouterSession
         if (inBullTransition)
         {
             int prevBar = Math.Max(0, bar - btc.Duration);
-            prevRegime  = _btc[prevBar].Regime;
+            prevRegime  = (_legacyBtc != null ? _legacyBtc : _btc)[prevBar].Regime;
         }
 
         var (fadeShort, grid, gridShort, dipLong, fadeLong, ripShort, swingLong, accumulationGrid, fadeShortLowVol, dipLongLowVol, swingLongLowVol, ripShortLowVol, fadeShortHighVol, dipLongHighVol, swingLongHighVol, ripShortHighVol) =
@@ -440,11 +655,88 @@ public class RegimeRouterSession
         };
     }
 
+    public double Weight(RegimeRouterGA.StrategyKind kind, DateTime tradeTime, double atrRatio = 1.0)
+    {
+        int bar = Lookup(tradeTime);
+        var btc = _btc[bar];
+
+        if (RegimeRouter.HmmEnabled && _geno.IsHmmGenotype && btc.HmmProbs != null)
+        {
+            if (_gate != null)
+            {
+                var regime = btc.Regime;
+                double conf = StrategyFamilyGating.FamilyConfidence(_gate, kind.ToString(), regime);
+
+                bool gateLowVol = kind is RegimeRouterGA.StrategyKind.FadeShortLowVol
+                                       or RegimeRouterGA.StrategyKind.DipLongLowVol
+                                       or RegimeRouterGA.StrategyKind.SwingLongLowVol
+                                       or RegimeRouterGA.StrategyKind.RipShortLowVol;
+                bool gateHighVol = kind is RegimeRouterGA.StrategyKind.FadeShortHighVol
+                                        or RegimeRouterGA.StrategyKind.DipLongHighVol
+                                        or RegimeRouterGA.StrategyKind.SwingLongHighVol
+                                        or RegimeRouterGA.StrategyKind.RipShortHighVol;
+
+                if (gateLowVol && atrRatio >= 0.8) return 0.0;
+                if (gateHighVol && atrRatio <= 1.5) return 0.0;
+
+                return conf;
+            }
+
+            double stress = Environment.GetEnvironmentVariable("GRAVITY_NOSHOCK") == "1" ? 0.0 : StressAt(tradeTime);
+            var weights = RegimeRouter.ComputeWeights(btc.HmmProbs, _geno, stress, _dailyPrior);
+
+            int baseIdx = GetBaseIndex(kind);
+            if (baseIdx < 0) return 0.0;
+
+            double w = weights[baseIdx];
+
+            if (btc.Duration < (int)_geno.MinHoldBars)
+                w = _previousWeight[baseIdx];
+            else
+                _previousWeight[baseIdx] = w;
+
+            bool isLowVolKind = kind is RegimeRouterGA.StrategyKind.FadeShortLowVol
+                                     or RegimeRouterGA.StrategyKind.DipLongLowVol
+                                     or RegimeRouterGA.StrategyKind.SwingLongLowVol
+                                     or RegimeRouterGA.StrategyKind.RipShortLowVol;
+            bool isHighVolKind = kind is RegimeRouterGA.StrategyKind.FadeShortHighVol
+                                      or RegimeRouterGA.StrategyKind.DipLongHighVol
+                                      or RegimeRouterGA.StrategyKind.SwingLongHighVol
+                                      or RegimeRouterGA.StrategyKind.RipShortHighVol;
+
+            if (isLowVolKind && atrRatio >= 0.8) return 0.0;
+            if (isHighVolKind && atrRatio <= 1.5) return 0.0;
+
+            return w;
+        }
+
+        return LegacyIsActive(kind, tradeTime, atrRatio) ? 1.0 : 0.0;
+    }
+
+    public double SizeGate(RegimeRouterGA.StrategyKind kind, DateTime tradeTime, double atrRatio = 1.0)
+    {
+        if (RegimeRouter.HmmEnabled && _geno.IsHmmGenotype && _btc[Lookup(tradeTime)].HmmProbs != null)
+        {
+            bool legacyActive = LegacyIsActive(kind, tradeTime, atrRatio);
+            if (!legacyActive) return 0.0;
+
+            double w = Weight(kind, tradeTime, atrRatio);
+            if (w < 0.50) return 1.0;
+            return w;
+        }
+
+        return IsActive(kind, tradeTime, atrRatio) ? 1.0 : 0.0;
+    }
+
     // Soft weight for coevolution gates: confidence-based gradient, step cutoff at 0.65.
     // Ignores router's trained thresholds so the strategy GA always has a gradient.
+    // In HMM mode, returns the continuous weight directly.
     private const double StepCutoffConf = 0.65;
     public double GetWeight(RegimeRouterGA.StrategyKind kind, DateTime tradeTime)
     {
+        if (RegimeRouter.HmmEnabled && _geno.IsHmmGenotype)
+            return Weight(kind, tradeTime);
+
         int bar = Lookup(tradeTime);
         var btc = _btc[bar];
         double conf = Blend(btc, bar);

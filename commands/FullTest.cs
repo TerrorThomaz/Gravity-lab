@@ -84,7 +84,7 @@ static class FullTest
             var btcFunding = await CandleFetcher.FetchFundingRateCachedAsync(client, "BTCUSDT");
             if (btcFunding.Length > 0)
             {
-                fundingSession = new FundingRateSession(btcFunding);
+                fundingSession = new FundingRateSession(btcFunding, 8.0);
                 Console.WriteLine($"  BTC funding: {btcFunding.Length} 8h records · current={fundingSession.CurrentRate:+0.0000%;-0.0000%;0.0000%}/8h\n");
             }
         }
@@ -223,12 +223,17 @@ static class FullTest
                         ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList()
                         : raw;
                     valGridRets.AddRange(gated.Select(t => t.Return));
-                    foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "grid", sym));
+                    foreach (var t in gated)
+                    {
+                        double sgGr = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.Grid, t.Time) : 1.0;
+                        valAll.Add((t.Time, t.Return, conf * sgGr, "grid", sym));
+                    }
                     foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "grid", sym));
                     foreach (var t in gated)
                     {
-                        valRawForEnrich.Add((t.Time, t.Return, conf, "grid", sym, TimeSpan.FromHours(coinGridG.MaxHoldCandles)));
-                        RouteValVol(gridVarLabel, sym, t.Time, t.Return, conf, "grid", valCandleCount);
+                        double sgGr2 = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.Grid, t.Time) : 1.0;
+                        valRawForEnrich.Add((t.Time, t.Return, conf * sgGr2, "grid", sym, TimeSpan.FromHours(coinGridG.MaxHoldCandles)));
+                        RouteValVol(gridVarLabel, sym, t.Time, t.Return, conf * sgGr2, "grid", valCandleCount);
                     }
                 }
             }
@@ -247,10 +252,17 @@ static class FullTest
                         ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.GridShort, t.Time)).ToList()
                         : raw;
                     valGsRets.AddRange(gated.Select(t => t.Return));
-                    foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "gridshort", sym));
+                    foreach (var t in gated)
+                    {
+                        double sgGs = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.GridShort, t.Time) : 1.0;
+                        valAll.Add((t.Time, t.Return, conf * sgGs, "gridshort", sym));
+                    }
                     foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "gridshort", sym));
                     foreach (var t in gated)
-                        valRawForEnrich.Add((t.Time, t.Return, conf, "gridshort", sym, TimeSpan.FromHours(gsG.MaxHoldCandles)));
+                    {
+                        double sgGs2 = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.GridShort, t.Time) : 1.0;
+                        valRawForEnrich.Add((t.Time, t.Return, conf * sgGs2, "gridshort", sym, TimeSpan.FromHours(gsG.MaxHoldCandles)));
+                    }
                 }
             }
 
@@ -264,10 +276,17 @@ static class FullTest
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList()
                     : raw;
                 valFlRets.AddRange(gated.Select(t => t.Return));
-                foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "fadelong", sym));
+                foreach (var t in gated)
+                {
+                    double sgFl = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.FadeLong, t.Time) : 1.0;
+                    valAll.Add((t.Time, t.Return, conf * sgFl, "fadelong", sym));
+                }
                 foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "fadelong", sym));
                 foreach (var t in gated)
-                    valRawForEnrich.Add((t.Time, t.Return, conf, "fadelong", sym, TimeSpan.FromHours(flG!.MaxHoldCandles)));
+                {
+                    double sgFl2 = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.FadeLong, t.Time) : 1.0;
+                    valRawForEnrich.Add((t.Time, t.Return, conf * sgFl2, "fadelong", sym, TimeSpan.FromHours(flG!.MaxHoldCandles)));
+                }
             }
 
             // DipLong
@@ -287,13 +306,18 @@ static class FullTest
                 valDlRets.AddRange(gated.Select(t => t.Return));
                 foreach (var t in gated)
                 {
-                    valAll.Add((t.Time, t.Return, conf, "diplong", sym));
+                    double sgDl = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time) : 1.0;
+                    double cDl = conf * sgDl;
+                    valAll.Add((t.Time, t.Return, cDl, "diplong", sym));
                     crashTrades.Add((t.Time - TimeSpan.FromHours(coinDlG.MaxHoldCandles), t.Time, t.Return, dlHk, "DipLong"));
-                    RouteValVol(dlVarLabel, sym, t.Time, t.Return, conf, "diplong", valCandleCount);
+                    RouteValVol(dlVarLabel, sym, t.Time, t.Return, cDl, "diplong", valCandleCount);
                 }
                 foreach (var t in raw) valNoRouter.Add((t.Time, t.Return, conf, "diplong", sym));
                 foreach (var t in gated)
-                    valRawForEnrich.Add((t.Time, t.Return, conf, "diplong", sym, TimeSpan.FromHours(coinDlG.MaxHoldCandles)));
+                {
+                    double sgDl2 = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time) : 1.0;
+                    valRawForEnrich.Add((t.Time, t.Return, conf * sgDl2, "diplong", sym, TimeSpan.FromHours(coinDlG.MaxHoldCandles)));
+                }
             }
 
             // SwingLong
@@ -310,12 +334,18 @@ static class FullTest
                 if (fundingSession != null)
                     gated = gated.Where(t => !fundingSession.IsCrowdedLong(t.Time)).ToList();
                 valSlRets.AddRange(gated.Select(t => t.Return));
-                foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "swing_long", sym));
+                foreach (var t in gated)
+                {
+                    double sgSl = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time) : 1.0;
+                    double cSl = conf * sgSl;
+                    valAll.Add((t.Time, t.Return, cSl, "swing_long", sym));
+                }
                 foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "swing_long", sym));
                 foreach (var t in gated)
                 {
-                    valRawForEnrich.Add((t.Time, t.Return, conf, "swing_long", sym, TimeSpan.FromHours(coinSlG.MaxHoldCandles)));
-                    RouteValVol(slVarLabel, sym, t.Time, t.Return, conf, "swing_long", valCandleCount);
+                    double sgSl2 = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time) : 1.0;
+                    valRawForEnrich.Add((t.Time, t.Return, conf * sgSl2, "swing_long", sym, TimeSpan.FromHours(coinSlG.MaxHoldCandles)));
+                    RouteValVol(slVarLabel, sym, t.Time, t.Return, conf * sgSl2, "swing_long", valCandleCount);
                 }
             }
 
@@ -331,12 +361,18 @@ static class FullTest
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList()
                     : raw;
                 valRsRets.AddRange(gated.Select(t => t.Return));
-                foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "ripshort", sym));
+                foreach (var t in gated)
+                {
+                    double sgRs = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.RipShort, t.Time) : 1.0;
+                    double cRs = conf * sgRs;
+                    valAll.Add((t.Time, t.Return, cRs, "ripshort", sym));
+                }
                 foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "ripshort", sym));
                 foreach (var t in gated)
                 {
-                    valRawForEnrich.Add((t.Time, t.Return, conf, "ripshort", sym, TimeSpan.FromHours(coinRsG.MaxHoldCandles)));
-                    RouteValVol(rsVarLabel, sym, t.Time, t.Return, conf, "ripshort", valCandleCount);
+                    double sgRs2 = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.RipShort, t.Time) : 1.0;
+                    valRawForEnrich.Add((t.Time, t.Return, conf * sgRs2, "ripshort", sym, TimeSpan.FromHours(coinRsG.MaxHoldCandles)));
+                    RouteValVol(rsVarLabel, sym, t.Time, t.Return, conf * sgRs2, "ripshort", valCandleCount);
                 }
             }
 
@@ -351,10 +387,17 @@ static class FullTest
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.AccumulationGrid, t.Time)).ToList()
                     : raw;
                 valAgRets.AddRange(gated.Select(t => t.Return));
-                foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "accumgrid", sym));
+                foreach (var t in gated)
+                {
+                    double sgAg = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.AccumulationGrid, t.Time) : 1.0;
+                    valAll.Add((t.Time, t.Return, conf * sgAg, "accumgrid", sym));
+                }
                 foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "accumgrid", sym));
                 foreach (var t in gated)
-                    valRawForEnrich.Add((t.Time, t.Return, conf, "accumgrid", sym, TimeSpan.FromHours(agBullG!.MaxHoldBars)));
+                {
+                    double sgAg2 = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.AccumulationGrid, t.Time) : 1.0;
+                    valRawForEnrich.Add((t.Time, t.Return, conf * sgAg2, "accumgrid", sym, TimeSpan.FromHours(agBullG!.MaxHoldBars)));
+                }
             }
         }
 
@@ -426,12 +469,17 @@ static class FullTest
                 {
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosGridRets.AddRange(vRet);
-                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "grid", sym));
+                    foreach (var t in gated)
+                    {
+                        double sgGr = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.Grid, t.Time) : 1.0;
+                        oosAll.Add((t.Time, t.Return, conf * sgGr, "grid", sym));
+                    }
                     foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "grid", sym));
                     foreach (var t in gated)
                     {
-                        oosRawForEnrich.Add((t.Time, t.Return, conf, "grid", sym, TimeSpan.FromHours(coinGridGOos.MaxHoldCandles)));
-                        RouteOosVol(gridOosLabel, sym, t.Time, t.Return, conf, "grid", oosCandleCount);
+                        double sgGr2 = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.Grid, t.Time) : 1.0;
+                        oosRawForEnrich.Add((t.Time, t.Return, conf * sgGr2, "grid", sym, TimeSpan.FromHours(coinGridGOos.MaxHoldCandles)));
+                        RouteOosVol(gridOosLabel, sym, t.Time, t.Return, conf * sgGr2, "grid", oosCandleCount);
                     }
                 }
             }
@@ -448,10 +496,17 @@ static class FullTest
                 {
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosGsRets.AddRange(vRet);
-                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "gridshort", sym));
+                    foreach (var t in gated)
+                    {
+                        double sgGs = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.GridShort, t.Time) : 1.0;
+                        oosAll.Add((t.Time, t.Return, conf * sgGs, "gridshort", sym));
+                    }
                     foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "gridshort", sym));
                     foreach (var t in gated)
-                        oosRawForEnrich.Add((t.Time, t.Return, conf, "gridshort", sym, TimeSpan.FromHours(gsG.MaxHoldCandles)));
+                    {
+                        double sgGs2 = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.GridShort, t.Time) : 1.0;
+                        oosRawForEnrich.Add((t.Time, t.Return, conf * sgGs2, "gridshort", sym, TimeSpan.FromHours(gsG.MaxHoldCandles)));
+                    }
                 }
             }
 
@@ -467,10 +522,17 @@ static class FullTest
                 {
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosFlRets.AddRange(vRet);
-                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "fadelong", sym));
+                    foreach (var t in gated)
+                    {
+                        double sgFl = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.FadeLong, t.Time) : 1.0;
+                        oosAll.Add((t.Time, t.Return, conf * sgFl, "fadelong", sym));
+                    }
                     foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "fadelong", sym));
                     foreach (var t in gated)
-                        oosRawForEnrich.Add((t.Time, t.Return, conf, "fadelong", sym, TimeSpan.FromHours(flG!.MaxHoldCandles)));
+                    {
+                        double sgFl2 = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.FadeLong, t.Time) : 1.0;
+                        oosRawForEnrich.Add((t.Time, t.Return, conf * sgFl2, "fadelong", sym, TimeSpan.FromHours(flG!.MaxHoldCandles)));
+                    }
                 }
             }
 
@@ -490,12 +552,17 @@ static class FullTest
                 {
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosDlRets.AddRange(vRet);
-                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "diplong", sym));
+                    foreach (var t in gated)
+                    {
+                        double sgDl = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time) : 1.0;
+                        oosAll.Add((t.Time, t.Return, conf * sgDl, "diplong", sym));
+                    }
                     foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "diplong", sym));
                     foreach (var t in gated)
                     {
-                        oosRawForEnrich.Add((t.Time, t.Return, conf, "diplong", sym, TimeSpan.FromHours(coinDlGOos.MaxHoldCandles)));
-                        RouteOosVol(dlOosLabel, sym, t.Time, t.Return, conf, "diplong", oosCandleCount);
+                        double sgDl2 = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time) : 1.0;
+                        oosRawForEnrich.Add((t.Time, t.Return, conf * sgDl2, "diplong", sym, TimeSpan.FromHours(coinDlGOos.MaxHoldCandles)));
+                        RouteOosVol(dlOosLabel, sym, t.Time, t.Return, conf * sgDl2, "diplong", oosCandleCount);
                     }
                 }
             }
@@ -516,12 +583,17 @@ static class FullTest
                 {
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosSlRets.AddRange(vRet);
-                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "swing_long", sym));
+                    foreach (var t in gated)
+                    {
+                        double sgSl = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time) : 1.0;
+                        oosAll.Add((t.Time, t.Return, conf * sgSl, "swing_long", sym));
+                    }
                     foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "swing_long", sym));
                     foreach (var t in gated)
                     {
-                        oosRawForEnrich.Add((t.Time, t.Return, conf, "swing_long", sym, TimeSpan.FromHours(coinSlGOos.MaxHoldCandles)));
-                        RouteOosVol(slOosLabel, sym, t.Time, t.Return, conf, "swing_long", oosCandleCount);
+                        double sgSl2 = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.DipLong, t.Time) : 1.0;
+                        oosRawForEnrich.Add((t.Time, t.Return, conf * sgSl2, "swing_long", sym, TimeSpan.FromHours(coinSlGOos.MaxHoldCandles)));
+                        RouteOosVol(slOosLabel, sym, t.Time, t.Return, conf * sgSl2, "swing_long", oosCandleCount);
                     }
                 }
             }
@@ -540,12 +612,17 @@ static class FullTest
                 {
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosRsRets.AddRange(vRet);
-                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "ripshort", sym));
+                    foreach (var t in gated)
+                    {
+                        double sgRs = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.RipShort, t.Time) : 1.0;
+                        oosAll.Add((t.Time, t.Return, conf * sgRs, "ripshort", sym));
+                    }
                     foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "ripshort", sym));
                     foreach (var t in gated)
                     {
-                        oosRawForEnrich.Add((t.Time, t.Return, conf, "ripshort", sym, TimeSpan.FromHours(coinRsGOos.MaxHoldCandles)));
-                        RouteOosVol(rsOosLabel, sym, t.Time, t.Return, conf, "ripshort", oosCandleCount);
+                        double sgRs2 = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.RipShort, t.Time) : 1.0;
+                        oosRawForEnrich.Add((t.Time, t.Return, conf * sgRs2, "ripshort", sym, TimeSpan.FromHours(coinRsGOos.MaxHoldCandles)));
+                        RouteOosVol(rsOosLabel, sym, t.Time, t.Return, conf * sgRs2, "ripshort", oosCandleCount);
                     }
                 }
             }
@@ -564,10 +641,17 @@ static class FullTest
                 {
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosAgRets.AddRange(vRet);
-                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "accumgrid", sym));
+                    foreach (var t in gated)
+                    {
+                        double sgAg = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.AccumulationGrid, t.Time) : 1.0;
+                        oosAll.Add((t.Time, t.Return, conf * sgAg, "accumgrid", sym));
+                    }
                     foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "accumgrid", sym));
                     foreach (var t in gated)
-                        oosRawForEnrich.Add((t.Time, t.Return, conf, "accumgrid", sym, TimeSpan.FromHours(agBullG!.MaxHoldBars)));
+                    {
+                        double sgAg2 = session != null ? session.SizeGate(RegimeRouterGA.StrategyKind.AccumulationGrid, t.Time) : 1.0;
+                        oosRawForEnrich.Add((t.Time, t.Return, conf * sgAg2, "accumgrid", sym, TimeSpan.FromHours(agBullG!.MaxHoldBars)));
+                    }
                 }
             }
         }

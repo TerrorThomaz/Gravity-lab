@@ -90,6 +90,15 @@ static class PapertradeCommands
         }
         else Console.WriteLine("  (no router genotype — using rule-based routing)");
 
+        HmmGenotype? hmmGenoPt = null;
+        if (File.Exists(Config.HmmGenoFile))
+        {
+            hmmGenoPt = JsonSerializer.Deserialize<HmmGenotypeDto>(
+                File.ReadAllText(Config.HmmGenoFile))!.ToGenotype();
+            Console.WriteLine($"HMM genotype:      (trained)");
+        }
+        else Console.WriteLine("  (no HMM genotype — HMM routing disabled)");
+
         DynamicGuardGenotype? guardGenoPt = null;
         if (File.Exists(Config.DynamicGuardGenoFile))
         {
@@ -194,7 +203,7 @@ static class PapertradeCommands
                 var btcFunding = await CandleFetcher.FetchFundingRateCachedAsync(client, "BTCUSDT");
                 if (btcFunding.Length > 0)
                 {
-                    fundingSession = new FundingRateSession(btcFunding);
+                    fundingSession = new FundingRateSession(btcFunding, 8.0);
                     Console.WriteLine($"  Funding: {fundingSession.CurrentRate:+0.0000%;-0.0000%} (current rate)");
                 }
             }
@@ -214,6 +223,20 @@ static class PapertradeCommands
                 Console.WriteLine($"  Guard: {guardTag}");
             }
 
+            // ── Daily prior (aggregate M15→daily for stable regime anchor) ───────
+            double[]? dailyPrior = null;
+            var btcM15 = coinData.FirstOrDefault(x => x.Sym == "BTCUSDT").M15;
+            if (btcM15 is { Length: >= 2880 })
+            {
+                var dailyCandles = AggregateCandles(btcM15, 96);
+                if (dailyCandles.Length >= 30)
+                {
+                    var dailySeries = RegimeClassifier.ClassifySeriesWithDuration(dailyCandles);
+                    var dailyBar = dailySeries[^1];
+                    dailyPrior = RegimeToPriorVector(dailyBar.Regime, dailyBar.Confidence);
+                }
+            }
+
             // ── Regime routing (BTC primary · ETH secondary) ─────────────────────
             StrategyActivation? ptRouting = null;
             {
@@ -222,15 +245,21 @@ static class PapertradeCommands
                 if (btcPt.H1 is { Length: > 220 })
                 {
                     Candle[]? ethH1Pt = ethPt.H1 is { Length: > 220 } ? ethPt.H1 : null;
-                    ptRouting = routerGenoPt != null
-                        ? RegimeRouter.Route(btcPt.H1, routerGenoPt, ethH1Pt)
-                        : RegimeRouter.Route(btcPt.H1, ethH1Pt);
+                    double ptAtrRatio = guardSession?.GetAtrRatio(DateTime.UtcNow) ?? 1.0;
+                    ptRouting = (hmmGenoPt != null && RegimeRouter.HmmEnabled && routerGenoPt != null)
+                        ? RegimeRouter.Route(btcPt.H1, routerGenoPt, hmmGenoPt, ethH1Pt, ptAtrRatio, dailyPrior)
+                        : routerGenoPt != null
+                            ? RegimeRouter.Route(btcPt.H1, routerGenoPt, ethH1Pt, ptAtrRatio)
+                            : RegimeRouter.Route(btcPt.H1, ethH1Pt, ptAtrRatio);
                     string routerTag = routerGenoPt != null ? "(trained)" : "(rule-based)";
                     var btcSeries = RegimeClassifier.ClassifySeriesWithDuration(btcPt.H1);
                     int bearDur = btcSeries[^1].Regime == MarketRegime.Bear ? btcSeries[^1].Duration : 0;
                     int bullDur = btcSeries[^1].Regime == MarketRegime.Bull ? btcSeries[^1].Duration : 0;
                     string durTag = bearDur > 0 ? $"  bear={bearDur}h" : bullDur > 0 ? $"  bull={bullDur}h" : "";
-                    Console.WriteLine($"  Regime {routerTag}: {ptRouting.Regime}  conf={ptRouting.Confidence:P0}  →  {RegimeRouter.Describe(ptRouting)}{durTag}\n");
+                    Console.WriteLine($"  Regime {routerTag}: {ptRouting.Regime}  conf={ptRouting.Confidence:P0}  →  {RegimeRouter.Describe(ptRouting)}{durTag}");
+                    if (ptRouting.Weights is { Length: 8 })
+                        Console.WriteLine($"  weights: FS={ptRouting.Weights[0]:F2} Gr={ptRouting.Weights[1]:F2} GS={ptRouting.Weights[2]:F2} DL={ptRouting.Weights[3]:F2} FL={ptRouting.Weights[4]:F2} RS={ptRouting.Weights[5]:F2} SL={ptRouting.Weights[6]:F2} AG={ptRouting.Weights[7]:F2}");
+                    Console.WriteLine();
                 }
             }
 
@@ -609,6 +638,18 @@ static class PapertradeCommands
                     DipLong    = ptRouting.DipLongActive,
                     FadeLong   = ptRouting.FadeLongActive,
                     RipShort   = ptRouting.RipShortActive,
+                    sizingMult = Math.Round(ptRouting.SizingMult, 2),
+                    weights    = ptRouting.Weights is { Length: 8 } w ? new
+                    {
+                        FadeShort          = Math.Round(w[0], 2),
+                        Grid               = Math.Round(w[1], 2),
+                        GridShort          = Math.Round(w[2], 2),
+                        DipLong            = Math.Round(w[3], 2),
+                        FadeLong           = Math.Round(w[4], 2),
+                        RipShort           = Math.Round(w[5], 2),
+                        SwingLong          = Math.Round(w[6], 2),
+                        AccumulationGrid   = Math.Round(w[7], 2),
+                    } : null,
                 } : null;
 
                 var guardInfo = guardSession != null ? new
@@ -721,5 +762,46 @@ static class PapertradeCommands
         }
 
         Console.WriteLine("\n\n  Paper trade stopped.");
+    }
+
+    static Candle[] AggregateCandles(Candle[] m15, int candlesPerBar)
+    {
+        if (m15.Length < candlesPerBar) return [];
+        int bars = m15.Length / candlesPerBar;
+        var result = new Candle[bars];
+        for (int i = 0; i < bars; i++)
+        {
+            int start = i * candlesPerBar;
+            double open = m15[start].Open;
+            double high = m15[start].High;
+            double low = m15[start].Low;
+            double volume = 0;
+            for (int j = 0; j < candlesPerBar; j++)
+            {
+                high = Math.Max(high, m15[start + j].High);
+                low = Math.Min(low, m15[start + j].Low);
+                volume += m15[start + j].Volume;
+            }
+            double close = m15[start + candlesPerBar - 1].Close;
+            result[i] = new Candle(m15[start].Time, open, high, low, close, volume);
+        }
+        return result;
+    }
+
+    static double[] RegimeToPriorVector(MarketRegime regime, double confidence)
+    {
+        var prior = new double[RegimeRouterGenotype.MaxHmmStates];
+        double baseWeight = (1.0 - confidence) / (RegimeRouterGenotype.MaxHmmStates - 1);
+        for (int i = 0; i < prior.Length; i++) prior[i] = baseWeight;
+        int idx = regime switch
+        {
+            MarketRegime.Bull => 0,
+            MarketRegime.Bear => 1,
+            MarketRegime.Ranging => 2,
+            MarketRegime.HighVol => 3,
+            _ => 2
+        };
+        prior[idx] = confidence;
+        return prior;
     }
 }

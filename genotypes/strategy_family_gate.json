@@ -1,0 +1,211 @@
+{
+  "FamilyOf": {
+    "DipLong": "F0",
+    "FadeShort": "F1",
+    "Grid": "F2",
+    "GridShort": "F3",
+    "RipShort": "F4"
+  },
+  "Families": [
+    {
+      "FamilyId": "F0",
+      "Members": [
+        "DipLong"
+      ],
+      "ProfitabilityByRegime": {
+        "Bull": {
+          "ProfitFactor": 3.3604427592244863,
+          "WinRate": 0.65625,
+          "AvgReturn": 3.149375711851241,
+          "TradeCount": 4800,
+          "IsActive": true
+        },
+        "Bear": {
+          "ProfitFactor": 0.14869554523213274,
+          "WinRate": 0.13274336283185842,
+          "AvgReturn": -5.047464357703996,
+          "TradeCount": 2599,
+          "IsActive": false
+        },
+        "Ranging": {
+          "ProfitFactor": 0.6803839234497329,
+          "WinRate": 0.3325153374233129,
+          "AvgReturn": -0.8560762861946469,
+          "TradeCount": 1630,
+          "IsActive": false
+        },
+        "HighVol": {
+          "ProfitFactor": 0,
+          "WinRate": 0,
+          "AvgReturn": 0,
+          "TradeCount": 0,
+          "IsActive": false
+        }
+      }
+    },
+    {
+      "FamilyId": "F1",
+      "Members": [
+        "FadeShort"
+      ],
+      "ProfitabilityByRegime": {
+        "Bull": {
+          "ProfitFactor": 0.23421814141156902,
+          "WinRate": 0.163107397090684,
+          "AvgReturn": -2.219495442996654,
+          "TradeCount": 9693,
+          "IsActive": false
+        },
+        "Bear": {
+          "ProfitFactor": 6.302062957891508,
+          "WinRate": 0.78940856223707,
+          "AvgReturn": 5.7846773561657505,
+          "TradeCount": 4041,
+          "IsActive": true
+        },
+        "Ranging": {
+          "ProfitFactor": 1.7232396369143383,
+          "WinRate": 0.5361331819901627,
+          "AvgReturn": 1.1354541088295518,
+          "TradeCount": 2643,
+          "IsActive": true
+        },
+        "HighVol": {
+          "ProfitFactor": 0,
+          "WinRate": 0,
+          "AvgReturn": 0,
+          "TradeCount": 0,
+          "IsActive": false
+        }
+      }
+    },
+    {
+      "FamilyId": "F2",
+      "Members": [
+        "Grid"
+      ],
+      "ProfitabilityByRegime": {
+        "Bull": {
+          "ProfitFactor": 1.7428408368710844,
+          "WinRate": 0.6956004756242569,
+          "AvgReturn": 0.2801072000912115,
+          "TradeCount": 2523,
+          "IsActive": true
+        },
+        "Bear": {
+          "ProfitFactor": 1.3761512473316575,
+          "WinRate": 0.6389891696750902,
+          "AvgReturn": 0.2068660078505211,
+          "TradeCount": 554,
+          "IsActive": true
+        },
+        "Ranging": {
+          "ProfitFactor": 1.5055298442594052,
+          "WinRate": 0.634849167041873,
+          "AvgReturn": 0.1588170206878199,
+          "TradeCount": 2221,
+          "IsActive": true
+        },
+        "HighVol": {
+          "ProfitFactor": 0,
+          "WinRate": 0,
+          "AvgReturn": 0,
+          "TradeCount": 0,
+          "IsActive": false
+        }
+      }
+    },
+    {
+      "FamilyId": "F3",
+      "Members": [
+        "GridShort"
+      ],
+      "ProfitabilityByRegime": {
+        "Bull": {
+          "ProfitFactor": 1.5107865904176678,
+          "WinRate": 0.6848118279569892,
+          "AvgReturn": 0.2053435438730451,
+          "TradeCount": 2976,
+          "IsActive": true
+        },
+        "Bear": {
+          "ProfitFactor": 1.8169198405168918,
+          "WinRate": 0.7248322147651006,
+          "AvgReturn": 0.3954965805263225,
+          "TradeCount": 596,
+          "IsActive": true
+        },
+        "Ranging": {
+          "ProfitFactor": 1.7357172405570729,
+          "WinRate": 0.7065390749601276,
+          "AvgReturn": 0.19501286441754806,
+          "TradeCount": 2508,
+          "IsActive": true
+        },
+        "HighVol": {
+          "ProfitFactor": 0,
+          "WinRate": 0,
+          "AvgReturn": 0,
+          "TradeCount": 0,
+          "IsActive": false
+        }
+      }
+    },
+    {
+      "FamilyId": "F4",
+      "Members": [
+        "RipShort"
+      ],
+      "ProfitabilityByRegime": {
+        "Bull": {
+          "ProfitFactor": 0.2213112762803056,
+          "WinRate": 0.16809692074709742,
+          "AvgReturn": -3.1502890587825276,
+          "TradeCount": 1981,
+          "IsActive": false
+        },
+        "Bear": {
+          "ProfitFactor": 1.8158423115010918,
+          "WinRate": 0.5120364346128823,
+          "AvgReturn": 2.4738134370819287,
+          "TradeCount": 1537,
+          "IsActive": true
+        },
+        "Ranging": {
+          "ProfitFactor": 0.8802039112468109,
+          "WinRate": 0.35179640718562877,
+          "AvgReturn": -0.3042868780177972,
+          "TradeCount": 668,
+          "IsActive": false
+        },
+        "HighVol": {
+          "ProfitFactor": 0,
+          "WinRate": 0,
+          "AvgReturn": 0,
+          "TradeCount": 0,
+          "IsActive": false
+        }
+      }
+    }
+  ],
+  "ActiveFamiliesByRegime": {
+    "Bull": [
+      "F0",
+      "F2",
+      "F3"
+    ],
+    "Bear": [
+      "F1",
+      "F2",
+      "F3",
+      "F4"
+    ],
+    "Ranging": [
+      "F1",
+      "F2",
+      "F3"
+    ],
+    "HighVol": []
+  },
+  "FamilyCorrThreshold": 0.7
+}

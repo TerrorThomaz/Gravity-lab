@@ -187,8 +187,10 @@ public class RegimeRouterHmmTests
         Assert.Equal(80, back.BullMinBars);
     }
 
+    // Hybrid routing (abbc8b2): the legacy regime gate decides on/off, the HMM weight only sizes.
+    // Must match RegimeRouterGA.FilterActive, which trains on exactly this rule.
     [Fact]
-    public void Session_IsActive_EqualsWeightAboveHalf()
+    public void Session_HybridMode_LegacyGatesAndHmmOnlySizes()
     {
         var baseTime = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         var bars = new RegimeBar[600];
@@ -204,6 +206,9 @@ public class RegimeRouterHmmTests
         var geno = HmmGeno(fav, bias, 4.0);
 
         var session = new RegimeRouterSession(bars, null, geno);
+        // Same bars and genotype minus the HMM probs → pure legacy threshold routing.
+        var legacyBars = bars.Select(b => b with { HmmProbs = null }).ToArray();
+        var legacy = new RegimeRouterSession(legacyBars, null, geno);
         var t = baseTime.AddHours(300);
 
         foreach (var kind in new[]
@@ -216,10 +221,14 @@ public class RegimeRouterHmmTests
             RegimeRouterGA.StrategyKind.SwingLong,
         })
         {
+            bool legacyActive = legacy.IsActive(kind, t);
             double w = session.Weight(kind, t);
-            bool active = session.IsActive(kind, t);
-            Assert.Equal(w > 0.5, active);
+            Assert.Equal(legacyActive, session.IsActive(kind, t));
+            double expectedSize = !legacyActive ? 0.0 : w < 0.5 ? 1.0 : w;
+            Assert.Equal(expectedSize, session.SizeGate(kind, t), 12);
         }
+        // Guard against a vacuous pass: at least one strategy must be legacy-active here.
+        Assert.Contains(true, Enum.GetValues<RegimeRouterGA.StrategyKind>().Select(k => legacy.IsActive(k, t)));
     }
 
     [Fact]

@@ -117,44 +117,162 @@ public static class CovarianceMatrix
         return s2 > 1e-24 ? s1 * s1 / s2 : 0.0;
     }
 
-    // Symmetric-difference estimate of eigenvalues via Jacobi rotation (k small, exact for our use).
+    // Eigenvalues, descending. See EigenDecompose for the contract and the k-scaling note.
     public static double[] Eigenvalues(double[] cov, int k)
+        => EigenDecompose(cov, k)?.Values ?? new double[k];
+
+    // Symmetric eigendecomposition by CYCLIC Jacobi. Values descending, Vectors[i*k + j] = component
+    // i of eigenvector j, columns reordered to match Values.
+    //
+    // This used to pick the largest off-diagonal each iteration and cap at 100 iterations, which is
+    // fine at k=8 (28 off-diagonals, and it breaks early once they are all small) but silently wrong
+    // for a symbol-level matrix: at k=190 there are 17,955 off-diagonals, so 100 single rotations
+    // zero at most 100 of them and the routine returns unconverged diagonal entries with no error.
+    // The greedy search is also O(k²) per rotation, i.e. O(k⁴) overall.
+    //
+    // Cyclic sweeps fix both: each sweep visits every (p,q) pair once, so a sweep is O(k³) and
+    // convergence is quadratic after the first few. Jacobi converges to the same diagonal whichever
+    // order the pairs are taken in, and the rotation itself is unchanged, so small-k callers
+    // (CombinedBacktest's EffectiveBets at k≈8) get the same numbers as before.
+    public static (double[] Values, double[] Vectors)? EigenDecompose(double[]? cov, int k)
     {
+        if (cov == null || k <= 0 || cov.Length < k * k) return null;
+
         var A = (double[])cov.Clone();
         var V = new double[k * k];
         for (int i = 0; i < k; i++) V[i * k + i] = 1.0;
-        const int MaxIter = 100;
-        for (int iter = 0; iter < MaxIter; iter++)
-        {
-            // Find largest off-diagonal.
-            int p = 0, q1 = 1; double maxAbs = 0;
-            for (int a = 0; a < k; a++)
-                for (int b = a + 1; b < k; b++)
-                    if (Math.Abs(A[a * k + b]) > maxAbs) { maxAbs = Math.Abs(A[a * k + b]); p = a; q1 = b; }
-            if (maxAbs < 1e-12 * (Math.Abs(A[0]) + Math.Abs(A[(k - 1) * k + k - 1]) + 1e-9)) break;
 
-            double app = A[p * k + p], aqq = A[q1 * k + q1], apq = A[p * k + q1];
-            double theta = 0.5 * Math.Atan2(2 * apq, aqq - app + 1e-12);
-            double c = Math.Cos(theta), s = Math.Sin(theta);
-            for (int i = 0; i < k; i++)
+        if (k > 1)
+        {
+            // Scale-relative convergence target: the off-diagonal Frobenius norm must fall to
+            // (1e-14)² of the total, so the test does not depend on the matrix's units.
+            double total = 0;
+            for (int a = 0; a < k; a++)
+                for (int b = 0; b < k; b++) total += A[a * k + b] * A[a * k + b];
+            double tol = 1e-28 * Math.Max(total, 1e-300);
+
+            const int MaxSweeps = 60;
+            for (int sweep = 0; sweep < MaxSweeps; sweep++)
             {
-                double aip = A[i * k + p], aiq = A[i * k + q1];
-                A[i * k + p] = c * aip - s * aiq;
-                A[p * k + i] = A[i * k + p];
-                A[i * k + q1] = s * aip + c * aiq;
-                A[q1 * k + i] = A[i * k + q1];
-                double vip = V[i * k + p], viq = V[i * k + q1];
-                V[i * k + p] = c * vip - s * viq;
-                V[i * k + q1] = s * vip + c * viq;
+                double off = 0;
+                for (int a = 0; a < k; a++)
+                    for (int b = a + 1; b < k; b++) off += A[a * k + b] * A[a * k + b];
+                if (off <= tol) break;
+
+                for (int p = 0; p < k - 1; p++)
+                    for (int q = p + 1; q < k; q++)
+                    {
+                        double apq = A[p * k + q];
+                        if (apq == 0.0) continue;
+
+                        double app = A[p * k + p], aqq = A[q * k + q];
+                        // tan(2θ) = 2·apq / (aqq − app); the epsilon only guards atan2(0, 0).
+                        double theta = 0.5 * Math.Atan2(2 * apq, aqq - app + 1e-12);
+                        double c = Math.Cos(theta), s = Math.Sin(theta);
+
+                        for (int i = 0; i < k; i++)
+                        {
+                            double aip = A[i * k + p], aiq = A[i * k + q];
+                            A[i * k + p] = c * aip - s * aiq;
+                            A[p * k + i] = A[i * k + p];
+                            A[i * k + q] = s * aip + c * aiq;
+                            A[q * k + i] = A[i * k + q];
+                            double vip = V[i * k + p], viq = V[i * k + q];
+                            V[i * k + p] = c * vip - s * viq;
+                            V[i * k + q] = s * vip + c * viq;
+                        }
+                        A[p * k + q] = A[q * k + p] = 0;
+                        A[p * k + p] = c * c * app - 2 * s * c * apq + s * s * aqq;
+                        A[q * k + q] = s * s * app + 2 * s * c * apq + c * c * aqq;
+                    }
             }
-            A[p * k + q1] = A[q1 * k + p] = 0;
-            A[p * k + p] = c * c * app - 2 * s * c * apq + s * s * aqq;
-            A[q1 * k + q1] = s * s * app + 2 * s * c * apq + c * c * aqq;
         }
-        var ev = new double[k];
-        for (int i = 0; i < k; i++) ev[i] = A[i * k + i];
-        Array.Sort(ev);
-        Array.Reverse(ev);
-        return ev;
+
+        // Sort descending by eigenvalue, carrying the eigenvector columns with them.
+        var order = Enumerable.Range(0, k).ToArray();
+        var diag  = new double[k];
+        for (int i = 0; i < k; i++) diag[i] = A[i * k + i];
+        Array.Sort(order, (x, y) => diag[y].CompareTo(diag[x]));
+
+        var values  = new double[k];
+        var vectors = new double[k * k];
+        for (int j = 0; j < k; j++)
+        {
+            values[j] = diag[order[j]];
+            for (int i = 0; i < k; i++) vectors[i * k + j] = V[i * k + order[j]];
+        }
+        return (values, vectors);
+    }
+
+    // Ledoit-Wolf shrinkage with the ANALYTIC intensity, computed from the observations rather than
+    // hand-picked. Shrink()'s fixed lambda is defensible at k≈8; at k≈190 the matrix carries
+    // k(k+1)/2 ≈ 18,145 free parameters and the intensity is the whole estimate, not a knob.
+    //
+    // Ledoit & Wolf (2004), identity target:
+    //   m  = tr(S)/k                     (mean variance)
+    //   d² = ‖S − m·I‖²_F / k            (dispersion of S about the target)
+    //   b² = min( (1/n²)·Σ_t ‖x_t x_tᵀ − S‖²_F / k ,  d² )   (estimation error, capped)
+    //   λ  = b²/d²,   Σ* = λ·m·I + (1−λ)·S
+    // S here uses the 1/n convention the derivation assumes, not Sample()'s 1/(n−1).
+    // Cost is O(n·k²). Returns null on degenerate input.
+    public static (double[] Cov, double Lambda)? ShrinkAuto(double[][] series)
+    {
+        int k = series.Length;
+        if (k == 0) return null;
+        int n = series[0].Length;
+        for (int a = 1; a < k; a++) if (series[a].Length != n) return null;
+        if (n < 2) return null;
+
+        var x = new double[k][];
+        for (int a = 0; a < k; a++)
+        {
+            double mean = series[a].Average();
+            x[a] = new double[n];
+            for (int i = 0; i < n; i++) x[a][i] = series[a][i] - mean;
+        }
+
+        var s = new double[k * k];
+        for (int a = 0; a < k; a++)
+            for (int b = a; b < k; b++)
+            {
+                double acc = 0;
+                for (int i = 0; i < n; i++) acc += x[a][i] * x[b][i];
+                s[a * k + b] = s[b * k + a] = acc / n;
+            }
+
+        double m = 0;
+        for (int a = 0; a < k; a++) m += s[a * k + a];
+        m /= k;
+
+        double d2 = 0;
+        for (int a = 0; a < k; a++)
+            for (int b = 0; b < k; b++)
+            {
+                double t = s[a * k + b] - (a == b ? m : 0.0);
+                d2 += t * t;
+            }
+        d2 /= k;
+        if (!(d2 > 1e-300)) return (s, 0.0);   // S already equals the target — nothing to shrink
+
+        double bbar2 = 0;
+        for (int i = 0; i < n; i++)
+            for (int a = 0; a < k; a++)
+            {
+                double xa = x[a][i];
+                for (int b = 0; b < k; b++)
+                {
+                    double t = xa * x[b][i] - s[a * k + b];
+                    bbar2 += t * t;
+                }
+            }
+        bbar2 /= (double)n * n * k;
+
+        double lambda = Math.Clamp(Math.Min(bbar2, d2) / d2, 0.0, 1.0);
+
+        var outCov = new double[k * k];
+        for (int a = 0; a < k; a++)
+            for (int b = 0; b < k; b++)
+                outCov[a * k + b] = lambda * (a == b ? m : 0.0) + (1.0 - lambda) * s[a * k + b];
+        return (outCov, lambda);
     }
 }

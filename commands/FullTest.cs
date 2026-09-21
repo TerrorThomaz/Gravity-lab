@@ -156,8 +156,8 @@ static class FullTest
         var valSlRets    = new List<double>();
         var valRsRets    = new List<double>();
         var valAgRets    = new List<double>();
-        var valAll         = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
-        var valNoRouter    = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
+        var valAll         = new List<(DateTime Time, double Return, double Conf, string Strategy, string Symbol)>();
+        var valNoRouter    = new List<(DateTime Time, double Return, double Conf, string Strategy, string Symbol)>();
         var crashTrades    = new List<(DateTime Open, DateTime Close, double Return, double HalfKelly, string Strategy)>();
         int valCandleCount = 0;
         var valRawForEnrich = new List<(DateTime Time, double Return, double Conf, string Strategy, string Symbol, TimeSpan HoldDuration)>();
@@ -198,8 +198,8 @@ static class FullTest
                     {
                         if (fundingSession?.IsCrowdedShort(t) == true) continue;
                         valSwingRets.Add(ret);
-                        valAll.Add((t, ret, conf, "swing"));
-                        valNoRouter.Add((t, ret, conf, "swing"));
+                        valAll.Add((t, ret, conf, "swing", sym));
+                        valNoRouter.Add((t, ret, conf, "swing", sym));
                         valRawForEnrich.Add((t, ret, conf, "swing", sym, TimeSpan.FromHours(coinFsG.MaxHoldCandles)));
                         crashTrades.Add((t - TimeSpan.FromHours(coinFsG.MaxHoldCandles), t, ret, fsHk, "FadeShort"));
                         RouteValVol(fsVarLabel, sym, t, ret, conf, "swing", valCandleCount);
@@ -223,8 +223,8 @@ static class FullTest
                         ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.Grid, t.Time)).ToList()
                         : raw;
                     valGridRets.AddRange(gated.Select(t => t.Return));
-                    foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "grid"));
-                    foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "grid"));
+                    foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "grid", sym));
+                    foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "grid", sym));
                     foreach (var t in gated)
                     {
                         valRawForEnrich.Add((t.Time, t.Return, conf, "grid", sym, TimeSpan.FromHours(coinGridG.MaxHoldCandles)));
@@ -247,8 +247,8 @@ static class FullTest
                         ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.GridShort, t.Time)).ToList()
                         : raw;
                     valGsRets.AddRange(gated.Select(t => t.Return));
-                    foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "gridshort"));
-                    foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "gridshort"));
+                    foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "gridshort", sym));
+                    foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "gridshort", sym));
                     foreach (var t in gated)
                         valRawForEnrich.Add((t.Time, t.Return, conf, "gridshort", sym, TimeSpan.FromHours(gsG.MaxHoldCandles)));
                 }
@@ -264,8 +264,8 @@ static class FullTest
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.FadeLong, t.Time)).ToList()
                     : raw;
                 valFlRets.AddRange(gated.Select(t => t.Return));
-                foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "fadelong"));
-                foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "fadelong"));
+                foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "fadelong", sym));
+                foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "fadelong", sym));
                 foreach (var t in gated)
                     valRawForEnrich.Add((t.Time, t.Return, conf, "fadelong", sym, TimeSpan.FromHours(flG!.MaxHoldCandles)));
             }
@@ -287,11 +287,11 @@ static class FullTest
                 valDlRets.AddRange(gated.Select(t => t.Return));
                 foreach (var t in gated)
                 {
-                    valAll.Add((t.Time, t.Return, conf, "diplong"));
+                    valAll.Add((t.Time, t.Return, conf, "diplong", sym));
                     crashTrades.Add((t.Time - TimeSpan.FromHours(coinDlG.MaxHoldCandles), t.Time, t.Return, dlHk, "DipLong"));
                     RouteValVol(dlVarLabel, sym, t.Time, t.Return, conf, "diplong", valCandleCount);
                 }
-                foreach (var t in raw) valNoRouter.Add((t.Time, t.Return, conf, "diplong"));
+                foreach (var t in raw) valNoRouter.Add((t.Time, t.Return, conf, "diplong", sym));
                 foreach (var t in gated)
                     valRawForEnrich.Add((t.Time, t.Return, conf, "diplong", sym, TimeSpan.FromHours(coinDlG.MaxHoldCandles)));
             }
@@ -310,8 +310,8 @@ static class FullTest
                 if (fundingSession != null)
                     gated = gated.Where(t => !fundingSession.IsCrowdedLong(t.Time)).ToList();
                 valSlRets.AddRange(gated.Select(t => t.Return));
-                foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "swing_long"));
-                foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "swing_long"));
+                foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "swing_long", sym));
+                foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "swing_long", sym));
                 foreach (var t in gated)
                 {
                     valRawForEnrich.Add((t.Time, t.Return, conf, "swing_long", sym, TimeSpan.FromHours(coinSlG.MaxHoldCandles)));
@@ -331,8 +331,8 @@ static class FullTest
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.RipShort, t.Time)).ToList()
                     : raw;
                 valRsRets.AddRange(gated.Select(t => t.Return));
-                foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "ripshort"));
-                foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "ripshort"));
+                foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "ripshort", sym));
+                foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "ripshort", sym));
                 foreach (var t in gated)
                 {
                     valRawForEnrich.Add((t.Time, t.Return, conf, "ripshort", sym, TimeSpan.FromHours(coinRsG.MaxHoldCandles)));
@@ -351,8 +351,8 @@ static class FullTest
                     ? raw.Where(t => session.IsActive(RegimeRouterGA.StrategyKind.AccumulationGrid, t.Time)).ToList()
                     : raw;
                 valAgRets.AddRange(gated.Select(t => t.Return));
-                foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "accumgrid"));
-                foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "accumgrid"));
+                foreach (var t in gated) valAll.Add((t.Time, t.Return, conf, "accumgrid", sym));
+                foreach (var t in raw)   valNoRouter.Add((t.Time, t.Return, conf, "accumgrid", sym));
                 foreach (var t in gated)
                     valRawForEnrich.Add((t.Time, t.Return, conf, "accumgrid", sym, TimeSpan.FromHours(agBullG!.MaxHoldBars)));
             }
@@ -367,8 +367,8 @@ static class FullTest
         var oosSlRets    = new List<double>();
         var oosRsRets    = new List<double>();
         var oosAgRets    = new List<double>();
-        var oosAll       = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
-        var oosNoRouter  = new List<(DateTime Time, double Return, double Conf, string Strategy)>();
+        var oosAll       = new List<(DateTime Time, double Return, double Conf, string Strategy, string Symbol)>();
+        var oosNoRouter  = new List<(DateTime Time, double Return, double Conf, string Strategy, string Symbol)>();
         int oosCandleCount = 0;
         const double oosMinVol = 0.05;
 
@@ -405,7 +405,7 @@ static class FullTest
                         oosSwingRets.AddRange(vRet);
                         foreach (var (t, ret, _, _, _) in trades)
                         {
-                            oosAll.Add((t, ret, conf, "swing"));
+                            oosAll.Add((t, ret, conf, "swing", sym));
                             oosRawForEnrich.Add((t, ret, conf, "swing", sym, TimeSpan.FromHours(coinFsGOos.MaxHoldCandles)));
                             RouteOosVol(fsOosLabel, sym, t, ret, conf, "swing", oosCandleCount);
                         }
@@ -426,8 +426,8 @@ static class FullTest
                 {
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosGridRets.AddRange(vRet);
-                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "grid"));
-                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "grid"));
+                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "grid", sym));
+                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "grid", sym));
                     foreach (var t in gated)
                     {
                         oosRawForEnrich.Add((t.Time, t.Return, conf, "grid", sym, TimeSpan.FromHours(coinGridGOos.MaxHoldCandles)));
@@ -448,8 +448,8 @@ static class FullTest
                 {
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosGsRets.AddRange(vRet);
-                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "gridshort"));
-                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "gridshort"));
+                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "gridshort", sym));
+                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "gridshort", sym));
                     foreach (var t in gated)
                         oosRawForEnrich.Add((t.Time, t.Return, conf, "gridshort", sym, TimeSpan.FromHours(gsG.MaxHoldCandles)));
                 }
@@ -467,8 +467,8 @@ static class FullTest
                 {
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosFlRets.AddRange(vRet);
-                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "fadelong"));
-                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "fadelong"));
+                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "fadelong", sym));
+                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "fadelong", sym));
                     foreach (var t in gated)
                         oosRawForEnrich.Add((t.Time, t.Return, conf, "fadelong", sym, TimeSpan.FromHours(flG!.MaxHoldCandles)));
                 }
@@ -490,8 +490,8 @@ static class FullTest
                 {
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosDlRets.AddRange(vRet);
-                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "diplong"));
-                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "diplong"));
+                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "diplong", sym));
+                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "diplong", sym));
                     foreach (var t in gated)
                     {
                         oosRawForEnrich.Add((t.Time, t.Return, conf, "diplong", sym, TimeSpan.FromHours(coinDlGOos.MaxHoldCandles)));
@@ -516,8 +516,8 @@ static class FullTest
                 {
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosSlRets.AddRange(vRet);
-                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "swing_long"));
-                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "swing_long"));
+                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "swing_long", sym));
+                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "swing_long", sym));
                     foreach (var t in gated)
                     {
                         oosRawForEnrich.Add((t.Time, t.Return, conf, "swing_long", sym, TimeSpan.FromHours(coinSlGOos.MaxHoldCandles)));
@@ -540,8 +540,8 @@ static class FullTest
                 {
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosRsRets.AddRange(vRet);
-                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "ripshort"));
-                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "ripshort"));
+                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "ripshort", sym));
+                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "ripshort", sym));
                     foreach (var t in gated)
                     {
                         oosRawForEnrich.Add((t.Time, t.Return, conf, "ripshort", sym, TimeSpan.FromHours(coinRsGOos.MaxHoldCandles)));
@@ -564,8 +564,8 @@ static class FullTest
                 {
                     double conf = Simulator.ComputeConfidence(vRet);
                     oosAgRets.AddRange(vRet);
-                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "accumgrid"));
-                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "accumgrid"));
+                    foreach (var t in gated) oosAll.Add((t.Time, t.Return, conf, "accumgrid", sym));
+                    foreach (var t in raw)   oosNoRouter.Add((t.Time, t.Return, conf, "accumgrid", sym));
                     foreach (var t in gated)
                         oosRawForEnrich.Add((t.Time, t.Return, conf, "accumgrid", sym, TimeSpan.FromHours(agBullG!.MaxHoldBars)));
                 }
@@ -588,8 +588,8 @@ static class FullTest
         // No longer `static`: it closes over btcSeries so the capped book can be graded through
         // StrategyEvaluation — the same call combinedbacktest and oosbacktest make, on the same
         // trade shape. This is the point where fulltest's numbers stop being its own.
-        List<(DateTime Time, double Return, double Conf, string Strategy)> ApplyCap(
-            List<(DateTime Time, double Return, double Conf, string Strategy)> trades, string label)
+        List<(DateTime Time, double Return, double Conf, string Strategy, string Symbol)> ApplyCap(
+            List<(DateTime Time, double Return, double Conf, string Strategy, string Symbol)> trades, string label)
         {
             if (trades.Count == 0) return trades;
             trades.Sort((a, b) => a.Time.CompareTo(b.Time));
@@ -602,11 +602,15 @@ static class FullTest
                     "ripshort"   => TimeSpan.FromHours(72),
                     "gridshort"  => TimeSpan.FromHours(72),
                     _            => TimeSpan.FromHours(72),
-                }, t.Return, t.Conf)).ToList();
-            var capped = PortfolioReplay.FilterByConcurrentCap(capIn, directionalCap: Config.MaxDirectionalConcurrent);
+                }, t.Return, t.Conf, t.Symbol)).ToList();
+            // Correlation-aware directional cap. OFF unless GRAVITY_CROWDING is set; one-sided when
+            // on, and estimated strictly before the book's first trade. See SymbolCrowdingCap.
+            var crowding = SymbolCrowdingCap.BuildForBook(fetched, capIn, label);
+            var capped = PortfolioReplay.FilterByConcurrentCap(capIn, directionalCap: Config.MaxDirectionalConcurrent,
+                                                              crowding: crowding);
             StrategyEvaluation.Report(label, capped, btcSeries,
                                       csvPath: $"reports/fulltest_{label.ToLowerInvariant().Replace(' ', '_')}_trades.csv");
-            return capped.Select(t => (t.EntryTime, t.Return, t.Conf, t.Strategy)).ToList();
+            return capped.Select(t => (t.EntryTime, t.Return, t.Conf, t.Strategy, t.Symbol)).ToList();
         }
 
         valAll = ApplyCap(valAll, "FULLTEST VAL BOOK");
@@ -614,13 +618,13 @@ static class FullTest
 
         // Helper: trades → exposure sim input
         List<(DateTime, double, double, TimeSpan)> ToSim(
-            List<(DateTime Time, double Return, double Conf, string Strategy)> t) =>
+            List<(DateTime Time, double Return, double Conf, string Strategy, string Symbol)> t) =>
             t.Select(x => (x.Time, x.Return, x.Conf, StratHold(x.Strategy, swingG, gridG, flG, dlG, slG, rsG, gsG))).ToList();
 
         // Guarded variant: ATR entry gate first (blocks high-ATR DipLong/SwingLong),
         // then confidence scaling. Strategy preserved for the portfolio-DD gate inside the simulator.
         List<(DateTime, double, double, TimeSpan, string)> ToSimGuarded(
-            List<(DateTime Time, double Return, double Conf, string Strategy)> t,
+            List<(DateTime Time, double Return, double Conf, string Strategy, string Symbol)> t,
             DynamicGuardSession gs) =>
             t.Where(x => !gs.IsEntryBlocked(x.Time, x.Strategy))
              .Select(x => (x.Time, x.Return,
@@ -629,7 +633,7 @@ static class FullTest
 
         // 5-tuple version of ToSim (adds Strategy) — used for DD-gate-aware guarded simulation.
         List<(DateTime, double, double, TimeSpan, string)> ToSim5(
-            List<(DateTime Time, double Return, double Conf, string Strategy)> t) =>
+            List<(DateTime Time, double Return, double Conf, string Strategy, string Symbol)> t) =>
             t.Select(x => (x.Time, x.Return, x.Conf,
                 StratHold(x.Strategy, swingG, gridG, flG, dlG, slG, rsG, gsG), x.Strategy)).ToList();
 
@@ -650,9 +654,14 @@ static class FullTest
         };
         valNoRouter.Sort((a, b) => a.Time.CompareTo(b.Time));
         oosNoRouter.Sort((a, b) => a.Time.CompareTo(b.Time));
-        var nrFilteredTrades    = PortfolioReplay.FilterByConcurrentCap(valNoRouter.Select(t => new PortfolioReplay.Trade(t.Strategy, t.Time, HoldFor(t.Strategy), t.Return, t.Conf)).ToList(), directionalCap: Config.MaxDirectionalConcurrent).ToList();
+        // Built once: the crowding cap needs the same list the filter consumes.
+        var valNoRouterCapIn = valNoRouter.Select(t => new PortfolioReplay.Trade(
+            t.Strategy, t.Time, HoldFor(t.Strategy), t.Return, t.Conf, t.Symbol)).ToList();
+        var oosNoRouterCapIn = oosNoRouter.Select(t => new PortfolioReplay.Trade(
+            t.Strategy, t.Time, HoldFor(t.Strategy), t.Return, t.Conf, t.Symbol)).ToList();
+        var nrFilteredTrades    = PortfolioReplay.FilterByConcurrentCap(valNoRouterCapIn, directionalCap: Config.MaxDirectionalConcurrent, crowding: SymbolCrowdingCap.BuildForBook(fetched, valNoRouterCapIn, "VAL NO-ROUTER")).ToList();
         var nrFiltered          = nrFilteredTrades.Select(t => (t.EntryTime, t.Return, t.Conf, StratHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG, gsG))).ToList();
-        var oosNrFilteredTrades = PortfolioReplay.FilterByConcurrentCap(oosNoRouter.Select(t => new PortfolioReplay.Trade(t.Strategy, t.Time, HoldFor(t.Strategy), t.Return, t.Conf)).ToList(), directionalCap: Config.MaxDirectionalConcurrent).ToList();
+        var oosNrFilteredTrades = PortfolioReplay.FilterByConcurrentCap(oosNoRouterCapIn, directionalCap: Config.MaxDirectionalConcurrent, crowding: SymbolCrowdingCap.BuildForBook(fetched, oosNoRouterCapIn, "OOS NO-ROUTER")).ToList();
         var oosNrFiltered       = oosNrFilteredTrades.Select(t => (t.EntryTime, t.Return, t.Conf, StratHold(t.Strategy, swingG, gridG, flG, dlG, slG, rsG, gsG))).ToList();
 
         // ══════════════════════════════════════════════════════════════════════════

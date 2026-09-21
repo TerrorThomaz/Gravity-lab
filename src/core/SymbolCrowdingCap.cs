@@ -102,6 +102,30 @@ public sealed class SymbolCrowdingCap
         return new SymbolCrowdingCap(index, corr, k, strength);
     }
 
+    // What every backtest call site needs, in one place: read the configured strength, estimate on
+    // data strictly before the book's first trade, and say plainly whether the cap ended up active.
+    // Returns null — and prints nothing — when the feature is off, so an unset environment leaves
+    // the report byte-identical to what it was before this existed.
+    public static SymbolCrowdingCap? BuildForBook(
+        IReadOnlyList<StrategyPipeline.FetchedCandles> fetched,
+        IReadOnlyList<PortfolioReplay.Trade> book,
+        string label)
+    {
+        double strength = ConfiguredStrength;
+        if (strength <= 0.0 || book.Count == 0) return null;
+
+        DateTime firstEntry = book.Min(t => t.EntryTime);
+        var daily = new List<SymbolCovariance.DailySeries>(fetched.Count);
+        foreach (var f in fetched)
+            if (SymbolCovariance.ToDaily(f.sym, f.h1) is { } d) daily.Add(d);
+
+        var cap = Build(daily, strength, asOf: firstEntry);
+        Console.WriteLine(cap != null
+            ? $"  [{label}] crowding cap ON (GRAVITY_CROWDING={strength:F2}), {cap.Symbols} symbols, correlation from data before {firstEntry:yyyy-MM-dd}"
+            : $"  [{label}] crowding cap requested (GRAVITY_CROWDING={strength:F2}) but too little history before {firstEntry:yyyy-MM-dd} — INACTIVE");
+        return cap;
+    }
+
     private static List<SymbolCovariance.DailySeries> Truncate(
         IReadOnlyList<SymbolCovariance.DailySeries> daily, DateTime cut)
     {

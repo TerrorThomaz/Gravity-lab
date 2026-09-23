@@ -38,6 +38,7 @@ switch (mode)
     case "disttest":         await Disttest.Run(client, args);                                   break;
     case "walkforward":      await WalkForwardCommand.Run(client);                              break;
     case "symbolcov":        await SymbolCovDiag.Run(client);                                  break;
+    case "edgetest":         await EdgeTest.Run(client);                                       break;
     case "hyperliquid-papertrade": await HyperliquidPaperTrade.Run();                           break;
     case "hyperliquid-lookback":   await HyperliquidLookback.Run(args.Length > 1 && int.TryParse(args[1], out var lbh) ? lbh : 48); break;
     case "hyperliquid-griddiag":   await HyperliquidGridDiag.Run();                             break;
@@ -73,4 +74,15 @@ switch (mode)
         Console.WriteLine("  dotnet run -- hyperliquid-papertrade Paper trade via Hyperliquid (requires HYPERLIQUID_PRIVATE_KEY)");
         Console.WriteLine("  dotnet run -- hmmtrain             Train Gaussian HMM on BTC regime features (default 4 states)");
         break;
+}
+
+// Persist the candidate-evaluation ledger. One place covers every training command, because the
+// counter is process-wide. The number feeds StatisticalTests.DeflatedSharpeRatio, where it decides
+// whether a result is distinguishable from the best of a random search — see GaTrialCounter.
+if (GaTrialCounter.Shared.Total > 0)
+{
+    GaTrialCounter.Shared.Save();
+    Console.WriteLine($"\n  GA trials this run: {GaTrialCounter.Shared.Total:N0} " +
+                      $"({string.Join(", ", GaTrialCounter.Shared.Snapshot().OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key}={kv.Value:N0}"))})");
+    Console.WriteLine($"  Cumulative ledger → {GaTrialCounter.DefaultPath}: {GaTrialCounter.LoadTotal():N0} total");
 }

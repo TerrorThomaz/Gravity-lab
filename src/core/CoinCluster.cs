@@ -17,6 +17,17 @@ public static class CoinClusterHelper
     }
 
 
+    // RETIRED 2026-09-23 — nothing produces these files any more. The per-cluster GA stage in
+    // TrainCommands was removed (it spent ~62% of a `train` run's candidate evaluations on
+    // variants no out-of-sample report ever scored, deflating the base genotype's Sharpe to pay
+    // for them); the files moved to docs/legacy/genotypes/. Every caller already falls back to the
+    // universal genotype when the file is absent, so these paths now resolve to "missing" and the
+    // fallback fires. Kept so that fallback stays explicit rather than becoming a silent default.
+    //
+    // DO NOT regenerate these files. They are ATR-band variants (Classify buckets on median h1
+    // ATR%, not liquidity — "Liquid" means LOW VOLATILITY), the same family as the high-vol
+    // genotypes retired in 2026-08, and they would silently shadow the base genotype on every
+    // path that still looks for them.
     public static string GenoFile(CoinCluster cluster) => cluster switch
     {
         CoinCluster.Liquid  => "genotypes/swing_best_genotype_liquid.json",

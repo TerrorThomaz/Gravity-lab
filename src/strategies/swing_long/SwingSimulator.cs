@@ -78,13 +78,15 @@ public static class FadeShortSimulator
             double[]  closes, double[] highs, double[] lows,
             double[]  rsi,    double[] adx,   double[] atr,
             double[]  ema,
-            int       rangeStart, int rangeEnd)
+            int       rangeStart, int rangeEnd,
+            List<double>? maeOut = null)
     {
         int warmup = Math.Max(Math.Max(g.EmaPeriod, RsiPeriod), AdxPeriod * 2 + 1)
                    + g.LookbackCandles;
         int iStart = Math.Max(rangeStart, warmup);
         if (iStart >= rangeEnd || rangeEnd > candles.Length) return [];
-        var (trades, _) = SimulateCore(g, candles, closes, highs, lows, rsi, adx, atr, ema, iStart, rangeEnd);
+        var (trades, _) = SimulateCore(g, candles, closes, highs, lows, rsi, adx, atr, ema,
+                                       iStart, rangeEnd, maeOut);
         return trades;
     }
 
@@ -95,9 +97,15 @@ public static class FadeShortSimulator
             ReadOnlySpan<Candle>  candles,
             double[]  closes, double[] highs, double[] lows,
             double[]  rsi,    double[] adx,   double[] atr, double[] ema,
-            int       iStart, int      iEnd)
+            int       iStart, int      iEnd,
+            // Opt-in worst adverse excursion per trade, percent and <= 0. FadeShort is SHORT, so
+            // adverse means price RISING above entry — the mirror of the existing trailLow, which
+            // tracks the favourable extreme. Measured on closes, matching this simulator's
+            // close-based stop checks (RipShort's wick-triggered exits would need highs instead).
+            List<double>? maeOut = null)
     {
         var result = new List<(DateTime, double, string, int, DateTime, double)>();
+        double trailHigh = 0.0;
 
         // Consecutive uptrend bars (regime FadeShort fades). Separate regime EMA (100-500) from signal EMA.
         var regimeEma   = Trend.Ema(closes, g.RegimeEmaPeriod);
@@ -163,6 +171,7 @@ public static class FadeShortSimulator
                 maeStop    = entry + g.MaeAtrMult * atrEntry;  // caps slow-grind losses
                 target     = entry - g.TakeProfitAtrMult * atrEntry;
                 trailLow   = price;
+                trailHigh  = price;
                 trailArmed = false;
                 lockArmed  = false;
                 holdCount  = 0;
@@ -170,7 +179,8 @@ public static class FadeShortSimulator
             else
             {
                 holdCount++;
-                if (price < trailLow) trailLow = price;
+                if (price < trailLow)  trailLow  = price;
+                if (price > trailHigh) trailHigh = price;
 
                 if (!trailArmed && entry - trailLow >= g.TrailingActivationAtrMult * atrEntry)
                     trailArmed = true;
@@ -190,6 +200,7 @@ public static class FadeShortSimulator
                     double ret = (entry - exitPx) / entry * 100.0
                                - TradeCost(hitStop, atrEntry, entry, EntryBarNotional(candles, entryIdx), g.PositionSizePct);
                     result.Add((candles[i].Time, ret, "fade_short", entryRegimeBars, entryTime, entry));
+                    maeOut?.Add(Math.Min(0.0, (entry - trailHigh) / entry * 100.0));
                     inTrade = false;
                 }
             }
@@ -201,6 +212,7 @@ public static class FadeShortSimulator
             double ret = (entry - finalPx) / entry * 100.0
                        - TradeCost(false, atrEntry, entry, EntryBarNotional(candles, entryIdx), g.PositionSizePct);
             result.Add((candles[iEnd - 1].Time, ret, "fade_short", entryRegimeBars, entryTime, entry));
+            maeOut?.Add(Math.Min(0.0, (entry - trailHigh) / entry * 100.0));
         }
 
         var finalState = new FadeShortTradeState(inTrade, entry, hardStop, maeStop, target,

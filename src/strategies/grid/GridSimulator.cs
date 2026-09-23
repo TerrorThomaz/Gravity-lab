@@ -24,10 +24,12 @@ public static class GridSimulator
     }
 
     // Per-session returns (mean of fills) for GA fitness.
+    // maeOut: opt-in per-trade worst adverse excursion, parallel to the returned list.
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetGridSessionReturns(
-        GridGenotype g, ReadOnlySpan<Candle> h1, FundingRateSession? funding = null)
+        GridGenotype g, ReadOnlySpan<Candle> h1, FundingRateSession? funding = null,
+        List<double>? maeOut = null)
     {
-        var (trades, _) = RunGrid(g, h1, sessionLevel: true, funding: funding);
+        var (trades, _) = RunGrid(g, h1, sessionLevel: true, funding: funding, maeOut: maeOut);
         return trades;
     }
 
@@ -56,7 +58,11 @@ public static class GridSimulator
     private static (List<(DateTime, double, string, DateTime, double)> Trades, GridTradeState FinalState)
         RunGrid(GridGenotype g, ReadOnlySpan<Candle> candles, bool sessionLevel,
                 string? coin = null, List<ScoredTrade>? scoredOut = null,
-                FundingRateSession? funding = null)
+                FundingRateSession? funding = null,
+                // Opt-in, same shape as scoredOut: worst adverse excursion per emitted trade, in
+                // percent and <= 0. Feeds FoldScoreHelper.Canonical's drawdown term so the GA can
+                // see time at risk instead of only the settled return.
+                List<double>? maeOut = null)
     {
         int warmup = Math.Max(Math.Max(Math.Max(g.EmaPeriod, AtrPeriod), AdxPeriod * 2 + 1), g.BbPeriod) + 2;
         if (candles.Length <= warmup + 5)
@@ -85,6 +91,7 @@ public static class GridSimulator
         var      entryPrice        = new double[MaxLevels];
         double   sessionScore      = 0;
         DateTime sessionEntryTime  = default;
+        double   sessionMae        = 0.0;   // worst unrealised % of the filled rungs this session
 
         void AddReturn(int i, double ret, string kind, double entryPx)
         {
@@ -109,7 +116,9 @@ public static class GridSimulator
             result.Add((times[i], avg, "grid_session", sessionEntryTime,
                         sessionEntryN > 0 ? sessionEntrySum / sessionEntryN : 0.0));
             scoredOut?.Add(new ScoredTrade(coin!, "grid", sessionEntryTime, times[i], avg, sessionScore));
+            maeOut?.Add(sessionMae);
             sessionFills.Clear();
+            sessionMae = 0.0;
         }
 
         void CloseAllFilled(int i, double exitPx, bool isStop = false)
@@ -140,6 +149,17 @@ public static class GridSimulator
                     hardStop = anchor - g.HardStopAtrMult * atrAtStart;
                 }
                 holdCount++;
+
+                // Worst unrealised point of the open rungs this bar. The low is the adverse
+                // extreme for a long grid, so this is a true MAE rather than a close-to-close proxy.
+                {
+                    double meanEntry = MeanFilled(entryPrice, filled);
+                    if (meanEntry > 1e-10)
+                    {
+                        double unreal = (lows[i] - meanEntry) / meanEntry * 100.0;
+                        if (unreal < sessionMae) sessionMae = unreal;
+                    }
+                }
 
                 if (lows[i] <= hardStop)
                 {

@@ -483,6 +483,15 @@ public static class SwingLongSimulator
         => GetSwingLongReturns(g, h1, m15, ctx.Funding, ctx.Ratchet);
 
     // Router-as-indicator: signed BTC alignment score (+Bull, -Bear, 0 otherwise). Null = absent.
+    // PROCESS-GLOBAL MUTABLE STATE. Left null the simulator scores btcScore = 1.0, which clears
+    // every possible `required`, so the committed BtcAlignWeight gate is inert — that is the state
+    // combinedbacktest and oosbacktest run in. SwingLongGA sets it during training and does NOT
+    // clear it; WalkForwardCommand sets it and clears it in a finally precisely because a leak
+    // would gate every later SwingLong run in the process.
+    //
+    // It is also a test hazard: a test that sets this races every concurrently running test that
+    // routes SwingLong, and the victim fails with "produced no trades" far from the cause. Any test
+    // touching it belongs in Gravity-gen2.Tests/ProcessGlobalCollection.cs.
     public static Func<DateTime, double>? BtcRegimeProbe;
 
     // Control switch: GRAVITY_SWINGLONG_NOBTC=1 forces gate open, preserving RNG stream.

@@ -4,6 +4,7 @@ using Xunit;
 
 namespace Gravity_gen2.Tests;
 
+[Collection(ProcessGlobalCollection.Name)]   // mutates process-global state — see ProcessGlobalCollection
 public class RegimeRouterHmmTests
 {
     private static double Sigmoid(double x) => 1.0 / (1.0 + Math.Exp(-6.0 * x));

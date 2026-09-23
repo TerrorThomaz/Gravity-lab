@@ -19,6 +19,7 @@ namespace Gravity_gen2.Tests;
 // are properties of the search, not of the landscape — but it is why the selection-pressure and
 // RNG-stream assertions below drive the GA's selector directly against a synthetic population
 // with hand-set fitnesses instead of inferring pressure from a training outcome.
+[Collection(ProcessGlobalCollection.Name)]   // mutates process-global state — see ProcessGlobalCollection
 public class GaReproducibilityTests
 {
     private static Candle[] Synthetic(int count, int seed)

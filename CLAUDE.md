@@ -109,12 +109,27 @@ Gravity-gen2.Tests/
                   regime/RegimeRouterContractTests, RollingStrategyGateTests
 ```
 
-**The suite is FLAKY under parallel collections — a DIFFERENT test fails on each full run and all
-pass in isolation.** Observed on `ExecContextConformanceTests`, `GuardedPortfolioTests`,
-`FundingSessionSetTests`, `GaReproducibilityTests`, `SymbolCrowdingCapTests`. Cause is shared
-mutable statics across collections — `SwingLongSimulator.BtcRegimeProbe` is a known one (the
-`walkforward` command sets it and clears it in a `finally` precisely because a leak would gate every
-later run in the process). Re-run before believing a single red result; fix before trusting CI.
+**Tests that mutate PROCESS-GLOBAL state must join `ProcessGlobalCollection`** (2026-09-23). The
+suite used to be flaky — a different test failed on each full run, all passed in isolation, roughly
+1 run in 3. Three shared resources, all process-wide, all mutated by tests xUnit was free to run
+concurrently because they sat in different collections:
+
+- **`Console.Out`** — the `Capture` helpers save/`SetOut`/restore, which interleaves destructively:
+  B saves A's writer as "previous", then A restores and clobbers B's redirect mid-test, so B
+  asserts on an empty string. The failure lands on whichever test was unlucky.
+- **`SwingLongSimulator.BtcRegimeProbe`** — `Dispose()` clears it at CLASS teardown, which does
+  nothing against a concurrent test. A victim routes SwingLong through a gated probe, gets zero
+  trades, and fails far from the cause.
+- **`GRAVITY_HMM` via `Environment.SetEnvironmentVariable`** — `RegimeRouter.HmmEnabled` reads it
+  live, so while set, any concurrent test expecting HMM routing silently takes the legacy path.
+  Widest blast radius, and it explains failures in classes that never touch Console.
+
+Fixed with one `[CollectionDefinition(DisableParallelization = true)]` collection. That stops it
+running alongside OTHER collections too, which is the property actually needed — the readers are
+not enumerable, since `HmmEnabled` is consulted deep inside routing. Verified with 8 consecutive
+clean full-suite runs against a prior ~1-in-3 failure rate. **Adding a test that touches
+`Console.SetOut`, an environment variable, or any mutable static? Put its class in that
+collection.**
 
 ## Architecture
 

@@ -53,7 +53,7 @@ power here (PF 1.01 vs 1.00 raw). Remove the screen and PF goes 2.51 → 1.04.
 | 9 | Per-cluster GA stage: **62%** of a `train` run's trials on ATR-band variants no OOS report ever loaded; `CoinCluster` buckets on ATR%, so "Liquid" means *low volatility* | Deflated the base genotype's Sharpe to pay for unmeasured variants | Retired to `docs/legacy/genotypes/` |
 | 10 | `edgetest` replayed with only the global 20-slot cap, ignoring `PortfolioReplay.DefaultCaps` | **My own bug.** FadeShort held 8,919 slots on arrival order and starved 2,331 Grid/GridShort trades — a measurement artifact that looked like a defective strategy | Fixed — per-strategy caps bind first |
 | 11 | `maePct` added to `CanonicalRegime` and then **ignored** | Introduced and caught in the same session; FadeShort routes through it, so it would have looked wired while doing nothing | Fixed + regression test |
-| 12 | Test suite flaky under parallel collections | A different test fails each full run, all pass in isolation | **NOT fixed** — see §6 |
+| 12 | Test suite flaky under parallel collections — `Console.Out`, `SwingLongSimulator.BtcRegimeProbe` and `GRAVITY_HMM` all mutated concurrently | ~1 run in 3 failed, on a different test each time, all passing in isolation — red results could not be trusted | Fixed — `ProcessGlobalCollection`, 8/8 clean runs |
 
 ---
 
@@ -156,10 +156,15 @@ Ordered by what unblocks the most.
 
 ### Now
 
-1. **Fix the test-suite flakiness.** A different test fails on each full run; all pass in
-   isolation. Shared mutable statics across parallel collections —
-   `SwingLongSimulator.BtcRegimeProbe` is a known one. This blocks trusting CI, which matters now
-   that `edgetest` returns a meaningful exit code.
+1. ~~**Fix the test-suite flakiness.**~~ **DONE.** Three process-global resources were mutated by
+   tests running concurrently: `Console.Out` (the `Capture` save/set/restore helpers interleave, so
+   one test clobbers another's redirect mid-run), `SwingLongSimulator.BtcRegimeProbe` (`Dispose`
+   clears it at class teardown, which does nothing against a concurrent test — the victim routes
+   SwingLong through a gated probe, gets zero trades, and fails far from the cause), and
+   `GRAVITY_HMM` (`RegimeRouter.HmmEnabled` reads it live, so any concurrent test expecting HMM
+   routing silently took the legacy path). Fixed with one `DisableParallelization` collection;
+   8 consecutive clean runs against a prior ~1-in-3 failure rate. Caveat: 8 clean runs is evidence,
+   not proof — the three mechanisms are understood and closed, but a rarer race could remain.
 2. **Validate on a disjoint sample** — either a different calendar period, or a set of coins that
    does not overlap the current 63. This is the single largest caveat on every number above: until
    it is done, the roster is a hypothesis fitted to the one sample it was selected on.

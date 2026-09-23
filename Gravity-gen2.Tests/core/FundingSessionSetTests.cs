@@ -9,6 +9,7 @@ namespace Gravity_gen2.Tests;
 //
 // Also covers the 8h assumption baked into the fetch depth: `Needed = 3504` was commented
 // "3.2yr at 8h" and is 1.6yr for a 4h-settling symbol.
+[Collection(ProcessGlobalCollection.Name)]   // mutates process-global state — see ProcessGlobalCollection
 public class FundingSessionSetTests
 {
     static readonly DateTime T0 = new(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);

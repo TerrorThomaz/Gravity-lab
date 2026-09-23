@@ -239,6 +239,7 @@ public class RegimeRouterGA
         bool                           hmmMode,
         int                            geneCount)
     {
+        GaTrialCounter.Shared.Record("regime_router");
 
         var windowTrades = trades
             .Where(t =>
@@ -339,7 +340,10 @@ public class RegimeRouterGA
                 int idx = BaseStrategyIndex(t.Kind);
                 if (idx < 0) continue;
                 double w = weights[idx];
-                if (w < 0.50) w = 1.0;
+                // Matches RegimeRouterSession.SizeGate exactly: size IS the conviction weight,
+                // already floored at StrategyFloorPct by ComputeWeights. The retired `w<0.5 → 1.0`
+                // rule made size peak at the router's LOWEST conviction, so the GA was selected to
+                // drive favorability under 0.5 and neutralise its own sizing layer.
                 result.Add(t with { Frac = t.Frac * w });
                 continue;
             }

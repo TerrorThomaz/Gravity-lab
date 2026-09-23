@@ -490,8 +490,8 @@ public class RegimeRouterSession
     private readonly Dictionary<long, int>   _idx;
     private StrategyFamilyGating.Gate?        _gate;
 
-    private readonly bool[] _wasActive = new bool[RegimeRouterGenotype.HmmStrategyRows];
-    private readonly double[] _previousWeight = new double[RegimeRouterGenotype.HmmStrategyRows];
+
+
     private double[]? _dailyPrior;
     private RegimeBar[]? _legacyBtc;
 
@@ -503,8 +503,6 @@ public class RegimeRouterSession
         _idx  = new Dictionary<long, int>(btcSeries.Length);
         for (int i = 0; i < btcSeries.Length; i++)
             _idx.TryAdd(HourKey(btcSeries[i].Time), i);
-        for (int i = 0; i < _wasActive.Length; i++) _wasActive[i] = true;
-        for (int i = 0; i < _previousWeight.Length; i++) _previousWeight[i] = 1.0;
     }
 
     public RegimeRouterSession WithDailyPrior(double[]? dailyPrior)
@@ -560,36 +558,106 @@ public class RegimeRouterSession
         return VolatilityWeightedRotator.BtcStress(move);
     }
 
-    public bool IsActive(RegimeRouterGA.StrategyKind kind, DateTime tradeTime, double atrRatio = 1.0)
+    // ONE resolution per (kind, bar). IsActive and SizeGate both read this, so they cannot
+    // disagree about whether a trade is on: a trade the router admits is always sized above zero.
+    // They used to be two independent code paths, and with a SIMFAM gate attached they took
+    // different branches — the gate admitted the trade, the legacy thresholds sized it at 0, and
+    // the trade entered the book and took a portfolio slot at zero notional.
+    private readonly record struct Routing(bool Active, double Size);
+
+    private Routing Resolve(RegimeRouterGA.StrategyKind kind, DateTime tradeTime, double atrRatio)
     {
-        if (RegimeRouter.HmmEnabled && _geno.IsHmmGenotype && _btc[Lookup(tradeTime)].HmmProbs != null)
+        int bar = Lookup(tradeTime);
+
+        if (!(RegimeRouter.HmmEnabled && _geno.IsHmmGenotype && _btc[bar].HmmProbs != null))
         {
-            if (_gate != null)
-            {
-                int bar = Lookup(tradeTime);
-                var regime = _btc[bar].Regime;
-                if (_gate.FamilyOf.ContainsKey(kind.ToString()))
-                    return StrategyFamilyGating.IsActive(_gate, kind.ToString(), regime);
-            }
-
-            bool legacyActive = LegacyIsActive(kind, tradeTime, atrRatio);
-            if (!legacyActive) return false;
-
-            double currentWeight = Weight(kind, tradeTime, atrRatio);
-            if (currentWeight < 0.50) return true;
-
-            int baseIdx = GetBaseIndex(kind);
-            if (baseIdx < 0) return false;
-
-            bool wasActive = _wasActive[baseIdx];
-            double threshold = wasActive ? _geno.DeactivateThreshold : _geno.ActivateThreshold;
-            bool isActive = currentWeight >= threshold;
-            _wasActive[baseIdx] = isActive;
-            return isActive;
+            bool legacy = LegacyIsActive(kind, tradeTime, atrRatio);
+            return new Routing(legacy, legacy ? 1.0 : 0.0);
         }
 
-        return LegacyIsActive(kind, tradeTime, atrRatio);
+        // A vol variant is only eligible inside its own ATR band, whichever gate follows.
+        if (OutOfVolBand(kind, atrRatio)) return new Routing(false, 0.0);
+
+        if (_gate != null && _gate.FamilyOf.ContainsKey(kind.ToString()))
+        {
+            var regime = _btc[bar].Regime;
+            if (!StrategyFamilyGating.IsActive(_gate, kind.ToString(), regime)) return new Routing(false, 0.0);
+            double conf = StrategyFamilyGating.FamilyConfidence(_gate, kind.ToString(), regime);
+            return new Routing(true, Math.Max(conf, _geno.StrategyFloorPct));
+        }
+
+        if (!LegacyIsActive(kind, tradeTime, atrRatio)) return new Routing(false, 0.0);
+
+        int baseIdx = GetBaseIndex(kind);
+        if (baseIdx < 0) return new Routing(false, 0.0);
+
+        var (active, w) = BarTable()[baseIdx][bar];
+        return new Routing(active, active ? w : 0.0);
     }
+
+    private static bool OutOfVolBand(RegimeRouterGA.StrategyKind kind, double atrRatio)
+    {
+        bool lowVol = kind is RegimeRouterGA.StrategyKind.FadeShortLowVol
+                           or RegimeRouterGA.StrategyKind.DipLongLowVol
+                           or RegimeRouterGA.StrategyKind.SwingLongLowVol
+                           or RegimeRouterGA.StrategyKind.RipShortLowVol;
+        bool highVol = kind is RegimeRouterGA.StrategyKind.FadeShortHighVol
+                            or RegimeRouterGA.StrategyKind.DipLongHighVol
+                            or RegimeRouterGA.StrategyKind.SwingLongHighVol
+                            or RegimeRouterGA.StrategyKind.RipShortHighVol;
+        return (lowVol && atrRatio >= 0.8) || (highVol && atrRatio <= 1.5);
+    }
+
+    // Hysteresis and the min-hold carry are path-dependent, so they are resolved ONCE over the bar
+    // series in time order rather than on each call. Backtests share one session across every coin
+    // and replay each coin's timeline from the start; mutating the state per call made the same
+    // trade route differently depending on which coin happened to be evaluated first.
+    // Built lazily: the WithGate/WithBtcBars/WithDailyPrior builders all run after construction.
+    private (bool Active, double W)[][]? _barTable;
+
+    private (bool Active, double W)[][] BarTable()
+    {
+        if (_barTable != null) return _barTable;
+
+        int rows = RegimeRouterGenotype.HmmStrategyRows;
+        var table = new (bool, double)[rows][];
+        for (int s = 0; s < rows; s++) table[s] = new (bool, double)[_btc.Length];
+
+        bool noShock = Environment.GetEnvironmentVariable("GRAVITY_NOSHOCK") == "1";
+        var wasActive = new bool[rows];
+        var held      = new double[rows];
+        for (int s = 0; s < rows; s++) { wasActive[s] = true; held[s] = 1.0; }
+
+        for (int bar = 0; bar < _btc.Length; bar++)
+        {
+            var btc = _btc[bar];
+            if (btc.HmmProbs == null)
+            {
+                for (int s = 0; s < rows; s++) table[s][bar] = (wasActive[s], held[s]);
+                continue;
+            }
+
+            double stress  = noShock ? 0.0 : StressAt(btc.Time);
+            var    weights = RegimeRouter.ComputeWeights(btc.HmmProbs, _geno, stress, _dailyPrior);
+            bool   holding = btc.Duration < (int)_geno.MinHoldBars;
+
+            for (int s = 0; s < rows; s++)
+            {
+                double w = holding ? held[s] : weights[s];
+                if (!holding) held[s] = w;
+
+                double threshold = wasActive[s] ? _geno.DeactivateThreshold : _geno.ActivateThreshold;
+                bool active = w >= threshold;
+                wasActive[s] = active;
+                table[s][bar] = (active, w);
+            }
+        }
+
+        return _barTable = table;
+    }
+
+    public bool IsActive(RegimeRouterGA.StrategyKind kind, DateTime tradeTime, double atrRatio = 1.0)
+        => Resolve(kind, tradeTime, atrRatio).Active;
 
     private static int GetBaseIndex(RegimeRouterGA.StrategyKind kind) => kind switch
     {
@@ -655,78 +723,31 @@ public class RegimeRouterSession
         };
     }
 
+    // The router's conviction in [0,1], before the on/off decision. Reported and used by the
+    // coevolution gate; SizeGate is what execution multiplies into a position.
     public double Weight(RegimeRouterGA.StrategyKind kind, DateTime tradeTime, double atrRatio = 1.0)
     {
         int bar = Lookup(tradeTime);
-        var btc = _btc[bar];
 
-        if (RegimeRouter.HmmEnabled && _geno.IsHmmGenotype && btc.HmmProbs != null)
-        {
-            if (_gate != null)
-            {
-                var regime = btc.Regime;
-                double conf = StrategyFamilyGating.FamilyConfidence(_gate, kind.ToString(), regime);
+        if (!(RegimeRouter.HmmEnabled && _geno.IsHmmGenotype && _btc[bar].HmmProbs != null))
+            return LegacyIsActive(kind, tradeTime, atrRatio) ? 1.0 : 0.0;
 
-                bool gateLowVol = kind is RegimeRouterGA.StrategyKind.FadeShortLowVol
-                                       or RegimeRouterGA.StrategyKind.DipLongLowVol
-                                       or RegimeRouterGA.StrategyKind.SwingLongLowVol
-                                       or RegimeRouterGA.StrategyKind.RipShortLowVol;
-                bool gateHighVol = kind is RegimeRouterGA.StrategyKind.FadeShortHighVol
-                                        or RegimeRouterGA.StrategyKind.DipLongHighVol
-                                        or RegimeRouterGA.StrategyKind.SwingLongHighVol
-                                        or RegimeRouterGA.StrategyKind.RipShortHighVol;
+        if (OutOfVolBand(kind, atrRatio)) return 0.0;
 
-                if (gateLowVol && atrRatio >= 0.8) return 0.0;
-                if (gateHighVol && atrRatio <= 1.5) return 0.0;
+        if (_gate != null && _gate.FamilyOf.ContainsKey(kind.ToString()))
+            return StrategyFamilyGating.FamilyConfidence(_gate, kind.ToString(), _btc[bar].Regime);
 
-                return conf;
-            }
-
-            double stress = Environment.GetEnvironmentVariable("GRAVITY_NOSHOCK") == "1" ? 0.0 : StressAt(tradeTime);
-            var weights = RegimeRouter.ComputeWeights(btc.HmmProbs, _geno, stress, _dailyPrior);
-
-            int baseIdx = GetBaseIndex(kind);
-            if (baseIdx < 0) return 0.0;
-
-            double w = weights[baseIdx];
-
-            if (btc.Duration < (int)_geno.MinHoldBars)
-                w = _previousWeight[baseIdx];
-            else
-                _previousWeight[baseIdx] = w;
-
-            bool isLowVolKind = kind is RegimeRouterGA.StrategyKind.FadeShortLowVol
-                                     or RegimeRouterGA.StrategyKind.DipLongLowVol
-                                     or RegimeRouterGA.StrategyKind.SwingLongLowVol
-                                     or RegimeRouterGA.StrategyKind.RipShortLowVol;
-            bool isHighVolKind = kind is RegimeRouterGA.StrategyKind.FadeShortHighVol
-                                      or RegimeRouterGA.StrategyKind.DipLongHighVol
-                                      or RegimeRouterGA.StrategyKind.SwingLongHighVol
-                                      or RegimeRouterGA.StrategyKind.RipShortHighVol;
-
-            if (isLowVolKind && atrRatio >= 0.8) return 0.0;
-            if (isHighVolKind && atrRatio <= 1.5) return 0.0;
-
-            return w;
-        }
-
-        return LegacyIsActive(kind, tradeTime, atrRatio) ? 1.0 : 0.0;
+        int baseIdx = GetBaseIndex(kind);
+        return baseIdx < 0 ? 0.0 : BarTable()[baseIdx][bar].W;
     }
 
+    // Size multiplier in [0,1]: 0 exactly when the router is off, otherwise the conviction weight,
+    // which ComputeWeights has already floored at StrategyFloorPct. Non-decreasing in conviction.
+    // The retired rule mapped w<0.5 to FULL size and w>=0.5 to w, so size peaked at the router's
+    // lowest conviction; RegimeRouterGA.FilterActive trained on the same rule, which paid the GA
+    // to drive favorability under 0.5 and switch its own sizing layer off.
     public double SizeGate(RegimeRouterGA.StrategyKind kind, DateTime tradeTime, double atrRatio = 1.0)
-    {
-        if (RegimeRouter.HmmEnabled && _geno.IsHmmGenotype && _btc[Lookup(tradeTime)].HmmProbs != null)
-        {
-            bool legacyActive = LegacyIsActive(kind, tradeTime, atrRatio);
-            if (!legacyActive) return 0.0;
-
-            double w = Weight(kind, tradeTime, atrRatio);
-            if (w < 0.50) return 1.0;
-            return w;
-        }
-
-        return IsActive(kind, tradeTime, atrRatio) ? 1.0 : 0.0;
-    }
+        => Resolve(kind, tradeTime, atrRatio).Size;
 
     // Soft weight for coevolution gates: confidence-based gradient, step cutoff at 0.65.
     // Ignores router's trained thresholds so the strategy GA always has a gradient.

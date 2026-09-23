@@ -223,9 +223,10 @@ public class RegimeRouterHmmTests
         {
             bool legacyActive = legacy.IsActive(kind, t);
             double w = session.Weight(kind, t);
+            // w here is 0.89 — above both hysteresis thresholds, so the legacy gate alone decides.
+            Assert.True(w >= geno.ActivateThreshold);
             Assert.Equal(legacyActive, session.IsActive(kind, t));
-            double expectedSize = !legacyActive ? 0.0 : w < 0.5 ? 1.0 : w;
-            Assert.Equal(expectedSize, session.SizeGate(kind, t), 12);
+            Assert.Equal(legacyActive ? w : 0.0, session.SizeGate(kind, t), 12);
         }
         // Guard against a vacuous pass: at least one strategy must be legacy-active here.
         Assert.Contains(true, Enum.GetValues<RegimeRouterGA.StrategyKind>().Select(k => legacy.IsActive(k, t)));

@@ -474,15 +474,30 @@ public static class Simulator
     }
 
     // Time-normalised Sharpe. candleCount = 5m-equivalent candles (288 = 1 day). Returns 0 if <5 trades or PF<1.3.
+    // NOTE ON SCALE: this is a PER-TRADE ratio scaled by sqrt(candleCount / 288). It is not an
+    // annualised Sharpe and must not be read as one — the scale factor depends on how many candles
+    // the book covers, so the same edge prints a different number on a longer history. For a
+    // portfolio Sharpe, take daily returns off the equity curve (EdgeTest does).
     public static double SharpeRatio(List<double> returns, int candleCount)
+    {
+        if (returns.Count < 5) return 0;
+        double mean = returns.Average();
+        double std  = Math.Sqrt(returns.Select(r => Math.Pow(r - mean, 2)).Average());
+        return std < 1e-10 ? 0 : mean / std * Math.Sqrt(candleCount / 288.0);
+    }
+
+    // SharpeRatio's retired behaviour: 0 below a profit-factor floor of 1.3. Kept explicit for any
+    // caller that genuinely wants "profitable enough to quote" — as a floor inside SharpeRatio it
+    // meant a losing book and a flat one both printed 0.00 and the report could not tell them apart.
+    public const double SharpeScreenMinPf = 1.3;
+
+    public static double ScreenedSharpeRatio(List<double> returns, int candleCount)
     {
         if (returns.Count < 5) return 0;
         double grossProfit = returns.Where(r => r > 0).Sum();
         double grossLoss   = Math.Abs(returns.Where(r => r <= 0).Sum());
-        if (grossLoss < 1e-10 || grossProfit / grossLoss < 1.3) return 0;
-        double mean = returns.Average();
-        double std  = Math.Sqrt(returns.Select(r => Math.Pow(r - mean, 2)).Average());
-        return std < 1e-10 ? 0 : mean / std * Math.Sqrt(candleCount / 288.0);
+        if (grossLoss < 1e-10 || grossProfit / grossLoss < SharpeScreenMinPf) return 0;
+        return SharpeRatio(returns, candleCount);
     }
 
     public static double SortinoRatio(List<double> returns, int candleCount)
@@ -492,7 +507,9 @@ public static class Simulator
         var    negReturns = returns.Where(r => r < 0).ToList();
         if (negReturns.Count == 0) return mean > 0 ? 99.99 : 0;
         double downStd = Math.Sqrt(negReturns.Select(r => r * r).Average());
-        return downStd < 1e-10 ? 0 : Math.Min(mean / downStd * Math.Sqrt(candleCount / 288.0), 999.99);
+        // Clamped both ways: a losing book must be able to report a negative Sortino.
+        return downStd < 1e-10 ? 0
+             : Math.Clamp(mean / downStd * Math.Sqrt(candleCount / 288.0), -999.99, 999.99);
     }
 
     public static double ProfitFactor(List<double> returns)

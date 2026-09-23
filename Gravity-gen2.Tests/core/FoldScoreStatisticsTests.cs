@@ -56,14 +56,46 @@ public class PerTradeStatisticTests
     }
 
     [Fact]
-    public void PerTradeSharpe_KeepsTheProfitFactorAndSampleGuards()
+    public void PerTradeSharpe_KeepsTheSampleGuard()
     {
-        // < 5 returns -> 0
         Assert.Equal(0.0, FoldScoreHelper.PerTradeSharpe([1.0, -1.0, 2.0, -0.5]), 12);
-        // profit factor below 1.3 -> 0 (carried over from Simulator.SharpeRatio)
-        var thin = new List<double> { 1.0, -1.0, 1.0, -1.0, 1.1, -1.0, 1.0, -1.0 };
-        Assert.True(Simulator.ProfitFactor(thin) < 1.3);
-        Assert.Equal(0.0, FoldScoreHelper.PerTradeSharpe(thin), 12);
+    }
+
+    // n/2 wins of `pf` against n/2 losses of 1.0 — profit factor is exactly `pf` by construction.
+    private static List<double> AtProfitFactor(double pf, int n = 40)
+        => Enumerable.Range(0, n).Select(i => i % 2 == 0 ? pf : -1.0).ToList();
+
+    // THE CLIFF. PerTradeSharpe returned 0 below profit factor 1.3, and SharpeW (0.5) is the
+    // largest live statistical weight in Canonical — PfW and CalmarW both default to 0. So the
+    // heaviest stat term contributed exactly nothing across PF 1.0–1.3, then jumped, and that band
+    // is where every strategy in the walk-forward book actually sits.
+    [Fact]
+    public void PerTradeSharpe_RampsAcrossTheMarginalBandInsteadOfCliffing()
+    {
+        Assert.True(FoldScoreHelper.PerTradeSharpe(AtProfitFactor(1.29)) > 0,
+                    "a profitable fold at PF 1.29 must not score exactly 0");
+
+        // Continuity across the old cliff edge: straddle it closely enough that the underlying
+        // Sharpe barely moves, so any jump left is the cliff and not the natural slope.
+        double justUnder = FoldScoreHelper.PerTradeSharpe(AtProfitFactor(1.299));
+        double justOver  = FoldScoreHelper.PerTradeSharpe(AtProfitFactor(1.301));
+        Assert.True(Math.Abs(justOver - justUnder) / justOver < 0.01,
+                    $"discontinuity at PF 1.3: {justUnder:F6} → {justOver:F6}");
+    }
+
+    [Fact]
+    public void PerTradeSharpe_IsMonotoneInProfitFactorAcrossTheBand()
+    {
+        var pfs = new[] { 1.0, 1.05, 1.1, 1.2, 1.3, 1.5, 2.0 };
+        double prev = -1;
+        foreach (double pf in pfs)
+        {
+            double v = FoldScoreHelper.PerTradeSharpe(AtProfitFactor(pf));
+            Assert.True(v >= prev - 1e-12, $"PF {pf}: {v:F6} fell below the lower-PF score {prev:F6}");
+            prev = v;
+        }
+        // Breakeven earns no Sharpe bonus — the ramp bottoms out at PF 1.0, it does not go negative.
+        Assert.Equal(0.0, FoldScoreHelper.PerTradeSharpe(AtProfitFactor(1.0)), 12);
     }
 
     [Fact]

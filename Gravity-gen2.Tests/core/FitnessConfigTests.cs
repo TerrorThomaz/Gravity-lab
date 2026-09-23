@@ -232,6 +232,17 @@ public class FitnessConfigTests
         // stop testing what its name says.
         //
         // 12 trades alternating +2.4 / -2.0: pf 1.20, rr 1.20, raw quality 0.533.
+        // PINS MOVED +0.1955% when PerTradeSharpe's PF<1.3 cliff became a ramp. Re-derived by
+        // hand, per this file's convention — the Sharpe term is a pure multiplicative factor here,
+        // so one ratio covers all three pins:
+        //   pf 1.20      -> rampW  = (1.20-1.00)/0.30              = 0.666...
+        //   mean 0.2, |dev| 2.2 (values +2.4/-2.0) -> raw sharpe   = 0.0909...
+        //   sharpe       = rampW * 0.0909...                       = 0.060606...
+        //   shrinkW      = n/(n+QualityShrinkK) = 12/62            = 0.193548...
+        //   ratio        = 1 + SharpeW*(sharpe/3)*shrinkW
+        //                = 1 + 0.5*0.0202020*0.193548             = 1.0019550342130987
+        // Was exactly 1.0 before, because PerTradeSharpe returned 0 for any pf < 1.3.
+        // The three DIRECTIONAL assertions below are unchanged — they test QualityW, not the ramp.
         var r = Enumerable.Range(0, 12).Select(i => i % 2 == 0 ? 2.4 : -2.0).ToList();
         double neutral = Score(r);
         double eager   = Score(r, new FitnessConfig() with { QualityW = 2.0 });
@@ -239,9 +250,9 @@ public class FitnessConfigTests
 
         Assert.True(eager < neutral, $"QualityW 2.0 ({eager}) should score below 1.0 ({neutral})");
         Assert.True(off > neutral,   $"QualityW 0.0 ({off}) should score above 1.0 ({neutral})");
-        Assert.Equal(1.3038402379592424, neutral, precision: 9);
-        Assert.Equal(1.1743809235519418, eager,   precision: 9);
-        Assert.Equal(1.4332995523665433, off,     precision: 9);
+        Assert.Equal(1.3063892902328678, neutral, precision: 9);
+        Assert.Equal(1.1766768784366965, eager,   precision: 9);
+        Assert.Equal(1.4361017020290392, off,     precision: 9);
     }
 
     [Fact]

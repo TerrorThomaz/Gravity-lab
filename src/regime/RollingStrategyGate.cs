@@ -36,7 +36,11 @@ public sealed class RollingStrategyGate
     // the symbol for the per-coin screen. One class, because the statistic and the lookahead
     // guard are identical either way — only the key changes.
     private readonly record struct Key(string Strategy, string Bucket);
-    public readonly record struct Verdict(bool Active, double Confidence, double Pf, int Trades);
+    // Vol: standard deviation of the trade returns in the trailing window, in percent. Carried
+    // alongside the gate decision because risk-parity sizing needs the SAME trailing, already-closed
+    // window the gate uses — sizing a strategy down because we observed its drawdown on the window
+    // being sized is the in-sample error the static family gate made.
+    public readonly record struct Verdict(bool Active, double Confidence, double Pf, int Trades, double Vol);
 
     // Trades bucketed by (strategy, regime at ENTRY), each bucket sorted by EXIT time.
     private readonly Dictionary<Key, List<(DateTime Time, double Return)>> _buckets = new();
@@ -118,24 +122,28 @@ public sealed class RollingStrategyGate
         if (!_buckets.TryGetValue(key, out var list)) return default;
 
         DateTime windowStart = periodStart.AddDays(-_windowDays);
-        double wins = 0, losses = 0;
+        double wins = 0, losses = 0, sum = 0, sumSq = 0;
         int n = 0;
         foreach (var (time, ret) in list)
         {
             if (time >= periodStart) break;          // sorted, so nothing later qualifies either
             if (time < windowStart) continue;
             if (ret > 0) wins += ret; else losses += Math.Abs(ret);
+            sum += ret; sumSq += ret * ret;
             n++;
         }
 
-        if (n < _minTrades) return new Verdict(false, 0.0, 0.0, n);
+        if (n < _minTrades) return new Verdict(false, 0.0, 0.0, n, 0.0);
+
+        double mean = sum / n;
+        double vol  = Math.Sqrt(Math.Max(0.0, sumSq / n - mean * mean));
 
         double pf = losses > 1e-12 ? wins / losses : (wins > 0 ? 99.0 : 0.0);
-        if (pf < _minPf) return new Verdict(false, 0.0, pf, n);
+        if (pf < _minPf) return new Verdict(false, 0.0, pf, n, vol);
 
         // Bounded in [0,1) and 0 at breakeven. Deliberately NOT pf/3: that is unbounded below the
         // clamp and sizes hardest on the thin buckets whose PF is least trustworthy.
         double conf = Math.Clamp((pf - 1.0) / (pf + 1.0), 0.0, 1.0);
-        return new Verdict(true, conf, pf, n);
+        return new Verdict(true, conf, pf, n, vol);
     }
 }

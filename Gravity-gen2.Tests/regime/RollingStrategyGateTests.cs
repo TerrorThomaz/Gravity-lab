@@ -142,3 +142,41 @@ public class RollingStrategyGateTests
         Assert.Equal(0.0, gate.Confidence("NeverTraded", MarketRegime.Bull, T0.AddHours(3000)), 12);
     }
 }
+
+// Risk-parity sizing needs each strategy's trailing volatility, measured on the SAME
+// already-closed window the gate decides on. Sizing a strategy down because we observed its
+// drawdown on the window being sized is the in-sample error the static family gate made.
+public class RollingStrategyGateVolTests
+{
+    private static readonly DateTime T0 = new(2022, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    private static RollingStrategyGate Gate(double amplitude) =>
+        RollingStrategyGate.BySymbol(
+            Enumerable.Range(0, 900).Select(i =>
+                ("S", "B", T0.AddHours(i * 4 + 1), i % 2 == 0 ? amplitude : -amplitude * 0.9)));
+
+    [Fact]
+    public void Verdict_ReportsTrailingVolatility_RisingWithReturnDispersion()
+    {
+        var at = T0.AddHours(3000);
+        double calm   = Gate(1.0).At("S", "B", at).Vol;
+        double wild   = Gate(5.0).At("S", "B", at).Vol;
+
+        Assert.True(calm > 0, "a series with dispersion must report non-zero volatility");
+        Assert.True(wild > calm * 3, $"5x the amplitude reported vol {wild:F3} against {calm:F3}");
+    }
+
+    // Vol must be available even when the gate says OFF — a strategy routed off still has a
+    // measured risk profile, and the sizing layer reads it independently of the on/off decision.
+    [Fact]
+    public void Verdict_ReportsVolatility_EvenWhenGatedOff()
+    {
+        var losing = RollingStrategyGate.BySymbol(
+            Enumerable.Range(0, 900).Select(i =>
+                ("S", "B", T0.AddHours(i * 4 + 1), i % 2 == 0 ? 1.0 : -3.0)));
+        var v = losing.At("S", "B", T0.AddHours(3000));
+
+        Assert.False(v.Active);
+        Assert.True(v.Vol > 0, "volatility must be measured regardless of the gate decision");
+    }
+}

@@ -211,6 +211,46 @@ public static class EdgeTest
             if (r.Active && c.Active) both.Add(t with { Size = Math.Min(r.Confidence, c.Confidence) });
         }
 
+        // ── RISK PARITY ──────────────────────────────────────────────────────────────────────
+        // Flat 5%-of-equity sizing is an implicit bet that equal notional means equal risk. It is
+        // not: Grid and GridShort run at ~0.5% max drawdown and FadeShort at ~9.3%, a ~20x spread,
+        // all sized identically. Inverse-volatility weights equalise RISK contribution instead.
+        //
+        // Fitted on the same trailing, already-closed window as the gate (bucket "all", so it is
+        // per strategy across regimes). Sizing a strategy down because we observed its drawdown on
+        // the window being sized would be the in-sample error the static family gate made.
+        //
+        // MEAN-NORMALISED across the strategies with a measurable vol at that moment, so this
+        // REDISTRIBUTES risk and cannot inflate gross exposure — it can never manufacture return
+        // through leverage, which matters because Simulator.GuardExposureCap refuses gross above
+        // 1.0x for want of a liquidation model.
+        var volGate = RollingStrategyGate.BySymbol(
+            raw.Select(t => (t.Strategy, "all", t.Exit, t.Ret)));
+        var strategyNames = raw.Select(t => t.Strategy).Distinct().OrderBy(x => x).ToList();
+        var scaleCache = new Dictionary<(long Period, string Strategy), double>();
+
+        double RiskScale(string strategy, DateTime at)
+        {
+            long period = (long)Math.Floor((at - new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalDays / 30);
+            if (scaleCache.TryGetValue((period, strategy), out double cached)) return cached;
+
+            var inv = new Dictionary<string, double>();
+            foreach (var n in strategyNames)
+            {
+                double v = volGate.At(n, "all", at).Vol;
+                if (v > 1e-9) inv[n] = 1.0 / v;
+            }
+            double mean = inv.Count > 0 ? inv.Values.Average() : 0.0;
+            foreach (var n in strategyNames)
+                scaleCache[(period, n)] = mean > 1e-12 && inv.TryGetValue(n, out double iv) ? iv / mean : 1.0;
+
+            return scaleCache.TryGetValue((period, strategy), out double r) ? r : 1.0;
+        }
+
+        var riskParity = rolling
+            .Select(t => t with { Size = t.Size * RiskScale(t.Strategy, t.Entry) })
+            .ToList();
+
         var staticGate = LoadStaticGate();
         List<Booked>? stat = null;
         if (staticGate != null)
@@ -242,6 +282,7 @@ public static class EdgeTest
         // conf-weighted book is the SIZING half of the gate; any gap between this and the random
         // control is the SELECTION half.
         books.Add(("  ↳ same trades, flat size", rolling.Select(t => t with { Size = avgSize }).ToList()));
+        books.Add(("ROLLING gate + risk parity", riskParity));
         books.Add(($"RANDOM gate (null, {admitRate * 100:F0}%)", randomGate));
 
         Console.WriteLine("  PER-TRADE (what the other commands report) vs PORTFOLIO (what you actually earn)");
@@ -439,6 +480,25 @@ public static class EdgeTest
             }
         }
 
+        Console.WriteLine("\n  ── RISK PARITY multipliers (inverse trailing vol, mean-normalised) ──");
+        Console.WriteLine($"     {"strategy",-14} {"median x",9} {"min",7} {"max",7}   (1.00 = unchanged)");
+        // riskParity is built from rolling by Select, so index i corresponds to index i — no lookup.
+        var multipliers = new Dictionary<string, List<double>>();
+        for (int i = 0; i < rolling.Count; i++)
+        {
+            double b = rolling[i].Size;
+            if (b <= 1e-12) continue;
+            if (!multipliers.TryGetValue(rolling[i].Strategy, out var l))
+                multipliers[rolling[i].Strategy] = l = new List<double>();
+            l.Add(riskParity[i].Size / b);
+        }
+        foreach (var n in strategyNames)
+        {
+            if (!multipliers.TryGetValue(n, out var xs) || xs.Count == 0) continue;
+            xs.Sort();
+            Console.WriteLine($"     {n,-14} {xs[xs.Count / 2],9:F2} {xs[0],7:F2} {xs[^1],7:F2}");
+        }
+
         // ── ACCEPTANCE GATE ──────────────────────────────────────────────────────────────────
         // The defect this session actually cost the most was keeping strategies that had no
         // out-of-sample edge: DipLong, RipShort and SwingLong each DRAGGED the book, and removing
@@ -515,7 +575,8 @@ public static class EdgeTest
         }
 
         // ── 6. One combined verdict ──────────────────────────────────────────────────────────
-        PrintScorecard(rolling, btcRegime);
+        PrintScorecard(rolling, btcRegime, "ROLLING regime gate, flat sizing");
+        PrintScorecard(riskParity, btcRegime, "ROLLING regime gate + RISK PARITY");
 
         Console.WriteLine("\n  WHAT THIS DOES AND DOES NOT SHOW");
         Console.WriteLine("    · Coins are never-trained, so strategy parameters are out-of-sample on price.");
@@ -535,7 +596,7 @@ public static class EdgeTest
     // whose deflated Sharpe is 0.00, because averaging lets three soft passes bury one fatal
     // failure. Here a deflation failure CAPS the grade, because "indistinguishable from the best
     // of a random search" is not something a good Calmar can compensate for.
-    private static void PrintScorecard(List<Booked> book, RegimeBar[] btcRegime)
+    private static void PrintScorecard(List<Booked> book, RegimeBar[] btcRegime, string label)
     {
         var st = Evaluate(book);
         if (st == null) { Console.WriteLine("\n  ── RIGOR SCORECARD: too few trades to score ──"); return; }
@@ -550,7 +611,7 @@ public static class EdgeTest
         double wrc = configs.Count >= 1 ? StatisticalTests.WhitesRealityCheck(configs) : double.NaN;
         int effN = StatisticalTests.EffectiveSampleSize(book.Select(t => t.Entry).ToList());
 
-        Console.WriteLine("\n  ══ RIGOR SCORECARD — ROLLING regime gate, all strategies combined ══");
+        Console.WriteLine($"\n  ══ RIGOR SCORECARD — {label} ══");
         Console.WriteLine("     criterion                        value        bar    verdict");
         int pass = 0, total = 0;
         void Row(string name, double val, double bar, bool higherIsBetter, string fmt = "F2")

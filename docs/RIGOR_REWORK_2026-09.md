@@ -132,8 +132,13 @@ window was 48% Bull / 43% Bear, so none of this is window bad luck.
 - **`DSR 1.000` is a saturation value**, not a quality score — the normal CDF has pinned. `Calmar
   13.48` divides by a 0.97% drawdown and is arithmetically fragile. Read grade A as "clears the
   bar", nothing more.
-- **The roster was chosen by looking at OOS results on this window.** That is selection on the test
-  set. A second window or coin universe is the only thing that converts this from a measurement
+- **The roster was chosen by looking at OOS results on this sample.** That is selection on the test
+  set. The sample is `Config.OosCoins` — 100 never-trained symbols, of which **63 produce trades**
+  (the rest fail the 300-h1-bar / 400-m15-bar length guards) — over **one** ~2,142-day span. The
+  problem is breadth, not size: 63 cross-sectionally correlated coins over a single calendar period
+  is much closer to one experiment than to 63, which is exactly what the effective-sample figure
+  says — 14,842 trades collapse to **294** independent observations. Re-running on a *different
+  time period* or a *disjoint set of coins* is the only thing that converts this from a measurement
   into a claim.
 - **The trial ledger is a LOWER BOUND.** Pre-instrumentation history is unrecoverable, so the
   deflated Sharpe it produces is optimistic.
@@ -155,8 +160,9 @@ Ordered by what unblocks the most.
    isolation. Shared mutable statics across parallel collections —
    `SwingLongSimulator.BtcRegimeProbe` is a known one. This blocks trusting CI, which matters now
    that `edgetest` returns a meaningful exit code.
-2. **Validate on a second window or coin universe.** This is the single largest caveat on every
-   number above. Until it is done, the roster is a hypothesis fitted to one sample.
+2. **Validate on a disjoint sample** — either a different calendar period, or a set of coins that
+   does not overlap the current 63. This is the single largest caveat on every number above: until
+   it is done, the roster is a hypothesis fitted to the one sample it was selected on.
 3. **Move production onto the rolling gate.** Replace the static `strategy_family_gate.json` path
    in `StrategyPipeline` so `combinedbacktest`/`oosbacktest`/`fulltest` stop reporting in-sample
    numbers. Expect every published figure to fall; that is the correction landing, not a

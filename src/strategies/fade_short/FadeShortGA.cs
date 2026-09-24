@@ -381,6 +381,17 @@ public class FadeShortGA
 
         if (_verbose) Console.WriteLine($"Best (selected on train): train={trainFit:F3}  val={best.Fitness:F3}");
         if (_verbose) Console.WriteLine($"  {best}");
+
+        // Post-GA finalist screen — report-only. See docs/RIGOR_REWORK_2026-09.md §6.
+        if (_verbose)
+        {
+            Console.WriteLine("\n=== Finalist screen (report-only) ===");
+            Console.WriteLine("  " + FinalistScreen.Format(FinalistScreen.PerturbedFitness(
+                best,
+                g => FitnessFromCache(g, trainCaches, useFolds: true, _cfg, _tradeGate),
+                (g, rng, mag) => g.Mutate(rng, mag).ClampToBounds(),
+                samplesPerMagnitude: 6)));
+        }
         return best;
     }
 

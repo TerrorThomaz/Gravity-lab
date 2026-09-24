@@ -131,6 +131,36 @@ public class GridGeneticAlgorithm
         return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D, attemptedFolds);
     }
 
+    // POST-GA FINALIST SCREEN. The GA returns an argmax over tens of thousands of candidates; on
+    // this sample the MinBTL budget is about five INDEPENDENT configurations, so the argmax is by
+    // default the best of many draws from noise. These two screens cannot show a genotype is good —
+    // they can show it is fragile, which is cheaper and more actionable. Report-only: nothing here
+    // changes selection, because using them to select would make them one more fitted surface.
+    private void PrintFinalistScreen(GridGenotype best, IReadOnlyList<CoinData> coins)
+    {
+        Console.WriteLine("\n=== Finalist screen (report-only — see docs/RIGOR_REWORK_2026-09.md §6) ===");
+
+        // Neighbourhood shape. Mutate is the natural perturbation operator: it already respects
+        // gene bounds, so a neighbour is always a genotype the GA could itself have produced.
+        var rob = FinalistScreen.PerturbedFitness(
+            best,
+            g => Fitness(g, coins, useValidation: false),
+            (g, rng, mag) => g.Mutate(rng, mag).ClampToBounds(),
+            samplesPerMagnitude: 8);
+        Console.WriteLine("  " + FinalistScreen.Format(rob));
+
+        // Concentration of the edge. Pooled train returns under the winning genotype, scored with
+        // the same fold score the GA selected on, so the two numbers are comparable.
+        var rets = new List<double>(); var mae = new List<double>();
+        foreach (var c in coins)
+            if (c.TrainCandles.Length >= 100) Collect(best, c.TrainCandles.Span, c.Funding, null, rets, mae);
+        if (rets.Count >= MinTradesPerFold)
+            Console.WriteLine("  " + FinalistScreen.Format(
+                FinalistScreen.OutlierSensitivity(rets, r => FoldScore(r, _cfg))));
+        else
+            Console.WriteLine($"  outlier sensitivity: only {rets.Count} train trades — not scored");
+    }
+
     private static int MedianLength(IEnumerable<int> lengths)
     {
         var sorted = lengths.OrderBy(n => n).ToArray();
@@ -261,6 +291,8 @@ public class GridGeneticAlgorithm
 
         if (_verbose) Console.WriteLine($"Best (selected on train): train={trainFit:F3}  val={best.Fitness:F3}");
         if (_verbose) Console.WriteLine($"  {best}");
+
+        if (_verbose) PrintFinalistScreen(best, coins);
         return best;
     }
 

@@ -294,6 +294,45 @@ Both terms are monotone non-decreasing in every fold score, so the sum is monoto
 - `papertrade`: **reporting only.** `guardSession.GetMult(...)` feeds a `Guard: STRESS ×N` console line, the rotator's safety score (which itself only prints and lands in JSON), and a `guard.mult` JSON status field. No signal is sized, filtered or suppressed by it.
 - `dynamicguardtrain`: applied, since that is the training objective.
 
+### Execution modelling — the defect that voided everything, and the gate that catches it
+
+**Same-bar fill lookahead, found and fixed 2026-09-24.** `GridSimulator` armed at bar `i` using
+`ema[i]`/`atr[i]` — both of which include `close[i]` — and then filled every rung that `lows[i]` had
+reached **during that same bar**. Live, those limit orders are placed at the close of bar `i` and
+can first fill at `i+1`. The simulator was buying dips it already knew had happened.
+
+**Measured cost: Grid Sharpe 4.15 → 0.67, CAGR 4.7% → 0.3%. GridShort 4.69 → 0.35.** The entire
+apparent edge of the two best strategies was this. Every backtest this repo ever produced inherited
+it. The same defect class is quantified in the literature — Zhang, Li, Peng & Chen (2026),
+*A One-Switch Benchmark for Decision-Time Leakage* (arXiv:2605.23959) — at leakage gains of +5.41
+to +21.65 Sharpe against clean references of 0.44–0.68.
+
+Fixed by `fillOnArmBar: false` (now the default) in both grid simulators, with the arming
+precondition relaxed so orders genuinely rest and an `everFilled` flag so an unfilled grid is not
+abandoned on the next bar. `GetGridSessionReturnsSameBarFill` reproduces the old behaviour and
+exists **only** so the null control can prove it still detects the defect.
+
+**AUDIT (2026-09-24): the defect is confined to the grid family.** All four dual-timeframe
+simulators take `h1Ref = ih1 - 1` (the last fully-closed hourly bar), `h4Ref = h1Ref/4 - 1`, and
+enter at `m15[nextBar].Open` — the decision strictly precedes the fill. `AccumulationGridSimulator`
+**still has the defect and is not fixed**: its `active = true` lives inside the fill block, so
+deferring the fill disables the strategy rather than correcting it. It is not live and not loaded
+by `edgetest`; it must pass the null gate before being revived.
+
+**THE GATE: `RandomWalkNullTests`.** On a driftless random walk there is no edge, so every simulator
+must lose approximately its costs. Anything that *profits* found it in the engine. This is the test
+that would have caught the bug on day one, and it is the only test in the suite that checks the
+**instrument** rather than the **result**. It includes a self-check that reintroduces the defect and
+asserts the gate still fires — a null control that has never rejected anything is not a control.
+**Add every new simulator to it.**
+
+**Why none of the statistics caught it.** Deflated Sharpe, PBO, White's Reality Check, walk-forward
+gating, block bootstrap and trial counting all ran clean, because every book compared shared the
+same biased fill model. Those methods answer *"given that this measurement is trustworthy, was the
+selection procedure honest?"* — nothing in that stack establishes the antecedent. **Null controls
+establish the antecedent; statistics operate on it. Run them in that order.** `edgetest` now prints
+a FILL-MODEL SENSITIVITY row: a single cell is not a result, the table is.
+
 ### Reported statistics — two traps
 
 **`Simulator.SharpeRatio` is NOT an annualised Sharpe.** It is a per-trade `mean/std` scaled by

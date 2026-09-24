@@ -85,8 +85,24 @@ public static class EdgeTest
         return p.C[lo];
     }
 
+    // HardStop and BailOut pushed far beyond any reachable ATR excursion. Not infinity: the
+    // simulator computes price levels from these, and an infinite level would produce NaN rather
+    // than a disabled check.
+    private static GridGenotype CloneWithStopsRemoved(GridGenotype g) => new()
+    {
+        AdxThreshold = g.AdxThreshold, BbPeriod = g.BbPeriod, BbWidthMaxPct = g.BbWidthMaxPct,
+        EmaPeriod = g.EmaPeriod, GridStepAtrMult = g.GridStepAtrMult, GridLevels = g.GridLevels,
+        TakeProfitAtrMult = g.TakeProfitAtrMult,
+        HardStopAtrMult = 1000.0, BailOutAtrMult = 1000.0,
+        MaxHoldCandles = g.MaxHoldCandles,          // left in: the only thing forcing a close
+        RungSellFrac = g.RungSellFrac, ReanchorAlpha = g.ReanchorAlpha,
+        SlopeThreshold = g.SlopeThreshold, SlopeLookback = g.SlopeLookback,
+        Fitness = g.Fitness,
+    };
+
     private static bool IsLong(string strategy) =>
         strategy is "Grid" or "DipLong" or "SwingLong" or "FadeLong" or "AccumGrid";
+    // FadeLong is evaluated again now that it has a genotype; it was excluded while disabled.
 
     // Unrealised return in percent at `now`, from the real price series. Null when the entry price
     // is unknown, which falls the position back to linear accrual rather than marking it at zero.
@@ -123,6 +139,8 @@ public static class EdgeTest
             "swing_long", d => d.ToGenotype(), d => (d.AtrLow, d.AtrHigh));
         var rsVariants = StrategyPipeline.LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
             "rip_short", d => d.ToGenotype(), d => (d.AtrLow, d.AtrHigh));
+        var flVariants = StrategyPipeline.LoadVariants<FadeLongGenotypeDto, FadeLongGenotype>(
+            "fade_long", d => d.ToGenotype(), d => (d.AtrLow, d.AtrHigh));
 
         if (fsVariants.Length == 0 || gridVariants.Length == 0)
         {
@@ -139,6 +157,66 @@ public static class EdgeTest
         var btcRegime = RegimeClassifier.ClassifySeriesWithDuration(btc.h1);
         Console.WriteLine($"  BTC regime series: {btcRegime.Length} h1 bars " +
                           $"({btcRegime[0].Time:yyyy-MM-dd} → {btcRegime[^1].Time:yyyy-MM-dd})\n");
+
+        // Setup locations from the retired long strategies. Loaded from their *.RETRAINED_REJECTED_*
+        // files on purpose: those genotypes were retrained from scratch under the corrected fitness
+        // and still failed as DIRECTIONAL strategies, which is exactly why they are disabled. Using
+        // them here asks a different question — is a place they liked a good place to harvest a
+        // range, even though betting on the direction was not?
+        var signalAnchors = new List<(string Label, Dictionary<string, Dictionary<int, double>> ByCoin)>();
+        foreach (var (label, file) in new[]
+                 {
+                     ("DipLong",   "genotypes/dip_long_genotype.json.RETRAINED_REJECTED_2026-09-23"),
+                     ("SwingLong", "genotypes/swing_long_genotype.json.RETRAINED_REJECTED_2026-09-23"),
+                 })
+        {
+            if (!File.Exists(file)) { Console.WriteLine($"  [harvest] {label}: no genotype at {file} — skipped"); continue; }
+            var byCoin = new Dictionary<string, Dictionary<int, double>>();
+            foreach (var f in fetched)
+            {
+                if (f.sym is "BTCUSDT" or "ETHUSDT" || f.h1 == null || f.h1.Length < 300 || f.m15.Length < 400) continue;
+                var setups = label == "DipLong"
+                    ? JsonSerializer.Deserialize<DipLongGenotypeDto>(File.ReadAllText(file))!.ToGenotype() is var dlg
+                        ? DipLongSimulator.GetDipLongReturns(dlg, f.h1, f.m15).Select(t => (t.EntryTime, t.EntryPrice)).ToList()
+                        : new List<(DateTime, double)>()
+                    : JsonSerializer.Deserialize<SwingLongGenotypeDto>(File.ReadAllText(file))!.ToGenotype() is var slg
+                        ? SwingLongSimulator.GetSwingLongReturns(slg, f.h1, f.m15).Select(t => (t.EntryTime, t.EntryPrice)).ToList()
+                        : new List<(DateTime, double)>();
+
+                // Map each setup's entry time onto the h1 bar index the grid loop walks.
+                var idx = new Dictionary<long, int>(f.h1.Length);
+                for (int i = 0; i < f.h1.Length; i++) idx.TryAdd(f.h1[i].Time.Ticks / TimeSpan.TicksPerHour, i);
+                var byBar = new Dictionary<int, double>();
+                foreach (var (t, px) in setups)
+                    if (px > 0 && idx.TryGetValue(t.Ticks / TimeSpan.TicksPerHour, out int bar)) byBar[bar] = px;
+                if (byBar.Count > 0) byCoin[f.sym] = byBar;
+            }
+            Console.WriteLine($"  [harvest] {label}: setups on {byCoin.Count} coins, {byCoin.Values.Sum(d => d.Count)} anchors");
+            signalAnchors.Add((label, byCoin));
+
+            // NULL CONTROL for the harvest claim. Same coins, same NUMBER of anchors per coin, but
+            // placed at random bars. If a setup's location carried information, harvesting at its
+            // anchors must beat harvesting at arbitrary ones. If the two match, the grid mechanics
+            // were doing all the work and the signal only controlled HOW OFTEN the grid armed.
+            var rng = new Random(20260923);
+            var randomByCoin = new Dictionary<string, Dictionary<int, double>>();
+            foreach (var (sym, byBar) in byCoin)
+            {
+                var entry = fetched.First(x => x.sym == sym);
+                var shuffled = new Dictionary<int, double>();
+                int n = byBar.Count, len = entry.h1.Length;
+                while (shuffled.Count < n)
+                {
+                    int bar = rng.Next(250, len);              // past indicator warmup
+                    // PREVIOUS bar's close: strictly known before bar `bar` opens. Anchoring on
+                    // h1[bar].Close instead lets the grid fill at a price from earlier inside the
+                    // same bar, chosen with knowledge of where that bar closed — same-bar lookahead.
+                    shuffled[bar] = entry.h1[bar - 1].Close;
+                }
+                randomByCoin[sym] = shuffled;
+            }
+            signalAnchors.Add(($"{label}Rnd", randomByCoin));
+        }
 
         // ── 1. Raw book: every strategy on every OOS coin, NO gating of any kind ──────────────
         var raw = new List<Booked>();
@@ -158,8 +236,11 @@ public static class EdgeTest
                 Add("FadeShort", FadeShortSimulator.GetFadeShortReturns(fs, f.h1, f.m15)
                     .Select(t => (t.Time, t.Return, t.EntryTime, t.EntryPrice)));
             if (StrategyPipeline.SelectVariant(gridVariants, f.m15) is { } gr)
+            {
                 Add("Grid", GridSimulator.GetGridSessionReturns(gr, f.h1)
                     .Select(t => (t.Time, t.Return, t.EntryTime, t.EntryPrice)));
+
+            }
             if (StrategyPipeline.SelectVariant(gsVariants, f.m15) is { } gs)
                 Add("GridShort", GridShortSimulator.GetGridShortSessionReturns(gs, f.h1)
                     .Select(t => (t.Time, t.Return, t.EntryTime, t.EntryPrice)));
@@ -171,6 +252,9 @@ public static class EdgeTest
                     .Select(t => (t.Time, t.Return, t.EntryTime, t.EntryPrice)));
             if (StrategyPipeline.SelectVariant(rsVariants, f.m15) is { } rs)
                 Add("RipShort", RipShortSimulator.GetRipShortReturns(rs, f.h1, f.m15)
+                    .Select(t => (t.Time, t.Return, t.EntryTime, t.EntryPrice)));
+            if (StrategyPipeline.SelectVariant(flVariants, f.m15) is { } fl)
+                Add("FadeLong", FadeLongSimulator.GetFadeLongReturns(fl, f.h1, f.m15)
                     .Select(t => (t.Time, t.Return, t.EntryTime, t.EntryPrice)));
         }
 
@@ -480,6 +564,19 @@ public static class EdgeTest
             }
         }
 
+        Console.WriteLine("\n  ── LOSS DISTRIBUTION per strategy (raw book) ──");
+        Console.WriteLine($"     {"strategy",-14} {"trades",7} {"loss%",7} {"meanLoss",9} {"p99 loss",9} {"worst",8} {"medHold",8}");
+        foreach (var g in raw.GroupBy(t => t.Strategy).OrderBy(g => g.Key))
+        {
+            var rets = g.Select(t => t.Ret).ToList();
+            var losses = rets.Where(x => x <= 0).OrderBy(x => x).ToList();
+            var holds = g.Select(t => (t.Exit - t.Entry).TotalHours).OrderBy(x => x).ToList();
+            if (losses.Count == 0) continue;
+            Console.WriteLine($"     {g.Key,-14} {rets.Count,7} {losses.Count * 100.0 / rets.Count,6:F0}% " +
+                              $"{losses.Average(),8:F2}% {losses[(int)(losses.Count * 0.01)],8:F2}% " +
+                              $"{losses[0],7:F2}% {holds[holds.Count / 2],7:F0}h");
+        }
+
         Console.WriteLine("\n  ── RISK PARITY multipliers (inverse trailing vol, mean-normalised) ──");
         Console.WriteLine($"     {"strategy",-14} {"median x",9} {"min",7} {"max",7}   (1.00 = unchanged)");
         // riskParity is built from rolling by Select, so index i corresponds to index i — no lookup.
@@ -497,6 +594,35 @@ public static class EdgeTest
             if (!multipliers.TryGetValue(n, out var xs) || xs.Count == 0) continue;
             xs.Sort();
             Console.WriteLine($"     {n,-14} {xs[xs.Count / 2],9:F2} {xs[0],7:F2} {xs[^1],7:F2}");
+        }
+
+        // ── FILL-MODEL SENSITIVITY ───────────────────────────────────────────────────────────
+        // A result that exists only under an optimistic fill convention is a result about the
+        // simulator. Zhang et al. (2026, arXiv:2605.23959) measure exactly this by toggling one
+        // execution convention at a time and report leakage gains of +5.41 to +21.65 Sharpe against
+        // clean references of 0.44-0.68. Our own measurement of the same switch: 4.15 -> 0.67.
+        //
+        // Publish the whole row, never one cell. If the honest column is not positive, nothing else
+        // on this page means anything.
+        Console.WriteLine("\n  ── FILL-MODEL SENSITIVITY (Grid) ──");
+        Console.WriteLine($"     {"fill model",-24} {"PF",6} {"mean%",9} {"perTradeSharpe",15} {"trades",8}");
+        foreach (var (modelName, sameBar) in new[] { ("next-bar (honest)", false), ("same-bar (RETIRED)", true) })
+        {
+            var rets = new List<double>();
+            foreach (var f2 in fetched)
+            {
+                if (f2.sym is "BTCUSDT" or "ETHUSDT" || f2.h1 is not { Length: > 300 }) continue;
+                if (StrategyPipeline.SelectVariant(gridVariants, f2.m15) is not { } gg) continue;
+                rets.AddRange(sameBar
+                    ? GridSimulator.GetGridSessionReturnsSameBarFill(gg, f2.h1).Select(t => t.Return)
+                    : GridSimulator.GetGridSessionReturns(gg, f2.h1).Select(t => t.Return));
+            }
+            if (rets.Count == 0) continue;
+            double gp = rets.Where(x => x > 0).Sum(), gl = -rets.Where(x => x <= 0).Sum();
+            double mean = rets.Average();
+            double sd = Math.Sqrt(rets.Select(x => (x - mean) * (x - mean)).Average());
+            Console.WriteLine($"     {modelName,-24} {(gl > 1e-9 ? gp / gl : 99.0),6:F2} {mean,8:F3}% " +
+                              $"{(sd > 1e-12 ? mean / sd : 0),15:F4} {rets.Count,8}");
         }
 
         // ── ACCEPTANCE GATE ──────────────────────────────────────────────────────────────────

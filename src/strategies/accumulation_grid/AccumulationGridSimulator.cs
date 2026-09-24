@@ -159,6 +159,20 @@ public static class AccumulationGridSimulator
                 if (regimeSustainCount < g.RegimeSustainBars)
                     continue;
 
+                // ⚠ SAME-BAR FILL LOOKAHEAD — NOT FIXED. emaNow and atrNow include close[i], so
+                // filling a rung that lows[i] reached DURING bar i buys a dip the model already
+                // knows happened. Live, the order is placed at that close and fills from bar i+1.
+                // On the long grid this defect was worth Sharpe 4.15 -> 0.67 (GridSimulator, fixed
+                // 2026-09-24 via fillOnArmBar) — assume the same magnitude here until measured.
+                //
+                // Not fixed because activation is TIED to the first fill: `active = true` lives
+                // inside this block, so simply deferring the fill disables the strategy rather than
+                // correcting it. The fix is to activate with filledLevels = 0 and let the active
+                // branch fill level 0 from the next bar, which is a restructure of this state
+                // machine. AccumulationGrid is not in the live path and not covered by edgetest, so
+                // it was left honest-but-broken rather than half-fixed.
+                //
+                // ANY NUMBER THIS STRATEGY HAS EVER PRODUCED IS INFLATED. Fix before reviving it.
                 double level1Price = emaNow - g.GridStepAtrMult * atrNow;
                 if (lows[i] <= level1Price)
                 {

@@ -894,6 +894,59 @@ def run_grid(mk: Market, p: GridParams, shuffle_rng: np.random.Generator | None 
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
+# Book 5 — FadeShort's market call on a basket (reads the C# trade log)
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class FsMarketParams:
+    trades: str = os.path.join(REPO, "reports", "edgetest_raw_trades.csv")
+    universe_top: int = 40
+    step: float = 0.05              # re-trade when the target gross moves by this much
+    delay: int = 1
+
+
+def fs_activity(mk: Market, p: FsMarketParams) -> np.ndarray:
+    """Per hour: the fraction of live coins where FadeShort holds an open short at the END of
+    that bar (entered at or before it, not yet exited). Known at the bar close."""
+    d = pd.read_csv(p.trades, parse_dates=["entry_time", "exit_time"])
+    d = d[d.strategy == "FadeShort"]
+    end = (mk.close.index + pd.Timedelta(hours=1)).values
+    ent, ext = np.sort(d.entry_time.values), np.sort(d.exit_time.values)
+    k = np.searchsorted(ent, end, "right") - np.searchsorted(ext, end, "right")
+    alive = (~np.isnan(mk.close.values)).sum(axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.clip(np.where(alive > 0, k / alive, 0.0), 0.0, 1.0)
+
+
+def run_fsmarket(mk: Market, p: FsMarketParams, act: np.ndarray, basket: str = "liquid"):
+    """Short `act[t]` of gross in one basket instead of per-coin shorts. basket="liquid":
+    equal-weight top-N liquid, refreshed daily; basket="BTCUSDT": that coin alone."""
+    n, m = mk.close.shape
+    targets: dict[int, np.ndarray] = {}
+    start = 24 * 30
+    members, last = None, None
+    for t in range(start, n - p.delay):
+        new_day = (t - start) % 24 == 0
+        if new_day:
+            if basket == "liquid":
+                members = liquid_universe(mk, t - 24 * 30, t + 1, p.universe_top)
+            else:
+                members = [list(mk.close.columns).index(basket)]
+        if not members:
+            continue
+        a = float(act[t])
+        if last is not None and not new_day and abs(a - last) < p.step:
+            continue
+        w = np.zeros(m)
+        w[members] = -a / len(members)
+        targets[t + p.delay] = w
+        last = a
+    r = run_book(mk.close.values, mk.funding.values, mk.funding_mask.values,
+                 mk.funding_known.values, targets, mk.close.index)
+    return _trim(r, start)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════
 # Reports
 # ═══════════════════════════════════════════════════════════════════════════════════
 
@@ -1023,6 +1076,43 @@ def report_baseline(mk: Market, n_controls: int, seed: int) -> None:
     report_grid(mk, n_controls, seed, sweep=False)
     report_pairs(mk, n_controls, seed, PairsParams(hl_min=24.0), sweep=False)
     report_carry(mk, n_controls, seed, sweep=False)
+
+
+def report_fsmarket(mk: Market, n_controls: int, seed: int) -> list[dict]:
+    p = FsMarketParams()
+    if not os.path.exists(p.trades):
+        raise SystemExit(f"{p.trades} missing — run `dotnet run -- edgetest` first")
+    act = fs_activity(mk, p)
+    live = act[24 * 30:]
+    print("\n── FSMARKET (FadeShort's open-short fraction, expressed as one short on a basket) ──")
+    print(f"  signal: mean {live.mean():.2f} of coins short, p10/p50/p90 "
+          f"{np.quantile(live, .1):.2f}/{np.median(live):.2f}/{np.quantile(live, .9):.2f}")
+    rows = []
+    r = run_fsmarket(mk, p, act)
+    rows.append(summarize("fsmarket: liquid basket", r))
+    # Control: the same signal shifted in time. Same exposure distribution and persistence,
+    # timing destroyed. What the real book earns above this is the timing.
+    rng = np.random.default_rng(seed)
+    ctrl = [summarize(f"shift#{k}", run_fsmarket(mk, p, np.roll(act, int(rng.integers(24 * 60, len(act) - 24 * 60)))))
+            for k in range(n_controls)]
+    if ctrl:
+        c = pd.DataFrame(ctrl)
+        row = {"book": f"fsmarket: TIME-SHIFTED signal control (median of {n_controls})"}
+        row.update(c.drop(columns="book").median().to_dict())
+        rows.append(row)
+        print(f"  real signal out-earns {(c['ann_net_%'] < rows[0]['ann_net_%']).mean():.0%} of time-shifted controls")
+    const = np.full_like(act, live.mean())
+    rows.append(summarize(f"fsmarket: CONSTANT short {live.mean():.2f} (drift only)", run_fsmarket(mk, p, const)))
+    if "BTCUSDT" in mk.close.columns:
+        rows.append(summarize("  sensitivity: BTC instead of basket", run_fsmarket(mk, p, act, "BTCUSDT")))
+    print_table(rows, "FSMARKET")
+    print("  net P&L by year (% of capital):", by_year(r).to_dict())
+    cut = r.index[int(len(r.index) * 0.9)]
+    tail = BookResult(r.price[r.index >= cut], r.funding[r.index >= cut], r.cost[r.index >= cut],
+                      0.0, r.index[r.index >= cut])
+    s_t = summarize("last 10%", tail)
+    print(f"  last 10% of the window (from {cut:%Y-%m-%d}): {s_t['ann_net_%']:+.2f}%/yr, t_weekly {s_t['t_weekly']:+.2f}")
+    return rows
 
 
 def report_xcarry(mk: Market, n_controls: int, seed: int) -> list[dict]:
@@ -1223,8 +1313,8 @@ def selftest() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("book", choices=["pairs", "carry", "xcarry", "grid", "all", "baseline",
-                                     "selftest"])
+    ap.add_argument("book", choices=["pairs", "carry", "xcarry", "grid", "fsmarket", "all",
+                                     "baseline", "selftest"])
     ap.add_argument("--universe", choices=["backtest", "oos", "both"], default="backtest",
                     help="Config.BacktestCoins, Config.OosCoins, or both")
     ap.add_argument("--cache", default=os.path.join(REPO, "candle_cache"))
@@ -1265,6 +1355,8 @@ def main() -> int:
         report_baseline(mk, a.controls, a.seed)
     if a.book in ("grid", "all"):
         report_grid(mk, a.controls, a.seed)
+    if a.book == "fsmarket":
+        report_fsmarket(mk, a.controls, a.seed)
     if a.book in ("pairs", "all"):
         report_pairs(mk, a.controls, a.seed)
     if a.book in ("carry", "all"):

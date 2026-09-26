@@ -18,6 +18,8 @@ history, so the states are not fully out-of-sample even though the filter is cau
 
   python3 scripts/regime_edge.py grid  [trades.csv]   # Grid sessions at ARMING
   python3 scripts/regime_edge.py carry [--universe oos|backtest]
+  ... [--regimes reports/regime_pc1_py.csv] [--since YYYY-MM-DD]   # another regime series,
+                                                                   # and a common start date
 """
 from __future__ import annotations
 
@@ -33,10 +35,14 @@ import market_neutral_research as mnr  # noqa: E402
 REPO = mnr.REPO
 LOOKBACK = pd.Timedelta(days=180)
 MIN_OBS = 30
+REGIMES = os.path.join(REPO, "reports", "btc_regime_series.csv")
+SINCE: pd.Timestamp | None = None
 
 
 def load_regimes() -> pd.DataFrame:
-    r = pd.read_csv(os.path.join(REPO, "reports", "btc_regime_series.csv"), parse_dates=["time"])
+    r = pd.read_csv(REGIMES, parse_dates=["time"])
+    if "legacy" not in r.columns:           # an HMM-only series (scripts/factor_hmm.py)
+        r["legacy"] = "n/a"
     p = [c for c in r.columns if c.startswith("p") and c[1:].isdigit()]
     r["state"] = "s" + r[p].values.argmax(axis=1).astype(str) + ":" + r.hmm_label
     r["known"] = r.time + pd.Timedelta(hours=1)
@@ -89,7 +95,7 @@ def gate_report(obs: pd.DataFrame, unit: str, seed: int = 7) -> None:
     print(f"\n  walk-forward gate (trailing 180d, closed {unit} only, min {MIN_OBS}):")
     line("ALWAYS ON", obs)
     rng = np.random.default_rng(seed)
-    for col in ("legacy", "state"):
+    for col in [c for c in ("legacy", "state") if obs[c].nunique() > 1]:
         a = walk_forward_gate(obs, col)
         line(f"gated on {col} ({a.mean():.0%} admitted)", obs[a])
         ctrl = [obs[rng.random(len(obs)) < a.mean()] for _ in range(50)]
@@ -106,8 +112,10 @@ def grid(path: str) -> None:
         obs = pd.concat([pd.DataFrame({"t": g.entry_time, "closed": g.exit_time, "ret": g.return_pct,
                                        "day": g.entry_time.dt.floor("D")}),
                          tag(g.entry_time, reg)], axis=1).dropna()
-        print(f"\n══ {strat} (n={len(obs)}), regime at ARMING — {path}")
-        by_group(obs, "legacy")
+        obs = obs[obs.t >= SINCE] if SINCE is not None else obs
+        print(f"\n══ {strat} (n={len(obs)}), regime at ARMING — {os.path.basename(REGIMES)}")
+        if obs.legacy.nunique() > 1:
+            by_group(obs, "legacy")
         by_group(obs, "state")
         gate_report(obs, "trades")
 
@@ -126,8 +134,11 @@ def carry(universe: str) -> None:
     obs = pd.concat([pd.DataFrame({"t": daily.index, "closed": daily.index + pd.Timedelta(days=1),
                                    "ret": daily.values, "day": daily.index}),
                      tag(pd.Series(daily.index), reg)], axis=1).dropna()
-    print(f"\n══ CARRY ({universe}, maker, band 0.5%), daily P&L % by regime known at day start")
-    by_group(obs, "legacy")
+    obs = obs[obs.t >= SINCE] if SINCE is not None else obs
+    print(f"\n══ CARRY ({universe}, maker, band 0.5%), daily P&L % by regime known at day start — "
+          f"{os.path.basename(REGIMES)}")
+    if obs.legacy.nunique() > 1:
+        by_group(obs, "legacy")
     by_group(obs, "state")
     gate_report(obs, "days")
     print("  (gating a carry book costs ~2 x gross x maker fee per switch; not charged above)")
@@ -135,6 +146,14 @@ def carry(universe: str) -> None:
 
 if __name__ == "__main__":
     a = sys.argv[1:]
+    for flag in ("--regimes", "--since"):
+        if flag in a:
+            i = a.index(flag)
+            if flag == "--regimes":
+                REGIMES = a[i + 1]
+            else:
+                SINCE = pd.Timestamp(a[i + 1])
+            del a[i:i + 2]
     if not a or a[0] not in ("grid", "carry"):
         sys.exit(__doc__)
     if a[0] == "grid":

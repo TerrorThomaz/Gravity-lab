@@ -55,6 +55,12 @@ class DipParams:
     cooldown_h: int = 24
     slots: int = 10
     universe_top: int = 40
+    # After the LAST add, wait for structure instead of the fixed stop: exit on a close below the
+    # most recent confirmed swing low that formed after that add (a fractal, pivot_k BARS each
+    # side, usable pivot_k bars later). Until one exists, a catastrophic stop one ladder step
+    # below the old stop. Otherwise hold for the break-even limit.
+    bos_after_max: bool = False
+    pivot_k: int = 2
 
 
 # High-frequency variant, fixed before its first run (2026-09-26): a 3% dip from the 24h high,
@@ -139,6 +145,10 @@ def dip_coin(o, h, l, c, fund, fmask, known: bool, floor_tick, trig, p: DipParam
                     px = levels[fills - 1]
                     q += tranche / px; cash -= tranche; cs[-1] -= tranche * maker
                     fills += 1
+                t_max = t if fills == p.adds + 1 else None
+                struct_low = None
+                if p.bos_after_max and t_max is not None:
+                    stop_px = P0 * (1 - p.step * (p.adds + 2))
                 if p.stop and l[t] <= stop_px:           # crashed through the stop in the fill bar
                     cash += q * stop_px
                     cs[-1] -= q * stop_px * taker
@@ -167,8 +177,15 @@ def dip_coin(o, h, l, c, fund, fmask, known: bool, floor_tick, trig, p: DipParam
                 px = levels[fills - 1]
                 q += tranche / px; cash -= tranche; cost -= tranche * maker
                 fills += 1; dca_or_stop = True
+                if fills == p.adds + 1:
+                    t_max = t
+                    if p.bos_after_max:     # the fixed stop gives way to structure + catastrophe stop
+                        stop_px = P0 * (1 - p.step * (p.adds + 2))
             reason = None
-            if p.stop and l[t] <= stop_px:
+            if p.bos_after_max and struct_low is not None and ct < struct_low:
+                reason, dca_or_stop = "bos", True          # structure broke down: the crash case
+                cash += q * ct; cost -= q * ct * taker
+            elif p.stop and l[t] <= stop_px:
                 px = min(stop_px, o[t]) if o[t] == o[t] else stop_px
                 reason, dca_or_stop = "stop", True
                 cash += q * px; cost -= q * px * taker
@@ -180,6 +197,10 @@ def dip_coin(o, h, l, c, fund, fmask, known: bool, floor_tick, trig, p: DipParam
                 cash += q * ct; cost -= q * ct * taker
             eq = cash + (0.0 if reason else q * ct)
             pr.append(eq - prev_eq); fd.append(f); cs.append(cost); prev_eq, last_c = eq, ct
+            if not reason and p.bos_after_max and t_max is not None:
+                i, k = t - p.pivot_k, p.pivot_k       # confirmed at this close; formed after the last add
+                if i - k >= t_max and l[i] <= np.min(l[i - k:t + 1]):
+                    struct_low = l[i]
             if reason:
                 trades.append(dict(t0=t0, t1=t, price=np.array(pr), fund=np.array(fd), cost=np.array(cs),
                                    fills=fills, reason=reason))
@@ -351,6 +372,25 @@ def selftest() -> int:
                       c <= (1 - p.drop) * hi, p, mnr.MAKER_COST_PER_SIDE, mnr.TAKER_COST_PER_SIDE)
         net = sum(x["price"].sum() + x["cost"].sum() for x in tr) * 100
         check(len(tr) > 0 and net > 0, f"mean-reverting series: net {net:+.1f}%-of-slot over {len(tr)} trades")
+    print("selftest [bos]: after the last add, structure decides, not the old fixed stop")
+    pb = replace(HF, bos_after_max=True, cooldown_h=0, max_hold_h=1000, order_ttl_h=5)
+    # entry 100 (trigger bar), adds fill at 99/98/97; old fixed stop 96, catastrophe stop 95;
+    # a swing low at 95.6 forms after the last add (below the OLD stop), then a close at 95.5
+    px = [100, 99.9, 98.9, 97.9, 96.9, 96.3, 95.6, 96.2, 96.4, 96.0, 95.5]
+    a = np.array(px, dtype=float)
+    trig = np.zeros(len(a), dtype=bool); trig[0] = True
+    z = np.zeros(len(a))
+    tr = dip_coin(a, a, a, a, z, z.astype(bool), True, z.astype(bool), trig, pb, 0.0, 0.0)
+    check(len(tr) == 1 and tr[0]["reason"] == "bos" and tr[0]["t1"] == len(a) - 1 and tr[0]["fills"] == 4,
+          f"holds through the old -4% stop, exits on the close below the confirmed swing low "
+          f"({tr[0]['reason'] if tr else 'no trade'} at bar {tr[0]['t1'] if tr else '-'})")
+    a2 = np.array(px[:9] + [97.5, 98.2, 98.9], dtype=float)
+    trig2 = np.zeros(len(a2), dtype=bool); trig2[0] = True
+    z2 = np.zeros(len(a2))
+    tr2 = dip_coin(a2, a2, a2, a2, z2, z2.astype(bool), True, z2.astype(bool), trig2, pb, 0.0, 0.0)
+    check(len(tr2) == 1 and tr2[0]["reason"] == "be", f"recovery without a breakdown exits at break-even "
+          f"({tr2[0]['reason'] if tr2 else 'no trade'})")
+
     print(f"\nselftest: {'OK' if fails == 0 else f'{fails} FAILED'}")
     return 1 if fails else 0
 
@@ -361,7 +401,7 @@ def main() -> int:
     ap.add_argument("--universe", choices=["backtest", "oos"], default="oos")
     ap.add_argument("--exec", dest="execution", choices=["taker", "maker"], default="maker")
     ap.add_argument("--controls", type=int, default=10)
-    ap.add_argument("--variant", choices=["std", "hf"], default="std",
+    ap.add_argument("--variant", choices=["std", "hf", "hf-bos"], default="std",
                     help="std: 15%% dip / 5%% steps on 1h bars; hf: 3%% dip / 1%% steps on 15m bars")
     ap.add_argument("--seed", type=int, default=12345)
     a = ap.parse_args()
@@ -372,7 +412,7 @@ def main() -> int:
     syms = mnr.config_symbols(key)
     syms = syms if "BTCUSDT" in syms else ["BTCUSDT"] + syms
     cache = os.path.join(mnr.REPO, "candle_cache")
-    p, bph = (HF, 4) if a.variant == "hf" else (DipParams(), 1)
+    p, bph = {"std": (DipParams(), 1), "hf": (HF, 4), "hf-bos": (replace(HF, bos_after_max=True), 4)}[a.variant]
     mk = build_market_15m(syms, cache) if bph == 4 else mnr.build_market(syms, cache)
     print(f"Universe {a.universe}: {mk.close.shape[1]} coins, {mk.close.index[0]:%Y-%m-%d} → "
           f"{mk.close.index[-1]:%Y-%m-%d}; exec {a.execution}")

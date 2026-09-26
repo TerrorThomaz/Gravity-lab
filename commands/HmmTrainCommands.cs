@@ -5,6 +5,35 @@ namespace TradingGA;
 
 static class HmmTrainCommands
 {
+    // Per-hour BTC regime series for outside analysis: the legacy classifier's label and the
+    // HMM's causal forward-filter probabilities. Bar `time` is the bar's OPEN; both are computed
+    // from that bar's close, so a consumer may use them from time + 1h onward.
+    public static async Task Dump(BybitRestClient client)
+    {
+        if (!File.Exists(Config.HmmGenoFile)) { Console.WriteLine($"  {Config.HmmGenoFile} missing."); return; }
+        var geno = JsonSerializer.Deserialize<HmmGenotypeDto>(File.ReadAllText(Config.HmmGenoFile))!.ToGenotype();
+        var m15 = await CandleFetcher.FetchFifteenMinCandlesCached(client, "BTCUSDT", batches: 113);
+        var h1 = FadeShortSimulator.AggregateCandles(m15.ToArray(), 4);
+        var hmm = HmmAnnotator.Annotate(h1, geno);
+        var legacy = RegimeClassifier.ClassifySeriesWithDuration(h1);
+        int k = geno.StatesN;
+        var lines = new List<string>
+        {
+            "time,legacy,legacy_conf,hmm_label,hmm_conf," + string.Join(",", Enumerable.Range(0, k).Select(s => $"p{s}"))
+        };
+        for (int i = 0; i < h1.Length; i++)
+        {
+            if (hmm[i].HmmProbs is not { } p) continue;
+            lines.Add(FormattableString.Invariant(
+                $"{h1[i].Time:yyyy-MM-dd HH:mm:ss},{legacy[i].Regime},{legacy[i].Confidence:F4},{hmm[i].Regime},{hmm[i].Confidence:F4},")
+                + string.Join(",", p.Select(v => v.ToString("F5", System.Globalization.CultureInfo.InvariantCulture))));
+        }
+        Directory.CreateDirectory("reports");
+        File.WriteAllLines("reports/btc_regime_series.csv", lines);
+        Console.WriteLine($"  wrote reports/btc_regime_series.csv: {lines.Count - 1} bars, {k} HMM states " +
+                          $"(labels: {string.Join(",", geno.StateLabels)})");
+    }
+
     public static async Task Run(BybitRestClient client, string[]? args = null)
     {
         int? forcedStates = null;

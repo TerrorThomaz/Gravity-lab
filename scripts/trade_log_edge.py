@@ -19,12 +19,21 @@ that is stale against the committed genotypes.
 
   python3 scripts/trade_log_edge.py reports/oos_trades.csv [more.csv ...] [--btc-start YYYY-MM-DD]
   python3 scripts/trade_log_edge.py reports/edgetest_raw_trades.csv --hedge
+  python3 scripts/trade_log_edge.py reports/edgetest_raw_trades.csv --grid-signals
 
 --hedge adds a "·hedged" row per strategy: each trade held against the same covariance
 anchors the carry book uses (the dollar direction plus the top 3 eigenvectors of the trailing
 30d covariance of the coins in the file, taken as of the entry day), with the hedge legs
 charged maker cost on entry and exit. What survives is the trade's return net of the market
 moves it happened to ride.
+
+--grid-signals asks whether any other strategy's activity says something about the grid. For
+each non-grid strategy, activity = its open-trade count at the end of each hour, ranked
+against its own trailing 30 days (point-in-time). Grid sessions are split into terciles of
+that rank at ARMING (the moment a gate would decide). Reported: mean/PF per tercile, and
+high-minus-low with a day-clustered z, overall and per half. The expected sign is written
+down in advance (a long signal should help Grid and hurt GridShort; a short signal the
+reverse). With ~10 tests, only |z| > 2.8 (Bonferroni at 5%) counts.
 """
 import os
 import sys
@@ -97,8 +106,49 @@ def t_day(d):
     return daily.mean() / daily.std() * np.sqrt(len(daily)) if len(daily) > 2 else float("nan")
 
 
-def report(path, btc_start, hedge=False):
+def _day_mean_se(x: pd.DataFrame) -> tuple[float, float, int]:
+    daily = x.groupby(x.entry_time.dt.floor("D")).return_pct.mean()
+    return daily.mean(), daily.std(ddof=1) / np.sqrt(len(daily)) if len(daily) > 1 else np.nan, len(daily)
+
+
+def grid_signals(d: pd.DataFrame) -> None:
+    grids = [g for g in ("Grid", "GridShort") if g in set(d.strategy)]
+    others = [s for s in sorted(set(d.strategy)) if s not in grids]
+    hours = pd.date_range(d.entry_time.min().floor("h"), d.exit_time.max().ceil("h"), freq="h")
+    end = (hours + pd.Timedelta(hours=1)).values
+    print("\n== other strategies' activity at grid ARMING (terciles of rank vs own trailing 30d)")
+    print("   high-minus-low: mean %/trade difference, day-clustered z; Bonferroni bar |z| > 2.8")
+    for sig in others:
+        x = d[d.strategy == sig]
+        ent, ext = np.sort(x.entry_time.values), np.sort(x.exit_time.values)
+        cnt = pd.Series(np.searchsorted(ent, end, "right") - np.searchsorted(ext, end, "right"), index=hours)
+        pct = cnt.rolling(24 * 30, min_periods=24 * 7).rank(pct=True)
+        for g in grids:
+            gg = d[d.strategy == g].copy()
+            gg["pct"] = pct.reindex(gg.entry_time.dt.floor("h")).values
+            gg = gg.dropna(subset=["pct"])
+            lo, mid, hi = gg[gg.pct <= 1 / 3], gg[(gg.pct > 1 / 3) & (gg.pct <= 2 / 3)], gg[gg.pct > 2 / 3]
+            if min(len(lo), len(hi)) < 30:
+                continue
+            (mh, sh, _), (ml, sl, _) = _day_mean_se(hi), _day_mean_se(lo)
+            z = (mh - ml) / np.sqrt(sh ** 2 + sl ** 2)
+            expect = (1 if sig in LONG else -1) * (1 if g in LONG else -1)
+            half = gg.entry_time.quantile(0.5)
+            hz = []
+            for part in (gg[gg.entry_time < half], gg[gg.entry_time >= half]):
+                a, b = part[part.pct > 2 / 3], part[part.pct <= 1 / 3]
+                hz.append(a.return_pct.mean() - b.return_pct.mean() if len(a) and len(b) else np.nan)
+            print(f"  {sig:10s} -> {g:9s}  low/mid/high mean {lo.return_pct.mean():+.3f}/{mid.return_pct.mean():+.3f}/"
+                  f"{hi.return_pct.mean():+.3f}%  PF {pf(lo.return_pct):.2f}/{pf(mid.return_pct):.2f}/{pf(hi.return_pct):.2f}"
+                  f"  | hi-lo {mh - ml:+.3f}% z {z:+.2f} (expected {'+' if expect > 0 else '-'})"
+                  f"  halves {hz[0]:+.3f}/{hz[1]:+.3f}")
+
+
+def report(path, btc_start, hedge=False, signals=False):
     d = pd.read_csv(path, parse_dates=["entry_time", "exit_time"])
+    if signals:
+        grid_signals(d)
+        return
     if hedge:
         h = d.assign(return_pct=hedged_returns(d), strategy=d.strategy + " ·hedged").dropna(subset=["return_pct"])
         print(f"  hedged {len(h)}/{len(d)} trades (rest lack 30d of history or price data)")
@@ -127,11 +177,11 @@ def report(path, btc_start, hedge=False):
 
 if __name__ == "__main__":
     args, start = sys.argv[1:], "2020-10-28"
-    hedge = "--hedge" in args
-    args = [a for a in args if a != "--hedge"]
+    hedge, signals = "--hedge" in args, "--grid-signals" in args
+    args = [a for a in args if a not in ("--hedge", "--grid-signals")]
     if "--btc-start" in args:
         i = args.index("--btc-start")
         start = args[i + 1]
         del args[i:i + 2]
     for p in args or ["reports/oos_trades.csv"]:
-        report(p, start, hedge)
+        report(p, start, hedge, signals)

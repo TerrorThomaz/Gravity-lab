@@ -278,6 +278,7 @@ class BookResult:
     cost: np.ndarray
     turnover: float        # total |traded notional| / capital
     index: pd.DatetimeIndex
+    orders: int = 0        # individual per-symbol orders (run_book books only)
 
     @property
     def net(self) -> np.ndarray:
@@ -286,13 +287,16 @@ class BookResult:
 
 def run_book(close: np.ndarray, funding: np.ndarray, fmask: np.ndarray, fknown: np.ndarray,
              targets: dict[int, np.ndarray], index: pd.DatetimeIndex,
-             cost_per_side: float | None = None) -> BookResult:
+             cost_per_side: float | None = None, band: float = 0.0) -> BookResult:
     """
     Simulate signed notional holdings (fraction of capital) against hourly closes.
 
     targets[t] = desired holdings decided at bar t; it is EXECUTED at bar t (caller applies
     the signal delay when building targets). Execution happens at the bar-t close, after
     that bar's return and funding accrue to the previous holdings.
+
+    band: a symbol whose drifted holding is within `band` of its target is left alone, no
+    order. 0 trades every symbol back to target (bit-identical to having no band).
     """
     cost_per_side = COST_PER_SIDE if cost_per_side is None else cost_per_side
     n, m = close.shape
@@ -306,7 +310,7 @@ def run_book(close: np.ndarray, funding: np.ndarray, fmask: np.ndarray, fknown: 
 
     h = np.zeros(m)
     price = np.zeros(n); fund = np.zeros(n); cost = np.zeros(n)
-    turnover = 0.0
+    turnover, orders = 0.0, 0
     for t in range(n):
         if t > 0 and h.any():
             price[t] = h @ ret[t]
@@ -319,12 +323,13 @@ def run_book(close: np.ndarray, funding: np.ndarray, fmask: np.ndarray, fknown: 
         if tgt is not None:
             # a symbol whose price is missing at t cannot be traded: keep what we have
             tradable = ~np.isnan(close[t])
-            new = np.where(tradable, tgt, h)
+            new = np.where(tradable & (np.abs(tgt - h) >= band), tgt, h)
+            orders += int((np.abs(new - h) > 1e-12).sum())
             traded = np.abs(new - h).sum()
             cost[t] = -traded * cost_per_side
             turnover += traded
             h = new
-    return BookResult(price, fund, cost, turnover, index)
+    return BookResult(price, fund, cost, turnover, index, orders)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -384,6 +389,7 @@ def summarize(name: str, r: BookResult, trades: list | None = None) -> dict:
         "t_weekly": t_wk,
         "maxDD_%": 100 * mdd,
         "turnover_x_yr": r.turnover / years,
+        "orders_yr": r.orders / years if r.orders else float("nan"),
         "days": n_days,
     }
     if trades is not None:
@@ -591,6 +597,7 @@ class CarryParams:
     signal_h: int = 24 * 7          # funding averaged over this trailing window
     cov_h: int = 24 * 30            # trailing window for the covariance the hedge is built on
     factors: int = 3                # leading principal components neutralised; fixed, not tuned
+    band: float = 0.0               # skip a symbol's rebalance when within this of target
     universe_top: int = 40
     quantile: float = 0.2
     delay: int = 1
@@ -660,12 +667,13 @@ def run_carry(mk: Market, p: CarryParams, shuffle_rng: np.random.Generator | Non
         targets[t + p.delay] = w
         legs.append((sig[shorts].mean() - sig[longs].mean()) * 100)
     r = run_book(mk.close.values, mk.funding.values, mk.funding_mask.values,
-                 mk.funding_known.values, targets, mk.close.index)
+                 mk.funding_known.values, targets, mk.close.index, band=p.band)
     return _trim(r, start), legs
 
 
 def _trim(r: BookResult, start: int) -> BookResult:
-    return BookResult(r.price[start:], r.funding[start:], r.cost[start:], r.turnover, r.index[start:])
+    return BookResult(r.price[start:], r.funding[start:], r.cost[start:], r.turnover, r.index[start:],
+                      r.orders)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -953,13 +961,21 @@ def report_carry(mk: Market, n_controls: int, seed: int, sweep: bool = True) -> 
         print(f"  mean funding spread short-leg minus long-leg: {np.mean(legs):.4f}%/settlement")
     rows.append(summarize("carry: factor-neutral", r))
     print(f"  realised daily beta of the book to BTC: {btc_beta(mk, r):+.3f}  (not hedged on; a check)")
-    ctrl = [summarize(f"shuffle#{s}", run_carry(mk, CarryParams(),
-                      shuffle_rng=np.random.default_rng(seed + s))[0]) for s in range(n_controls)]
-    if ctrl:
-        c = pd.DataFrame(ctrl)
-        row = {"book": f"carry: SHUFFLED-funding control (median of {n_controls})"}
-        row.update(c.drop(columns="book").median().to_dict())
-        rows.append(row)
+    # The executable version: skip any symbol within 0.5% of capital of its target, so the
+    # hedge's dust orders (below exchange minimums on a small budget) are never sent. Fixed in
+    # advance; gets its own control because the band also changes what the control trades.
+    for band in (0.0, 0.005):
+        if band:
+            rb_, _ = run_carry(mk, CarryParams(band=band))
+            rows.append(summarize(f"carry: factor-neutral, band {band:.1%}", rb_))
+        ctrl = [summarize(f"shuffle#{s}", run_carry(mk, CarryParams(band=band),
+                          shuffle_rng=np.random.default_rng(seed + s))[0]) for s in range(n_controls)]
+        if ctrl:
+            c = pd.DataFrame(ctrl)
+            row = {"book": f"carry: SHUFFLED-funding control{f', band {band:.1%}' if band else ''} "
+                           f"(median of {n_controls})"}
+            row.update(c.drop(columns="book").median().to_dict())
+            rows.append(row)
     for rb in ((8, 72) if sweep else ()):
         for q in (0.1, 0.3):
             rr, _ = run_carry(mk, CarryParams(rebalance_h=rb, quantile=q))
@@ -1129,6 +1145,10 @@ def selftest() -> int:
     check(abs(r.price.sum() - (0.10 + 0.11)) < 1e-12, f"price P&L drifts with holdings ({r.price.sum():.4f})")
     check(abs(r.funding.sum() + 0.0011) < 1e-12, f"long pays positive funding on drifted notional ({r.funding.sum():.5f})")
     check(abs(r.cost.sum() + 0.001 * (1 + 1.21)) < 1e-12, f"cost on traded notional ({r.cost.sum():.5f})")
+    rb = run_book(close, fund, fund != 0, np.array([True]), {0: np.array([1.0]), 3: np.array([1.0])},
+                  idx, cost_per_side=0.001, band=0.3)
+    check(rb.orders == 1 and abs(rb.cost.sum() + 0.001) < 1e-12,
+          f"band: drift 1.21 vs target 1.0 is inside 0.3, so no re-trim order (orders {rb.orders})")
 
     print("selftest: pairs finds planted cointegration, random control does not")
     mk = synthetic_market(7, funding_edge=False)

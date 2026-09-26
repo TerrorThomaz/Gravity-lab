@@ -18,11 +18,71 @@ inconsistencies between reports (e.g. a strategy flipping sign between two of th
 that is stale against the committed genotypes.
 
   python3 scripts/trade_log_edge.py reports/oos_trades.csv [more.csv ...] [--btc-start YYYY-MM-DD]
+  python3 scripts/trade_log_edge.py reports/edgetest_raw_trades.csv --hedge
+
+--hedge adds a "·hedged" row per strategy: each trade held against the same covariance
+anchors the carry book uses (the dollar direction plus the top 3 eigenvectors of the trailing
+30d covariance of the coins in the file, taken as of the entry day), with the hedge legs
+charged maker cost on entry and exit. What survives is the trade's return net of the market
+moves it happened to ride.
 """
+import os
 import sys
 
 import numpy as np
 import pandas as pd
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import market_neutral_research as mnr  # noqa: E402
+
+LONG = {"Grid", "grid", "DipLong", "diplong", "SwingLong", "swing_long", "FadeLong", "fadelong",
+        "AccumGrid", "accumgrid"}
+
+
+def hedged_returns(d: pd.DataFrame, factors: int = 3) -> np.ndarray:
+    """Trade return (%) plus the P&L of the legs that make it factor-neutral at entry."""
+    mk = mnr.build_market(sorted(d.symbol.unique()), os.path.join(mnr.REPO, "candle_cache"))
+    close, idx = mk.close.values, mk.close.index
+    col = {c: i for i, c in enumerate(mk.close.columns)}
+    ffill = pd.DataFrame(close).ffill().values
+    low, high = mk.low.values, mk.high.values
+    has_px = "entry_price" in d.columns
+    anchors: dict[pd.Timestamp, tuple] = {}
+    out = np.full(len(d), np.nan)
+    for n, (et, xt, sym, ret, strat, epx) in enumerate(zip(
+            d.entry_time, d.exit_time, d.symbol, d.return_pct, d.strategy,
+            d.entry_price if has_px else np.zeros(len(d)))):
+        i = col.get(sym)
+        t, x = idx.searchsorted(et.floor("1h")), idx.searchsorted(xt.floor("1h"))
+        if i is None or t < 24 * 30 or x >= len(idx):
+            continue
+        day = et.floor("1D")
+        if day not in anchors:                  # one covariance per entry day, strictly before it
+            t_d = idx.searchsorted(day) - 1
+            uni = mnr.liquid_universe(mk, t_d - 24 * 30, t_d + 1, 40)
+            anchors[day] = (uni, mnr.log_returns(mk, t_d - 24 * 30, t_d + 1, uni)) if len(uni) > factors + 2 else None
+        if anchors[day] is None:
+            continue
+        uni, lr = anchors[day]
+        if i not in uni:                        # the traded coin always belongs to its own hedge
+            uni = uni + [i]
+            lr = mnr.log_returns(mk, idx.searchsorted(day) - 1 - 24 * 30, idx.searchsorted(day), uni)
+        dirn = 1.0 if strat in LONG else -1.0
+        # A grid session's entry_time is when it was ARMED; its rungs fill later, when price
+        # comes to them. Hedging from arming would short the very dip the grid then buys and book
+        # that drop as hedge profit. Start the hedge at the first bar that reaches the session's
+        # mean fill price instead.
+        if "grid" in strat.lower() and epx > 0:
+            seg = low[t:x + 1, i] <= epx if dirn > 0 else high[t:x + 1, i] >= epx
+            hit = np.flatnonzero(seg)
+            t = t + int(hit[0]) if len(hit) else t
+        w = np.zeros(len(uni)); w[uni.index(i)] = dirn
+        hedge = mnr.factor_neutral(w, lr, factors) - w          # legs added on top of the trade
+        with np.errstate(invalid="ignore", divide="ignore"):
+            move = np.nan_to_num(ffill[x, uni] / ffill[t, uni] - 1.0)
+        cost = 2 * np.abs(hedge).sum() * mnr.MAKER_COST_PER_SIDE
+        out[n] = ret + 100.0 * (hedge @ move - cost)
+    return out
 
 TRAIN, VAL = 0.80, 0.10
 
@@ -37,8 +97,12 @@ def t_day(d):
     return daily.mean() / daily.std() * np.sqrt(len(daily)) if len(daily) > 2 else float("nan")
 
 
-def report(path, btc_start):
-    d = pd.read_csv(path, parse_dates=["entry_time"])
+def report(path, btc_start, hedge=False):
+    d = pd.read_csv(path, parse_dates=["entry_time", "exit_time"])
+    if hedge:
+        h = d.assign(return_pct=hedged_returns(d), strategy=d.strategy + " ·hedged").dropna(subset=["return_pct"])
+        print(f"  hedged {len(h)}/{len(d)} trades (rest lack 30d of history or price data)")
+        d = pd.concat([d, h], ignore_index=True)
     t0, t1 = min(pd.Timestamp(btc_start), d.entry_time.min()), d.entry_time.max()
     cut1, cut2 = t0 + (t1 - t0) * TRAIN, t0 + (t1 - t0) * (TRAIN + VAL)
     d["split"] = np.where(d.entry_time < cut1, "train-time",
@@ -63,9 +127,11 @@ def report(path, btc_start):
 
 if __name__ == "__main__":
     args, start = sys.argv[1:], "2020-10-28"
+    hedge = "--hedge" in args
+    args = [a for a in args if a != "--hedge"]
     if "--btc-start" in args:
         i = args.index("--btc-start")
         start = args[i + 1]
         del args[i:i + 2]
     for p in args or ["reports/oos_trades.csv"]:
-        report(p, start)
+        report(p, start, hedge)

@@ -267,6 +267,14 @@ public static class EdgeTest
         Console.WriteLine($"  Raw book: {raw.Count} trades, {raw.Select(t => t.Symbol).Distinct().Count()} coins, " +
                           $"{raw.Select(t => t.Strategy).Distinct().Count()} strategies\n");
 
+        // Ungated trades from the live genotypes, in trade_log_edge.py's schema, so the
+        // market-hedged view (scripts/trade_log_edge.py --hedge) runs on what edgetest measured.
+        Directory.CreateDirectory("reports");
+        File.WriteAllLines("reports/edgetest_raw_trades.csv",
+            raw.Select(t => FormattableString.Invariant(
+                    $"{t.Entry:yyyy-MM-dd HH:mm:ss},{t.Exit:yyyy-MM-dd HH:mm:ss},{t.Symbol},{t.Strategy},{t.Ret:F4},{t.EntryPrice}"))
+               .Prepend("entry_time,exit_time,symbol,strategy,return_pct,entry_price"));
+
         // ── 2. The books ──────────────────────────────────────────────────────────────────────
         // Regime at entry, once, for every trade (binary search over the classified BTC series).
         var regimes = RegimeBarLookup.TagRegimes(btcRegime, raw.Select(t => t.Entry).ToList());

@@ -504,6 +504,14 @@ Per `docs/RIGOR_REWORK_2026-09.md` (null controls before statistics), `selftest`
 | carry, BTC-beta hedge (retired) | +20.5 (shuffled −2.0), t 1.45, maxDD −41% | +13.3 (shuffled −3.4), t 1.50, maxDD −64% | superseded |
 | **carry, covariance-PC hedge** | **+20.2 (shuffled −0.8), t 1.92, Sharpe 0.89, maxDD −29%** | **+13.3 (shuffled −2.1), t 2.13, Sharpe 0.87, maxDD −23%** | **the one lead**. Same return, a third less vol, drawdown halved, BTC beta −0.005/−0.004. The OOS price leg went −13.2 → −1.2%/yr. factors=1/5 give 17.5/13.8 and 15.8/13.1, so the result doesn't hinge on 3 |
 
+**Rebalance band (`CarryParams.band`, run_book `band=`).** A symbol within 0.5% of capital of its target is not re-traded. Covariance-hedged carry sends ~37 orders/day, mostly hedge dust that falls below exchange minimums on a small budget. With the 0.5% band (fixed in advance, with its own control): orders 13.7k → 4.4k/yr, OOS +21.8%/yr t 2.07, BacktestCoins +13.5% t 2.17, so the result slightly *improves*. Carry's real sample is ~250 weekly blocks per universe and ~1,000 position openings; the order count is not the sample size.
+
+**What the directional strategies actually earn** (`edgetest` now writes `reports/edgetest_raw_trades.csv`; `trade_log_edge.py --hedge` holds each trade against carry's covariance anchors):
+- **FadeShort's edge is market timing, not coin selection.** During its holds the equal-weight market moves 0.74%/trade further in its favour than over random windows of the same length. Hedged, it loses (train-time mean −0.21%, PF 0.85, t_day −5.7). Its most recent 10% of trades is negative even unhedged (−0.49%, t_day −2.2). Per-coin shorts carry the market call plus idiosyncratic noise that is net negative.
+- **Grid's edge is market-wide dip rebound on an hours scale** (median hold 2h from first fill), not coin-specific. The hedge legs lose 0.14%/trade because the market bounces during the hold, and hedged Grid is ~0. So never hedge the grid: the market component *is* the edge. A grid session's `entry_time` is its ARMING time, so any hedge or timing analysis must start at the first bar that reaches the fill price. Hedging from arming shorts the dip the grid then buys and fabricates a t_day of 16.
+- **GridShort**: rejected by `edgetest` before and after the maker fix; nothing survives hedging.
+- **FadeShort activity as a grid gate: not worth wiring.** With arming bucketed by FadeShort's open-trade count against its own trailing 30d, the grid is weakest in the high-activity third (+0.110%/trade vs +0.174%/+0.236%) but still profitable there (PF 1.21). The gap sits mostly in the first half of the data, and GridShort shows no pattern.
+
 Under taker costs (the default) pairs on OOS was −4.6%/yr: its 172x/yr turnover makes execution the whole answer. Survivorship: 37 of the 101 OosCoins are delisted and Bybit returns no history for them, so the OOS universe is survivors only.
 
 ### Discord bot

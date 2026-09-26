@@ -947,6 +947,65 @@ def run_fsmarket(mk: Market, p: FsMarketParams, act: np.ndarray, basket: str = "
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
+# Combined book — carry + Grid sleeves, covariance (ERC) sizing across sleeves
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+SHRINK_LAMBDA = 0.3        # StrategyAllocator.Compute default; CovarianceMatrix.Shrink's target
+
+
+def shrink(cov: np.ndarray, lam: float = SHRINK_LAMBDA) -> np.ndarray:
+    """Mirror of CovarianceMatrix.Shrink: (1-lam)*S + lam*mean(diag S)*I."""
+    return (1 - lam) * cov + lam * np.mean(np.diag(cov)) * np.eye(len(cov))
+
+
+def erc_weights(cov: np.ndarray, iters: int = 500) -> np.ndarray:
+    """Equal-risk-contribution weights (sum 1): w_i * (cov @ w)_i equal for every i. With two
+    sleeves this is inverse-vol whatever the correlation; the covariance starts to matter from
+    three sleeves on."""
+    # Cyclical coordinate descent on the convex form min ½wᵀΣw − Σ log w_i: each step solves
+    # Σ_ii·w_i² + c·w_i − 1 = 0 (c = off-diagonal pull), whose root is always positive, so it
+    # stays well-defined under negative correlation, where a multiplicative update goes NaN.
+    n = len(cov)
+    w = 1.0 / np.sqrt(np.diag(cov))
+    for _ in range(iters):
+        for i in range(n):
+            c = cov[i] @ w - cov[i, i] * w[i]
+            w[i] = (-c + math.sqrt(c * c + 4 * cov[i, i])) / (2 * cov[i, i])
+    return w / w.sum()
+
+
+def grid_sleeve(path: str, strategy: str = "Grid", size: float = 0.05, cap: int = 12) -> pd.Series:
+    """Daily P&L (fraction of the sleeve's capital) of a C# grid trade log, sized as edgetest
+    sizes it: `size` of capital per session, at most `cap` open (PortfolioReplay.DefaultCaps),
+    arrival order, booked at exit (holds are mostly hours)."""
+    d = pd.read_csv(path, parse_dates=["entry_time", "exit_time"])
+    g = d[d.strategy == strategy].sort_values("entry_time")
+    open_ex, keep = [], []
+    for et, xt in zip(g.entry_time, g.exit_time):
+        open_ex = [x for x in open_ex if x > et]
+        keep.append(len(open_ex) < cap)
+        if keep[-1]:
+            open_ex.append(xt)
+    g = g[keep]
+    return (g.return_pct / 100 * size).groupby(g.exit_time.dt.floor("D")).sum()
+
+
+def erc_combine(sleeves: pd.DataFrame, lookback_d: int = 90, min_d: int = 60) -> tuple[pd.Series, pd.DataFrame]:
+    """Monthly rebalance; each month's weights from the shrunk covariance of the trailing
+    `lookback_d` days of sleeve P&L strictly BEFORE the month starts. Too little history ->
+    equal weights. Weights sum to 1: a capital split, never leverage."""
+    months = sleeves.index.to_period("M")
+    w = pd.DataFrame(index=sleeves.index, columns=sleeves.columns, dtype=float)
+    for mth in months.unique():
+        start = mth.start_time
+        past = sleeves[(sleeves.index < start) & (sleeves.index >= start - pd.Timedelta(days=lookback_d))]
+        wt = (erc_weights(shrink(past.cov().values)) if len(past) >= min_d
+              else np.full(sleeves.shape[1], 1 / sleeves.shape[1]))
+        w.loc[months == mth] = wt
+    return (w * sleeves).sum(axis=1), w
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════
 # Reports
 # ═══════════════════════════════════════════════════════════════════════════════════
 
@@ -1113,6 +1172,36 @@ def report_fsmarket(mk: Market, n_controls: int, seed: int) -> list[dict]:
     s_t = summarize("last 10%", tail)
     print(f"  last 10% of the window (from {cut:%Y-%m-%d}): {s_t['ann_net_%']:+.2f}%/yr, t_weekly {s_t['t_weekly']:+.2f}")
     return rows
+
+
+def report_combo(mk: Market, trades: str) -> None:
+    if not os.path.exists(trades):
+        raise SystemExit(f"{trades} missing — run `dotnet run -- edgetest` first")
+    r, _ = run_carry(mk, CarryParams(band=0.005))
+    carry = pd.Series(r.net, index=r.index).resample("1D").sum()
+    carry = carry[carry.index >= carry[carry != 0].index.min()]
+    grid = grid_sleeve(trades)
+    idx = pd.date_range(max(carry.index.min(), grid.index.min()), min(carry.index.max(), grid.index.max()), freq="D")
+    S = pd.DataFrame({"carry": carry.reindex(idx, fill_value=0.0), "grid": grid.reindex(idx, fill_value=0.0)})
+    erc, w = erc_combine(S)
+    print(f"\n── COMBO: carry (factor-neutral, band 0.5%) + Grid ({os.path.basename(trades)}, 5%/session, "
+          f"cap 12); {idx[0]:%Y-%m-%d} → {idx[-1]:%Y-%m-%d}; daily corr {S.carry.corr(S.grid):+.3f} ──")
+    print(f"  ERC sleeve weights (monthly, trailing 90d, shrink {SHRINK_LAMBDA}): carry median "
+          f"{w.carry.median():.0%}, range {w.carry.min():.0%}–{w.carry.max():.0%}")
+
+    def row(name, x):
+        yrs = len(x) / 365
+        eq = (1 + x).cumprod()
+        vol = x.std() * math.sqrt(365)
+        wk = x.resample("7D").sum()
+        return {"book": name, "CAGR_%": 100 * (eq.iloc[-1] ** (1 / yrs) - 1), "vol_%": 100 * vol,
+                "sharpe": x.mean() * 365 / vol if vol > 0 else 0.0, "maxDD_%": 100 * (eq / eq.cummax() - 1).min(),
+                "t_weekly": wk.mean() / wk.std() * math.sqrt(len(wk))}
+    rows = [row("carry alone", S.carry), row("grid alone", S.grid), row("50/50 fixed (reference)", S.mean(axis=1)),
+            row("ERC covariance sizing (MAIN)", erc)]
+    with pd.option_context("display.width", 200, "display.float_format", lambda v: f"{v:,.2f}"):
+        print(pd.DataFrame(rows).set_index("book").to_string())
+    print("  ERC by year (%):", (erc.groupby(erc.index.year).sum() * 100).round(2).to_dict())
 
 
 def report_xcarry(mk: Market, n_controls: int, seed: int) -> list[dict]:
@@ -1305,6 +1394,16 @@ def selftest() -> int:
     g_ou, n_ou = grid_run(o, h, l, c, gp, MAKER_COST_PER_SIDE, TAKER_COST_PER_SIDE)
     check(n_ou > 5.0, f"mean-reverting series: net {n_ou:+.1f}%/yr (gross {g_ou:+.1f}%)")
 
+    print("selftest: ERC sizing")
+    a = rng.normal(size=(200, 4)) @ rng.normal(size=(4, 4))
+    cov = np.cov(a.T)
+    w = erc_weights(cov)
+    rc = w * (cov @ w)
+    check(abs(w.sum() - 1) < 1e-12 and rc.std() / rc.mean() < 1e-6, f"equal risk contributions (dispersion {rc.std() / rc.mean():.1e})")
+    two = np.array([[0.04, 0.01], [0.01, 0.0025]])
+    check(np.allclose(erc_weights(two), np.array([1 / 0.2, 1 / 0.05]) / (1 / 0.2 + 1 / 0.05)),
+          "two sleeves: ERC is inverse-vol whatever the correlation")
+
     print(f"\nselftest: {'OK' if fails == 0 else f'{fails} FAILED'}")
     return 1 if fails else 0
 
@@ -1313,8 +1412,10 @@ def selftest() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("book", choices=["pairs", "carry", "xcarry", "grid", "fsmarket", "all",
+    ap.add_argument("book", choices=["pairs", "carry", "xcarry", "grid", "fsmarket", "combo", "all",
                                      "baseline", "selftest"])
+    ap.add_argument("--trades", default=os.path.join(REPO, "reports", "edgetest_raw_trades.csv"),
+                    help="C# trade log for the combo book's Grid sleeve")
     ap.add_argument("--universe", choices=["backtest", "oos", "both"], default="backtest",
                     help="Config.BacktestCoins, Config.OosCoins, or both")
     ap.add_argument("--cache", default=os.path.join(REPO, "candle_cache"))
@@ -1357,6 +1458,8 @@ def main() -> int:
         report_grid(mk, a.controls, a.seed)
     if a.book == "fsmarket":
         report_fsmarket(mk, a.controls, a.seed)
+    if a.book == "combo":
+        report_combo(mk, a.trades)
     if a.book in ("pairs", "all"):
         report_pairs(mk, a.controls, a.seed)
     if a.book in ("carry", "all"):

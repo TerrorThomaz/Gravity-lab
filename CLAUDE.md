@@ -141,6 +141,24 @@ collection.**
 
 ## Architecture
 
+### How we size — covariance first (2026-09-26)
+
+**The main sizing component is covariance-based equal risk contribution (ERC) across sleeves.** The book is two sleeves that earn in different ways, with daily correlation −0.02: **carry** (market-neutral funding) and **Grid** (market-wide dip rebound). Sizing is decided in three layers, and only the outer one moves capital between sleeves:
+
+1. **Across sleeves (MAIN): covariance ERC.** Each month, take the trailing 90 days of daily sleeve P&L, strictly before the month starts. Shrink its covariance with `CovarianceMatrix.Shrink`'s rule (λ = 0.3, the `StrategyAllocator.Compute` default), solve ERC, and use the weights as a **capital split summing to 1**. Never leverage. With fewer than 60 days of history, split equally. Python: `market_neutral_research.py combo` (`shrink`, `erc_weights`, `erc_combine`). C#: `StrategyAllocator.Compute`, which is the same ERC plus SIMFAM family cap and correlation-load haircut, mean-normalised.
+2. **Inside carry: covariance anchors.** Quantile legs are projected off the dollar direction and the top-3 PCs of the trailing 30-day covariance (`factor_neutral`), scaled to 1x gross. The 0.5% rebalance band skips dust orders.
+3. **Inside Grid: flat per session.** 5% of the sleeve's capital per session, at most 12 open (`PortfolioReplay.DefaultCaps["grid"]`), in arrival order.
+
+**Not part of sizing:** router weights and HMM state (no gate beat always-on, see the market-neutral section) and DynamicGuard (it only reports in papertrade).
+
+**Measured** (`combo --universe oos --exec maker`, Dec 2021–Sep 2026, Grid from the GA genotype): ERC gives CAGR **14.7%**, vol 8.3%, Sharpe **1.71**, maxDD −9.0%, t_weekly **3.67**. Carry's median weight is 32% (range 30–50%). For reference, fixed 50/50 gives 16.7% / 11.5% / 1.40 / −9.0% / 3.04; carry alone 21.2% / 22.7% / 0.96 / −18.4%; Grid alone 10.9% / 4.4% / 2.36 / −3.1%. By year, ERC: 2022 +1.8%, 2023 +11.0%, 2024 +18.1%, 2025 +21.1%, 2026 YTD +19.1%.
+
+**Two things to know before changing it:**
+- **With two sleeves, ERC *is* inverse-vol** whatever the correlation. The covariance only starts to matter from a third sleeve on, which is when family caps and correlation haircuts earn their keep.
+- **Shrinkage pulls the split toward equal.** Shrinking toward `mean(diag)·I` inflates the low-vol sleeve's variance: Grid's ~4.4% vol reads as ~9.7%. The split lands near 32/68 instead of the ~16/84 pure inverse-vol gives. It is kept for parity with the C# authority. A diagonal target (shrink correlations only) would be more faithful when sleeve vols differ several-fold.
+
+**Conflict with the C# default:** `CovarianceSizing` (`GRAVITY_COVSIZE`, **ON by default**) is *not* covariance sizing in practice. Its default metric is a Composite of expectancy × Kelly × PF / downside scored on the same backtest, which its own comment calls an overfitting surface. `StrategyAllocator` is the covariance method, and it is opt-in only (`hmmrisk` in CombinedBacktest, `GRAVITY_HMM_SIZE=1`). `edgetest`'s "risk parity" row is a third variant: trailing inverse-vol per strategy.
+
 ### Strategy suite — 3 LIVE, 4 disabled (as of 2026-09-23)
 
 **Only FadeShort, Grid and GridShort have genotypes on disk.** FadeLong, DipLong, RipShort and

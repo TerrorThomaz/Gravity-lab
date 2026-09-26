@@ -33,6 +33,15 @@ public class SlippageModelTests
         { "accum_grid", 0.18  },
     };
 
+    // Grid-family entries are resting limit rungs (maker side). Every other simulator enters
+    // with a market order. Exits in the normalised signature below are non-TP, so taker.
+    private static bool RestingEntry(string name) => name is "grid" or "grid_short";
+
+    // What a maker entry takes off the all-taker round trip, at a given ATR%.
+    private static double EntrySaving(string name, double atrPct) => RestingEntry(name)
+        ? TradeCosts.FeeRoundTripPct / 2 - TradeCosts.MakerFeePct + TradeCosts.SlippagePerSidePct(atrPct)
+        : 0.0;
+
     private static double SimulatorCost(string name, bool isStop, double atr, double entryPx) => name switch
     {
         "fade_short" => FadeShortSimulator.TradeCost(isStop, atr, entryPx),
@@ -132,7 +141,8 @@ public class SlippageModelTests
             double atr = entryPx * atrPct / 100.0;
             foreach (bool isStop in new[] { false, true })
             {
-                Assert.Equal(TradeCosts.RoundTripPct(atrPct, isStop, stopGapAtrK),
+                Assert.Equal(TradeCosts.RoundTripPct(atrPct, isStop, stopGapAtrK,
+                                                     entryMaker: RestingEntry(simulator)),
                              SimulatorCost(simulator, isStop, atr, entryPx), 12);
             }
         }
@@ -148,7 +158,8 @@ public class SlippageModelTests
         const double entryPx = 250.0;
         double atr  = entryPx * TradeCosts.ReferenceAtrPct / 100.0;
         double cost = SimulatorCost(simulator, isStop: false, atr, entryPx);
-        Assert.Equal(TradeCosts.FeeRoundTripPct + Config.SlippageBps / 100.0, cost, 12);
+        Assert.Equal(TradeCosts.FeeRoundTripPct + Config.SlippageBps / 100.0
+                     - EntrySaving(simulator, TradeCosts.ReferenceAtrPct), cost, 12);
     }
 
     // ── 5. Exchange fees: charged once, and NOT double-counted (verified, not assumed) ───
@@ -161,8 +172,9 @@ public class SlippageModelTests
     public void ExchangeFee_ChargedExactlyOnce(string simulator, double stopGapAtrK)
     {
         _ = stopGapAtrK;
-        Assert.Equal(TradeCosts.FeeRoundTripPct, SimulatorCost(simulator, false, 0.0, 100.0), 12);
-        Assert.Equal(TradeCosts.FeeRoundTripPct, SimulatorCost(simulator, true,  0.0, 100.0), 12);
+        double fee = TradeCosts.FeeRoundTripPct - EntrySaving(simulator, 0.0);
+        Assert.Equal(fee, SimulatorCost(simulator, false, 0.0, 100.0), 12);
+        Assert.Equal(fee, SimulatorCost(simulator, true,  0.0, 100.0), 12);
         Assert.Equal(0.11, TradeCosts.FeeRoundTripPct, 12);
     }
 
@@ -184,5 +196,31 @@ public class SlippageModelTests
                      TradeCosts.RoundTripPct(atrPct, true, k), 12);
         Assert.Equal(TradeCosts.RoundTripPct(atrPct, false, k),
                      TradeCosts.RoundTripPct(atrPct, false, stopGapAtrK: 999.0), 12);
+    }
+    // ── 7. A resting limit side pays the maker fee and no slippage ─────────────────────────
+    [Fact]
+    public void MakerSides_PayMakerFeeAndNoSlippage()
+    {
+        const double atrPct = 4.0, k = 0.18;
+        double taker = TradeCosts.RoundTripPct(atrPct, false, k);
+        Assert.Equal(TradeCosts.FeeRoundTripPct + TradeCosts.SlippageRoundTripPct(atrPct), taker, 12);
+
+        // both sides resting: two maker fees, nothing else
+        Assert.Equal(2 * TradeCosts.MakerFeePct,
+                     TradeCosts.RoundTripPct(atrPct, false, k, entryMaker: true, exitMaker: true), 12);
+        // one side resting: one maker fee plus one taker side with its slippage
+        Assert.Equal(TradeCosts.MakerFeePct + TradeCosts.FeeRoundTripPct / 2 + TradeCosts.SlippagePerSidePct(atrPct),
+                     TradeCosts.RoundTripPct(atrPct, false, k, entryMaker: true), 12);
+        // a stop is never a maker fill, whatever the caller says
+        Assert.Equal(TradeCosts.RoundTripPct(atrPct, true, k, entryMaker: true),
+                     TradeCosts.RoundTripPct(atrPct, true, k, entryMaker: true, exitMaker: true), 12);
+
+        // wired: a grid take-profit is maker on both sides, a grid stop only on the entry
+        double px = 100.0, atr = px * atrPct / 100.0;
+        Assert.Equal(2 * TradeCosts.MakerFeePct, GridSimulator.TradeCost(atr, px, isStop: false, isTp: true), 12);
+        Assert.Equal(2 * TradeCosts.MakerFeePct, GridShortSimulator.TradeCost(atr, px, isStop: false, isTp: true), 12);
+        Assert.True(GridSimulator.TradeCost(atr, px, isStop: true) > taker);
+        Assert.Equal(TradeCosts.RoundTripPct(atrPct, false, 0.03, exitMaker: true),
+                     FadeShortSimulator.TradeCost(false, atr, px, isTp: true), 12);
     }
 }

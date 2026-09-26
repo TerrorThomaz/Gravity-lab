@@ -48,7 +48,8 @@ dotnet run -- papertrade         # Live signals (15m refresh — PapertradeComma
 
 # Market-neutral research (Python, standalone — pip install -r scripts/requirements-research.txt)
 python3 scripts/market_neutral_research.py selftest              # synthetic: finds planted edges, not fake ones
-python3 scripts/market_neutral_research.py all                   # pairs + carry + xcarry on BacktestCoins
+python3 scripts/market_neutral_research.py all                   # grid + pairs + carry + xcarry on BacktestCoins
+python3 scripts/market_neutral_research.py baseline --exec maker # textbook params, no sweep: one trial per book
 python3 scripts/market_neutral_research.py all --universe oos    # same on never-trained OosCoins
 python3 scripts/market_neutral_research.py all --fetch           # fill candle_cache/ from Bybit first
 python3 scripts/trade_log_edge.py reports/oos_trades.csv         # day-clustered t, train/val/test split
@@ -403,6 +404,8 @@ The fold logic is now fixed (per-coin fold boundaries via `FoldScoreHelper.PerCo
 
 There is no longer a `slippageBps` parameter to forget: it was deleted outright from the four portfolio entry points and all 46 call sites, so a site that tries to pass one now **fails to compile** rather than handing a number to something that discards it. `Simulator.FeeRoundTrip = 0.21` went with it (dead, and sat next to the live `TradeCosts.FeeRoundTripPct = 0.11` — two fee constants differing by exactly 2x is the shape of a double-count). Any result recorded before 2026-08 assumed **zero** slippage and is not comparable.
 
+**Maker vs taker sides (2026-09-26).** `TradeCosts.RoundTripPct` takes `entryMaker`/`exitMaker`. A maker side is a resting limit order: it pays `MakerFeePct = 0.02` (Bybit non-VIP) and **no slippage**, because a limit fills at its own price. A stop is never maker (`exitMaker` is ignored when `isStop`). Both default to false, so every caller that doesn't pass them is bit-identical to before. Wired: grid-family rungs are maker entries and their take-profits maker exits; FadeShort's fixed target is a maker exit (its entry is a market order at the next open). Fill risk is **not** modelled, on purpose: per-strategy budgets are small against book depth, so a touched limit counts as filled. Before this, every limit fill paid taker plus slippage. The code said so itself ("limit-fill discount not modelled"), and that charged the grid ~0.14% per round trip against a real ~0.04%. Measured on `edgetest`: Grid next-bar mean/trade 0.087% → 0.164% (PF 1.17 → 1.34), rolling-gate book Sharpe 0.68 → 0.94, CAGR 2.7% → 3.8%, DSR 0.001 → 0.007. **The genotypes on disk were selected under all-taker costs** and have not been retrained against this.
+
 ### Held-out validation: time-embargo + regime-stratification
 
 Plain "held-out coin" validation (different symbol, same calendar window as training) doesn't test time-generalization — it tests symbol-generalization, and crypto's cross-sectional correlation (BTC/alts co-move) lets a regime-timing overfit "generalize" across correlated coins without being a real edge. Two fixes layered on top of the original held-out check, both report-only (never used for GA selection):
@@ -480,15 +483,28 @@ FadeShort the book is two correlated grid variants.
 
 ### Market-neutral research (`scripts/market_neutral_research.py`)
 
-Deliberately shares **no** code path with the directional suite (no GA, router, guard or HMM), so nothing here can be flattered by them. It mirrors only the cost constants (`FeeRoundTripPct`, `SlippageBps`, `FallbackIntervalPct` — keep in sync) and parses the symbol lists from `Config.cs`. Three books, walk-forward, parameters fixed in advance:
+Deliberately shares **no** code path with the directional suite (no GA, router, guard or HMM), so nothing here can be flattered by them. It mirrors only the cost constants (`FeeRoundTripPct`, `SlippageBps`, `FallbackIntervalPct` — keep in sync) and parses the symbol lists from `Config.cs`. Four books (grid below), walk-forward, parameters fixed in advance:
 
 - **pairs** — Engle-Granger cointegration pairs selected on a 90d formation window, traded on the next 30d with the hedge ratio frozen. Control: random pairs from the same universe under the same rules.
-- **carry** — cross-sectional funding carry, short high-funding / long low-funding, legs scaled to zero trailing BTC beta.
+- **carry** — cross-sectional funding carry, short high-funding / long low-funding, then `factor_neutral` projects the weights off the dollar direction and the top 3 eigenvectors of the universe's own trailing 30d return covariance. It has no BTC anchor: the hedge follows whatever co-movement dominates, and some hedge weight lands on coins outside the two legs. `factors=3` was fixed in advance; the sweep prints 1 and 5 to show it is not a knife-edge.
 - **xcarry** — funding spread carried across highly correlated pairs (the correlation hedges the price move).
 
 Both carry books use a **fixed-permutation** shuffled-funding control (signal keeps its persistence and turnover, loses its link to the funding actually received — a per-rebalance reshuffle would inflate the control's turnover ~13x and make it an unfair strawman). Signals act one bar late; funding is real per-symbol, floor-charged both ways when missing. The sensitivity grid rows are printed in full and are **not** candidates.
 
-Per `docs/RIGOR_REWORK_2026-09.md` (null controls before statistics), `selftest` is the gate and runs first: on synthetic data with no planted cointegration / no persistent funding dispersion every book must lose roughly its costs, and with them planted it must find them. Execution is at the close of the bar *after* the signal bar, strictly later than the grid fix's next-bar fill. Run on candles, it has never been run yet.
+Per `docs/RIGOR_REWORK_2026-09.md` (null controls before statistics), `selftest` is the gate and runs first: on synthetic data with no planted cointegration / no persistent funding dispersion every book must lose roughly its costs, and with them planted it must find them. Execution is at the close of the bar *after* the signal bar, strictly later than the grid fix's next-bar fill.
+
+**grid book** (`run_grid`): the textbook neutral futures grid, no trend filter and no time exit. It has 10 geometric levels per side over ±2σ of a 30-day move, each unit bought at P_i is sold at P_(i+1), it is flattened at market one step outside the range, and it redeploys. Intrabar fills walk O→L→H→C (up bar) or O→H→L→C (down bar). `selftest` measures that rule against exact sub-hour fill order on random walks rather than assuming it: the paired gap is +2.0 ± 3.3%/yr, so no edge comes from the fill model. Control: each coin's bars shuffled in time.
+
+**Measured 2026-09-26, `baseline --exec maker`** (textbook parameters, no sweep, one trial each; net %/yr, t on weekly blocks):
+
+| book | OosCoins (64 survivors) | BacktestCoins (89) | verdict |
+|---|---|---|---|
+| grid | −15.7 (control −6.7), t −1.6 | −4.2 (control −4.5), t −0.5 | **no edge**. 98% of grids end in a range break; on OOS alts the real grid is WORSE than shuffled bars, so they trend at this scale and a grid sits on the wrong side |
+| pairs (half-life ≥ 24h) | +11.3 (random +4.9), t 1.96 | −7.4 (random −6.1), loses gross | **not robust**. Positive on one universe, negative before costs on the other |
+| carry, BTC-beta hedge (retired) | +20.5 (shuffled −2.0), t 1.45, maxDD −41% | +13.3 (shuffled −3.4), t 1.50, maxDD −64% | superseded |
+| **carry, covariance-PC hedge** | **+20.2 (shuffled −0.8), t 1.92, Sharpe 0.89, maxDD −29%** | **+13.3 (shuffled −2.1), t 2.13, Sharpe 0.87, maxDD −23%** | **the one lead**. Same return, a third less vol, drawdown halved, BTC beta −0.005/−0.004. The OOS price leg went −13.2 → −1.2%/yr. factors=1/5 give 17.5/13.8 and 15.8/13.1, so the result doesn't hinge on 3 |
+
+Under taker costs (the default) pairs on OOS was −4.6%/yr: its 172x/yr turnover makes execution the whole answer. Survivorship: 37 of the 101 OosCoins are delisted and Bybit returns no history for them, so the OOS universe is survivors only.
 
 ### Discord bot
 

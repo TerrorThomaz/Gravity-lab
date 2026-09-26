@@ -198,7 +198,7 @@ public static class FadeShortSimulator
                                     hitMae      ? maeStop  :
                                     hitTarget   ? target   : price;
                     double ret = (entry - exitPx) / entry * 100.0
-                               - TradeCost(hitStop, atrEntry, entry, EntryBarNotional(candles, entryIdx), g.PositionSizePct);
+                               - TradeCost(hitStop, atrEntry, entry, EntryBarNotional(candles, entryIdx), g.PositionSizePct, isTp: hitTarget && !hitStop);
                     result.Add((candles[i].Time, ret, "fade_short", entryRegimeBars, entryTime, entry));
                     maeOut?.Add(Math.Min(0.0, (entry - trailHigh) / entry * 100.0));
                     inTrade = false;
@@ -440,7 +440,7 @@ public static class FadeShortSimulator
                                     hitTarget   ? target   : m15Price;
                     double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: false);
                     double ret = (entry - exitPx) / entry * 100.0
-                               - TradeCost(hitStop, atrEntry, entry, EntryBarNotional(h1, entryIH1), g.PositionSizePct)
+                               - TradeCost(hitStop, atrEntry, entry, EntryBarNotional(h1, entryIH1), g.PositionSizePct, isTp: hitTarget && !hitStop)
                                + fundingPnl;
                     result.Add((m15[im15].Time, ret, "fade_short", entryRegimeBars, entryTime, entry));
                     scoredOut?.Add(new ScoredTrade(coin!, "swing", entryTime, m15[im15].Time, ret, entryScore));
@@ -468,10 +468,12 @@ public static class FadeShortSimulator
     internal static double EntryBarNotional(ReadOnlySpan<Candle> bars, int i)
         => (uint)i < (uint)bars.Length ? bars[i].Volume * bars[i].Close : 0.0;
 
+    // Entry is a market order at the next bar's open (taker). The fixed target is a resting
+    // limit, so a take-profit exit is maker; stops, trail and time exits are taker.
     internal static double TradeCost(bool isStop, double atrEntry, double entryPx,
-                                      double barNotional = 0.0, double posFrac = 0.0)
+                                      double barNotional = 0.0, double posFrac = 0.0, bool isTp = false)
         => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrEntry, entryPx), isStop, StopGapAtrK,
-                                   barNotional, posFrac);
+                                   barNotional, posFrac, exitMaker: isTp);
 
 }
 

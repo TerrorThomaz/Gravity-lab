@@ -9,11 +9,12 @@ public static class GridSimulator
     private const int    MaxLevels    = 5;
     private const double StopGapAtrK = 0.18;  // gap premium on stop exits (whole ladder)
 
-    // isTp retained on signature but no longer changes cost (limit-fill discount not modelled).
+    // Every rung is a resting limit (maker); the take-profit is too. Stops and forced closes
+    // (ADX, max hold, end of data) cross the book (taker).
     internal static double TradeCost(double atrAtStart, double entryPx, bool isStop, bool isTp = false,
                                      double barNotional = 0.0, double posFrac = 0.0)
         => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrAtStart, entryPx), isStop, StopGapAtrK,
-                                   barNotional, posFrac);
+                                   barNotional, posFrac, entryMaker: true, exitMaker: isTp);
 
     // Per-fill returns for backtest display. null funding = floor fallback (not zero).
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetGridReturns(

@@ -10,10 +10,11 @@ public static class GridShortSimulator
 
     private const double StopGapAtrK = 0.18;  // same as GridSimulator (direction mirrors)
 
+    // Rungs and take-profit are resting limits (maker); stops and forced closes are taker.
     internal static double TradeCost(double atrAtStart, double entryPx, bool isStop, bool isTp = false,
                                      double barNotional = 0.0, double posFrac = 0.0)
         => TradeCosts.RoundTripPct(TradeCosts.AtrPct(atrAtStart, entryPx), isStop, StopGapAtrK,
-                                   barNotional, posFrac);
+                                   barNotional, posFrac, entryMaker: true, exitMaker: isTp);
 
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetGridShortReturns(
         GridGenotype g, ReadOnlySpan<Candle> h1, FundingRateSession? funding = null)

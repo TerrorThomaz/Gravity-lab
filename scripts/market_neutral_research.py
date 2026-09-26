@@ -7,7 +7,7 @@ the router or the guard, so a result here cannot be flattered by any of them. It
 only the COST CONSTANTS (below, copied from src/core) and the SYMBOL LISTS (parsed from
 src/core/Config.cs at runtime, so there is one authority).
 
-Three books, all walk-forward and all with parameters fixed in advance (no search here):
+Four books, all walk-forward and all with parameters fixed in advance (no search here):
 
   pairs    Engle-Granger cointegration pairs. Pairs are selected on a FORMATION window,
            then traded on the NEXT window with the formation hedge ratio frozen. Every
@@ -15,8 +15,9 @@ Three books, all walk-forward and all with parameters fixed in advance (no searc
            exact same trading rules on randomly drawn pairs from the same universe: if
            cointegration selection does not beat random pairs, the selection is noise.
 
-  carry    Cross-sectional funding carry, beta-neutral. Short the highest-funding perps,
-           long the lowest, legs scaled so the book has zero trailing BTC beta. Control:
+  carry    Cross-sectional funding carry, factor-neutral. Short the highest-funding perps,
+           long the lowest, then project the weights off the dollar direction and the top 3
+           principal components of the universe's own trailing covariance. Control:
            the same book ranked on SHUFFLED funding (keeps turnover and hedging, removes
            the signal).
 
@@ -26,10 +27,20 @@ Three books, all walk-forward and all with parameters fixed in advance (no searc
            trailing returns, so the correlation cancels most of the price move and the
            funding differential is what remains. Same shuffled-funding control.
 
+  grid     The textbook neutral futures grid: 10 geometric levels each side of the deploy
+           price over +/-2 sigma of a 30-day move, buy-low/sell-one-level-up, flattened at
+           market one step past the range and redeployed. Control: the same grid on each
+           coin's bars shuffled in time (same volatility, no serial structure).
+
+  baseline runs grid + pairs (half-life >= 24h) + carry with textbook parameters and no
+           sensitivity rows: one trial each.
+
 Accounting (identical for all three):
   * signals use data up to bar t close; positions change at bar t+DELAY close (default 1)
-  * cost per side = fee 0.055% + slippage 0.05% on |traded notional|   (Simulator.cs
-    FeeRoundTripPct = 0.11 and Config.SlippageBps = 10 round trip, split per side)
+  * cost per side on |traded notional|: --exec taker (default) = fee 0.055% + slippage
+    0.05% (Simulator.cs FeeRoundTripPct = 0.11, Config.SlippageBps = 10 round trip);
+    --exec maker = 0.02% maker fee, no slippage (TradeCosts.MakerFeePct). Fill risk is not
+    modelled. A grid's range-break exit is a market order and always pays taker.
   * funding: real per-symbol rates at their actual settlement timestamps; long pays a
     positive rate. A symbol with no funding file is charged the repo's floor
     (FundingRateSession.FallbackIntervalPct = 0.01% per 8h tick) in BOTH directions —
@@ -46,6 +57,7 @@ Usage:
   python3 scripts/market_neutral_research.py all                    # BacktestCoins
   python3 scripts/market_neutral_research.py pairs --universe oos   # never-trained coins
   python3 scripts/market_neutral_research.py all --fetch            # download first
+  python3 scripts/market_neutral_research.py baseline --exec maker  # textbook, one trial each
   python3 scripts/market_neutral_research.py selftest               # synthetic sanity checks
 """
 from __future__ import annotations
@@ -70,7 +82,12 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FEE_ROUND_TRIP_PCT = 0.11            # src/core/Simulator.cs  TradeCosts.FeeRoundTripPct
 SLIPPAGE_BPS_ROUND_TRIP = 10.0       # src/core/Config.cs     Config.SlippageBps
 FUNDING_FLOOR_PCT_PER_8H = 0.01      # src/core/FundingRateSession.cs FallbackIntervalPct
-COST_PER_SIDE = (FEE_ROUND_TRIP_PCT + SLIPPAGE_BPS_ROUND_TRIP / 100.0) / 2.0 / 100.0  # fraction
+MAKER_FEE_PCT = 0.02                 # src/core/Simulator.cs  TradeCosts.MakerFeePct
+TAKER_COST_PER_SIDE = (FEE_ROUND_TRIP_PCT + SLIPPAGE_BPS_ROUND_TRIP / 100.0) / 2.0 / 100.0  # fraction
+MAKER_COST_PER_SIDE = MAKER_FEE_PCT / 100.0   # a resting limit fills at its price: fee, no slippage
+# Execution assumption for every scheduled fill (rebalances, pair entries/exits). --exec sets it.
+# Forced exits (a grid's range-break stop) always pay TAKER_COST_PER_SIDE.
+COST_PER_SIDE = TAKER_COST_PER_SIDE
 
 HOURS_PER_YEAR = 24 * 365
 
@@ -101,7 +118,7 @@ def _read_ms_csv(path: str, ncols: int) -> pd.DataFrame | None:
 
 
 def load_h1(sym: str, cache: str) -> pd.DataFrame | None:
-    """Hourly close + quote volume. Prefers the C# 15m cache, falls back to a 60m file."""
+    """Hourly OHLC + quote volume. Prefers the C# 15m cache, falls back to a 60m file."""
     for fname, freq in ((f"{sym}_15m.csv", "15min"), (f"{sym}_60m.csv", "60min")):
         df = _read_ms_csv(os.path.join(cache, fname), 6)
         if df is None:
@@ -112,11 +129,15 @@ def load_h1(sym: str, cache: str) -> pd.DataFrame | None:
         if freq == "15min":
             # Hour bar is labelled by its START (Bybit convention); require all 4 quarters.
             g = df["c"].resample("1h")
-            out = pd.DataFrame({"close": g.last(), "qvol": qv.resample("1h").sum(),
+            out = pd.DataFrame({"open": df["o"].resample("1h").first(),
+                                "high": df["h"].resample("1h").max(),
+                                "low": df["l"].resample("1h").min(),
+                                "close": g.last(), "qvol": qv.resample("1h").sum(),
                                 "n": g.count()})
             out = out[out["n"] == 4].drop(columns="n")
         else:
-            out = pd.DataFrame({"close": df["c"], "qvol": qv})
+            out = pd.DataFrame({"open": df["o"], "high": df["h"], "low": df["l"],
+                                "close": df["c"], "qvol": qv})
         return out
     return None
 
@@ -200,16 +221,28 @@ class Market:
     funding_known: pd.Series       # sym -> has real funding data
     funding_mask: pd.DataFrame     # hour x sym, True at a real settlement hour
     missing: list[str] = field(default_factory=list)
+    open: pd.DataFrame | None = None   # hour x sym OHLC — only the grid book needs these
+    high: pd.DataFrame | None = None
+    low: pd.DataFrame | None = None
+
+    def rows(self, keep) -> "Market":
+        """Same market restricted to the rows selected by boolean `keep`."""
+        sub = lambda d: None if d is None else d[keep]
+        return Market(self.close[keep], self.qvol[keep], self.funding[keep], self.funding_known,
+                      self.funding_mask[keep], self.missing, sub(self.open), sub(self.high),
+                      sub(self.low))
 
 
 def build_market(symbols: list[str], cache: str) -> Market:
     closes, vols, funds, missing = {}, {}, {}, []
+    opens, highs, lows = {}, {}, {}
     for s in symbols:
         h = load_h1(s, cache)
         if h is None or len(h) < 24 * 60:
             missing.append(s)
             continue
         closes[s], vols[s] = h["close"], h["qvol"]
+        opens[s], highs[s], lows[s] = h["open"], h["high"], h["low"]
         f = load_funding(s, cache)
         if f is not None:
             funds[s] = f
@@ -230,7 +263,8 @@ def build_market(symbols: list[str], cache: str) -> Market:
         funding.loc[f.index, s] = f.values
         mask.loc[f.index, s] = True
     known = pd.Series({s: s in funds for s in close.columns})
-    return Market(close, qvol, funding, known, mask, missing)
+    ohlc = [pd.DataFrame(d).reindex(idx)[close.columns] for d in (opens, highs, lows)]
+    return Market(close, qvol, funding, known, mask, missing, *ohlc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -252,7 +286,7 @@ class BookResult:
 
 def run_book(close: np.ndarray, funding: np.ndarray, fmask: np.ndarray, fknown: np.ndarray,
              targets: dict[int, np.ndarray], index: pd.DatetimeIndex,
-             cost_per_side: float = COST_PER_SIDE) -> BookResult:
+             cost_per_side: float | None = None) -> BookResult:
     """
     Simulate signed notional holdings (fraction of capital) against hourly closes.
 
@@ -260,6 +294,7 @@ def run_book(close: np.ndarray, funding: np.ndarray, fmask: np.ndarray, fknown: 
     the signal delay when building targets). Execution happens at the bar-t close, after
     that bar's return and funding accrue to the previous holdings.
     """
+    cost_per_side = COST_PER_SIDE if cost_per_side is None else cost_per_side
     n, m = close.shape
     ret = np.zeros_like(close)
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -546,7 +581,7 @@ def run_pairs(mk: Market, p: PairsParams, rng: np.random.Generator | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
-# Book 2 — cross-sectional funding carry, beta-neutral
+# Book 2 — cross-sectional funding carry, factor-neutral
 # ═══════════════════════════════════════════════════════════════════════════════════
 
 @dataclass
@@ -554,11 +589,23 @@ class CarryParams:
     warmup_h: int = 24 * 30
     rebalance_h: int = 24
     signal_h: int = 24 * 7          # funding averaged over this trailing window
-    beta_h: int = 24 * 30
+    cov_h: int = 24 * 30            # trailing window for the covariance the hedge is built on
+    factors: int = 3                # leading principal components neutralised; fixed, not tuned
     universe_top: int = 40
     quantile: float = 0.2
     delay: int = 1
-    btc: str = "BTCUSDT"
+
+
+def factor_neutral(w: np.ndarray, lr: np.ndarray, k: int) -> np.ndarray:
+    """Project weights off the anchors: the dollar direction plus the top-k eigenvectors of
+    the universe's own return covariance. A portfolio's exposure to principal component v is
+    w·v, so after the projection it carries none of the k dominant co-movements and no net
+    dollar, whichever coin happens to drive them. Eigenvectors are unchanged by shrinkage
+    toward the identity, so the sample covariance is enough here."""
+    _, vecs = np.linalg.eigh(np.cov(lr.T))
+    anchors = np.column_stack([np.ones(len(w)), vecs[:, ::-1][:, :k]])
+    q, _ = np.linalg.qr(anchors)
+    return w - q @ (q.T @ w)
 
 
 def trailing_funding(mk: Market, t: int, h: int, cols: list[int]) -> np.ndarray:
@@ -584,16 +631,13 @@ def signal_source(mk: Market, shuffle_rng: np.random.Generator | None) -> np.nda
 
 def run_carry(mk: Market, p: CarryParams, shuffle_rng: np.random.Generator | None = None):
     n, m = mk.close.shape
-    if p.btc not in mk.close.columns:
-        raise SystemExit(f"{p.btc} missing — carry needs it for beta hedging")
-    btc = list(mk.close.columns).index(p.btc)
     targets: dict[int, np.ndarray] = {}
-    start = max(p.warmup_h, p.beta_h, p.signal_h)
+    start = max(p.warmup_h, p.cov_h, p.signal_h)
     legs = []
     src = signal_source(mk, shuffle_rng)
     for t in range(start, n - p.delay, p.rebalance_h):
-        uni = [c for c in liquid_universe(mk, t - p.beta_h, t + 1, p.universe_top)
-               if mk.funding_known.values[c] and c != btc]
+        uni = [c for c in liquid_universe(mk, t - p.cov_h, t + 1, p.universe_top)
+               if mk.funding_known.values[c]]
         if len(uni) < 10:
             continue
         sig = trailing_funding(mk, t, p.signal_h, [src[c] for c in uni])
@@ -602,21 +646,17 @@ def run_carry(mk: Market, p: CarryParams, shuffle_rng: np.random.Generator | Non
         sig = sig[ok]
         if len(uni) < 10:
             continue
-        lr = log_returns(mk, t - p.beta_h, t + 1, uni + [btc])
-        x = lr[:, -1]
-        betas = np.array([np.cov(lr[:, i], x)[0, 1] / x.var() for i in range(len(uni))])
-        betas = np.clip(betas, 0.2, 3.0)
         k = max(2, int(len(uni) * p.quantile))
         order = np.argsort(sig)
         longs, shorts = order[:k], order[-k:]
-        bl, bs = betas[longs].mean(), betas[shorts].mean()
-        L = bs / (bl + bs)               # L·bl = S·bs, L+S = 1 → zero trailing BTC beta
-        S = 1.0 - L
+        wu = np.zeros(len(uni))
+        wu[longs], wu[shorts] = 1.0 / k, -1.0 / k
+        wu = factor_neutral(wu, log_returns(mk, t - p.cov_h, t + 1, uni), p.factors)
+        gross = np.abs(wu).sum()
+        if gross <= 1e-12:
+            continue
         w = np.zeros(m)
-        for i in longs:
-            w[uni[i]] += L / k
-        for i in shorts:
-            w[uni[i]] -= S / k
+        w[uni] = wu / gross            # hedge weight lands on the rest of the universe too
         targets[t + p.delay] = w
         legs.append((sig[shorts].mean() - sig[longs].mean()) * 100)
     r = run_book(mk.close.values, mk.funding.values, mk.funding_mask.values,
@@ -711,12 +751,149 @@ def run_xcarry(mk: Market, p: XCarryParams, shuffle_rng: np.random.Generator | N
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
+# Book 4 — neutral grid (the textbook bot, no search)
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class GridParams:
+    levels_per_side: int = 10
+    width_sigmas: float = 2.0       # range half-width = this x sigma of a horizon-day move
+    horizon_days: int = 30
+    min_width: float = 0.05
+    max_width: float = 0.50
+    vol_h: int = 24 * 30            # trailing window for sigma and for the liquidity screen
+    universe_top: int = 20          # capital is split 1/universe_top per coin
+
+
+def grid_coin(o, h, l, c, fund, fmask, known: bool, eligible, hours, p: GridParams,
+              maker_cps: float, taker_cps: float):
+    """One coin's neutral grid on hourly OHLC, as fractions of THIS coin's capital (1.0).
+    Returns (price, funding, cost, turnover, deploys, stops).
+
+    Textbook futures grid: 2N geometric levels around the deploy price, BUY limits resting
+    below price and SELL limits above; every fill re-arms the neighbouring level on the other
+    side, so a unit bought at P_i is sold at P_(i+1). The whole state is one index e (the
+    empty level nearest price) and inventory is (N - e) units of q coins. One step past
+    either outer level the range is broken: flatten at market (taker) and redeploy at that
+    bar's close. No trend filter, no time exit — that is the textbook bot.
+
+    The deploy decision uses close[t] only; orders first rest in bar t+1. Intrabar path is
+    O->L->H->C on an up bar and O->H->L->C on a down bar. A fill is at the level price even
+    when the bar gapped through it (the real fill would be better). selftest checks the path
+    rule on a random walk, where a grid must not make money.
+    """
+    n, N = len(c), p.levels_per_side
+    price = np.zeros(n); fnd = np.zeros(n); cost = np.zeros(n)
+    turnover, deploys, stops = 0.0, 0, 0
+    floor = FUNDING_FLOOR_PCT_PER_8H / 100.0
+    with np.errstate(invalid="ignore", divide="ignore"):
+        lr = np.diff(np.log(c), prepend=np.nan)
+    active, cash, Q, prev_eq, last_c = False, 0.0, 0.0, 0.0, float("nan")
+    lv, e, q, lo_stop, hi_stop = [], N, 0.0, 0.0, 0.0
+    for t in range(n):
+        ct = c[t]
+        if ct != ct:
+            continue
+        if active:
+            if Q != 0.0:                       # funding on inventory held into this hour
+                notional = Q * last_c
+                if known:
+                    if fmask[t]:
+                        fnd[t] -= notional * fund[t]
+                elif hours[t] % 8 == 0:
+                    fnd[t] -= abs(notional) * floor
+            path = (o[t], l[t], h[t], ct) if ct >= o[t] else (o[t], h[t], l[t], ct)
+            for k, x in enumerate(path):
+                if x != x:
+                    continue
+                while e > 0 and x <= lv[e - 1]:
+                    e -= 1
+                    cash -= q * lv[e]; Q += q
+                    cost[t] -= q * lv[e] * maker_cps; turnover += q * lv[e]
+                while e < 2 * N and x >= lv[e + 1]:
+                    e += 1
+                    cash += q * lv[e]; Q -= q
+                    cost[t] -= q * lv[e] * maker_cps; turnover += q * lv[e]
+                if x <= lo_stop or x >= hi_stop:
+                    px = x if k == 0 else (lo_stop if x <= lo_stop else hi_stop)  # open gaps fill at the open
+                    cash += Q * px
+                    cost[t] -= abs(Q) * px * taker_cps; turnover += abs(Q) * px
+                    Q, active = 0.0, False
+                    stops += 1
+                    break
+        eq = cash + Q * ct
+        price[t] = eq - prev_eq
+        prev_eq, last_c = eq, ct
+        if not active and eligible[t] and t >= p.vol_h:
+            sd = np.nanstd(lr[t - p.vol_h + 1:t + 1])
+            if not (sd > 0):
+                continue
+            w = float(np.clip(p.width_sigmas * sd * math.sqrt(24 * p.horizon_days),
+                              p.min_width, p.max_width))
+            r = (1.0 + w) ** (1.0 / N)
+            lv = [ct * r ** (i - N) for i in range(2 * N + 1)]
+            e, q = N, 1.0 / (N * ct)
+            lo_stop, hi_stop = lv[0] / r, lv[-1] * r
+            active = True
+            deploys += 1
+    return price, fnd, cost, turnover, deploys, stops
+
+
+def shuffled_bars(O, H, L, C, rng: np.random.Generator):
+    """Per coin, permute whole bars (open/high/low/close relative to the previous close) and
+    rebuild the path. Same bar-level volatility and shape; any serial structure — the mean
+    reversion a grid harvests — is gone, so this is a random walk with the coin's own bars."""
+    O2, H2, L2, C2 = (a.copy() for a in (O, H, L, C))
+    for j in range(C.shape[1]):
+        v = np.where(~np.isnan(C[:, j]))[0]
+        if len(v) < 3:
+            continue
+        prev = C[v[:-1], j]
+        rel = np.stack([O[v[1:], j] / prev, H[v[1:], j] / prev, L[v[1:], j] / prev,
+                        C[v[1:], j] / prev], axis=1)[rng.permutation(len(v) - 1)]
+        cl = C[v[0], j] * np.concatenate([[1.0], np.cumprod(rel[:, 3])])
+        O2[v[1:], j], H2[v[1:], j], L2[v[1:], j] = (rel[:, k] * cl[:-1] for k in range(3))
+        C2[v, j] = cl
+    return O2, H2, L2, C2
+
+
+def run_grid(mk: Market, p: GridParams, shuffle_rng: np.random.Generator | None = None):
+    if mk.open is None:
+        raise SystemExit("grid needs OHLC — build_market provides it; synthetic markets do not")
+    n, m = mk.close.shape
+    O, H, L, C = mk.open.values, mk.high.values, mk.low.values, mk.close.values
+    if shuffle_rng is not None:
+        O, H, L, C = shuffled_bars(O, H, L, C, shuffle_rng)
+    elig = np.zeros((n, m), dtype=bool)
+    for t in range(p.vol_h, n, 24):          # point-in-time liquidity screen, refreshed daily
+        elig[t:t + 24, liquid_universe(mk, t - p.vol_h, t + 1, p.universe_top)] = True
+    hours = mk.close.index.hour.values
+    price = np.zeros(n); fund = np.zeros(n); cost = np.zeros(n)
+    turnover, deploys, stops = 0.0, 0, 0
+    slot = 1.0 / p.universe_top
+    for j in range(m):
+        if not elig[:, j].any():
+            continue
+        pr, fd, cs, to, dp, st = grid_coin(O[:, j], H[:, j], L[:, j], C[:, j],
+                                           mk.funding.values[:, j], mk.funding_mask.values[:, j],
+                                           bool(mk.funding_known.values[j]), elig[:, j], hours, p,
+                                           COST_PER_SIDE, TAKER_COST_PER_SIDE)
+        price += slot * pr; fund += slot * fd; cost += slot * cs
+        turnover += slot * to; deploys += dp; stops += st
+    # ponytail: capital is 1/universe_top per coin and a deployed grid is kept after its coin
+    # leaves the screen, so a few more than universe_top can run at once (slightly over 1x gross).
+    return _trim(BookResult(price, fund, cost, turnover, mk.close.index), p.vol_h), deploys, stops
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════
 # Reports
 # ═══════════════════════════════════════════════════════════════════════════════════
 
-def report_pairs(mk: Market, n_controls: int, seed: int) -> list[dict]:
-    p = PairsParams()
-    print("\n── PAIRS (cointegration, walk-forward: select on 90d, trade next 30d) ──")
+def report_pairs(mk: Market, n_controls: int, seed: int, p: PairsParams | None = None,
+                 sweep: bool = True) -> list[dict]:
+    p = p or PairsParams()
+    print(f"\n── PAIRS (cointegration, walk-forward: select on 90d, trade next 30d; "
+          f"half-life >= {p.hl_min:g}h) ──")
     rows = []
     r, trades = run_pairs(mk, p)
     rows.append(summarize("pairs: cointegrated", r, trades))
@@ -737,9 +914,9 @@ def report_pairs(mk: Market, n_controls: int, seed: int) -> list[dict]:
     g = run_book_gross_view(r)
     rows.append(summarize("pairs: cointegrated, GROSS of cost", g, None))
     # small fixed sensitivity grid, printed in full so no cell can be cherry-picked
-    for ez in (1.5, 2.5):
+    for ez in ((1.5, 2.5) if sweep else ()):
         for fm in (24 * 60, 24 * 180):
-            pp = PairsParams(entry_z=ez, formation_h=fm)
+            pp = PairsParams(entry_z=ez, formation_h=fm, hl_min=p.hl_min)
             rr, tt = run_pairs(mk, pp, quiet=True)
             rows.append(summarize(f"  grid entry_z={ez} form={fm // 24}d", rr, tt))
     print_table(rows, "PAIRS")
@@ -756,15 +933,26 @@ def run_book_gross_view(r: BookResult) -> BookResult:
     return BookResult(r.price, r.funding, np.zeros_like(r.cost), r.turnover, r.index)
 
 
-def report_carry(mk: Market, n_controls: int, seed: int) -> list[dict]:
-    print("\n── CARRY (cross-sectional funding, beta-neutral, daily rebalance) ──")
+def btc_beta(mk: Market, r: BookResult) -> float:
+    if "BTCUSDT" not in mk.close.columns:
+        return float("nan")
+    book = pd.Series(r.net, index=r.index).resample("1D").sum()
+    btc = mk.close["BTCUSDT"].reindex(r.index).resample("1D").last().pct_change()
+    d = pd.concat([book, btc], axis=1).dropna()
+    return float(np.cov(d.iloc[:, 0], d.iloc[:, 1])[0, 1] / d.iloc[:, 1].var()) if len(d) > 2 else float("nan")
+
+
+def report_carry(mk: Market, n_controls: int, seed: int, sweep: bool = True) -> list[dict]:
+    print(f"\n── CARRY (cross-sectional funding, neutral to $ + top {CarryParams().factors} "
+          f"covariance PCs, daily rebalance) ──")
     known = int(mk.funding_known.sum())
     print(f"  symbols with real funding data: {known}/{len(mk.funding_known)}")
     rows = []
     r, legs = run_carry(mk, CarryParams())
     if legs:
         print(f"  mean funding spread short-leg minus long-leg: {np.mean(legs):.4f}%/settlement")
-    rows.append(summarize("carry: beta-neutral", r))
+    rows.append(summarize("carry: factor-neutral", r))
+    print(f"  realised daily beta of the book to BTC: {btc_beta(mk, r):+.3f}  (not hedged on; a check)")
     ctrl = [summarize(f"shuffle#{s}", run_carry(mk, CarryParams(),
                       shuffle_rng=np.random.default_rng(seed + s))[0]) for s in range(n_controls)]
     if ctrl:
@@ -772,13 +960,53 @@ def report_carry(mk: Market, n_controls: int, seed: int) -> list[dict]:
         row = {"book": f"carry: SHUFFLED-funding control (median of {n_controls})"}
         row.update(c.drop(columns="book").median().to_dict())
         rows.append(row)
-    for rb in (8, 72):
+    for rb in ((8, 72) if sweep else ()):
         for q in (0.1, 0.3):
             rr, _ = run_carry(mk, CarryParams(rebalance_h=rb, quantile=q))
             rows.append(summarize(f"  grid rebalance={rb}h q={q}", rr))
+    for nf in ((1, 5) if sweep else ()):
+        rr, _ = run_carry(mk, CarryParams(factors=nf))
+        rows.append(summarize(f"  grid factors={nf}", rr))
     print_table(rows, "CARRY")
     print("  net P&L by year (% of capital):", by_year(r).to_dict())
     return rows
+
+
+def report_grid(mk: Market, n_controls: int, seed: int, sweep: bool = True) -> list[dict]:
+    p = GridParams()
+    print(f"\n── GRID (neutral, {p.levels_per_side} levels/side, range ±{p.width_sigmas:g}σ of a "
+          f"{p.horizon_days}d move, stop one step outside; top {p.universe_top} liquid) ──")
+    rows = []
+    r, deploys, stops = run_grid(mk, p)
+    print(f"  grids deployed: {deploys}   range breaks (market exits): {stops}")
+    rows.append(summarize("grid: neutral", r))
+    ctrl = [summarize(f"shuffle#{k}", run_grid(mk, p, shuffle_rng=np.random.default_rng(seed + k))[0])
+            for k in range(n_controls)]
+    if ctrl:
+        c = pd.DataFrame(ctrl)
+        row = {"book": f"grid: SHUFFLED-bars control (median of {n_controls})"}
+        row.update(c.drop(columns="book").median().to_dict())
+        rows.append(row)
+        # on net return, not Sharpe: with both negative, a lower-vol control has the worse Sharpe
+        print(f"  real grid out-earns {(c['ann_net_%'] < rows[0]['ann_net_%']).mean():.0%} of "
+              f"shuffled-bar controls (net %/yr)")
+    rows.append(summarize("grid: neutral, GROSS of cost", run_book_gross_view(r)))
+    for lv in ((5, 20) if sweep else ()):
+        for ws in (1.0, 3.0):
+            rr, _, _ = run_grid(mk, GridParams(levels_per_side=lv, width_sigmas=ws))
+            rows.append(summarize(f"  grid levels={lv} width={ws}σ", rr))
+    print_table(rows, "GRID")
+    print("  net P&L by year (% of capital):", by_year(r).to_dict())
+    return rows
+
+
+def report_baseline(mk: Market, n_controls: int, seed: int) -> None:
+    """The textbook version of each book, parameters fixed before any run: ONE trial each.
+    No sensitivity rows — there is nothing to pick from."""
+    print("\n══ BASELINES — textbook parameters, fixed in advance, no search, one trial each ══")
+    report_grid(mk, n_controls, seed, sweep=False)
+    report_pairs(mk, n_controls, seed, PairsParams(hl_min=24.0), sweep=False)
+    report_carry(mk, n_controls, seed, sweep=False)
 
 
 def report_xcarry(mk: Market, n_controls: int, seed: int) -> list[dict]:
@@ -855,6 +1083,28 @@ def synthetic_market(seed: int, n_coins: int = 30, days: int = 540, coint_pairs:
     return Market(close, qvol, funding, pd.Series(True, index=cols), mask)
 
 
+def synthetic_ohlc(seed: int, hours: int, kind: str, sub: int = 12, vol_h: float = 0.01,
+                   with_path: bool = False):
+    """Hourly OHLC built from a finer true path (sub steps per hour), so a bar's high and low
+    are real extremes and the grid's intrabar path rule is tested, not assumed. kind="rw" is
+    a driftless random walk; kind="ou" mean-reverts with a 24h half-life."""
+    rng = np.random.default_rng(seed)
+    z = rng.normal(0.0, vol_h / math.sqrt(sub), hours * sub)
+    if kind == "ou":
+        phi = 0.5 ** (1.0 / (24 * sub))
+        x = np.zeros_like(z)
+        for k in range(1, len(z)):
+            x[k] = phi * x[k - 1] + z[k]
+    else:
+        x = np.cumsum(z)
+    x = x.reshape(hours, sub)
+    o = np.concatenate([[0.0], x[:-1, -1]])
+    h = np.maximum(o, x.max(axis=1))
+    l = np.minimum(o, x.min(axis=1))
+    out = tuple(100.0 * np.exp(a) for a in (o, h, l, x[:, -1]))
+    return out + (100.0 * np.exp(x.ravel()),) if with_path else out
+
+
 def selftest() -> int:
     fails = 0
 
@@ -900,6 +1150,8 @@ def selftest() -> int:
     rs, _ = run_carry(mk, CarryParams(), shuffle_rng=np.random.default_rng(5))
     ss = summarize("x", rs)
     check(sc["ann_funding_%"] > 5, f"carry funding income {sc['ann_funding_%']:.1f}%/yr")
+    b = btc_beta(mk, rc)
+    check(abs(b) < 0.05, f"factor-neutral book carries no market beta ({b:+.3f})")
     check(ss["ann_funding_%"] < sc["ann_funding_%"] / 3,
           f"shuffled funding income {ss['ann_funding_%']:.1f}%/yr")
     mk0 = synthetic_market(11, coint_pairs=0, funding_edge=False)
@@ -912,6 +1164,37 @@ def selftest() -> int:
     rx, _ = run_xcarry(mk, XCarryParams())
     sx = summarize("x", rx)
     check(sx["ann_funding_%"] > 0, f"xcarry funding income {sx['ann_funding_%']:.2f}%/yr")
+    print("selftest: grid fill model is unbiased; grid earns on mean reversion, not on noise")
+    sub, hrs = 12, 24 * 365 * 2
+    gp = GridParams()
+    gfine = GridParams(vol_h=gp.vol_h * sub, horizon_days=gp.horizon_days * sub)  # same sigma, finer bars
+    yrs = (hrs - gp.vol_h) / HOURS_PER_YEAR
+
+    def grid_run(o, h, l, c, p, maker=0.0, taker=0.0):
+        n = len(c)
+        pr, _, cs, *_ = grid_coin(o, h, l, c, np.zeros(n), np.zeros(n, dtype=bool), True,
+                                  np.ones(n, dtype=bool), np.arange(n) % 24, p, maker, taker)
+        return pr.sum() / yrs * 100, (pr.sum() + cs.sum()) / yrs * 100
+
+    # The intrabar path rule (O-L-H-C / O-H-L-C) is an assumption. Measure it: the same random
+    # walks, once as hourly OHLC and once at the true sub-hour resolution where fill order is
+    # exact. A path rule that manufactures round trips shows up as a positive paired gap.
+    diffs, nets = [], []
+    for k in range(16):
+        o, h, l, c, fine = synthetic_ohlc(100 + k, hrs, "rw", sub=sub, with_path=True)
+        g_ohlc, n_ohlc = grid_run(o, h, l, c, gp, MAKER_COST_PER_SIDE, TAKER_COST_PER_SIDE)
+        g_exact, _ = grid_run(fine, fine, fine, fine, gfine)
+        diffs.append(g_ohlc - g_exact)
+        nets.append(n_ohlc - g_ohlc)
+    d = np.array(diffs)
+    se = d.std(ddof=1) / math.sqrt(len(d))
+    check(d.mean() < 2.5 * se + 1.0,
+          f"hourly OHLC vs exact fill order: {d.mean():+.2f}%/yr (±{se:.2f} s.e.) — path rule adds no edge")
+    check(max(nets) < 0, f"costs always charged: {np.mean(nets):+.2f}%/yr")
+    o, h, l, c = synthetic_ohlc(7, hrs, "ou")
+    g_ou, n_ou = grid_run(o, h, l, c, gp, MAKER_COST_PER_SIDE, TAKER_COST_PER_SIDE)
+    check(n_ou > 5.0, f"mean-reverting series: net {n_ou:+.1f}%/yr (gross {g_ou:+.1f}%)")
+
     print(f"\nselftest: {'OK' if fails == 0 else f'{fails} FAILED'}")
     return 1 if fails else 0
 
@@ -920,7 +1203,8 @@ def selftest() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("book", choices=["pairs", "carry", "xcarry", "all", "selftest"])
+    ap.add_argument("book", choices=["pairs", "carry", "xcarry", "grid", "all", "baseline",
+                                     "selftest"])
     ap.add_argument("--universe", choices=["backtest", "oos", "both"], default="backtest",
                     help="Config.BacktestCoins, Config.OosCoins, or both")
     ap.add_argument("--cache", default=os.path.join(REPO, "candle_cache"))
@@ -928,7 +1212,12 @@ def main() -> int:
     ap.add_argument("--controls", type=int, default=20, help="random/shuffled control runs")
     ap.add_argument("--seed", type=int, default=12345)
     ap.add_argument("--since", help="drop data before this date (YYYY-MM-DD)")
+    ap.add_argument("--exec", dest="execution", choices=["taker", "maker"], default="taker",
+                    help="scheduled fills cross the book (taker: fee + slippage) or rest as limits "
+                         "(maker: maker fee only). Grid range-break exits are always taker.")
     a = ap.parse_args()
+    global COST_PER_SIDE
+    COST_PER_SIDE = MAKER_COST_PER_SIDE if a.execution == "maker" else TAKER_COST_PER_SIDE
 
     if a.book == "selftest":
         return selftest()
@@ -948,11 +1237,14 @@ def main() -> int:
     mk = build_market(syms, a.cache)
     if a.since:
         keep = mk.close.index >= pd.Timestamp(a.since)
-        mk = Market(mk.close[keep], mk.qvol[keep], mk.funding[keep], mk.funding_known,
-                    mk.funding_mask[keep], mk.missing)
+        mk = mk.rows(keep)
     print(f"Universe {a.universe}: {mk.close.shape[1]} symbols loaded, {len(mk.missing)} missing; "
           f"{mk.close.index[0]:%Y-%m-%d} → {mk.close.index[-1]:%Y-%m-%d}; "
-          f"cost/side {COST_PER_SIDE * 100:.3f}%")
+          f"exec {a.execution}, cost/side {COST_PER_SIDE * 100:.3f}%")
+    if a.book == "baseline":
+        report_baseline(mk, a.controls, a.seed)
+    if a.book in ("grid", "all"):
+        report_grid(mk, a.controls, a.seed)
     if a.book in ("pairs", "all"):
         report_pairs(mk, a.controls, a.seed)
     if a.book in ("carry", "all"):

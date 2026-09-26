@@ -6,8 +6,18 @@ namespace TradingGA;
 // via Config.SlippageBps (sole magnitude authority). Exchange fees separate, also charged once.
 public static class TradeCosts
 {
-    // Exchange fee: 2 × 0.055% Bybit taker. Only fee term in the codebase.
+    // Exchange fee: 2 × 0.055% Bybit taker — the default for every side not flagged maker.
     public const double FeeRoundTripPct = 0.11;
+
+    // Bybit non-VIP perp maker fee, per side. A resting limit order fills AT its price, so a
+    // maker side pays this and no slippage. Fill risk is not modelled: position sizes are small
+    // relative to book depth, so a touched limit is treated as filled.
+    public const double MakerFeePct = 0.02;
+
+    // What one side saves by resting instead of crossing: the taker/maker fee gap plus its slippage.
+    // Subtracted rather than re-summed so the all-taker path stays bit-identical.
+    private static double MakerSavingPct(double atrPct)
+        => FeeRoundTripPct / 2.0 - MakerFeePct + SlippagePerSidePct(atrPct);
 
     // Calibration anchor: ATR% at which Config.SlippageBps is quoted (~3% for a liquid perp).
     // Not a second knob — fixes where on the vol axis the authority constant is measured.
@@ -30,12 +40,17 @@ public static class TradeCosts
     // Total round-trip cost (pct pts) — same unit as trade `ret`. Every simulator delegates here.
     // Participation impact: when barNotional>0 and Config.ChargeParticipationImpact is on,
     // adds size-aware term (impact ∝ sqrt(orderNotional/barNotional)). Without it, "deploy more capital" is unpriced.
+    // entryMaker/exitMaker: that side was a resting limit order. A stop is never maker, so
+    // exitMaker is ignored when isStop.
     public static double RoundTripPct(double atrPct, bool isStop, double stopGapAtrK,
-                                      double barNotional = 0.0, double posFrac = 0.0)
+                                      double barNotional = 0.0, double posFrac = 0.0,
+                                      bool entryMaker = false, bool exitMaker = false)
     {
         double cost = FeeRoundTripPct
                     + SlippageRoundTripPct(atrPct)
                     + (isStop ? StopGapPct(stopGapAtrK, atrPct) : 0.0);
+        if (entryMaker)            cost -= MakerSavingPct(atrPct);
+        if (exitMaker && !isStop)  cost -= MakerSavingPct(atrPct);
 
         if (Config.ChargeParticipationImpact && barNotional > 0 && posFrac > 0)
         {

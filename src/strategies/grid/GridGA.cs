@@ -55,13 +55,33 @@ public class GridGeneticAlgorithm
     }
 
     // Canonical fold score with GridShape config delta.
-    private static double FoldScore(List<double> returns, FitnessConfig cfg, double volWeight = 1.0)
+    private static double FoldScore(List<double> returns, FitnessConfig cfg, double volWeight = 1.0,
+                                    IReadOnlyList<double>? maePct = null)
         => FoldScoreHelper.Canonical(
             returns, FitPosFrac, MinTradesPerFold,
-            FoldScoreHelper.GridShape(cfg), volWeight, statBonusCeiling: 1.0);
+            FoldScoreHelper.GridShape(cfg), volWeight, statBonusCeiling: 1.0, maePct: maePct);
+
+    // Collect gate-weighted returns AND their worst adverse excursions, kept index-aligned. The
+    // gate both filters and scales, so the excursion has to be scaled by the same weight — a
+    // half-sized position takes a half-sized drawdown.
+    private static void Collect(
+        GridGenotype ind, ReadOnlySpan<Candle> span, FundingRateSession? funding,
+        Func<DateTime, double>? gate, List<double> rets, List<double> maes)
+    {
+        var mae    = new List<double>();
+        var trades = GridSimulator.GetGridSessionReturns(ind, span, funding, mae);
+        for (int i = 0; i < trades.Count; i++)
+        {
+            double w = gate?.Invoke(trades[i].Time) ?? 1.0;
+            if (w < 0.05) continue;
+            rets.Add(trades[i].Return * w);
+            maes.Add(i < mae.Count ? mae[i] * w : 0.0);
+        }
+    }
 
     private double Fitness(GridGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
     {
+        GaTrialCounter.Shared.Record("grid");
         var validCoins = coins
             .Select(c => (c, arr: useValidation ? c.ValCandles : c.TrainCandles))
             .Where(x => x.arr.Length >= 100)
@@ -70,12 +90,9 @@ public class GridGeneticAlgorithm
 
         if (useValidation || folds <= 1)
         {
-            var all = validCoins
-                .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr.Span, x.c.Funding)
-                    .Select(t => (t.Return, w: _tradeGate?.Invoke(t.Time) ?? 1.0))
-                    .Where(t => t.w >= 0.05).Select(t => t.Return * t.w))
-                .ToList();
-            return FoldScore(all, _cfg);
+            var all = new List<double>(); var allMae = new List<double>();
+            foreach (var x in validCoins) Collect(ind, x.arr.Span, x.c.Funding, _tradeGate, all, allMae);
+            return FoldScore(all, _cfg, maePct: allMae);
         }
 
         // Per-coin folds; k from median coin length (not shortest).
@@ -84,12 +101,9 @@ public class GridGeneticAlgorithm
 
         if (k < 2)
         {
-            var all = validCoins
-                .SelectMany(x => GridSimulator.GetGridSessionReturns(ind, x.arr.Span, x.c.Funding)
-                    .Select(t => (t.Return, w: _tradeGate?.Invoke(t.Time) ?? 1.0))
-                    .Where(t => t.w >= 0.05).Select(t => t.Return * t.w))
-                .ToList();
-            return FoldScore(all, _cfg);
+            var all = new List<double>(); var allMae = new List<double>();
+            foreach (var x in validCoins) Collect(ind, x.arr.Span, x.c.Funding, _tradeGate, all, allMae);
+            return FoldScore(all, _cfg, maePct: allMae);
         }
 
         var foldScores = new List<double>(k);
@@ -99,23 +113,52 @@ public class GridGeneticAlgorithm
         {
             attemptedFolds++;
             var foldReturns = new List<double>();
+            var foldMae     = new List<double>();
             foreach (var (coin, arr) in validCoins)
             {
                 var (start, end) = FoldScoreHelper.PerCoinFoldRange(arr.Length, k, f, _cfg.EmbargoPct);
                 if (end - start < 40) continue;
-                foldReturns.AddRange(
-                    GridSimulator.GetGridSessionReturns(ind, arr.Slice(start, end - start).Span, coin.Funding)
-                        .Select(t => (t.Return, w: _tradeGate?.Invoke(t.Time) ?? 1.0))
-                        .Where(t => t.w >= 0.05).Select(t => t.Return * t.w));
+                Collect(ind, arr.Slice(start, end - start).Span, coin.Funding, _tradeGate,
+                        foldReturns, foldMae);
             }
 
             if (foldReturns.Count < MinTradesPerFold) continue;
 
-            foldScores.Add(FoldScore(foldReturns, _cfg));
+            foldScores.Add(FoldScore(foldReturns, _cfg, maePct: foldMae));
             foldCounts.Add(foldReturns.Count);
         }
 
         return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D, attemptedFolds);
+    }
+
+    // POST-GA FINALIST SCREEN. The GA returns an argmax over tens of thousands of candidates; on
+    // this sample the MinBTL budget is about five INDEPENDENT configurations, so the argmax is by
+    // default the best of many draws from noise. These two screens cannot show a genotype is good —
+    // they can show it is fragile, which is cheaper and more actionable. Report-only: nothing here
+    // changes selection, because using them to select would make them one more fitted surface.
+    public void ScreenFinalist(GridGenotype best, IReadOnlyList<CoinData> coins)
+    {
+        Console.WriteLine("\n=== Finalist screen (report-only — see docs/RIGOR_REWORK_2026-09.md §6) ===");
+
+        // Neighbourhood shape. Mutate is the natural perturbation operator: it already respects
+        // gene bounds, so a neighbour is always a genotype the GA could itself have produced.
+        var rob = FinalistScreen.PerturbedFitness(
+            best,
+            g => Fitness(g, coins, useValidation: false),
+            (g, rng, mag) => g.Mutate(rng, mag).ClampToBounds(),
+            samplesPerMagnitude: 8);
+        Console.WriteLine("  " + FinalistScreen.Format(rob));
+
+        // Concentration of the edge. Pooled train returns under the winning genotype, scored with
+        // the same fold score the GA selected on, so the two numbers are comparable.
+        var rets = new List<double>(); var mae = new List<double>();
+        foreach (var c in coins)
+            if (c.TrainCandles.Length >= 100) Collect(best, c.TrainCandles.Span, c.Funding, null, rets, mae);
+        if (rets.Count >= MinTradesPerFold)
+            Console.WriteLine("  " + FinalistScreen.Format(
+                FinalistScreen.OutlierSensitivity(rets, r => FoldScore(r, FinalistScreen.ScreenCfg(_cfg)))));
+        else
+            Console.WriteLine($"  outlier sensitivity: only {rets.Count} train trades — not scored");
     }
 
     private static int MedianLength(IEnumerable<int> lengths)
@@ -248,6 +291,8 @@ public class GridGeneticAlgorithm
 
         if (_verbose) Console.WriteLine($"Best (selected on train): train={trainFit:F3}  val={best.Fitness:F3}");
         if (_verbose) Console.WriteLine($"  {best}");
+
+        if (_verbose) ScreenFinalist(best, coins);
         return best;
     }
 

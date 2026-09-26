@@ -6,6 +6,7 @@ namespace Gravity_gen2.Tests;
 // Covers the mechanism that was fully implemented but never reached combinedbacktest /
 // oosbacktest: applying the trained DynamicGuard to a portfolio trade list, and reporting the
 // guarded result ALONGSIDE the unguarded one rather than in place of it.
+[Collection(ProcessGlobalCollection.Name)]   // mutates process-global state — see ProcessGlobalCollection
 public class GuardedPortfolioTests
 {
     static readonly DateTime T0 = new(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);

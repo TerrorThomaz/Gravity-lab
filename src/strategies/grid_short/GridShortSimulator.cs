@@ -23,9 +23,10 @@ public static class GridShortSimulator
     }
 
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetGridShortSessionReturns(
-        GridGenotype g, ReadOnlySpan<Candle> h1, FundingRateSession? funding = null)
+        GridGenotype g, ReadOnlySpan<Candle> h1, FundingRateSession? funding = null,
+        List<double>? maeOut = null)
     {
-        var (trades, _) = RunGridShort(g, h1, sessionLevel: true, funding: funding);
+        var (trades, _) = RunGridShort(g, h1, sessionLevel: true, funding: funding, maeOut: maeOut);
         return trades;
     }
 
@@ -44,7 +45,15 @@ public static class GridShortSimulator
 
     private static (List<(DateTime, double, string, DateTime, double)> Trades, GridShortTradeState FinalState)
         RunGridShort(GridGenotype g, ReadOnlySpan<Candle> candles, bool sessionLevel,
-                     FundingRateSession? funding = null)
+                     FundingRateSession? funding = null,
+                     // Opt-in worst adverse excursion per emitted trade, percent and <= 0. Mirrors
+                     // GridSimulator; the adverse extreme for a SHORT grid is the bar HIGH.
+                     List<double>? maeOut = null,
+                     // See GridSimulator: arming uses ema[i]/atr[i], which include close[i], and the
+                     // original code then filled rungs that highs[i] reached DURING bar i. Live, the
+                     // orders are placed at that close and can first fill at bar i+1. Measured on the
+                     // long grid the difference was Sharpe 4.15 -> 0.67. Default false = honest.
+                     bool fillOnArmBar = false)
     {
         int warmup = Math.Max(Math.Max(Math.Max(g.EmaPeriod, AtrPeriod), AdxPeriod * 2 + 1), g.BbPeriod) + 2;
         if (candles.Length <= warmup + 5)
@@ -69,6 +78,8 @@ public static class GridShortSimulator
         double   hardStop     = 0;
         int      holdCount    = 0;
         DateTime gridStartTime = default;
+        double   sessionMae   = 0.0;   // worst unrealised % of the filled rungs this session
+        bool     everFilled   = false; // has this session ever held a rung?
         int      levels       = Math.Clamp(g.GridLevels, 1, MaxLevels);
         var      filled       = new bool[MaxLevels];
         var      entryPrice   = new double[MaxLevels];
@@ -93,7 +104,9 @@ public static class GridShortSimulator
             if (!sessionLevel || sessionFills.Count == 0) return;
             result.Add((times[i], sessionFills.Average(), "grid_short_session", gridStartTime,
                         sessionEntryN > 0 ? sessionEntrySum / sessionEntryN : 0.0));
+            maeOut?.Add(sessionMae);
             sessionFills.Clear();
+            sessionMae = 0.0;
         }
 
         void CloseAllFilled(int i, double exitPx, bool isStop = false)
@@ -118,6 +131,17 @@ public static class GridShortSimulator
             if (gridActive)
             {
                 holdCount++;
+
+                // Short grid: the bar HIGH is the adverse extreme, so a rise above mean entry is
+                // the loss. Sign is flipped relative to GridSimulator; the result is still <= 0.
+                {
+                    double meanEntry = MeanFilled(entryPrice, filled);
+                    if (meanEntry > 1e-10)
+                    {
+                        double unreal = (meanEntry - highs[i]) / meanEntry * 100.0;
+                        if (unreal < sessionMae) sessionMae = unreal;
+                    }
+                }
 
                 if (highs[i] >= hardStop)
                 {
@@ -190,7 +214,8 @@ public static class GridShortSimulator
                     }
                 }
 
-                if (!filled.Take(levels).Any(f => f))
+                if (filled.Take(levels).Any(f => f)) everFilled = true;
+                else if (everFilled)
                 {
                     gridActive = false;
                     FlushSession(i);
@@ -205,8 +230,10 @@ public static class GridShortSimulator
                 double proposedStop   = proposedAnchor + g.HardStopAtrMult * proposedAtr;
                 double level1Price    = proposedAnchor + g.GridStepAtrMult * proposedAtr;
 
-                if (level1Price >= proposedStop || highs[i] < level1Price) continue;
+                if (level1Price >= proposedStop) continue;
+                if (fillOnArmBar && highs[i] < level1Price) continue;
 
+                everFilled   = false;
                 anchor       = proposedAnchor;
                 atrAtStart   = proposedAtr;
                 hardStop     = proposedStop;
@@ -216,7 +243,7 @@ public static class GridShortSimulator
                 sessionEntrySum = 0; sessionEntryN = 0;
                 sessionFills.Clear();
 
-                for (int n = 0; n < levels; n++)
+                for (int n = 0; n < levels && fillOnArmBar; n++)
                 {
                     double lvlPrice = anchor + (n + 1) * g.GridStepAtrMult * atrAtStart;
                     if (lvlPrice < hardStop && highs[i] >= lvlPrice)
@@ -227,6 +254,7 @@ public static class GridShortSimulator
                     }
                 }
 
+                if (filled.Take(levels).Any(f => f)) everFilled = true;
                 gridActive = true;
             }
         }

@@ -8,9 +8,22 @@ public static class FoldScoreHelper
         int minTradesPerFold,
         FitnessConfig cfg,
         double volWeight = 1.0,
-        double statBonusCeiling = 1.0)
+        double statBonusCeiling = 1.0,
+        // Per-trade maximum adverse excursion, in percent, NEGATIVE or zero, one entry per return.
+        // OPT-IN: null (or a mismatched length, which is a wiring mistake) leaves the drawdown term
+        // exactly as it was, so a strategy whose simulator does not yet report excursions is scored
+        // bit-for-bit as before. Without this the fold score books each trade whole and a trade that
+        // sank 30% before closing at +1% is indistinguishable from a smooth ride to +1% — which is
+        // how a Grid retrain tripled MaxHoldCandles (53 -> 164) for a fold score that could not
+        // register the added time at risk.
+        IReadOnlyList<double>? maePct = null)
     {
         if (returns.Count < minTradesPerFold) return -1.0;
+
+        // Cap the winners before anything reads them, so every downstream term — gain, pf, rr,
+        // Sharpe, the tail terms — sees the same capped series. Index order and length are
+        // preserved, which is what keeps the maePct walk below in lockstep.
+        returns = WinsorizeWinners(returns, cfg.WinsorizeWinnerPct);
 
         int wins = 0;
         double grossWins = 0, grossLoss = 0;
@@ -25,10 +38,21 @@ public static class FoldScoreHelper
 
         if (pf < 1.0) return pf - 2.0;
 
+        var mae = maePct is { } m && m.Count == returns.Count ? m : null;
+
         double balance = 1.0, peak = 1.0, maxDd = 0.0;
-        foreach (var r in returns)
+        for (int i = 0; i < returns.Count; i++)
         {
-            balance += r / 100.0 * posFrac;
+            // Dip to the trade's worst point BEFORE settling it. Same sequential, non-overlapping
+            // assumption the walk already made — this only adds the trough inside each hold.
+            if (mae != null)
+            {
+                double trough = balance + Math.Min(0.0, mae[i]) / 100.0 * posFrac;
+                double ddTrough = (peak - trough) / peak;
+                if (ddTrough > maxDd) maxDd = ddTrough;
+            }
+
+            balance += returns[i] / 100.0 * posFrac;
             if (balance > peak) peak = balance;
             double dd = (peak - balance) / peak;
             if (dd > maxDd) maxDd = dd;
@@ -108,6 +132,41 @@ public static class FoldScoreHelper
         return score;
     }
 
+    // Cap every winning trade at the (1 - pct) quantile of the fold's OWN winning trades.
+    //
+    // WHY: `gain` is a sum, so a single +50% trade outranks a hundred +0.5% trades, and three
+    // further terms used to pay again for the same shape (rrMult, Sortino, the p95/p5 tail bonus).
+    // The finalist screen measures what that bought — 94-99% of the fold score lost when the best
+    // 1% of trades is deleted, on every live genotype. A capped series cannot be bought with a
+    // lottery ticket.
+    //
+    // ORDER AND LENGTH ARE PRESERVED. Canonical walks `returns` and `maePct` index-by-index, so a
+    // transform that sorted or filtered would pair each trade's return with another trade's
+    // excursion. This only lowers values in place.
+    //
+    // MONOTONE: min(r, cap) is non-decreasing in both r and cap, and cap is non-decreasing in every
+    // return, so the whole vector is elementwise non-decreasing in its input. FitnessLandscapeTests'
+    // gradient-bearing requirement therefore still holds.
+    //
+    // LOSSES ARE NEVER TOUCHED. Trimming both tails would flatter a strategy by deleting its worst
+    // losses, which is the opposite of the question being asked.
+    public static List<double> WinsorizeWinners(List<double> returns, double pct)
+    {
+        if (pct <= 0.0 || returns.Count == 0) return returns;
+
+        var winners = returns.Where(r => r > 0).ToList();
+        if (winners.Count < 2) return returns;      // a cap at the only winner is already a no-op
+
+        winners.Sort();
+        // Highest value kept. At pct=0.05 and 101 winners this is index 95, so the top 5 are capped.
+        int idx = (int)Math.Floor((1.0 - pct) * (winners.Count - 1));
+        double cap = winners[Math.Clamp(idx, 0, winners.Count - 1)];
+
+        var outp = new List<double>(returns.Count);
+        foreach (double r in returns) outp.Add(r > cap ? cap : r);
+        return outp;
+    }
+
     // Risk/reward leg: saturating hyperbola, strictly positive and increasing on (0, inf).
     // Replaced a linear ramp that was negative for rr<1 (collapsed the whole fold score to 0).
     // RrMultiplier(2.5) == 1.0 exactly (neutral); bounded above by MaxRrMult (1.6).
@@ -125,16 +184,35 @@ public static class FoldScoreHelper
 
     // Per-trade Sharpe: mean/stdev of trade returns, no time normalisation.
     // Scale-free in trade count — two folds with the same distribution get the same number.
-    // Guards: <5 returns → 0; PF<1.3 → 0.
+    // Guards: <5 returns → 0; ramped to zero as profit factor falls to 1.0.
+    //
+    // THIS WAS A CLIFF. The rule was `PF < 1.3 → 0`, inherited from Simulator.SharpeRatio. Since
+    // Canonical exits early below PF 1.0, the live band starts at 1.0 — so the term was pinned at
+    // zero across PF 1.0–1.3 and jumped at the boundary. That matters more than it looks: SharpeW
+    // defaults to 0.5 while PfW and CalmarW default to 0.0, making this the LARGEST live
+    // statistical weight in the fold score, and every strategy in the walk-forward book sits in
+    // exactly that band (measured PF 1.00–1.05 per strategy). The heaviest stat term was therefore
+    // contributing a constant, carrying no information about the genotypes actually being ranked.
+    //
+    // The ramp keeps the original intent — a barely-profitable fold should not collect a full
+    // Sharpe bonus — without the discontinuity or the dead zone. Same shape as the tail-term ramp.
+    public const double SharpePfRampLo = 1.0;   // no bonus at breakeven
+    public const double SharpePfRampHi = 1.3;   // full bonus from here up (the old cliff edge)
+
     public static double PerTradeSharpe(List<double> returns)
     {
         if (returns.Count < 5) return 0;
         double grossProfit = returns.Where(r => r > 0).Sum();
         double grossLoss   = Math.Abs(returns.Where(r => r <= 0).Sum());
-        if (grossLoss < 1e-10 || grossProfit / grossLoss < 1.3) return 0;
+        if (grossLoss < 1e-10) return 0;
+
+        double pf = grossProfit / grossLoss;
+        double w  = Math.Clamp((pf - SharpePfRampLo) / (SharpePfRampHi - SharpePfRampLo), 0.0, 1.0);
+        if (w <= 0.0) return 0;
+
         double mean = returns.Average();
         double std  = Math.Sqrt(returns.Select(r => (r - mean) * (r - mean)).Average());
-        return std < 1e-10 ? 0 : mean / std;
+        return std < 1e-10 ? 0 : w * mean / std;
     }
 
     // Per-trade Sortino: mean / downside-deviation, no time scaling. Guards match Simulator.SortinoRatio.
@@ -461,10 +539,28 @@ public static class FoldScoreHelper
         int minTradesPerFold,
         FitnessConfig cfg,
         double volWeight = 1.0,
-        double statBonusCeiling = 1.0)
+        double statBonusCeiling = 1.0,
+        // Per-trade maximum adverse excursion, in percent, NEGATIVE or zero, one entry per return.
+        // OPT-IN: null (or a mismatched length, which is a wiring mistake) leaves the drawdown term
+        // exactly as it was, so a strategy whose simulator does not yet report excursions is scored
+        // bit-for-bit as before. Without this the fold score books each trade whole and a trade that
+        // sank 30% before closing at +1% is indistinguishable from a smooth ride to +1% — which is
+        // how a Grid retrain tripled MaxHoldCandles (53 -> 164) for a fold score that could not
+        // register the added time at risk.
+        IReadOnlyList<double>? maePct = null)
     {
-        var valid = returns.Where(r => r.RegimeBars >= sustainedBars).Select(r => r.Return).ToList();
-        return Canonical(valid, posFrac, minTradesPerFold, cfg, volWeight, statBonusCeiling);
+        // The regime filter drops trades, so the excursion list has to be filtered by the SAME
+        // predicate or the two fall out of alignment and Canonical silently discards a
+        // mismatched-length list. Index-based rather than Where(), for exactly that reason.
+        var mae = maePct is { } src && src.Count == returns.Count ? new List<double>(returns.Count) : null;
+        var valid = new List<double>(returns.Count);
+        for (int i = 0; i < returns.Count; i++)
+        {
+            if (returns[i].RegimeBars < sustainedBars) continue;
+            valid.Add(returns[i].Return);
+            mae?.Add(maePct![i]);
+        }
+        return Canonical(valid, posFrac, minTradesPerFold, cfg, volWeight, statBonusCeiling, mae);
     }
 
     public static double CanonicalRegimeStratified(
@@ -474,13 +570,28 @@ public static class FoldScoreHelper
         int minTradesPerFold,
         FitnessConfig cfg,
         double volWeight = 1.0,
-        double statBonusCeiling = 1.0)
+        double statBonusCeiling = 1.0,
+        // Per-trade maximum adverse excursion, in percent, NEGATIVE or zero, one entry per return.
+        // OPT-IN: null (or a mismatched length, which is a wiring mistake) leaves the drawdown term
+        // exactly as it was, so a strategy whose simulator does not yet report excursions is scored
+        // bit-for-bit as before. Without this the fold score books each trade whole and a trade that
+        // sank 30% before closing at +1% is indistinguishable from a smooth ride to +1% — which is
+        // how a Grid retrain tripled MaxHoldCandles (53 -> 164) for a fold score that could not
+        // register the added time at risk.
+        IReadOnlyList<double>? maePct = null)
     {
-        var valid = returns.Where(r => r.RegimeBars >= sustainedBars).ToList();
+        var mae = maePct is { } src && src.Count == returns.Count ? new List<double>(returns.Count) : null;
+        var valid = new List<(double Return, int RegimeBars, MarketRegime Regime)>(returns.Count);
+        for (int i = 0; i < returns.Count; i++)
+        {
+            if (returns[i].RegimeBars < sustainedBars) continue;
+            valid.Add(returns[i]);
+            mae?.Add(maePct![i]);
+        }
         if (valid.Count < minTradesPerFold) return -1.0;
 
         var plainReturns = valid.Select(r => r.Return).ToList();
-        double baseScore = Canonical(plainReturns, posFrac, minTradesPerFold, cfg, volWeight, statBonusCeiling);
+        double baseScore = Canonical(plainReturns, posFrac, minTradesPerFold, cfg, volWeight, statBonusCeiling, mae);
         if (baseScore <= -1.0) return baseScore;
 
         var regimeBuckets = new Dictionary<MarketRegime, List<double>>();

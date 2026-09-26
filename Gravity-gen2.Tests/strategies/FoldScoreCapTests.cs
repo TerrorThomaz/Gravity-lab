@@ -1155,7 +1155,8 @@ public class GridShapeTests
 
         var method = typeof(GridGeneticAlgorithm).GetMethod("FoldScore",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-        double actual = (double)method.Invoke(null, [returns, Neutral, 1.0])!;
+        // null = no per-trade excursions supplied, which must reproduce the pre-MAE score exactly.
+        double actual = (double)method.Invoke(null, [returns, Neutral, 1.0, null])!;
 
         double expected = FoldScoreHelper.Canonical(
             returns, 0.03, 10, FoldScoreHelper.GridShape(Neutral), 1.0, statBonusCeiling: 1.0);
@@ -1173,7 +1174,7 @@ public class GridShapeTests
 
         var method = typeof(GridGeneticAlgorithm).GetMethod("FoldScore",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-        double Score(FitnessConfig c) => (double)method.Invoke(null, [returns, c, 1.0])!;
+        double Score(FitnessConfig c) => (double)method.Invoke(null, [returns, c, 1.0, null])!;
 
         double neutral = Score(Neutral);
         Assert.True(neutral > 0);

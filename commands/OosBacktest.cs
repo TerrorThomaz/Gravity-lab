@@ -711,7 +711,10 @@ static class OosBacktest
             int noEntry = allTrades.Count(t => t.Entry == default);
             if (noEntry > 0)
                 Console.WriteLine($"  !! {noEntry} trades carry no entry time — concurrency modelled with the legacy constant");
-            var filtered = PortfolioReplay.FilterByConcurrentCap(capInput, directionalCap: Config.MaxDirectionalConcurrent, perSymbolCap: Config.MaxPerSymbolConcurrent);
+            // Correlation-aware directional cap. OFF unless GRAVITY_CROWDING is set; one-sided when
+            // on, and estimated strictly before the book's first trade. See SymbolCrowdingCap.
+            var crowding = SymbolCrowdingCap.BuildForBook(fetched, capInput, "OOS BOOK");
+            var filtered = PortfolioReplay.FilterByConcurrentCap(capInput, directionalCap: Config.MaxDirectionalConcurrent, perSymbolCap: Config.MaxPerSymbolConcurrent, crowding: crowding);
             Console.WriteLine($"  Concurrent cap: {allTrades.Count} → {filtered.Count} trades ({allTrades.Count - filtered.Count} removed)");
             allTrades = filtered.Select(t => (t.EntryTime + t.HoldDuration, t.Return, t.Conf, t.Strategy, t.EntryTime, t.Symbol)).ToList();
 
@@ -1369,7 +1372,10 @@ static class OosBacktest
             int noEntry = allTrades.Count(t => t.Entry == default);
             if (noEntry > 0)
                 Console.WriteLine($"  !! {noEntry} trades carry no entry time — concurrency modelled with the legacy constant");
-            var filtered = PortfolioReplay.FilterByConcurrentCap(capInput, directionalCap: Config.MaxDirectionalConcurrent, perSymbolCap: Config.MaxPerSymbolConcurrent);
+            // Correlation-aware directional cap. OFF unless GRAVITY_CROWDING is set; one-sided when
+            // on, and estimated strictly before the book's first trade. See SymbolCrowdingCap.
+            var crowding = SymbolCrowdingCap.BuildForBook(fetchedAll, capInput, "ALL-COINS BOOK");
+            var filtered = PortfolioReplay.FilterByConcurrentCap(capInput, directionalCap: Config.MaxDirectionalConcurrent, perSymbolCap: Config.MaxPerSymbolConcurrent, crowding: crowding);
             Console.WriteLine($"  Concurrent cap: {allTrades.Count} → {filtered.Count} trades ({allTrades.Count - filtered.Count} removed)");
             allTrades = filtered.Select(t => (t.EntryTime + t.HoldDuration, t.Return, t.Conf, t.Strategy, t.EntryTime, t.Symbol)).ToList();
 

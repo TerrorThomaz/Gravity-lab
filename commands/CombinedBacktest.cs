@@ -1346,8 +1346,15 @@ static class CombinedBacktest
             int noEntry = allTrades.Count(t => t.Entry == default);
             if (noEntry > 0)
                 Console.WriteLine($"  !! {noEntry} trades carry no entry time — concurrency modelled with the legacy constant");
+            // Correlation-aware directional cap. OFF unless GRAVITY_CROWDING is set, and one-sided
+            // when on: it can only remove trades the headcount already admitted. The correlation is
+            // estimated STRICTLY BEFORE the first trade in the book — a cap fitted on the window it
+            // filters would be picking which clusters to avoid already knowing how they turned out.
+            var crowding = SymbolCrowdingCap.BuildForBook(fetched, capInput, "VAL BOOK");
+
             var capFiltered = PortfolioReplay.FilterByConcurrentCap(capInput, directionalCap: Config.MaxDirectionalConcurrent,
-                                                                    perSymbolCap: Config.MaxPerSymbolConcurrent);
+                                                                    perSymbolCap: Config.MaxPerSymbolConcurrent,
+                                                                    crowding: crowding);
             int skipped = allTrades.Count - capFiltered.Count;
             if (skipped > 0)
                 Console.WriteLine($"  Concurrent cap removed {skipped} trades");

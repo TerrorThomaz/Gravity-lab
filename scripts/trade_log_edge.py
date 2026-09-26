@@ -12,6 +12,11 @@ pass --btc-start with the first BTC bar the backtest used (default 2020-10-28, t
 entry in the fulltest OOS book); the end defaults to the log's last entry. Only the "test"
 rows are free of every selection step (GA, router, HMM, guard).
 
+NOT EVIDENCE OF AN EDGE. These CSVs are per-trade returns from in-sample-gated books; see
+docs/RIGOR_REWORK_2026-09.md — `edgetest` is the measurement of record. Use this only to spot
+inconsistencies between reports (e.g. a strategy flipping sign between two of them) or a CSV
+that is stale against the committed genotypes.
+
   python3 scripts/trade_log_edge.py reports/oos_trades.csv [more.csv ...] [--btc-start YYYY-MM-DD]
 """
 import sys

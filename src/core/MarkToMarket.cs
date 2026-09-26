@@ -38,35 +38,58 @@ public static class MarkToMarket
         double MaxDrawdownPct,      // peak-to-trough on the mark-to-market curve
         double PeakGrossExposurePct,// max concurrent notional as a fraction of equity
         double AvgGrossExposurePct, // time-weighted average of the same
-        int    Steps);
+        int    Steps,
+        // The curve itself, one point per step. A portfolio Sharpe has to come from here: a
+        // per-trade mean/std is not one, however it is scaled.
+        IReadOnlyList<(DateTime Time, double Equity)> Curve);
 
-    // trades: (EntryTime, Return%, HoldDuration, PositionEur) — position size as ALLOCATED by the
-    // exposure-capped sim, so this reflects the cap actually under test rather than a nominal size.
+    // One open position. `UnrealisedPct` is the OPT-IN path: given a time inside the hold it
+    // returns the position's unrealised return in percent, marked from the real price series.
+    // Supply it and the interior of the hold is real; leave it null and the position accrues
+    // linearly, exactly as before (see the LOWER BOUND note above — that is what null means).
+    public readonly record struct Position(
+        DateTime EntryTime,
+        double   ReturnPct,
+        TimeSpan Hold,
+        double   PosEur,
+        Func<DateTime, double>? UnrealisedPct = null);
+
+    // Backward-compatible overload: no price paths, linear accrual, bit-identical to the original.
     public static Result Compute(
         IReadOnlyList<(DateTime EntryTime, double ReturnPct, TimeSpan Hold, double PosEur)> trades,
         double startBalance,
         TimeSpan step)
+        => Compute(trades.Select(t => new Position(t.EntryTime, t.ReturnPct, t.Hold, t.PosEur)).ToList(),
+                   startBalance, step);
+
+    // trades: position size as ALLOCATED by the exposure-capped sim, so this reflects the cap
+    // actually under test rather than a nominal size.
+    public static Result Compute(
+        IReadOnlyList<Position> trades,
+        double startBalance,
+        TimeSpan step)
     {
-        if (trades.Count == 0) return new Result(0, 0, 0, 0);
+        if (trades.Count == 0) return new Result(0, 0, 0, 0, Array.Empty<(DateTime, double)>());
 
         var ordered = trades.OrderBy(t => t.EntryTime).ToList();
         DateTime t0 = ordered[0].EntryTime;
         DateTime t1 = ordered.Max(t => t.EntryTime + t.Hold);
-        if (t1 <= t0) return new Result(0, 0, 0, 0);
+        if (t1 <= t0) return new Result(0, 0, 0, 0, Array.Empty<(DateTime, double)>());
 
         // Realized equity accrues as trades CLOSE; open positions are marked continuously. Keeping
         // the two separate is what stops a position being counted twice at the moment it closes.
         double realized = startBalance;
         double peak = startBalance, maxDd = 0, peakGross = 0, grossTimeSum = 0;
         int steps = 0, next = 0;
-        var open = new List<(DateTime Entry, DateTime Close, double Ret, double Eur)>();
+        var curve = new List<(DateTime, double)>();
+        var open = new List<(DateTime Entry, DateTime Close, double Ret, double Eur, Func<DateTime, double>? Path)>();
 
         for (DateTime now = t0; now <= t1; now += step)
         {
             while (next < ordered.Count && ordered[next].EntryTime <= now)
             {
                 var tr = ordered[next++];
-                open.Add((tr.EntryTime, tr.EntryTime + tr.Hold, tr.ReturnPct, tr.PosEur));
+                open.Add((tr.EntryTime, tr.EntryTime + tr.Hold, tr.ReturnPct, tr.PosEur, tr.UnrealisedPct));
             }
 
             for (int i = open.Count - 1; i >= 0; i--)
@@ -80,13 +103,24 @@ public static class MarkToMarket
             double unrealized = 0, gross = 0;
             foreach (var p in open)
             {
-                double span = (p.Close - p.Entry).TotalSeconds;
-                double frac = span > 1e-9 ? Math.Clamp((now - p.Entry).TotalSeconds / span, 0, 1) : 1.0;
-                unrealized += p.Ret / 100.0 * p.Eur * frac;
+                if (p.Path is { } markAt)
+                {
+                    // Real path: the position is worth what the price says right now. It is still
+                    // SETTLED at p.Ret when it closes (above), so costs and stop/target execution
+                    // land at the close rather than being smeared across the hold.
+                    unrealized += markAt(now) / 100.0 * p.Eur;
+                }
+                else
+                {
+                    double span = (p.Close - p.Entry).TotalSeconds;
+                    double frac = span > 1e-9 ? Math.Clamp((now - p.Entry).TotalSeconds / span, 0, 1) : 1.0;
+                    unrealized += p.Ret / 100.0 * p.Eur * frac;
+                }
                 gross      += p.Eur;
             }
 
             double equity = realized + unrealized;
+            curve.Add((now, equity));
             if (equity > peak) peak = equity;
             if (peak > 0)
             {
@@ -99,6 +133,6 @@ public static class MarkToMarket
             steps++;
         }
 
-        return new Result(maxDd, peakGross, steps > 0 ? grossTimeSum / steps : 0, steps);
+        return new Result(maxDd, peakGross, steps > 0 ? grossTimeSum / steps : 0, steps, curve);
     }
 }

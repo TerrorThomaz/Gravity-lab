@@ -37,6 +37,10 @@ dotnet run -- allcoinsbacktest   # Portfolio sim: BacktestCoins (val 20%) + OOS 
 dotnet run -- yearlybreakdown    # Per-year portfolio returns (full history)
 dotnet run -- fulltest           # Full statistical test with Kelly cap + VC analysis
 dotnet run -- test               # Statistical edge validation
+dotnet run -- edgetest           # THE rigour command: walk-forward gate, portfolio Sharpe off a
+                                 # daily equity curve, deflated Sharpe/PBO/White's RC, per-strategy
+                                 # leave-one-out acceptance gate. Exits non-zero on a strictly
+                                 # dominated strategy. Read this before trusting any other number.
 
 # Live
 dotnet run -- papertrade         # Live signals (15m refresh — PapertradeCommands.RefreshSeconds = 900),
@@ -105,12 +109,48 @@ Gravity-gen2.Tests/
   regime/         RegimeClassifierTests, RegimeRouterGenotypeDtoTests,
                   HiddenMarkovModelTests, RegimeRouterHmmTests
   guard/          DynamicGuardTests
-  strategies/     FoldScoreCapTests, PerCoinFoldAlignmentTests, RipShortExitOverrideTests
+  strategies/     FoldScoreCapTests, PerCoinFoldAlignmentTests, RipShortExitOverrideTests,
+                  GridMaeTests, FadeShortMaeTests
+  (added 2026-09-23) core/SharpeHonestyTests, FitnessLandscapeTests, FitnessPathRiskTests,
+                  GaTrialCounterTests, MarkToMarketPathTests;
+                  regime/RegimeRouterContractTests, RollingStrategyGateTests
 ```
+
+**Tests that mutate PROCESS-GLOBAL state must join `ProcessGlobalCollection`** (2026-09-23). The
+suite used to be flaky — a different test failed on each full run, all passed in isolation, roughly
+1 run in 3. Three shared resources, all process-wide, all mutated by tests xUnit was free to run
+concurrently because they sat in different collections:
+
+- **`Console.Out`** — the `Capture` helpers save/`SetOut`/restore, which interleaves destructively:
+  B saves A's writer as "previous", then A restores and clobbers B's redirect mid-test, so B
+  asserts on an empty string. The failure lands on whichever test was unlucky.
+- **`SwingLongSimulator.BtcRegimeProbe`** — `Dispose()` clears it at CLASS teardown, which does
+  nothing against a concurrent test. A victim routes SwingLong through a gated probe, gets zero
+  trades, and fails far from the cause.
+- **`GRAVITY_HMM` via `Environment.SetEnvironmentVariable`** — `RegimeRouter.HmmEnabled` reads it
+  live, so while set, any concurrent test expecting HMM routing silently takes the legacy path.
+  Widest blast radius, and it explains failures in classes that never touch Console.
+
+Fixed with one `[CollectionDefinition(DisableParallelization = true)]` collection. That stops it
+running alongside OTHER collections too, which is the property actually needed — the readers are
+not enumerable, since `HmmEnabled` is consulted deep inside routing. Verified with 8 consecutive
+clean full-suite runs against a prior ~1-in-3 failure rate. **Adding a test that touches
+`Console.SetOut`, an environment variable, or any mutable static? Put its class in that
+collection.**
 
 ## Architecture
 
-### Strategy suite (8 strategies)
+### Strategy suite — 3 LIVE, 4 disabled (as of 2026-09-23)
+
+**Only FadeShort, Grid and GridShort have genotypes on disk.** FadeLong, DipLong, RipShort and
+SwingLong are disabled (`genotypes/<name>_genotype.json.DISABLED_<date>`); every loader treats a
+missing genotype as "skip", so they simply do not trade. They were retired on `edgetest` evidence:
+each was a NEGATIVE contributor out-of-sample, and DipLong/RipShort lost money *in their own home
+regime* on n≈4,000-5,000 (DipLong PF 0.95 in Bull, RipShort PF 0.98 in Bear) — not window bad luck.
+Removing them moved the book's deflated Sharpe 0.003 → 0.119 → 0.790. The table below still
+describes all eight because the code paths remain; treat the four as documentation, not as live.
+
+### Strategy suite (8 defined)
 
 Most strategies use a dual-timeframe setup: **1h candles** for regime/setup detection, **15m candles** for precise entry/exit execution. **The grid family is the exception — `GridSimulator.GetGridReturns` / `GetGridSessionReturns` take only an h1 span and never see 15m data.**
 
@@ -161,6 +201,18 @@ Returns `StrategyActivation`: per-strategy **boolean** flags plus `Regime`, `Con
 Two overloads: rule-based fallback and trained-genotype path (`RegimeRouter.Route(btcH1, routerGeno, ethH1)`), plus an HMM overload (`Route(btcH1, routerGeno, hmmGeno, ethH1, atrRatio)`) that fills `StrategyActivation.Weights`.
 Legacy (threshold) gating delegates to `RegimeRouter.ComputeActivation`; HMM gating delegates to `RegimeRouter.ComputeWeights`.
 
+**`IsActive` and `SizeGate` share ONE resolver (`RegimeRouter.Resolve`, fixed 2026-09-23).** They
+used to be independent paths: with a SIMFAM gate attached `IsActive` routed through the gate while
+`SizeGate` fell through to the legacy thresholds and returned **0**, so a trade the gate admitted
+was sized at zero notional — it took a portfolio slot, entered the reported book, and contributed
+no P&L. **56-71% of the rows** in the committed report CSVs were in that state. Two further fixes
+in the same pass: size is now the conviction weight (monotone), replacing a `w < 0.5 → 1.0` rule
+that made size peak at the router's LOWEST conviction and paid the GA to drive favorability under
+0.5; and hysteresis/min-hold are precomputed once over the bar series in time order, because they
+were mutating per call on a session shared across every coin, so the same trade routed differently
+depending on which coin was evaluated first. `RegimeRouterContractTests` pins all three as
+properties.
+
 `RegimeRouterSession` — pre-computed O(1) per-trade lookup for backtests. Build once, call `IsActive(kind, time)`. In HMM mode also exposes `Weight(kind, time)` (continuous [0,1]) and `SizeGate(kind, time)` (0 when gated off, else the HMM weight; 1.0 in legacy mode) — backtests multiply `SizeGate` into trade `Conf` so the router's conviction scales size.
 
 ### HMM regime router (favorability matrix)
@@ -199,7 +251,26 @@ score = base * (1 + SharpeW·f(sharpe)) * (1 + CalmarW·f(calmar))
              * volWeight * CVaRPenalty * TailRatioBonus
 ```
 
-where sharpe/sortino are the *per-trade*, non-time-normalised variants (`PerTradeSharpe`/`PerTradeSortino` — deliberately not `Simulator.SharpeRatio`, which would smuggle in a second frequency term), the six `FitnessConfig` term weights are floored at 0 and are bit-for-bit no-ops at 1.0, and both tail terms **ramp** over `[TailRampLo = 40, TailRampHi = MinTailSampleSize = 100]` returns via `w(n) = clamp((n − 40)/60, 0, 1)` — neutral at 40 (the 5% bucket holds 2 observations), fully on at 100 (5 observations). They were previously a hard gate at 100, which was a cliff the GA was paid to sit under: deleting one *winning* trade at n=100 raised the fold score 35.8%; it now costs 4.2%. `TailRatioBonus` is also capped (`MaxRrMult`-style) rather than unbounded.
+where sharpe/sortino are the *per-trade*, non-time-normalised variants (`PerTradeSharpe`/`PerTradeSortino` — deliberately not `Simulator.SharpeRatio`, which would smuggle in a second frequency term)
+
+**`PerTradeSharpe` used to return 0 below profit factor 1.3 — a CLIFF, fixed 2026-09-23.** It now
+ramps over `[SharpePfRampLo = 1.0, SharpePfRampHi = 1.3]`. This mattered more than its size
+suggests: `SharpeW` defaults to 0.5 while `PfW` and `CalmarW` default to **0.0**, making it the
+largest *live* statistical weight, and every strategy in the walk-forward book sits at PF 1.00-1.20
+— so the heaviest stat term was contributing a constant across the entire band being ranked. Third
+instance of the same class (tail-ratio step at n=100, `Simulator.SharpeRatio`'s PF floor, this).
+`FitnessLandscapeTests` now guards it generically: every GA-consumed statistic must be continuous,
+monotone and gradient-bearing across PF 1.0-3.0. **Any new statistic added to `Canonical` gets a
+case there** — a guard clause returning a constant fails it.
+
+**`maePct`: intra-hold drawdown now reaches fitness.** `Canonical` and `CanonicalRegime` take an
+opt-in per-trade maximum adverse excursion; the balance walk dips to each trade's trough before
+settling it, so the drawdown term prices time at risk instead of only the settled return. Null or
+mismatched-length is a bit-identical no-op. Wired for **Grid, GridShort and FadeShort** (opt-in
+`maeOut` lists on their simulators, filtered in lockstep with the trade gate and the regime-sustain
+filter). Why it exists: a path-blind retrain pushed Grid's `MaxHoldCandles` 53 → **164**, tripling
+time at risk for a score that could not register it; under the path-aware term the same GA chose
+**30**., the six `FitnessConfig` term weights are floored at 0 and are bit-for-bit no-ops at 1.0, and both tail terms **ramp** over `[TailRampLo = 40, TailRampHi = MinTailSampleSize = 100]` returns via `w(n) = clamp((n − 40)/60, 0, 1)` — neutral at 40 (the 5% bucket holds 2 observations), fully on at 100 (5 observations). They were previously a hard gate at 100, which was a cliff the GA was paid to sit under: deleting one *winning* trade at n=100 raised the fold score 35.8%; it now costs 4.2%. `TailRatioBonus` is also capped (`MaxRrMult`-style) rather than unbounded.
 
 `qualityMult`'s payoff-ratio term is the bounded hyperbola `1.6·rr/(rr + 1.5)`, anchored so `rrMult(2.5) == 1.0` exactly. The old linear ramp floored at 0, which made `qualityMult` zero for any fold with `rr < 1.0` — and since `base` is a pure product, the whole fold score collapsed to exactly 0.0 with no gradient back toward `rr = 1`. `retentionMult` penalises giving back gains at fold end (pushes toward tight trailing, not peak capture).
 
@@ -230,9 +301,71 @@ Both terms are monotone non-decreasing in every fold score, so the sum is monoto
 - `papertrade`: **reporting only.** `guardSession.GetMult(...)` feeds a `Guard: STRESS ×N` console line, the rotator's safety score (which itself only prints and lands in JSON), and a `guard.mult` JSON status field. No signal is sized, filtered or suppressed by it.
 - `dynamicguardtrain`: applied, since that is the training objective.
 
+### Execution modelling — the defect that voided everything, and the gate that catches it
+
+**Same-bar fill lookahead, found and fixed 2026-09-24.** `GridSimulator` armed at bar `i` using
+`ema[i]`/`atr[i]` — both of which include `close[i]` — and then filled every rung that `lows[i]` had
+reached **during that same bar**. Live, those limit orders are placed at the close of bar `i` and
+can first fill at `i+1`. The simulator was buying dips it already knew had happened.
+
+**Measured cost: Grid Sharpe 4.15 → 0.67, CAGR 4.7% → 0.3%. GridShort 4.69 → 0.35.** The entire
+apparent edge of the two best strategies was this. Every backtest this repo ever produced inherited
+it. The same defect class is quantified in the literature — Zhang, Li, Peng & Chen (2026),
+*A One-Switch Benchmark for Decision-Time Leakage* (arXiv:2605.23959) — at leakage gains of +5.41
+to +21.65 Sharpe against clean references of 0.44–0.68.
+
+Fixed by `fillOnArmBar: false` (now the default) in both grid simulators, with the arming
+precondition relaxed so orders genuinely rest and an `everFilled` flag so an unfilled grid is not
+abandoned on the next bar. `GetGridSessionReturnsSameBarFill` reproduces the old behaviour and
+exists **only** so the null control can prove it still detects the defect.
+
+**AUDIT (2026-09-24): the defect is confined to the grid family.** All four dual-timeframe
+simulators take `h1Ref = ih1 - 1` (the last fully-closed hourly bar), `h4Ref = h1Ref/4 - 1`, and
+enter at `m15[nextBar].Open` — the decision strictly precedes the fill. `AccumulationGridSimulator`
+**still has the defect and is not fixed**: its `active = true` lives inside the fill block, so
+deferring the fill disables the strategy rather than correcting it. It is not live and not loaded
+by `edgetest`; it must pass the null gate before being revived.
+
+**THE GATE: `RandomWalkNullTests`.** On a driftless random walk there is no edge, so every simulator
+must lose approximately its costs. Anything that *profits* found it in the engine. This is the test
+that would have caught the bug on day one, and it is the only test in the suite that checks the
+**instrument** rather than the **result**. It includes a self-check that reintroduces the defect and
+asserts the gate still fires — a null control that has never rejected anything is not a control.
+**Add every new simulator to it.**
+
+**Why none of the statistics caught it.** Deflated Sharpe, PBO, White's Reality Check, walk-forward
+gating, block bootstrap and trial counting all ran clean, because every book compared shared the
+same biased fill model. Those methods answer *"given that this measurement is trustworthy, was the
+selection procedure honest?"* — nothing in that stack establishes the antecedent. **Null controls
+establish the antecedent; statistics operate on it. Run them in that order.** `edgetest` now prints
+a FILL-MODEL SENSITIVITY row: a single cell is not a result, the table is.
+
+### Reported statistics — two traps
+
+**`Simulator.SharpeRatio` is NOT an annualised Sharpe.** It is a per-trade `mean/std` scaled by
+`sqrt(candleCount / 288)`, which is why `oosbacktest` prints 10.95. The scale factor depends on how
+many candles the book spans, so the same edge prints a different number on a longer history. A real
+portfolio Sharpe has to come off a daily equity curve — `edgetest` does that and reports ~1-3.
+
+It also **used to return exactly 0 whenever profit factor < 1.3**, so a losing book and a flat one
+both printed `0.00` and no report could tell them apart. Fixed 2026-09-23: it now returns the true
+value including negatives, and `ScreenedSharpeRatio` keeps the old floor for any caller that wants
+"profitable enough to quote" (none of the 63 call sites did). `SortinoRatio` is clamped both ways.
+
 ### Portfolio cap
 
 `src/core/PortfolioReplay.cs` — filters combined trade list by per-strategy concurrent count before EUR exposure simulation. `DefaultCaps`: `fade_short`=10, `swing`=10, `swing_long`=8, `diplong`=8, `fadelong`=8, `ripshort`=8, `grid`=12, `gridshort`=12, `accumgrid`=12. A strategy label missing from that dictionary warns once and falls back to `int.MaxValue` (uncapped) — keep labels in sync when adding a strategy. Directional cap (`Config.MaxDirectionalConcurrent = 20`) limits total same-direction concurrent positions across all strategies to prevent correlated exposure clustering; a label with no known direction is counted against *both* directional caps.
+
+**Per-strategy caps bind before the directional cap, and measuring without them is a trap.**
+`edgetest` originally replayed with only the global 20-slot budget and no `DefaultCaps`, which let
+FadeShort hold 8,919 slots on arrival order alone and starve 1,108 Grid + 1,248 GridShort trades.
+That made a *measurement artifact* look like a defective strategy: the acceptance gate rejected
+FadeShort, and wiring `DefaultCaps` in moved the book from CAGR 9.1%/Sharpe 1.43/DSR 0.125 to CAGR
+11.4%/Sharpe 2.62/DSR 0.941. Any new harness that replays trades must apply per-strategy caps first.
+
+**Crowding cap (`src/core/SymbolCrowdingCap.cs`) — OFF by default.** The directional cap counts heads: 20 open longs are 20 open longs whether they sit in one co-movement family or five. `GRAVITY_CROWDING=<double>` charges the directional budget for correlation instead, via `EffectiveSlots(n, rho, strength) = n·(1 + (n−1)·rho)^strength` — the variance inflation of n equally-sized positions at mean pairwise correlation `rho`. Two properties are load-bearing: it is an **exact no-op at strength 0** (`Math.Pow(x, 0) == 1`, plus an early return, so the pre-existing headcount path is bit-for-bit unchanged), and it is **one-sided** — the inflation factor is floored at 1, so it can only ever *reject* a trade the headcount admitted, never admit one it rejected. That asymmetry is deliberate: crypto correlations converge toward 1 in exactly the drawdowns this exists to survive, so an estimate made on average conditions understates crowding when it matters and must never be trusted in the loosening direction. Negative correlation therefore buys no extra slots. Wired into `combinedbacktest`, `oosbacktest`, `allcoinsbacktest` and `fulltest` (all four of its books: val, OOS, and both no-router variants), each building its own matrix because the `asOf` cutoff differs per book. The correlation is estimated **strictly before the first trade in the book** (`asOf`), because a cap fitted on the window it filters would be choosing which clusters to avoid already knowing how they turned out. Unknown symbols are charged at correlation 1.0. `fulltest`'s four trade books previously carried no symbol — they now do (`(Time, Return, Conf, Strategy, Symbol)`), which is what lets the cap see anything there at all. Mean pairwise correlation is used rather than `CovarianceMatrix.EffectiveBets`: the two agree exactly for an equicorrelation block (`n/EffectiveBets == 1 + (n−1)·rho`), and a 20×20 eigendecomposition per trade is both over-parameterised at ~1,170 daily observations and O(n³) in the hot path.
+
+`dotnet run -- symbolcov` reports the inputs this cap runs on — effective bets for the whole universe and for `Config.OosCoins` alone, PC1's share of variance, stress-vs-calm correlations, and deterministic co-movement families. Read it before choosing a strength.
 
 ### Candle fetching
 
@@ -249,8 +382,7 @@ Both terms are monotone non-decreasing in every fold score, so the sum is monoto
 | `genotypes/dip_long_genotype.json` | DipLong |
 | `genotypes/swing_long_genotype.json` | SwingLong |
 | `genotypes/swing_best_genotype.json` | SwingLong (best candidate) |
-| `genotypes/swing_best_genotype_liquid.json` | SwingLong – liquid coins |
-| `genotypes/swing_best_genotype_mid.json` | SwingLong – mid coins |
+| `docs/legacy/genotypes/swing_best_genotype_{liquid,mid}.json` | **RETIRED 2026-09-23** — see below |
 | `genotypes/regime_router_genotype.json` | RegimeRouter (threshold genes + optional HMM favorability/biases) |
 | `genotypes/regime_hmm_genotype.json` | Gaussian HMM (transition matrix, per-state Gaussian emissions, post-hoc state labels) |
 | `genotypes/dynamic_guard_genotype.json` | DynamicGuard |
@@ -278,6 +410,74 @@ Plain "held-out coin" validation (different symbol, same calendar window as trai
 - **Time embargo** (`TrainCommands.cs` FadeShort, `LongTrainCommands.cs` RipShort): restrict held-out coins to dates after every training coin's own fit window ends. FadeShort has embargo headroom (global 87.5% train/val split leaves a trailing slice free). **RipShort does not** — its per-coin val window is carved from that coin's own most-recent bear block (`CandleFetcher.FindLastRegimeBlock`), so at least one coin's training data typically already extends to the present, collapsing the embargo cutoff to "today" with zero trades to report. Fixing this would mean reserving a fixed trailing slice *before* the per-coin bear-block extraction runs.
 - **Regime stratification** (`RegimeBarLookup.TagRegimes` in `RegimeClassifier.cs`): tags each held-out trade with the BTC regime active at its entry time, so results are bucketed per regime instead of blended into one number. (The *reporting* use in `TrainCommands.cs` / `LongTrainCommands.cs` is report-only. `TagRegimes` itself is not: `FadeLongGA` and `DipLongGA` also call it inside fitness to drive the `RegimeDiversityW` term — default 0.2 — on their non-fold `useValidation || folds <= 1` branch.) A single blended window can be net-Bull or net-Bear, which silently favors whichever strategy direction matches it. Buckets under 20 trades print "insufficient data" instead of a fabricated stat — thin regimes (Ranging's longest contiguous run is ~41 h1 bars) genuinely can't support a held-out claim.
 
+### Rigour: `edgetest`, the trial ledger, and the rolling gate
+
+**`edgetest` is the only command whose numbers survive scrutiny.** Everything else reports
+per-trade statistics on an in-sample-gated book. It reports, for each of RAW / static-gate /
+rolling-gate / coin-screen / combined / a random-gate null control: per-trade PF and mean, then
+CAGR, annualised Sharpe, maxDD, Calmar and deflated Sharpe off a **daily marked-to-market equity
+curve**. Read the null control — at one point the gate's entire drawdown benefit was reproducible
+by dropping the same *fraction* of trades at random.
+
+**`RollingStrategyGate` (`src/regime/RollingStrategyGate.cs`)** replaces
+`genotypes/strategy_family_gate.json` for measurement. The static gate fits (strategy, regime)
+profit factors over the whole training set and then gates those same trades on the result, with
+`FamilyConfidence = in-sample PF / 3` sizing the position — nothing downstream of it is
+out-of-sample. The rolling gate re-fits every 30d on the trailing 180d of trades that had already
+**closed** (entry time picks the bucket, exit time gates availability), so no decision sees its own
+outcome. It is also the decay detector: a dead strategy routes itself off with no retrain.
+`BySymbol` does the same per coin — and measured, per-coin selection has **no** out-of-sample power
+here (PF 1.01 vs 1.00 raw), which is most of what `oosbacktest`'s in-sample coin screen was buying.
+
+**`GaTrialCounter` (`src/core/GaTrialCounter.cs`) — the deflated Sharpe is decided by a number
+nobody used to record.** `DeflatedSharpeRatio` subtracts `E[max SR]`, the Sharpe a search of T
+trials produces from strategies with NO edge. The same book scores DSR 0.971 at T=1,000 and 0.770
+at T=100,000. One `Record` per candidate evaluation at each of the 9 GA fitness entry points,
+merged into `genotypes/ga_trials.json` at process exit. **Trials ACCUMULATE and the ledger merges
+rather than replaces** — a genotype surviving five retrains was selected from all five passes, and
+resetting would launder away the multiple-testing burden a retrain just added. A missing ledger
+falls back to a deliberately LARGE default, because "we did not measure the search" must deflate,
+never inflate. Measured: `gridtrain` = 11,110 trials/run; a `train` run was 29,234 before the
+per-cluster stage was retired.
+
+**Per-cluster (`CoinCluster`) genotypes are RETIRED 2026-09-23.** `CoinClusterHelper.Classify`
+buckets on median h1 ATR% — **"Liquid" means LOW VOLATILITY, not liquidity** — so these were
+ATR-band variants, the same family as the high-vol genotypes retired in 2026-08. The training stage
+spent ~62% of a `train` run's evaluations on them, deflating the base genotype's Sharpe to pay for
+variants no out-of-sample report ever loaded (only `backtest`, `LongTrainCommands` and the live
+Hyperliquid path read them). Files moved to `docs/legacy/genotypes/`; every reader already falls
+back to the universal genotype when the file is absent, so the reader code is dead but harmless.
+**Do not regenerate them** — they would silently shadow the base genotype again.
+
+**`MarkToMarket` marks against real prices when given a path.** Linear accrual carries a position
+as a straight line from 0 to its final return, which hides every intra-hold drawdown and inflates
+any Sharpe taken off the curve — worst for the longest holds, i.e. the grid family. Supplying
+`Position.UnrealisedPct` marks at the actual price series; omitting it is bit-identical to the old
+behaviour (`Simulator.cs:428` still does). Switching `edgetest` to real paths cut the book's Sharpe
+2.29 → 1.34 and its DSR 0.790 → 0.097. CAGR was unchanged, as it must be — only the path moved.
+
+**Acceptance gate.** `edgetest` runs leave-one-out per strategy and prints ΔSharpe/ΔDSR/ΔCAGR plus
+the absolute book *without* it, and the slot-crowding decomposition. Verdicts are three-way:
+REJECT only when a strategy is worse on **both** return and risk (strictly dominated, exit code 1);
+TRADE-OFF when it helps one and costs the other — a risk-appetite call the gate deliberately does
+not price for you; accept when it helps both. It was binary at first and flagged FadeShort as a
+defect when FadeShort adds +2.0pp CAGR; a gate that cries wolf gets ignored, which is how
+`VERDICT A edge=A robustness=A` became meaningless.
+
+**Current standing (2026-09-23, 3 live strategies, 57,516 recorded trials):**
+
+| book | CAGR | annSharpe | maxDD | Calmar | DSR |
+|---|---|---|---|---|---|
+| with FadeShort | 11.4% | 2.62 | 3.9% | 2.96 | 0.941 |
+| without FadeShort | 9.4% | 6.38 | 0.5% | — | — |
+
+Grade **B** (6/7 criteria). Deflated Sharpe 0.941 against a 0.95 bar is the sole failure and is a
+coin-flip distinction on a threshold chosen by hand; the trial count is a **lower bound** because
+pre-instrumentation history is unrecoverable, so treat it as "borderline", not "passing". FadeShort
+is kept deliberately: +2.0pp CAGR for 7.8x the drawdown. Two caveats that no statistic prices: the
+roster was chosen by looking at OOS results on this window (selection on the test set), and without
+FadeShort the book is two correlated grid variants.
+
 ### Market-neutral research (`scripts/market_neutral_research.py`)
 
 Deliberately shares **no** code path with the directional suite (no GA, router, guard or HMM), so nothing here can be flattered by them. It mirrors only the cost constants (`FeeRoundTripPct`, `SlippageBps`, `FallbackIntervalPct` — keep in sync) and parses the symbol lists from `Config.cs`. Three books, walk-forward, parameters fixed in advance:
@@ -287,6 +487,8 @@ Deliberately shares **no** code path with the directional suite (no GA, router, 
 - **xcarry** — funding spread carried across highly correlated pairs (the correlation hedges the price move).
 
 Both carry books use a **fixed-permutation** shuffled-funding control (signal keeps its persistence and turnover, loses its link to the funding actually received — a per-rebalance reshuffle would inflate the control's turnover ~13x and make it an unfair strawman). Signals act one bar late; funding is real per-symbol, floor-charged both ways when missing. The sensitivity grid rows are printed in full and are **not** candidates.
+
+Per `docs/RIGOR_REWORK_2026-09.md` (null controls before statistics), `selftest` is the gate and runs first: on synthetic data with no planted cointegration / no persistent funding dispersion every book must lose roughly its costs, and with them planted it must find them. Execution is at the close of the bar *after* the signal bar, strictly later than the grid fix's next-bar fill. Run on candles, it has never been run yet.
 
 ### Discord bot
 

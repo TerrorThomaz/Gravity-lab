@@ -76,6 +76,7 @@ public class DipLongGA
 
     private double Fitness(DipLongGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
     {
+        GaTrialCounter.Shared.Record("dip_long");
         var validCoins = coins
             .Select(c => (c, h1: useValidation ? c.ValH1 : c.TrainH1,
                              m15: useValidation ? c.ValM15 : c.TrainM15))

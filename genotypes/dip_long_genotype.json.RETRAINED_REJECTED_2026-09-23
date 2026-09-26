@@ -1,0 +1,19 @@
+{
+  "RegimeLongEmaPeriod": 104,
+  "RegimeSlopeLookback": 10,
+  "EmaPeriod": 44,
+  "AdxThreshold": 23.15578582936702,
+  "RsiDipThreshold": 40.533584410107494,
+  "StopLossAtrMult": 1.8407107590887282,
+  "TakeProfitAtrMult": 15,
+  "TrailingActivationAtrMult": 4.6076745504316285,
+  "TrailingStopAtrMult": 5,
+  "MaxHoldCandles": 60,
+  "PositionSizePct": 0.05,
+  "TimeStopBars": 50,
+  "TimeStopLossPct": 0.2431306036878985,
+  "RegimeSustainedBars": 27,
+  "Fitness": -1.1710146087384992,
+  "AtrLow": 0,
+  "AtrHigh": 9999
+}

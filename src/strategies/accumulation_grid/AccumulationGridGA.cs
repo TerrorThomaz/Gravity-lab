@@ -53,6 +53,7 @@ public class AccumulationGridGA
 
     private double Fitness(AccumulationGridGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
     {
+        GaTrialCounter.Shared.Record("accum_grid");
         var validCoins = coins
             .Select(c => (c, arr: useValidation ? c.ValCandles : c.TrainCandles))
             .Where(x => x.arr.Length >= 100)

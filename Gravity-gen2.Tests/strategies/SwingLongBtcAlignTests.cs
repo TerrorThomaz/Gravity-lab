@@ -9,6 +9,7 @@ namespace Gravity_gen2.Tests;
 // "Router as indicator": BTC regime reaches SwingLong's ENTRY test rather than gating the whole
 // strategy from outside. The existing tradeGate only weights trades the simulator already took,
 // so the strategy could be penalised for trading in the wrong regime but never decline to.
+[Collection(ProcessGlobalCollection.Name)]   // sets SwingLongSimulator.BtcRegimeProbe, a process-global static
 public class SwingLongBtcAlignTests : IDisposable
 {
     private static readonly DateTime T0 = new(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);

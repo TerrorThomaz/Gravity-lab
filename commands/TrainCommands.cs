@@ -280,43 +280,32 @@ static class TrainCommands
         }
         catch (Exception ex) { Console.WriteLine($"  ExpandingWindowValidation skipped: {ex.Message}"); }
 
-        Console.WriteLine("\n─── Per-cluster GA training ───");
-        var clusterGroups = namedCoins
-            .GroupBy(nc => CoinClusterHelper.Classify(nc.Cd.TrainCandles.ToArray()))
-            .OrderBy(grp => (int)grp.Key)
-            .ToList();
-
-        foreach (var grp in clusterGroups)
-        {
-            var clusterType  = grp.Key;
-            var clusterCoins = grp.Select(nc => nc.Cd).ToList();
-            string clFile    = CoinClusterHelper.GenoFile(clusterType);
-            string clLabel   = CoinClusterHelper.Label(clusterType);
-            Console.WriteLine($"\n  [{clLabel}] {clusterCoins.Count} coins:");
-            foreach (var nc in grp) Console.Write($"    {nc.Sym}");
-            Console.WriteLine();
-
-            if (clusterCoins.Count < 4)
-            {
-                Console.WriteLine($"  ⚠ Too few coins — skipping cluster GA, universal genotype will cover this cluster");
-                File.WriteAllText(clFile, JsonSerializer.Serialize(FadeShortGenotypeDto.From(best),
-                    new JsonSerializerOptions { WriteIndented = true }));
-                continue;
-            }
-
-            FadeShortGenotype? clusterSeed = File.Exists(clFile)
-                ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(clFile))!.ToGenotype() is { Fitness: > 0 } prev ? prev : best
-                : best;
-
-            // Offset per cluster so the cluster runs do not all replay the identical RNG stream
-            // under one --seed; unchecked so a seed near int.MaxValue wraps instead of throwing.
-            int? clusterRngSeed = rngSeed is int rs ? unchecked(rs + (int)clusterType + 1) : null;
-            var clusterBest = new FadeShortGA(60, 100, verbose: false, seed: clusterRngSeed).Run(clusterCoins, clusterSeed);
-            Console.WriteLine($"  [{clLabel}] best: {clusterBest}");
-            File.WriteAllText(clFile, JsonSerializer.Serialize(FadeShortGenotypeDto.From(clusterBest),
-                new JsonSerializerOptions { WriteIndented = true }));
-            Console.WriteLine($"  Saved → {clFile}");
-        }
+        // ── PER-CLUSTER GA TRAINING: RETIRED 2026-09-23 ──────────────────────────────────
+        // This stage trained one FadeShort genotype per CoinCluster bucket and wrote them to
+        // genotypes/swing_best_genotype_{liquid,mid}.json. Retired for three reasons:
+        //
+        //  1. COST. Measured with GaTrialCounter: one `train` run spent 29,234 candidate
+        //     evaluations, against 11,110 for a gridtrain run of the same population and
+        //     generations. Roughly 18,000 of them — about 62% — went to these variants. Every
+        //     trial raises E[max SR] in StatisticalTests.DeflatedSharpeRatio, so the cost landed
+        //     as a lower deflated Sharpe on the BASE genotype that actually carries the book.
+        //
+        //  2. NEVER MEASURED. combinedbacktest, oosbacktest, fulltest and edgetest do not load
+        //     them. Only backtest, LongTrainCommands and the live Hyperliquid path did, so no
+        //     out-of-sample evidence for them has ever existed — the benefit was unquantified
+        //     while the cost was real.
+        //
+        //  3. MISNAMED, AND THE SAME SHAPE AS A RETIRED FAILURE. CoinClusterHelper.Classify
+        //     buckets on median h1 ATR%, not liquidity — so "Liquid" means "low volatility".
+        //     That makes these ATR-band variants, the same family as the high-vol genotypes
+        //     retired in 2026-08 for working against DynamicGuard.
+        //
+        // Every reader already falls back to the universal genotype when the file is absent
+        // (`File.Exists(clFile) ? ... : gUniversal`), so retiring the PRODUCER is sufficient and
+        // the existing files were moved to docs/legacy/genotypes/. The reader code is left in
+        // place, dead but harmless — the same treatment the high-vol operators got. Do not
+        // regenerate these files without re-reading note 1: they would silently shadow the base
+        // genotype again on every path that still looks for them.
 
         // ┌── KNOWN GAP: FUNDING IS NOT PRICED ANYWHERE IN THIS COMMAND ─────────────────────┐
         // │ Every figure below — the overfit check, the held-out coins, the time-embargoed   │

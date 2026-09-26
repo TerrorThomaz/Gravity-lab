@@ -6,7 +6,7 @@ using Xunit;
 
 namespace Gravity_gen2.Tests;
 
-public class CovarianceMatrixTests
+public class CovarianceMatrixSizingTests
 {
     private static double[] DiagonalMatrix(int k, double v)
     {

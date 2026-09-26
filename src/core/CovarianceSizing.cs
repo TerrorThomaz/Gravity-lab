@@ -1,13 +1,13 @@
 namespace TradingGA;
 
 // Covariance-aware position sizing. Inverse-vol weights with correlation haircut.
-// ON by default (GRAVITY_COVSIZE=0 disables). Composite metric = expectancy × Kelly × PF / downside.
+// ON by default (GRAVITY_COVSIZE=0 disables). Default metric: InverseVol (2026-09-26).
 public static class CovarianceSizing
 {
-    // ON by default. GRAVITY_COVSIZE=0 disables. Composite doubles return-per-unit-DD vs baseline.
+    // ON by default. GRAVITY_COVSIZE=0 disables.
     public static bool Enabled => Environment.GetEnvironmentVariable("GRAVITY_COVSIZE") != "0";
 
-    // GRAVITY_SIZEMETRIC selects. InverseVol is wrong default for this book (defunds best edges).
+    // GRAVITY_SIZEMETRIC selects; InverseVol unless another metric is asked for by name.
     // Weights capped at MaxWeight; below MinSamples → neutral 1.0. Mean-normalised (redistributes only).
     public enum Metric
     {
@@ -50,8 +50,12 @@ public static class CovarianceSizing
             "sharpe"      => Metric.Sharpe,
             "composite"   => Metric.Composite,
             "inversevol"  => Metric.InverseVol,
-            // Composite default. InverseVol wrong for this book — must be asked for by name.
-            _             => Metric.Composite,
+            // InverseVol by default (2026-09-26). The size-from-edge metrics (Kelly, Expectancy,
+            // PF, Sharpe, Composite) score each strategy on the same backtest that is then sized,
+            // so they re-fit the result they report; Composite stacks four such terms. Sizing
+            // only by risk (1/sigma) asks the backtest nothing about where the edge is. The others
+            // stay available by name for comparison.
+            _             => Metric.InverseVol,
         };
 
     // Max weight = 3× mean. Concentration limit against point-estimate tail risk.

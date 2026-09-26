@@ -286,11 +286,12 @@ public class SizingMetricTests
     }
 
     [Fact]
-    public void DefaultMetric_IsComposite_NotInverseVol()
-        // InverseVol is measurably the wrong shape here — it treats volatility as risk, but this
-        // book's volatility is mostly payoff asymmetry. It sized Grid (weakest per-trade edge) at
-        // 4.56x and SwingLong (PF 5.16, WR 86%) at 0.16x. Retained, but must be asked for by name.
-        => Assert.Equal(CovarianceSizing.Metric.Composite, CovarianceSizing.SelectedMetric);
+    public void DefaultMetric_IsInverseVol()
+        // Switched from Composite 2026-09-26. Composite (and Kelly/Expectancy/PF/Sharpe) size by
+        // edge measured on the backtest being sized, which re-fits what it reports. The earlier
+        // case against InverseVol (it funded Grid over SwingLong) was later settled the other way:
+        // SwingLong was retired as a negative out-of-sample contributor and Grid kept.
+        => Assert.Equal(CovarianceSizing.Metric.InverseVol, CovarianceSizing.SelectedMetric);
 }
 
 public class CompositeSizingTests
@@ -347,10 +348,10 @@ public class CompositeSizingTests
     }
 
     [Fact]
-    public void IsTheDefault_AfterBeingMeasuredAgainstEverySingleMetric()
+    public void IsNoLongerTheDefault()
     {
-        // Four weighted terms is real overfitting surface, so this was held opt-in until measured.
-        // It won on return-per-drawdown against baseline and all four single metrics.
-        Assert.Equal(CovarianceSizing.Metric.Composite, CovarianceSizing.SelectedMetric);
+        // It won on return-per-drawdown in the backtest it was then sized on, which is the
+        // in-sample loop the default now avoids. Still selectable: GRAVITY_SIZEMETRIC=composite.
+        Assert.NotEqual(CovarianceSizing.Metric.Composite, CovarianceSizing.SelectedMetric);
     }
 }

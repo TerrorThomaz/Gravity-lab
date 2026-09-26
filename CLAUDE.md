@@ -42,6 +42,13 @@ dotnet run -- test               # Statistical edge validation
 dotnet run -- papertrade         # Live signals (15m refresh — PapertradeCommands.RefreshSeconds = 900),
                                  # all strategies, router-gated
 
+# Market-neutral research (Python, standalone — pip install -r scripts/requirements-research.txt)
+python3 scripts/market_neutral_research.py selftest              # synthetic: finds planted edges, not fake ones
+python3 scripts/market_neutral_research.py all                   # pairs + carry + xcarry on BacktestCoins
+python3 scripts/market_neutral_research.py all --universe oos    # same on never-trained OosCoins
+python3 scripts/market_neutral_research.py all --fetch           # fill candle_cache/ from Bybit first
+python3 scripts/trade_log_edge.py reports/oos_trades.csv         # day-clustered t, train/val/test split
+
 # Discord bot (requires .env)
 .venv/bin/python bot/discord_bot.py
 
@@ -270,6 +277,16 @@ Plain "held-out coin" validation (different symbol, same calendar window as trai
 
 - **Time embargo** (`TrainCommands.cs` FadeShort, `LongTrainCommands.cs` RipShort): restrict held-out coins to dates after every training coin's own fit window ends. FadeShort has embargo headroom (global 87.5% train/val split leaves a trailing slice free). **RipShort does not** — its per-coin val window is carved from that coin's own most-recent bear block (`CandleFetcher.FindLastRegimeBlock`), so at least one coin's training data typically already extends to the present, collapsing the embargo cutoff to "today" with zero trades to report. Fixing this would mean reserving a fixed trailing slice *before* the per-coin bear-block extraction runs.
 - **Regime stratification** (`RegimeBarLookup.TagRegimes` in `RegimeClassifier.cs`): tags each held-out trade with the BTC regime active at its entry time, so results are bucketed per regime instead of blended into one number. (The *reporting* use in `TrainCommands.cs` / `LongTrainCommands.cs` is report-only. `TagRegimes` itself is not: `FadeLongGA` and `DipLongGA` also call it inside fitness to drive the `RegimeDiversityW` term — default 0.2 — on their non-fold `useValidation || folds <= 1` branch.) A single blended window can be net-Bull or net-Bear, which silently favors whichever strategy direction matches it. Buckets under 20 trades print "insufficient data" instead of a fabricated stat — thin regimes (Ranging's longest contiguous run is ~41 h1 bars) genuinely can't support a held-out claim.
+
+### Market-neutral research (`scripts/market_neutral_research.py`)
+
+Deliberately shares **no** code path with the directional suite (no GA, router, guard or HMM), so nothing here can be flattered by them. It mirrors only the cost constants (`FeeRoundTripPct`, `SlippageBps`, `FallbackIntervalPct` — keep in sync) and parses the symbol lists from `Config.cs`. Three books, walk-forward, parameters fixed in advance:
+
+- **pairs** — Engle-Granger cointegration pairs selected on a 90d formation window, traded on the next 30d with the hedge ratio frozen. Control: random pairs from the same universe under the same rules.
+- **carry** — cross-sectional funding carry, short high-funding / long low-funding, legs scaled to zero trailing BTC beta.
+- **xcarry** — funding spread carried across highly correlated pairs (the correlation hedges the price move).
+
+Both carry books use a **fixed-permutation** shuffled-funding control (signal keeps its persistence and turnover, loses its link to the funding actually received — a per-rebalance reshuffle would inflate the control's turnover ~13x and make it an unfair strawman). Signals act one bar late; funding is real per-symbol, floor-charged both ways when missing. The sensitivity grid rows are printed in full and are **not** candidates.
 
 ### Discord bot
 

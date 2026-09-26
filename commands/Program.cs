@@ -39,6 +39,7 @@ switch (mode)
     case "walkforward":      await WalkForwardCommand.Run(client);                              break;
     case "symbolcov":        await SymbolCovDiag.Run(client);                                  break;
     case "edgetest":         await EdgeTest.Run(client);                                       break;
+    case "screen":           await ScreenCommand.Run(client);                                  break;
     case "hyperliquid-papertrade": await HyperliquidPaperTrade.Run();                           break;
     case "hyperliquid-lookback":   await HyperliquidLookback.Run(args.Length > 1 && int.TryParse(args[1], out var lbh) ? lbh : 48); break;
     case "hyperliquid-griddiag":   await HyperliquidGridDiag.Run();                             break;

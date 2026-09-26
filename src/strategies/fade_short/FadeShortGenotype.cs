@@ -26,12 +26,47 @@ public class FadeShortGenotype
     // Seeded init: 30% loose mutant, ~45% anchored / ~55% exploration.
     private const double SeedMutantProbability = 0.3;
 
+    // ── Payoff-ratio constraint ──────────────────────────────────────────────────────────────
+    //
+    // The genotype committed in 2026-09 paired StopLossAtrMult = 0.30 (the floor of [0.3, 2.0])
+    // with TakeProfitAtrMult = 23.27 against a ceiling of 25: a 77:1 payoff ratio. Such a genotype
+    // almost never reaches its target, and when it does the win is enormous — which is exactly what
+    // the finalist screen reported as "99% of the edge lives in the top 1% of trades". That is not
+    // a subtle statistical finding, it is the arithmetic of an optimiser driven to opposite corners
+    // of the risk/reward box.
+    //
+    // A CONSTRAINT, not a fitness penalty. An inexpressible genotype costs zero trials and cannot be
+    // traded off against anything, whereas a penalty can always be outbid by a large enough `gain`.
+    public const double MaxPayoffRatio = 6.0;
+
+    // Deterministic projection back into the feasible set. Widening the STOP is tried first: it cuts
+    // the ratio without discarding the trade's thesis, whereas cutting the target changes what the
+    // strategy is trying to capture. The target only moves when the stop has hit its own ceiling.
+    // Feasible for every bounds table where tpLo / stopHi <= MaxPayoffRatio.
+    private static (double Stop, double Tp) ConstrainPayoff(double stop, double tp, double[,] b)
+    {
+        stop = Math.Clamp(stop, b[6, 0], b[6, 1]);
+        tp   = Math.Clamp(tp,   b[8, 0], b[8, 1]);
+        stop = Math.Clamp(Math.Max(stop, tp / MaxPayoffRatio), b[6, 0], b[6, 1]);
+        tp   = Math.Clamp(Math.Min(tp, stop * MaxPayoffRatio), b[8, 0], b[8, 1]);
+        return (stop, tp);
+    }
+
+    // Applied at the end of every operator, so no path into the population can skip it.
+    private FadeShortGenotype WithPayoffConstrained(double[,] b)
+    {
+        var (stop, tp) = ConstrainPayoff(StopLossAtrMult, TakeProfitAtrMult, b);
+        StopLossAtrMult   = stop;
+        TakeProfitAtrMult = tp;
+        return this;
+    }
+
     public static FadeShortGenotype Random(System.Random rng, FadeShortGenotype? seed = null)
     {
         if (seed != null && rng.NextDouble() < SeedMutantProbability)
             return seed.ClampToBounds().Mutate(rng, 0.5);
 
-        return new()
+        return new FadeShortGenotype()
         {
             EmaPeriod        = RandInt(rng, 0),
             AdxThreshold     = Rand(rng, 1),
@@ -49,7 +84,7 @@ public class FadeShortGenotype
             RegimeSustainBars         = RandInt(rng, 13),
             RegimeEmaPeriod           = RandInt(rng, 14),
             RegimeSlopeLookback       = RandInt(rng, 15),
-        };
+        }.WithPayoffConstrained(Bounds);
     }
 
     public static FadeShortGenotype Crossover(FadeShortGenotype a, FadeShortGenotype b, System.Random rng)
@@ -106,10 +141,10 @@ public class FadeShortGenotype
             RegimeSustainBars         = NudgeInt(RegimeSustainBars,       Lo(13), Hi(13), 8),
             RegimeEmaPeriod           = NudgeInt(RegimeEmaPeriod,         Lo(14), Hi(14), 40),
             RegimeSlopeLookback       = NudgeInt(RegimeSlopeLookback,     Lo(15), Hi(15), 6),
-        };
+        }.WithPayoffConstrained(Bounds);
     }
 
-    public FadeShortGenotype ClampToBounds() => new()
+    public FadeShortGenotype ClampToBounds() => new FadeShortGenotype()
     {
         EmaPeriod        = ClampInt(EmaPeriod,       0),
         AdxThreshold     = Clamp(AdxThreshold,       1),
@@ -128,7 +163,7 @@ public class FadeShortGenotype
         RegimeEmaPeriod           = ClampInt(RegimeEmaPeriod,         14),
         RegimeSlopeLookback       = ClampInt(RegimeSlopeLookback,     15),
         Fitness = Fitness,
-    };
+    }.WithPayoffConstrained(Bounds);
 
     public static readonly double[,] Bounds =
     {
@@ -140,7 +175,11 @@ public class FadeShortGenotype
         { 5.0, 30.0 }, // MinRallyAtrMult
         { 0.3,  2.0 }, // StopLossAtrMult
         { 1.5,  4.0 }, // MaeAtrMult
-        { 2.0, 25.0 }, // TakeProfitAtrMult
+        // 25.0 -> 12.0: with StopLossAtrMult capped at 2.0 and MaxPayoffRatio 6, no target above 12
+        // is reachable — the projection folded everything higher back onto 12 anyway. Leaving the
+        // ceiling at 25 would spend roughly half the Bayesian optimiser's samples in a region whose
+        // every point evaluates as the same genotype.
+        { 2.0, 12.0 }, // TakeProfitAtrMult
         { 1.0,  4.0 }, // TrailingActivationAtrMult
         { 1.0,  5.0 }, // TrailingStopAtrMult
         {  24, 120  }, // MaxHoldCandles
@@ -283,7 +322,7 @@ public class FadeShortGenotype
         MaxHoldCandles, PositionSizePct, RegimeSustainBars, RegimeEmaPeriod, RegimeSlopeLookback,
     ];
 
-    public static FadeShortGenotype FromVector(double[] v) => new()
+    public static FadeShortGenotype FromVector(double[] v) => new FadeShortGenotype()
     {
         EmaPeriod        = ClampInt(v[0],  0),
         AdxThreshold     = Clamp(v[1],     1),
@@ -301,9 +340,9 @@ public class FadeShortGenotype
         RegimeSustainBars         = ClampInt(v[13], 13),
         RegimeEmaPeriod           = ClampInt(v[14], 14),
         RegimeSlopeLookback       = ClampInt(v[15], 15),
-    };
+    }.WithPayoffConstrained(Bounds);
 
-    public static FadeShortGenotype FromVectorLowVol(double[] v) => new()
+    public static FadeShortGenotype FromVectorLowVol(double[] v) => new FadeShortGenotype()
     {
         EmaPeriod        = Math.Clamp((int)Math.Round(v[0]),  20, 100),
         AdxThreshold     = Math.Clamp(v[1],  10.0, 30.0),
@@ -321,7 +360,7 @@ public class FadeShortGenotype
         RegimeSustainBars         = (int)Math.Clamp(Math.Round(v[13]), 0, 120),
         RegimeEmaPeriod           = (int)Math.Clamp(Math.Round(v[14]), 100, 500),
         RegimeSlopeLookback       = (int)Math.Clamp(Math.Round(v[15]), 10, 60),
-    };
+    }.WithPayoffConstrained(BoundsLowVol);
 
     // Low-vol variant: seed-mutant uses LowVol clamp+mutate.
     public static FadeShortGenotype RandomLowVol(System.Random rng, FadeShortGenotype? seed = null)
@@ -329,7 +368,7 @@ public class FadeShortGenotype
         if (seed != null && rng.NextDouble() < SeedMutantProbability)
             return seed.ClampToBoundsLowVol().MutateLowVol(rng, 0.5);
 
-        return new()
+        return new FadeShortGenotype()
         {
             EmaPeriod        = rng.Next(20, 101),
             AdxThreshold     = 10.0 + rng.NextDouble() * 20.0,
@@ -347,10 +386,10 @@ public class FadeShortGenotype
             RegimeSustainBars         = rng.Next(0, 121),
             RegimeEmaPeriod           = rng.Next(100, 501),
             RegimeSlopeLookback       = rng.Next(10, 61),
-        };
+        }.WithPayoffConstrained(BoundsLowVol);
     }
 
-    public FadeShortGenotype ClampToBoundsLowVol() => new()
+    public FadeShortGenotype ClampToBoundsLowVol() => new FadeShortGenotype()
     {
         EmaPeriod        = Math.Clamp(EmaPeriod,      20,  100),
         AdxThreshold     = Math.Clamp(AdxThreshold,  10.0, 30.0),
@@ -369,7 +408,7 @@ public class FadeShortGenotype
         RegimeEmaPeriod           = Math.Clamp(RegimeEmaPeriod,            100,  500),
         RegimeSlopeLookback       = Math.Clamp(RegimeSlopeLookback,         10,   60),
         Fitness = Fitness,
-    };
+    }.WithPayoffConstrained(BoundsLowVol);
 
     public FadeShortGenotype MutateLowVol(System.Random rng, double rate)
     {
@@ -401,7 +440,7 @@ public class FadeShortGenotype
             RegimeSustainBars         = NudgeInt(RegimeSustainBars, 0, 120, 8),
             RegimeEmaPeriod           = NudgeInt(RegimeEmaPeriod, 100, 500, 40),
             RegimeSlopeLookback       = NudgeInt(RegimeSlopeLookback, 10, 60, 6),
-        };
+        }.WithPayoffConstrained(BoundsLowVol);
     }
 
     public override string ToString() =>

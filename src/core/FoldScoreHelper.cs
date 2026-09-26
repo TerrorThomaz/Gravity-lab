@@ -20,6 +20,11 @@ public static class FoldScoreHelper
     {
         if (returns.Count < minTradesPerFold) return -1.0;
 
+        // Cap the winners before anything reads them, so every downstream term — gain, pf, rr,
+        // Sharpe, the tail terms — sees the same capped series. Index order and length are
+        // preserved, which is what keeps the maePct walk below in lockstep.
+        returns = WinsorizeWinners(returns, cfg.WinsorizeWinnerPct);
+
         int wins = 0;
         double grossWins = 0, grossLoss = 0;
         foreach (var r in returns)
@@ -125,6 +130,41 @@ public static class FoldScoreHelper
         score *= TailRatioBonus(returns, cfg);
 
         return score;
+    }
+
+    // Cap every winning trade at the (1 - pct) quantile of the fold's OWN winning trades.
+    //
+    // WHY: `gain` is a sum, so a single +50% trade outranks a hundred +0.5% trades, and three
+    // further terms used to pay again for the same shape (rrMult, Sortino, the p95/p5 tail bonus).
+    // The finalist screen measures what that bought — 94-99% of the fold score lost when the best
+    // 1% of trades is deleted, on every live genotype. A capped series cannot be bought with a
+    // lottery ticket.
+    //
+    // ORDER AND LENGTH ARE PRESERVED. Canonical walks `returns` and `maePct` index-by-index, so a
+    // transform that sorted or filtered would pair each trade's return with another trade's
+    // excursion. This only lowers values in place.
+    //
+    // MONOTONE: min(r, cap) is non-decreasing in both r and cap, and cap is non-decreasing in every
+    // return, so the whole vector is elementwise non-decreasing in its input. FitnessLandscapeTests'
+    // gradient-bearing requirement therefore still holds.
+    //
+    // LOSSES ARE NEVER TOUCHED. Trimming both tails would flatter a strategy by deleting its worst
+    // losses, which is the opposite of the question being asked.
+    public static List<double> WinsorizeWinners(List<double> returns, double pct)
+    {
+        if (pct <= 0.0 || returns.Count == 0) return returns;
+
+        var winners = returns.Where(r => r > 0).ToList();
+        if (winners.Count < 2) return returns;      // a cap at the only winner is already a no-op
+
+        winners.Sort();
+        // Highest value kept. At pct=0.05 and 101 winners this is index 95, so the top 5 are capped.
+        int idx = (int)Math.Floor((1.0 - pct) * (winners.Count - 1));
+        double cap = winners[Math.Clamp(idx, 0, winners.Count - 1)];
+
+        var outp = new List<double>(returns.Count);
+        foreach (double r in returns) outp.Add(r > cap ? cap : r);
+        return outp;
     }
 
     // Risk/reward leg: saturating hyperbola, strictly positive and increasing on (0, inf).

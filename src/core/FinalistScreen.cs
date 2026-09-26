@@ -18,6 +18,17 @@ namespace TradingGA;
 // does nothing for design circularity. See docs/RIGOR_REWORK_2026-09.md §6.
 public static class FinalistScreen
 {
+    // THE SCREEN MUST NOT GRADE ITS OWN HOMEWORK.
+    //
+    // FitnessConfig.WinsorizeWinnerPct caps winning trades before scoring, precisely so the GA
+    // cannot buy fitness with a lottery ticket. Measuring outlier sensitivity through that same cap
+    // would be circular: the transform flattens the top of the distribution, so deleting the top 1%
+    // would necessarily look harmless and the screen would report health it did not verify.
+    //
+    // The screen therefore always scores on the RAW series. A genotype selected under winsorization
+    // still has to show, on uncapped returns, that its edge does not live in a handful of trades.
+    public static FitnessConfig ScreenCfg(FitnessConfig cfg) => cfg with { WinsorizeWinnerPct = 0.0 };
+
     // ── 1. Outlier sensitivity ───────────────────────────────────────────────────────────────
     //
     // Falck, Rej & Thesmar (CFM, arXiv:2105.01380) recoded 72 published equity strategies and found

@@ -143,30 +143,78 @@ public class SymbolCrowdingCapTests
     {
         var daily = new List<SymbolCovariance.DailySeries>
         {
-            Series("AUSDT", 500), Series("BUSDT", 500),
+            Series("BTCUSDT", 500), Series("ETHUSDT", 500), Series("AUSDT", 500),
         };
         Assert.Null(SymbolCrowdingCap.Build(daily, strength: 0.0));
     }
 
     [Fact]
-    public void Build_ReturnsNullWhenAsOfLeavesTooLittlePriorHistory()
+    public void Build_ReturnsNullWithoutBothAnchors()
     {
-        var daily = new List<SymbolCovariance.DailySeries> { Series("AUSDT", 500), Series("BUSDT", 500) };
-        // Only 10 days precede the cutoff — far under the 365-day window floor.
-        Assert.Null(SymbolCrowdingCap.Build(daily, strength: 1.0, asOf: T0.AddDays(10)));
+        var daily = new List<SymbolCovariance.DailySeries> { Series("BTCUSDT", 500), Series("AUSDT", 500) };
+        Assert.Null(SymbolCrowdingCap.Build(daily, strength: 1.0));
     }
 
     [Fact]
     public void MeanPairwise_TreatsUnknownSymbolsAsFullyCorrelated()
     {
-        // A symbol absent from the estimation window must not dilute measured crowding: worst case.
+        // A symbol with no anchored history must not dilute measured crowding: worst case.
         var trades = Longs(2);
         var cap = Correlated(trades, rho: 0.0, strength: 1.0);
 
         // Two independent sample paths measure near zero, never exactly zero.
-        Assert.InRange(cap.MeanPairwise(new[] { "SYM0USDT" }, "SYM1USDT"), -0.2, 0.2);
+        Assert.InRange(cap.MeanPairwise(new[] { "SYM0USDT" }, "SYM1USDT", T0), -0.2, 0.2);
         // An unlisted symbol is pinned at the worst case, exactly.
-        Assert.Equal(1.0, cap.MeanPairwise(new[] { "SYM0USDT" }, "NOTLISTEDUSDT"), 12);
+        Assert.Equal(1.0, cap.MeanPairwise(new[] { "SYM0USDT" }, "NOTLISTEDUSDT", T0), 12);
+    }
+
+    // The failure this design exists to fix: one matrix fitted before the book's first trade left
+    // every later-listed coin at correlation 1.0 forever. Rolling re-estimation must let a coin in
+    // once it has enough history of its own.
+    [Fact]
+    public void LateListedSymbol_IsWorstCaseAtFirst_ThenMeasuredOnceItHasHistory()
+    {
+        var daily = new List<SymbolCovariance.DailySeries>
+        {
+            Walk("BTCUSDT", seed: 1, from: -400, to: 300),
+            Walk("ETHUSDT", seed: 2, from: -400, to: 300),
+            Walk("OLDUSDT", seed: 3, from: -400, to: 300),
+            Walk("NEWUSDT", seed: 4, from: -20,  to: 300),   // listed 20 days before T0
+        };
+        var cap = SymbolCrowdingCap.Build(daily, strength: 1.0)!;
+
+        Assert.Equal(1.0, cap.MeanPairwise(new[] { "OLDUSDT" }, "NEWUSDT", T0), 12);
+        // 200 days later NEWUSDT has well over minObs=60 days in the trailing window.
+        Assert.InRange(cap.MeanPairwise(new[] { "OLDUSDT" }, "NEWUSDT", T0.AddDays(200)), -0.3, 0.3);
+    }
+
+    // Lookahead guard: data dated at or after the trade must not move the estimate that applies
+    // to it. The same history with a violently co-moving future appended gives the same answer.
+    [Fact]
+    public void Estimate_IgnoresEverythingOnOrAfterTheTradesPeriod()
+    {
+        // One seed per symbol, so appending a future never shifts any symbol's past draws.
+        List<SymbolCovariance.DailySeries> Book(bool withFuture)
+            => new[] { "BTCUSDT", "ETHUSDT", "AUSDT", "BUSDT" }
+                .Select((sym, i) => Walk(sym, seed: 20 + i, from: -400, to: withFuture ? 200 : 0,
+                                         vol: d => d >= 0 ? 5.0 : 0.0))
+                .ToList();
+
+        var past   = SymbolCrowdingCap.Build(Book(false), 1.0)!;
+        var future = SymbolCrowdingCap.Build(Book(true),  1.0)!;
+
+        Assert.Equal(past.MeanPairwise(new[] { "AUSDT" }, "BUSDT", T0),
+                     future.MeanPairwise(new[] { "AUSDT" }, "BUSDT", T0), 12);
+    }
+
+    // BTC and ETH perfectly collinear makes the two-factor normal matrix singular; the fallback to
+    // BTC alone must still recover full correlation rather than NaN or a blown-up loading.
+    [Fact]
+    public void CollinearAnchors_FallBackToBtcAlone()
+    {
+        var trades = Longs(2);
+        var cap = Correlated(trades, rho: 1.0, strength: 1.0, ethEqualsBtc: true);
+        Assert.Equal(1.0, cap.MeanPairwise(new[] { "SYM0USDT" }, "SYM1USDT", T0), 6);
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────────────────────
@@ -178,33 +226,61 @@ public class SymbolCrowdingCapTests
                 "diplong", T0.AddMinutes(i), TimeSpan.FromHours(100), 0.01, 0.5, $"SYM{i}USDT"))
             .ToList();
 
-    // A crowding cap over those symbols with a prescribed uniform pairwise correlation, built by
-    // synthesising daily series: identical series give rho = 1, independent ones give rho ≈ 0.
+    // A crowding cap over those symbols with a prescribed co-movement, built by synthesising daily
+    // series against a shared path that also drives the BTC anchor: symbols identical to it give
+    // rho = 1, independent ones give rho ≈ 0. All history sits before T0.
     private static SymbolCrowdingCap Correlated(
-        IReadOnlyList<PortfolioReplay.Trade> trades, double rho, double strength)
+        IReadOnlyList<PortfolioReplay.Trade> trades, double rho, double strength, bool ethEqualsBtc = false)
     {
         const int days = 500;
         var rng = new Random(11);
         var shared = new double[days];
         for (int d = 0; d < days; d++) shared[d] = rng.NextDouble() - 0.5;
 
-        var daily = new List<SymbolCovariance.DailySeries>();
-        foreach (var t in trades.Select(t => t.Symbol).Distinct())
+        SymbolCovariance.DailySeries Path(string sym, Func<int, double> step)
         {
             var dts = new DateTime[days];
             var cl  = new double[days];
             double px = 100.0;
             for (int d = 0; d < days; d++)
             {
-                double step = rho >= 1.0 ? shared[d] : (rho <= 0.0 ? rng.NextDouble() - 0.5
-                             : rho * shared[d] + (1 - rho) * (rng.NextDouble() - 0.5));
-                px *= 1.0 + 0.01 * step;
-                dts[d] = T0.AddDays(d - days).Date;    // entirely before T0, so asOf: T0 keeps it
+                px *= 1.0 + 0.01 * step(d);
+                dts[d] = T0.AddDays(d - days).Date;
                 cl[d]  = px;
             }
-            daily.Add(new SymbolCovariance.DailySeries(t, dts, cl));
+            return new SymbolCovariance.DailySeries(sym, dts, cl);
         }
-        return SymbolCrowdingCap.Build(daily, strength, asOf: T0)!;
+
+        var daily = new List<SymbolCovariance.DailySeries>
+        {
+            Path("BTCUSDT", d => shared[d]),
+            ethEqualsBtc ? Path("ETHUSDT", d => shared[d])
+                         : Path("ETHUSDT", d => 0.7 * shared[d] + 0.3 * (rng.NextDouble() - 0.5)),
+        };
+        foreach (var t in trades.Select(t => t.Symbol).Distinct())
+            daily.Add(Path(t, d => rho >= 1.0 ? shared[d]
+                                 : rho <= 0.0 ? rng.NextDouble() - 0.5
+                                 : rho * shared[d] + (1 - rho) * (rng.NextDouble() - 0.5)));
+        return SymbolCrowdingCap.Build(daily, strength)!;
+    }
+
+    // Random walk over days [from, to) relative to T0; `vol` adds to the unit step size by day.
+    private static SymbolCovariance.DailySeries Walk(
+        string sym, int seed, int from, int to, Func<int, double>? vol = null)
+    {
+        var rng = new Random(seed);
+        int n = to - from;
+        var dts = new DateTime[n];
+        var cl  = new double[n];
+        double px = 100.0;
+        for (int i = 0; i < n; i++)
+        {
+            int d = from + i;
+            px *= 1.0 + 0.01 * (1.0 + (vol?.Invoke(d) ?? 0.0)) * (rng.NextDouble() - 0.5);
+            dts[i] = T0.AddDays(d).Date;
+            cl[i]  = px;
+        }
+        return new SymbolCovariance.DailySeries(sym, dts, cl);
     }
 
     private static SymbolCovariance.DailySeries Series(string sym, int days)

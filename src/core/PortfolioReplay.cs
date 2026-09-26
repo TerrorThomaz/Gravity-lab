@@ -151,8 +151,8 @@ public static class PortfolioReplay
                 else
                 {
                     bool blocked =
-                        (countsLong  && crowding!.Exceeds(Symbols(longOpen),  t.Symbol, directionalCap)) ||
-                        (countsShort && crowding!.Exceeds(Symbols(shortOpen), t.Symbol, directionalCap));
+                        (countsLong  && crowding!.Exceeds(Symbols(longOpen),  t.Symbol, directionalCap, t.EntryTime)) ||
+                        (countsShort && crowding!.Exceeds(Symbols(shortOpen), t.Symbol, directionalCap, t.EntryTime));
                     if (blocked) { crowdSkipped++; continue; }
                 }
             }
@@ -171,7 +171,7 @@ public static class PortfolioReplay
                               $"removed {crowdSkipped} further trades beyond the headcount cap");
             if (crowding.UnknownSymbolHits > 0)
                 Console.WriteLine($"     {crowding.UnknownSymbolHits} candidate trades named a symbol absent from the " +
-                                  "correlation window — charged at correlation 1.0 (worst case)");
+                                  "anchored correlation window (too little history) — charged at correlation 1.0 (worst case)");
         }
 
         return result;

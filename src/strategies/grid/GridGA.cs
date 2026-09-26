@@ -136,7 +136,7 @@ public class GridGeneticAlgorithm
     // default the best of many draws from noise. These two screens cannot show a genotype is good —
     // they can show it is fragile, which is cheaper and more actionable. Report-only: nothing here
     // changes selection, because using them to select would make them one more fitted surface.
-    private void PrintFinalistScreen(GridGenotype best, IReadOnlyList<CoinData> coins)
+    public void ScreenFinalist(GridGenotype best, IReadOnlyList<CoinData> coins)
     {
         Console.WriteLine("\n=== Finalist screen (report-only — see docs/RIGOR_REWORK_2026-09.md §6) ===");
 
@@ -156,7 +156,7 @@ public class GridGeneticAlgorithm
             if (c.TrainCandles.Length >= 100) Collect(best, c.TrainCandles.Span, c.Funding, null, rets, mae);
         if (rets.Count >= MinTradesPerFold)
             Console.WriteLine("  " + FinalistScreen.Format(
-                FinalistScreen.OutlierSensitivity(rets, r => FoldScore(r, _cfg))));
+                FinalistScreen.OutlierSensitivity(rets, r => FoldScore(r, FinalistScreen.ScreenCfg(_cfg)))));
         else
             Console.WriteLine($"  outlier sensitivity: only {rets.Count} train trades — not scored");
     }
@@ -292,7 +292,7 @@ public class GridGeneticAlgorithm
         if (_verbose) Console.WriteLine($"Best (selected on train): train={trainFit:F3}  val={best.Fitness:F3}");
         if (_verbose) Console.WriteLine($"  {best}");
 
-        if (_verbose) PrintFinalistScreen(best, coins);
+        if (_verbose) ScreenFinalist(best, coins);
         return best;
     }
 

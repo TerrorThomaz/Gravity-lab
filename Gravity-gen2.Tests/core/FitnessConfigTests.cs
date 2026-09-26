@@ -28,11 +28,18 @@ public class FitnessConfigTests
         Assert.Equal(0.5,   cfg.SharpeW);
         Assert.Equal(0.0,   cfg.CalmarW);
         Assert.Equal(0.0,   cfg.PfW);
-        Assert.Equal(0.3,   cfg.SortinoW);
+        // SortinoW 0.3 -> 0.0 and TailRatioW 0.2 -> 0.0 (2026-09-24). Both were paying for a fat
+        // RIGHT tail: Sortino divides by downside deviation only, so a monster winner lifts the
+        // numerator and leaves the denominator alone, and TailRatio is literally |p95|/|p5|. The
+        // finalist screen showed all three live genotypes losing 94-99% of fold score when the best
+        // 1% of trades was deleted. SharpeW keeps its 0.5 because its denominator DOES include the
+        // winner, so it partially self-corrects.
+        Assert.Equal(0.0,   cfg.SortinoW);
         Assert.Equal(0.0,   cfg.AtrLow);
         Assert.Equal(9999.0,cfg.AtrHigh);
         Assert.Equal(0.3,   cfg.CVaRW);
-        Assert.Equal(0.2,   cfg.TailRatioW);
+        Assert.Equal(0.0,   cfg.TailRatioW);
+        Assert.Equal(0.05,  cfg.WinsorizeWinnerPct);
         Assert.Equal(0.2,   cfg.RegimeDiversityW);
         Assert.Equal(0.05,  cfg.EmbargoPct);
     }
@@ -100,10 +107,25 @@ public class FitnessConfigTests
     private static List<double> HeavyGiveBack() => new()
         { 20.0, 20.0, 20.0, -18.0, -18.0, -18.0, 1.0, -1.0, 2.0, -1.0 };
 
+    // THE BASELINE FOR EVERY HAND-DERIVED NUMBER BELOW.
+    //
+    // These tests exist to pin the six canonical term weights as exact no-ops at 1.0, and every
+    // expected value was derived by hand from the formula as it stood. Three LIVE defaults changed
+    // on 2026-09-24 — SortinoW 0.3 -> 0, TailRatioW 0.2 -> 0, and winsorization switched on — as a
+    // deliberate change to the objective, not a drift. Re-deriving thirteen constants against the
+    // new defaults would destroy exactly the property these tests are here to guard, so they are
+    // scored against the historical settings instead and keep documenting that formula.
+    //
+    // Defaults_AllWeightsCorrect is what pins the CURRENT live values.
+    private static FitnessConfig Historical() => new()
+    {
+        SortinoW = 0.3, TailRatioW = 0.2, WinsorizeWinnerPct = 0.0,
+    };
+
     private static double Score(List<double> returns, FitnessConfig cfg)
         => FoldScoreHelper.Canonical(returns, PosFrac, MinTrades, cfg);
 
-    private static double Score(List<double> returns) => Score(returns, new FitnessConfig());
+    private static double Score(List<double> returns) => Score(returns, Historical());
 
     // ── The no-op guarantee ───────────────────────────────────────────────────
 
@@ -146,7 +168,7 @@ public class FitnessConfigTests
     [Fact]
     public void ExplicitNeutralWeights_MatchDefaults()
     {
-        var neutral = new FitnessConfig() with
+        var neutral = Historical() with
         {
             GainW = 1.0, WrW = 1.0, QualityW = 1.0,
             FreqW = 1.0, DdPenalty = 1.0, RetentionW = 1.0
@@ -162,8 +184,8 @@ public class FitnessConfigTests
     {
         var r = Baseline();
         double neutral = Score(r);
-        double harsh   = Score(r, new FitnessConfig() with { DdPenalty = 2.5 });
-        double lenient = Score(r, new FitnessConfig() with { DdPenalty = 0.0 });
+        double harsh   = Score(r, Historical() with { DdPenalty = 2.5 });
+        double lenient = Score(r, Historical() with { DdPenalty = 0.0 });
 
         Assert.True(harsh < neutral, $"DdPenalty 2.5 ({harsh}) should score below 1.0 ({neutral})");
         Assert.True(lenient > neutral, $"DdPenalty 0.0 ({lenient}) should score above 1.0 ({neutral})");
@@ -176,8 +198,8 @@ public class FitnessConfigTests
     {
         var r = Baseline();   // 12 trades vs MinTrades 5 -> log bonus is live
         double neutral = Score(r);
-        double eager   = Score(r, new FitnessConfig() with { FreqW = 2.0 });
-        double off     = Score(r, new FitnessConfig() with { FreqW = 0.0 });
+        double eager   = Score(r, Historical() with { FreqW = 2.0 });
+        double off     = Score(r, Historical() with { FreqW = 0.0 });
 
         Assert.True(eager > neutral, $"FreqW 2.0 ({eager}) should score above 1.0 ({neutral})");
         Assert.True(off < neutral,   $"FreqW 0.0 ({off}) should score below 1.0 ({neutral})");
@@ -190,8 +212,8 @@ public class FitnessConfigTests
     {
         var r = Baseline();   // wr 0.50, above the 0.40 knee
         double neutral = Score(r);
-        double eager   = Score(r, new FitnessConfig() with { WrW = 2.0 });
-        double off     = Score(r, new FitnessConfig() with { WrW = 0.0 });
+        double eager   = Score(r, Historical() with { WrW = 2.0 });
+        double off     = Score(r, Historical() with { WrW = 0.0 });
 
         Assert.True(eager > neutral, $"WrW 2.0 ({eager}) should score above 1.0 ({neutral})");
         Assert.True(off < neutral,   $"WrW 0.0 ({off}) should score below 1.0 ({neutral})");
@@ -206,8 +228,8 @@ public class FitnessConfigTests
         // reward — WrW must leave it alone, or WrW = 0 would REWARD a terrible win rate.
         var r = LowWinRate();
         double neutral = Score(r);
-        Assert.Equal(neutral, Score(r, new FitnessConfig() with { WrW = 3.0 }), precision: 12);
-        Assert.Equal(neutral, Score(r, new FitnessConfig() with { WrW = 0.0 }), precision: 12);
+        Assert.Equal(neutral, Score(r, Historical() with { WrW = 3.0 }), precision: 12);
+        Assert.Equal(neutral, Score(r, Historical() with { WrW = 0.0 }), precision: 12);
     }
 
     [Fact]
@@ -215,7 +237,7 @@ public class FitnessConfigTests
     {
         var r = HighQuality();   // raw quality 1.806
         double neutral = Score(r);
-        double eager   = Score(r, new FitnessConfig() with { QualityW = 1.3 });
+        double eager   = Score(r, Historical() with { QualityW = 1.3 });
 
         Assert.True(eager > neutral, $"QualityW 1.3 ({eager}) should score above 1.0 ({neutral})");
         Assert.Equal(47.170682262458364, eager, precision: 9);
@@ -245,8 +267,8 @@ public class FitnessConfigTests
         // The three DIRECTIONAL assertions below are unchanged — they test QualityW, not the ramp.
         var r = Enumerable.Range(0, 12).Select(i => i % 2 == 0 ? 2.4 : -2.0).ToList();
         double neutral = Score(r);
-        double eager   = Score(r, new FitnessConfig() with { QualityW = 2.0 });
-        double off     = Score(r, new FitnessConfig() with { QualityW = 0.0 });
+        double eager   = Score(r, Historical() with { QualityW = 2.0 });
+        double off     = Score(r, Historical() with { QualityW = 0.0 });
 
         Assert.True(eager < neutral, $"QualityW 2.0 ({eager}) should score below 1.0 ({neutral})");
         Assert.True(off > neutral,   $"QualityW 0.0 ({off}) should score above 1.0 ({neutral})");
@@ -262,8 +284,8 @@ public class FitnessConfigTests
         // spectacular fold's quality reading from dominating fitness, so a large
         // QualityW must saturate against it rather than bypass it.
         var r = HighQuality();
-        double big    = Score(r, new FitnessConfig() with { QualityW = 3.0 });
-        double bigger = Score(r, new FitnessConfig() with { QualityW = 5.0 });
+        double big    = Score(r, Historical() with { QualityW = 3.0 });
+        double bigger = Score(r, Historical() with { QualityW = 5.0 });
 
         Assert.Equal(big, bigger, precision: 12);
         Assert.Equal(52.673743389267578, big, precision: 9);
@@ -274,7 +296,7 @@ public class FitnessConfigTests
     {
         var r = Baseline();   // ends below its peak -> retentionRaw < 1.0
         double neutral = Score(r);
-        double harsh   = Score(r, new FitnessConfig() with { RetentionW = 2.0 });
+        double harsh   = Score(r, Historical() with { RetentionW = 2.0 });
 
         Assert.True(harsh < neutral, $"RetentionW 2.0 ({harsh}) should score below 1.0 ({neutral})");
         Assert.Equal(8.9784404565299685, harsh, precision: 9);
@@ -285,7 +307,7 @@ public class FitnessConfigTests
     {
         var r = EndsAtPeak();   // retentionRaw == 1.0 -> nothing for the weight to scale
         double neutral = Score(r);
-        Assert.Equal(neutral, Score(r, new FitnessConfig() with { RetentionW = 3.0 }), precision: 12);
+        Assert.Equal(neutral, Score(r, Historical() with { RetentionW = 3.0 }), precision: 12);
         Assert.Equal(27.920086485636887, neutral, precision: 9);
     }
 
@@ -294,7 +316,7 @@ public class FitnessConfigTests
     {
         var r = Baseline();
         double neutral = Score(r);
-        double eager   = Score(r, new FitnessConfig() with { GainW = 1.5 });
+        double eager   = Score(r, Historical() with { GainW = 1.5 });
 
         Assert.True(eager > neutral, $"GainW 1.5 ({eager}) should score above 1.0 ({neutral})");
         Assert.Equal(neutral * 1.5, eager, precision: 9);
@@ -309,9 +331,9 @@ public class FitnessConfigTests
         // ddDiv = 1 + maxDd*10*DdPenalty. An unclamped DdPenalty of -1/maxDd/10 would
         // make ddDiv exactly 0; anything beyond that flips the sign of the fold score.
         var r = Baseline();
-        double off = Score(r, new FitnessConfig() with { DdPenalty = 0.0 });
-        Assert.Equal(off, Score(r, new FitnessConfig() with { DdPenalty = -5.0 }),   precision: 12);
-        Assert.Equal(off, Score(r, new FitnessConfig() with { DdPenalty = -1000.0 }), precision: 12);
+        double off = Score(r, Historical() with { DdPenalty = 0.0 });
+        Assert.Equal(off, Score(r, Historical() with { DdPenalty = -5.0 }),   precision: 12);
+        Assert.Equal(off, Score(r, Historical() with { DdPenalty = -1000.0 }), precision: 12);
         Assert.True(off > 0);
     }
 
@@ -319,20 +341,20 @@ public class FitnessConfigTests
     public void NegativeWeights_ClampToZero_RatherThanInvertingTheirTerm()
     {
         var r = Baseline();
-        Assert.Equal(Score(r, new FitnessConfig() with { WrW      = 0.0 }),
-                     Score(r, new FitnessConfig() with { WrW      = -1.0 }), precision: 12);
-        Assert.Equal(Score(r, new FitnessConfig() with { QualityW = 0.0 }),
-                     Score(r, new FitnessConfig() with { QualityW = -1.0 }), precision: 12);
-        Assert.Equal(Score(r, new FitnessConfig() with { FreqW    = 0.0 }),
-                     Score(r, new FitnessConfig() with { FreqW    = -3.0 }), precision: 12);
+        Assert.Equal(Score(r, Historical() with { WrW      = 0.0 }),
+                     Score(r, Historical() with { WrW      = -1.0 }), precision: 12);
+        Assert.Equal(Score(r, Historical() with { QualityW = 0.0 }),
+                     Score(r, Historical() with { QualityW = -1.0 }), precision: 12);
+        Assert.Equal(Score(r, Historical() with { FreqW    = 0.0 }),
+                     Score(r, Historical() with { FreqW    = -3.0 }), precision: 12);
     }
 
     [Fact]
     public void GainW_ZeroOrNegative_ZeroesTheScoreInsteadOfInvertingIt()
     {
         var r = Baseline();
-        Assert.Equal(0.0, Score(r, new FitnessConfig() with { GainW = 0.0 }),  precision: 12);
-        Assert.Equal(0.0, Score(r, new FitnessConfig() with { GainW = -2.0 }), precision: 12);
+        Assert.Equal(0.0, Score(r, Historical() with { GainW = 0.0 }),  precision: 12);
+        Assert.Equal(0.0, Score(r, Historical() with { GainW = -2.0 }), precision: 12);
     }
 
     [Fact]
@@ -342,7 +364,7 @@ public class FitnessConfigTests
         // the guard — which would invert the sign of an otherwise-profitable fold.
         var r = HeavyGiveBack();
         Assert.True(Score(r) > 0);
-        Assert.Equal(0.0, Score(r, new FitnessConfig() with { RetentionW = 6.0 }), precision: 12);
-        Assert.True(Score(r, new FitnessConfig() with { RetentionW = 20.0 }) >= 0.0);
+        Assert.Equal(0.0, Score(r, Historical() with { RetentionW = 6.0 }), precision: 12);
+        Assert.True(Score(r, Historical() with { RetentionW = 20.0 }) >= 0.0);
     }
 }

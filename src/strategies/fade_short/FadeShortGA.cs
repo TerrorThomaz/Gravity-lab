@@ -243,6 +243,44 @@ public class FadeShortGA
         return count == 0 ? 1.0 : sum / count;
     }
 
+    // Post-GA finalist screen — report-only. See docs/RIGOR_REWORK_2026-09.md §6.
+    // Public so a committed genotype can be screened WITHOUT running a GA: a diagnostic must not
+    // cost 11k trials in the ledger, because those trials deflate the Sharpe of the very genotype
+    // being examined.
+    public void ScreenFinalist(FadeShortGenotype best, IReadOnlyList<CoinData> coins)
+    {
+        var caches = coins.Select(c => BuildCache(c.TrainCandles, c.Weight))
+                          .Where(c => c.Candles.Length >= 100).ToList();
+        if (caches.Count == 0) { Console.WriteLine("  Finalist screen: no usable train caches."); return; }
+
+        Console.WriteLine("\n=== Finalist screen (report-only) ===");
+        Console.WriteLine("  " + FinalistScreen.Format(FinalistScreen.PerturbedFitness(
+            best,
+            g => FitnessFromCache(g, caches, useFolds: true, _cfg, _tradeGate),
+            (g, rng, mag) => g.Mutate(rng, mag).ClampToBounds(),
+            samplesPerMagnitude: 6)));
+
+        // Pooled train returns under the winning genotype, scored with the same regime-aware fold
+        // score the GA selected on, so the two numbers are directly comparable.
+        var rets = new List<(double Return, int RegimeBars)>();
+        var emaBuf = new double[caches.Max(c => c.Candles.Length)];
+        foreach (var cache in caches)
+        {
+            Trend.EmaInto(cache.Closes, best.EmaPeriod, emaBuf);
+            foreach (var t in FadeShortSimulator.GetFadeShortReturnsPrecomputedWithRegime(
+                         best, cache.Candles, cache.Closes, cache.Highs, cache.Lows,
+                         cache.Rsi, cache.Adx, cache.Atr, emaBuf, 0, cache.Candles.Length))
+                rets.Add((t.Return, t.RegimeBarsActive));
+        }
+        if (rets.Count >= MinTradesPerFold)
+            Console.WriteLine("  " + FinalistScreen.Format(FinalistScreen.OutlierSensitivity(
+                rets.Select(r => r.Return).ToList(),
+                r => FoldScore(r.Select(x => (x, 0)).ToList(),
+                               Math.Clamp(best.PositionSizePct, 0.01, 0.05), 0, FinalistScreen.ScreenCfg(_cfg)))));
+        else
+            Console.WriteLine($"  outlier sensitivity: only {rets.Count} train trades — not scored");
+    }
+
     public FadeShortGenotype Run(IReadOnlyList<CoinData> coins, FadeShortGenotype? seed = null)
     {
         if (coins.Count == 0 || coins.All(c => c.TrainCandles.Length == 0))
@@ -382,16 +420,8 @@ public class FadeShortGA
         if (_verbose) Console.WriteLine($"Best (selected on train): train={trainFit:F3}  val={best.Fitness:F3}");
         if (_verbose) Console.WriteLine($"  {best}");
 
-        // Post-GA finalist screen — report-only. See docs/RIGOR_REWORK_2026-09.md §6.
-        if (_verbose)
-        {
-            Console.WriteLine("\n=== Finalist screen (report-only) ===");
-            Console.WriteLine("  " + FinalistScreen.Format(FinalistScreen.PerturbedFitness(
-                best,
-                g => FitnessFromCache(g, trainCaches, useFolds: true, _cfg, _tradeGate),
-                (g, rng, mag) => g.Mutate(rng, mag).ClampToBounds(),
-                samplesPerMagnitude: 6)));
-        }
+        if (_verbose) ScreenFinalist(best, coins);
+
         return best;
     }
 

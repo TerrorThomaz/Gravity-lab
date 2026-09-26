@@ -118,6 +118,26 @@ public class GridShortGA
         return FoldScoreHelper.AggregateFoldScores(foldScores, foldCounts, D, attemptedFolds);
     }
 
+    // Post-GA finalist screen — report-only. See docs/RIGOR_REWORK_2026-09.md §6.
+    public void ScreenFinalist(GridGenotype best, IReadOnlyList<CoinData> coins)
+    {
+        Console.WriteLine("\n=== Finalist screen (report-only) ===");
+        Console.WriteLine("  " + FinalistScreen.Format(FinalistScreen.PerturbedFitness(
+            best,
+            g => Fitness(g, coins, useValidation: false),
+            (g, rng, mag) => g.Mutate(rng, mag).ClampToBounds(),
+            samplesPerMagnitude: 8)));
+
+        var rets = new List<double>(); var mae = new List<double>();
+        foreach (var c in coins)
+            if (c.TrainCandles.Length >= 100) Collect(best, c.TrainCandles.Span, rets, mae);
+        if (rets.Count >= MinTradesPerFold)
+            Console.WriteLine("  " + FinalistScreen.Format(
+                FinalistScreen.OutlierSensitivity(rets, r => FoldScore(r, FinalistScreen.ScreenCfg(_cfg)))));
+        else
+            Console.WriteLine($"  outlier sensitivity: only {rets.Count} train trades — not scored");
+    }
+
     private static int MedianLength(IEnumerable<int> lengths)
     {
         var sorted = lengths.OrderBy(n => n).ToArray();
@@ -232,25 +252,8 @@ public class GridShortGA
         if (_verbose) Console.WriteLine($"Best (selected on train): train={trainFit:F3}  val={best.Fitness:F3}");
         if (_verbose) Console.WriteLine($"  {best}");
 
-        // Post-GA finalist screen — report-only. See docs/RIGOR_REWORK_2026-09.md §6.
-        if (_verbose)
-        {
-            Console.WriteLine("\n=== Finalist screen (report-only) ===");
-            Console.WriteLine("  " + FinalistScreen.Format(FinalistScreen.PerturbedFitness(
-                best,
-                g => Fitness(g, coins, useValidation: false),
-                (g, rng, mag) => g.Mutate(rng, mag).ClampToBounds(),
-                samplesPerMagnitude: 8)));
+        if (_verbose) ScreenFinalist(best, coins);
 
-            var rets = new List<double>(); var mae = new List<double>();
-            foreach (var c in coins)
-                if (c.TrainCandles.Length >= 100) Collect(best, c.TrainCandles.Span, rets, mae);
-            if (rets.Count >= MinTradesPerFold)
-                Console.WriteLine("  " + FinalistScreen.Format(
-                    FinalistScreen.OutlierSensitivity(rets, r => FoldScore(r, _cfg))));
-            else
-                Console.WriteLine($"  outlier sensitivity: only {rets.Count} train trades — not scored");
-        }
         return best;
     }
 

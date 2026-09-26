@@ -43,11 +43,28 @@ public record FitnessConfig(
     double SharpeW         = 0.5,
     double CalmarW         = 0.0,
     double PfW             = 0.0,
-    double SortinoW        = 0.3,
+    // SortinoW was 0.3. Sortino divides by DOWNSIDE deviation only, so one enormous winner lifts the
+    // numerator and leaves the denominator untouched — it is a fat-right-tail bonus wearing a
+    // risk-adjustment's name. SharpeW keeps its weight because its denominator DOES include the
+    // winner, so it partially self-corrects. See WinsorizedFitnessTests.
+    double SortinoW        = 0.0,
     double AtrLow          = 0.0,
     double AtrHigh         = 9999.0,
     double CVaRW           = 0.3,
-    double TailRatioW      = 0.2,
+    // TailRatioW was 0.2. The term is |p95|/|p5| — literally a concentration bonus. You cannot
+    // penalise tail concentration in one place while paying for it in another.
+    double TailRatioW      = 0.0,
+    // Cap each winning trade at this upper quantile of the fold's OWN winners before scoring.
+    // 0.0 = off and bit-for-bit identical to the unwinsorized score.
+    //
+    // `gain` is a sum, so one +50% trade outranks a hundred +0.5% trades, and the finalist screen
+    // measures the consequence: 94-99% of fold score lost when the best 1% of trades is deleted, on
+    // every live genotype. Capping removes the payment at source — score can then be bought with
+    // many moderate trades, not with a lottery ticket.
+    //
+    // WINNERS ONLY, deliberately: trimming both tails would flatter a strategy by deleting its
+    // worst losses, which is the opposite of the question being asked.
+    double WinsorizeWinnerPct = 0.05,
     double RegimeDiversityW = 0.2,
     double EmbargoPct      = 0.05
 )

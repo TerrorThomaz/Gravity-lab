@@ -42,20 +42,20 @@ WIN, K, Z_UP, Z_MKT, GIVE, FADE_H = 720, 3, 3.0, 1.0, 0.5, 72
 FWD = (6, 24, 72)
 
 
-def residuals(mk: mnr.Market) -> np.ndarray:
+def residuals(mk: mnr.Market, win: int = WIN) -> np.ndarray:
     """Hourly residual log-returns, NaN where the coin had no fit that day or no bar."""
     C = mk.close.values
     with np.errstate(invalid="ignore", divide="ignore"):
         r = np.diff(np.log(C), axis=0, prepend=np.nan)
     res = np.full_like(r, np.nan)
-    days = np.flatnonzero(mk.close.index.hour == 0)
+    days = np.flatnonzero(mk.close.index == mk.close.index.normalize())
     for d0, d1 in zip(days, np.r_[days[1:], len(C)]):
-        if d0 < WIN + 1:
+        if d0 < win + 1:
             continue
-        cols = mnr.liquid_universe(mk, d0 - WIN, d0, top=10_000)
+        cols = mnr.liquid_universe(mk, d0 - win, d0, top=10_000)
         if len(cols) < 10:
             continue
-        lr = mnr.log_returns(mk, d0 - WIN, d0, cols)
+        lr = mnr.log_returns(mk, d0 - win, d0, cols)
         _, vecs = np.linalg.eigh(np.cov(lr.T))
         q, _ = np.linalg.qr(np.column_stack([np.ones(len(cols)), vecs[:, ::-1][:, :K]]))
         R = r[d0:d1][:, cols]
@@ -67,27 +67,28 @@ def residuals(mk: mnr.Market) -> np.ndarray:
     return res
 
 
-def zscore24(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """24h cumulative sum and its z against the trailing 720h hourly std (strictly before)."""
+def zscore24(x: np.ndarray, n: int = 24, win: int = WIN) -> tuple[np.ndarray, np.ndarray]:
+    """n-bar cumulative sum and its z against the trailing `win`-bar std (strictly before)."""
     df = pd.DataFrame(x)
-    s24 = df.rolling(24, min_periods=20).sum()
-    sd = df.rolling(WIN, min_periods=WIN // 2).std().shift(24)
-    return s24.values, (s24 / (sd * math.sqrt(24))).values
+    s = df.rolling(n, min_periods=max(1, n * 5 // 6)).sum()
+    sd = df.rolling(win, min_periods=win // 2).std().shift(n)
+    return s.values, (s / (sd * math.sqrt(n))).values
 
 
-def events(level: np.ndarray, trig: np.ndarray, fade: bool) -> list[tuple[int, int]]:
+def events(level: np.ndarray, trig: np.ndarray, fade: bool, look: int = 24,
+           fade_h: int = FADE_H) -> list[tuple[int, int]]:
     """(trigger bar, signal bar) per event for one coin. level = cumulative log series."""
-    out, t, n = [], 24, len(level)
+    out, n = [], len(level)
     idx = np.flatnonzero(trig)
     k = 0
     while k < len(idx):
         t = idx[k]
         if not fade:
             out.append((t, t))
-            nxt = t + 24
+            nxt = t + look
         else:
-            base, peak, sig = level[t - 24], level[t], None
-            for s in range(t + 1, min(n, t + FADE_H + 1)):
+            base, peak, sig = level[t - look], level[t], None
+            for s in range(t + 1, min(n, t + fade_h + 1)):
                 if np.isnan(level[s]):
                     break
                 peak = max(peak, level[s])
@@ -96,7 +97,7 @@ def events(level: np.ndarray, trig: np.ndarray, fade: bool) -> list[tuple[int, i
                     break
             if sig is not None:
                 out.append((t, sig))
-            nxt = (sig or t + FADE_H) + 1
+            nxt = (sig or t + fade_h) + 1
         while k < len(idx) and idx[k] < nxt:
             k += 1
     return out

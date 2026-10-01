@@ -7,5 +7,6 @@
   "rip_short": 17110,
   "fade_long": 17180,
   "bounce_dca_filter": 3,
-  "anomaly_fade_bounce": 4
+  "anomaly_fade_bounce": 4,
+  "anomaly_fade_4h": 4
 }

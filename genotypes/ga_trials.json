@@ -9,5 +9,6 @@
   "bounce_dca_filter": 3,
   "anomaly_fade_bounce": 4,
   "anomaly_fade_4h": 4,
-  "anomaly_backed_dip": 8
+  "anomaly_backed_dip": 8,
+  "anomaly_1m": 5
 }

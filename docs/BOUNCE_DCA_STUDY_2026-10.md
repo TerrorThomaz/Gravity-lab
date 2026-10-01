@@ -96,3 +96,49 @@ data ends.
   `edgetest` with `MarkToMarket` real paths. Linear accrual hides a 6-month −70% bag completely.
 - Any C# simulator must join `RandomWalkNullTests`. The `random_walk` row above is the
   expected-to-pass reference: negative mean, t below +2.
+
+## Real candles (2026-10-01): handoff tasks 1 and 2. Verdict: not viable, stopped at gate 2
+
+Variant E (3x DCA at 2/4/6 ATR, sizes 1/1.5/2, TP +2% net, no stop) on real h1 candles with real
+per-symbol funding. `research/bounce_dca_label.py` (task 1) reproduces this study's random-walk E row
+trade for trade before touching real data. `research/bounce_dca_filter.py` (task 2) is the filter.
+
+**Task 1, BacktestCoins (89 coins, 2,774-3,253 entries).** P&L is in base-order units, 5.5 reserved
+per position.
+
+| bag closed after | dead% | winners | dead bags | net | t_day | %/yr on reserve | random entries, net p50 |
+|---|---|---|---|---|---|---|---|
+| 30d | 3.0 | +128.9 | -122.1 | +6.8 | | | |
+| 90d | 2.1 | +129.4 | -123.2 | +6.2 | | | |
+| 180d | 1.5 | +125.6 | -106.4 | +19.2 | 0.57 | 0.9 | -28.4 |
+| never (marked at the last close) | 0.7 | +118.5 | -55.2 | +63.3 | 3.02 | 3.0 | +3.4 |
+
+- **The entry is real:** it beats random entries under the same mechanics in 20/20 seeds at both
+  horizons.
+- **The design is not:** any cap from 30 to 180 days leaves the book near zero. The +63 only appears
+  when 19 bags are held up to 4.7 years on coins known to have survived. Four of them (FIL, MANA,
+  LTC, STRK) are still at about -100% of their reserve. Delisted coins are absent from the cache, so
+  even the 3%/yr is flattered.
+
+**Task 2, predicting the dead bag at entry (180d target).** The plan was fixed before the first run
+(see the script's docstring) and cost 3 trials (`ga_trials.json: bounce_dca_filter`).
+- Model: L2 logistic (= Bayesian MAP), 13 features, monthly walk-forward, trained only on outcomes
+  resolved before each refit. Thresholds reject the top 5/10/20% of risk.
+- Controls: re-simulated with rejected signals masked, against random rejection of the same fraction.
+
+| | AUC | reject 5% Δnet | 10% | 20% | dead bags caught at 10% |
+|---|---|---|---|---|---|
+| BacktestCoins walk-forward (dead 33/2,436) | 0.63 | -0.1 (beats 50% of random) | -1.7 (40%) | -5.8 (60%) | 3/33 |
+| OosCoins, never fitted (dead 16/1,803) | 0.64 | +1.9 (80%) | +5.2 (100%) | +2.0 (100%) | 3/16 |
+
+- **Gate 2 fails.** No threshold helps in the walk-forward. The OOS gains rest on 1-3 caught bags out
+  of 16 and are worth about 0.4%/yr on reserve. Picking the 10% row because it won on OOS would be
+  selecting on the test set.
+- **What the model does see:** the largest coefficient is a *rising* EMA50 (+1.99 standardized). The
+  bags that never return are first big dips after a run-up, i.e. tops, not capitulations. Bear regime
+  is second (+0.55).
+- **The task 1 break-even bar (catch > 1.18 x FRR) was not enough.** At 20% rejection, BacktestCoins
+  catch 27% against a bar of 18% and the book still loses 5.8. A rejected good entry frees a slot for
+  the next signal, so only a re-simulated book is a valid test.
+
+Task 3 (C#) was not started, per the handoff's stop rule.

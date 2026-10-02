@@ -41,6 +41,7 @@ switch (mode)
     case "symbolcov":        await SymbolCovDiag.Run(client);                                  break;
     case "edgetest":         await EdgeTest.Run(client);                                       break;
     case "screen":           await ScreenCommand.Run(client);                                  break;
+    case "signalstudy":      await SignalStudyCommand.Run(client, args);                       break;
     case "hyperliquid-papertrade": await HyperliquidPaperTrade.Run();                           break;
     case "hyperliquid-lookback":   await HyperliquidLookback.Run(args.Length > 1 && int.TryParse(args[1], out var lbh) ? lbh : 48); break;
     case "hyperliquid-griddiag":   await HyperliquidGridDiag.Run();                             break;
@@ -69,6 +70,7 @@ switch (mode)
         Console.WriteLine("  dotnet run -- dynamicguardtrain  Train BTC 4H ATR/momentum dynamic guard (proactive, corrects router)");
         Console.WriteLine("  dotnet run -- rotatortrain       Train volatility-weighted rotator (co-evolves with guard)");
         Console.WriteLine("  dotnet run -- accumgridtrain     Train AccumulationGrid (EMA-based dynamic grid, replaces FadeShort)");
+        Console.WriteLine("  dotnet run -- signalstudy        Signal panel: IC table, variance ratios, PCA, walk-forward ridge/logit, strategy attribution [--stride N] [--universe all|oos|train] [--placebos N]");
         Console.WriteLine("  dotnet run -- hybridgridtrain    Train HybridGrid (EMA-side long/short grid) [--sides both|long|short]");
         Console.WriteLine("  dotnet run -- lowvoltrain        Train low-volatility optimized variants (ATR<0.8, 5-fold WFV)");
         Console.WriteLine("  dotnet run -- disttest           Calibrate + separate predictive distribution (edge & risk)");

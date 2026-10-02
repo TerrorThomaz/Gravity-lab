@@ -42,6 +42,10 @@ dotnet run -- edgetest           # THE rigour command: walk-forward gate, portfo
                                  # daily equity curve, deflated Sharpe/PBO/White's RC, per-strategy
                                  # leave-one-out acceptance gate. Exits non-zero on a strictly
                                  # dominated strategy. Read this before trusting any other number.
+dotnet run -- signalstudy        # DIAGNOSTIC: which SIGNALS carry information (IC table by regime,
+                                 # variance ratios, PCA, walk-forward ridge/logit + placebo null,
+                                 # live-strategy attribution). [--stride 3] [--universe all|oos|train]
+                                 # [--placebos 20]. ~15 min on the full universe. Writes reports/.
 
 # Live
 dotnet run -- papertrade         # Live signals (15m refresh — PapertradeCommands.RefreshSeconds = 900),
@@ -82,6 +86,8 @@ src/
     grid_short/   GridShortGA, GridShortGenotype, GridShortSimulator
     accumulation_grid/  AccumulationGridGA, AccumulationGridGenotype, AccumulationGridSimulator
     hybrid_grid/  HybridGridGA, HybridGridGenotype, HybridGridSimulator (Grid + AccumGrid, both sides)
+  research/       SignalFeatures, SignalPanel (+VarianceRatioAccumulator), SignalStats, SignalStudy
+                  — the signalstudy command's engine; never feeds a strategy or a GA
   guard/          DynamicGuardGA, DynamicGuardGenotype, DynamicGuardSession,
                   DynamicGuardTrainCommands
   coevolve/       CoevolveGA
@@ -490,6 +496,35 @@ pre-instrumentation history is unrecoverable, so treat it as "borderline", not "
 is kept deliberately: +2.0pp CAGR for 7.8x the drawdown. Two caveats that no statistic prices: the
 roster was chosen by looking at OOS results on this window (selection on the test set), and without
 FadeShort the book is two correlated grid variants.
+
+### Signal study (`signalstudy`, added 2026-10-02) — diagnostic, never selects anything
+
+Asks what the strategies are built FROM rather than how they score: a (coin × h1 bar) panel of 19
+causal signals (EMA distances, slope, RSI, ADX, BB width, ATR ratio, range position, divergence and
+BoS flags, funding, BTC context), forward returns in ATR units from the t+1 OPEN, and a ±2-ATR/24h
+triple barrier (a bar touching both barriers is a LOSS for either side, never a win). Reports:
+pooled rank IC per signal × horizon × BTC regime with BH q-values; Lo-MacKinlay variance ratios
+(VR<1 pays fades/grids, VR>1 pays continuation); correlation + PCA (effective number of signals);
+one FIXED ridge and one fixed logistic model, walk-forward with a purge gap, cost-aware P&L; and
+attribution of the live strategies' OOS-coin trades (what they select on, what their returns load
+on, whether the OOS panel model agrees with their direction). All constants are fixed — it is one
+model, not a search, so it records no GA trials.
+
+**Read the placebo p, not the t.** The placebo re-runs the whole walk-forward with every coin's
+targets shifted by one common time offset: autocorrelation and cross-coin co-movement survive, the
+signal→outcome link does not. That is the calibration for the panel's real effective sample size.
+
+`SignalStudyTests` (causality, random-walk null over many seeds, planted-signal power) caught three
+estimator defects while this was written — each would have produced a confident wrong answer:
+- **Mean of per-day ICs is biased NEGATIVE** (Stambaugh/Nickell: within-day demeaning + persistent
+  regressors + overlapping labels). On a random walk every trend feature read as a reversal signal
+  (dist_ema50 t = −1.3 … −2.7 across seeds) — i.e. it would have "confirmed" the fade thesis on
+  noise. Replaced by a pooled rank IC with a day-block bootstrap.
+- **Constant features and thin regimes** produced t ≈ 4-6 from roundoff and from ~6 bootstrap
+  blocks. Now NaN / "— thin" (< 15 blocks).
+- **Analytic OOS t was over-dispersed** (null sd 1.3-1.5 at h=24/72): persistent features carry a
+  per-fold level offset that multiplies fold drift. Prediction now centred on its own TRAILING
+  30-day mean (past only), and the placebo is the final calibration.
 
 ### Discord bot
 

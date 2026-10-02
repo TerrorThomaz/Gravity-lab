@@ -19,6 +19,7 @@ dotnet run -- ripshorttrain      # RipShort GA: bear-regime relief-rally continu
 dotnet run -- diplongtrain       # DipLong GA: bull-regime RSI dip + bullish BoS, regime-gated
 dotnet run -- swinglongtrain     # SwingLong GA: bull-regime RSI bullish divergence + bullish BoS
 dotnet run -- accumgridtrain     # AccumulationGrid GA (separate Bull and Bear genotypes)
+dotnet run -- hybridgridtrain    # HybridGrid GA: EMA-side long/short grid [--sides both|long|short]
 dotnet run -- lowvoltrain        # Low-vol variant genotypes (ATR ratio < 0.8)
 dotnet run -- routertrain        # RegimeRouter GA: train routing thresholds + duration gates
 dotnet run -- hmmtrain           # Gaussian HMM on BTC regime features (Baum-Welch); saves regime_hmm_genotype.json
@@ -80,6 +81,7 @@ src/
     grid/         GridGA, GridGenotype, GridSimulator
     grid_short/   GridShortGA, GridShortGenotype, GridShortSimulator
     accumulation_grid/  AccumulationGridGA, AccumulationGridGenotype, AccumulationGridSimulator
+    hybrid_grid/  HybridGridGA, HybridGridGenotype, HybridGridSimulator (Grid + AccumGrid, both sides)
   guard/          DynamicGuardGA, DynamicGuardGenotype, DynamicGuardSession,
                   DynamicGuardTrainCommands
   coevolve/       CoevolveGA
@@ -325,6 +327,24 @@ that would have caught the bug on day one, and it is the only test in the suite 
 **instrument** rather than the **result**. It includes a self-check that reintroduces the defect and
 asserts the gate still fires — a null control that has never rejected anything is not a control.
 **Add every new simulator to it.**
+
+**HybridGrid (`src/strategies/hybrid_grid/`, added 2026-10-02) — Grid + AccumulationGrid, long OR
+short by EMA side. NOT LIVE, NOT TRAINED, not in any backtest.** Above a rising EMA it rests buy-limits
+at `EMA − k·step·ATR` (AccumGrid's pullback ladder); below a falling EMA it rests sell-limits at
+`EMA + k·step·ATR`; near a flat EMA it does nothing (Grid/GridShort territory). Trailing stop off the
+best close, per-rung TP on ATR frozen at fill, exit on EMA-slope flip or max hold. Sides are a RUN
+option (`--sides`), not a gene, so long-only vs both is a measured comparison. It is written to be
+causal from the start: every level used during bar i comes from bar i−1. It passes the null gate on
+all three side modes, per-session AND per-rung, plus a truncation-invariance test; the
+`GetHybridSessionReturnsSameBarLeak` self-check reintroduces AccumGrid's defect and measures t≈4.7.
+Two things the gate found while it was being written:
+- **Gap-through stops.** Booking a stop at the stop price on a bar that opened beyond it earned
+  t≈3-4 on pure noise. Exits now take `min(stop, open)` (long). Grid/GridShort book `hardStop` the
+  same optimistic way; their gate fixture uses 40-ATR stops, so it never exercises that path —
+  unmeasured, not shown clean.
+- **Session averaging flatters fitness by ~0.2pp/trade on noise.** A session's score is the mean of
+  its rung returns, so a 3-rung loser weighs the same as a 1-rung winner. Per-rung gross on the null
+  is −0.07%, session mean ≈ 0. Grid's GA fitness has the same construction.
 
 **Why none of the statistics caught it.** Deflated Sharpe, PBO, White's Reality Check, walk-forward
 gating, block bootstrap and trial counting all ran clean, because every book compared shared the

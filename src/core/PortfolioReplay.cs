@@ -16,13 +16,17 @@ public static class PortfolioReplay
         ["grid"]       = 12,
         ["gridshort"]  = 12,
         ["accumgrid"]  = 12,
+        // HybridGrid trades BOTH sides under one strategy, so it is two labels: a single label
+        // would have no direction and be charged against both directional caps.
+        ["hybrid_long"]  = 12,
+        ["hybrid_short"] = 12,
     };
 
     private static readonly HashSet<string> LongStrategies = new(StringComparer.OrdinalIgnoreCase)
-        { "diplong", "fadelong", "swing_long", "grid", "accumgrid" };
+        { "diplong", "fadelong", "swing_long", "grid", "accumgrid", "hybrid_long" };
 
     private static readonly HashSet<string> ShortStrategies = new(StringComparer.OrdinalIgnoreCase)
-        { "swing", "fade_short", "ripshort", "gridshort" };
+        { "swing", "fade_short", "ripshort", "gridshort", "hybrid_short" };
 
     // Direction of a strategy. Null = unknown label → callers should be conservative.
     public static bool? IsLong(string strategy) =>

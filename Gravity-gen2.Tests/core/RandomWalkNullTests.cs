@@ -1,3 +1,4 @@
+using GravityGen2.Strategies.HybridGrid;
 using TradingGA;
 using Xunit;
 
@@ -127,5 +128,74 @@ public class RandomWalkNullTests
             $"leakage gain was only {gain:F4}%/trade (honest {honest.Mean:F4}% t={honest.T:F2}, " +
             $"same-bar {leaked.Mean:F4}% t={leaked.T:F2}). The null control can no longer detect the " +
             "defect it exists for — check the fixture's intrabar range against the grid step.");
+    }
+    // ── HybridGrid ────────────────────────────────────────────────────────────────────────────
+    // Combines Grid with AccumulationGrid — the one simulator this gate excluded for failing it —
+    // so it has to pass here, on BOTH sides, before any number it produces is read.
+    private static HybridGridGenotype PermissiveHybrid() => new()
+    {
+        EmaPeriod = 20, SlopeLookback = 10, SlopeMinPct = 0.0, BiasBandAtr = 0.0, AdxMin = 0.0,
+        GridStepAtrMult = 0.4, GridLevels = 3, TakeProfitAtrMult = 1.0, TrailStopAtrMult = 3.0,
+        MaxHoldBars = 60,
+    };
+
+    [Theory]
+    [InlineData(HybridGridSides.Both)]
+    [InlineData(HybridGridSides.LongOnly)]
+    [InlineData(HybridGridSides.ShortOnly)]
+    public void HybridGrid_OnADriftlessRandomWalk_DoesNotProfit(HybridGridSides sides)
+    {
+        var (n, mean, t) = Pooled(c => HybridGridSimulator.GetHybridSessionReturns(PermissiveHybrid(), c, sides)
+                                                          .Select(x => x.Return));
+        Assert.True(n >= 500, $"fixture produced only {n} trades — too few to conclude anything");
+        Assert.True(t < 2.0,
+            $"HybridGrid({sides}) earned {mean:F4}% per session (t={t:F2}) on a driftless random walk " +
+            $"over {n} sessions. There is no edge in this data, so the P&L came from the simulator.");
+
+        // Per-rung too, and stricter. The session mean weights a 3-rung losing session the same as
+        // a 1-rung winner, which on this fixture lifts the session figure ~0.2pp above the per-rung
+        // one — so the session check alone sits near zero even on a clean engine. Per-rung is what
+        // the account actually books, and a clean engine must lose its costs there, significantly.
+        var (nr, meanR, tr) = Pooled(c => HybridGridSimulator.GetHybridReturns(PermissiveHybrid(), c, sides)
+                                                            .Select(x => x.Return));
+        Assert.True(tr < -2.0,
+            $"HybridGrid({sides}) per-rung mean {meanR:F4}% (t={tr:F2}, n={nr}) — a clean engine " +
+            "loses its costs on a random walk; failing to is the simulator handing out P&L.");
+    }
+
+    // Self-check for the HybridGrid gate: building bar i's levels from bar i's own ema/atr/close
+    // (AccumulationGrid's defect) must be detectable as a gain over the honest engine.
+    [Fact]
+    public void TheNullControlDetectsTheHybridSameBarLeak()
+    {
+        var honest = Pooled(c => HybridGridSimulator.GetHybridSessionReturns(PermissiveHybrid(), c)
+                                                    .Select(x => x.Return));
+        var leaked = Pooled(c => HybridGridSimulator.GetHybridSessionReturnsSameBarLeak(PermissiveHybrid(), c)
+                                                    .Select(x => x.Return));
+        Assert.True(honest.N >= 500 && leaked.N >= 500, "diagnostic fixture produced too few trades");
+        double gain = leaked.Mean - honest.Mean;
+        Assert.True(gain > 0.05,
+            $"leakage gain was only {gain:F4}%/trade (honest {honest.Mean:F4}% t={honest.T:F2}, " +
+            $"leaked {leaked.Mean:F4}% t={leaked.T:F2}) — the gate cannot see the defect on this engine.");
+    }
+
+    // CAUSALITY BY TRUNCATION. A trade that closed at bar k must be identical whether or not bars
+    // after k exist. Any use of future data — not only the same-bar kind — breaks this. Indicators
+    // here are all causal recursions, so truncating the input cannot change any value before the cut.
+    [Fact]
+    public void HybridGrid_TradesClosedBeforeACut_DoNotDependOnLaterBars()
+    {
+        var full = RandomWalk(3000, 77);
+        var all  = HybridGridSimulator.GetHybridReturns(PermissiveHybrid(), full);
+        foreach (int cut in new[] { 900, 1700, 2500 })
+        {
+            var prefix = HybridGridSimulator.GetHybridReturns(PermissiveHybrid(), full.AsSpan(0, cut));
+            DateTime cutTime = full[cut - 1].Time;
+            // The prefix run force-closes whatever is open at its last bar; exclude those.
+            var expected = all.Where(x => x.Time < cutTime).ToList();
+            var actual   = prefix.Where(x => x.Time < cutTime).ToList();
+            Assert.True(expected.Count > 20, $"too few trades before cut {cut}");
+            Assert.Equal(expected, actual);
+        }
     }
 }

@@ -29,6 +29,7 @@ switch (mode)
     case "dynamicguardtrain":   await DynamicGuardTrainCommands.RunDynamicGuardTrain(client, args);  break;
     case "rotatortrain":     VolatilityWeightedRotatorGA.Train();                                 break;
     case "accumgridtrain":   await LongTrainCommands.RunAccumulationGridTrain(client, args);      break;
+    case "hybridgridtrain":  await HybridGridCommands.RunTrain(client, args);                      break;
     case "ripconfdiag":      await RipShortConfDiag.Run(client);                                break;
     // highvoltrain RETIRED (see legacy/HighVolTrainCommands.cs). A genotype tuned to trade
     // harder when ATR spikes works directly against DynamicGuard, whose whole job is to cut
@@ -68,6 +69,7 @@ switch (mode)
         Console.WriteLine("  dotnet run -- dynamicguardtrain  Train BTC 4H ATR/momentum dynamic guard (proactive, corrects router)");
         Console.WriteLine("  dotnet run -- rotatortrain       Train volatility-weighted rotator (co-evolves with guard)");
         Console.WriteLine("  dotnet run -- accumgridtrain     Train AccumulationGrid (EMA-based dynamic grid, replaces FadeShort)");
+        Console.WriteLine("  dotnet run -- hybridgridtrain    Train HybridGrid (EMA-side long/short grid) [--sides both|long|short]");
         Console.WriteLine("  dotnet run -- lowvoltrain        Train low-volatility optimized variants (ATR<0.8, 5-fold WFV)");
         Console.WriteLine("  dotnet run -- disttest           Calibrate + separate predictive distribution (edge & risk)");
         Console.WriteLine("  dotnet run -- walkforward          Walk-forward validation of committed genotypes on never-seen coins (raw + router-gated)");

@@ -41,3 +41,4 @@ fulltest_results.json
 ## properly-named permanent regression test in the normal suite instead.
 Gravity-gen2.Tests/**/ZZProbe_*.cs
 logs/
+data/recorder/

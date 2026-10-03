@@ -59,11 +59,6 @@ static class HyperliquidPaperTrade
     {
         Console.WriteLine("=== Gravity-gen2 | PAPER TRADE (Hyperliquid) - Ctrl+C to stop ===\n");
 
-        if (!File.Exists(Config.FadeShortGenoFile))
-        {
-            Console.WriteLine($"No genotype at '{Config.FadeShortGenoFile}'. Run 'dotnet run -- train' first.");
-            return;
-        }
 
         // Check bridge health
         using var client = new HyperliquidClient();
@@ -88,17 +83,16 @@ static class HyperliquidPaperTrade
         var rsVariantsPt = StrategyPipeline.LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
             "rip_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
 
+        // FadeShort is OPTIONAL (retired 2026-10-03 — see CLAUDE.md): no genotype → it simply does not trade.
         var gUniversalPt = fsVariantsPt.Length > 0 ? fsVariantsPt[0].Genotype! : null;
-        if (gUniversalPt == null)
-        {
-            Console.WriteLine($"No genotype at '{Config.FadeShortGenoFile}'. Run 'dotnet run -- train' first.");
-            return;
-        }
-        Console.WriteLine($"Universal genotype: {gUniversalPt}  [{fsVariantsPt.Length} variant(s)]");
+        Console.WriteLine(gUniversalPt != null
+            ? $"Universal genotype: {gUniversalPt}  [{fsVariantsPt.Length} variant(s)]"
+            : $"FadeShort: no genotype at '{Config.FadeShortGenoFile}' — retired, not traded");
 
         var clusterGenosPt = new Dictionary<CoinCluster, FadeShortGenotype>();
         foreach (CoinCluster cl in Enum.GetValues<CoinCluster>())
         {
+            if (gUniversalPt == null) break;
             string clFile = CoinClusterHelper.GenoFile(cl);
             clusterGenosPt[cl] = File.Exists(clFile)
                 ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(clFile))!.ToGenotype()
@@ -687,13 +681,16 @@ static class HyperliquidPaperTrade
             {
                 if (!passes) continue;
 
-                // ── FadeShort ──
+                // ── FadeShort (optional: retired 2026-10-03, skipped with no genotype) ──
                 var coinCl = CoinClusterHelper.ClassifyByName(sym);
-                var gForCoin = clusterGenosPt.TryGetValue(coinCl, out var g) ? g : gUniversalPt;
-                var st = FadeShortSimulator.GetFadeShortTradeState(gForCoin, h1, m15);
-                if (st.InTrade)
-                    await ProcessSignalAsync("FadeShort", "fade_short", 10, sym, "Short", "A", fsRoutedOn,
-                        st.Entry, h1[^1].Close, st.HoldCount, Math.Min(st.HardStop, st.MaeStop), st.Target, st.TrailArmed, gForCoin.PositionSizePct, volM * 1_000_000.0);
+                if (gUniversalPt != null)
+                {
+                    var gForCoin = clusterGenosPt.TryGetValue(coinCl, out var g) ? g : gUniversalPt;
+                    var st = FadeShortSimulator.GetFadeShortTradeState(gForCoin, h1, m15);
+                    if (st.InTrade)
+                        await ProcessSignalAsync("FadeShort", "fade_short", 10, sym, "Short", "A", fsRoutedOn,
+                            st.Entry, h1[^1].Close, st.HoldCount, Math.Min(st.HardStop, st.MaeStop), st.Target, st.TrailArmed, gForCoin.PositionSizePct, volM * 1_000_000.0);
+                }
 
                 // ── Grid ──
                 if (gridGPt != null)

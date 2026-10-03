@@ -37,11 +37,6 @@ static class PapertradeCommands
     {
         Console.WriteLine("=== Gravity-gen2 | PAPER TRADE (15m→1h candles) — Ctrl+C to stop ===\n");
 
-        if (!File.Exists(Config.FadeShortGenoFile))
-        {
-            Console.WriteLine($"No genotype at '{Config.FadeShortGenoFile}'. Run 'dotnet run -- train' first.");
-            return;
-        }
 
         // Load variant arrays at startup (currently single-element; ready for multi-variant)
         var fsVariantsPt = StrategyPipeline.LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(
@@ -57,17 +52,16 @@ static class PapertradeCommands
         var rsVariantsPt = StrategyPipeline.LoadVariants<RipShortGenotypeDto, RipShortGenotype>(
             "rip_short", dto => dto.ToGenotype(), dto => (dto.AtrLow, dto.AtrHigh));
 
+        // FadeShort is OPTIONAL (retired 2026-10-03 — see CLAUDE.md): no genotype → it simply does not trade.
         var gUniversalPt = fsVariantsPt.Length > 0 ? fsVariantsPt[0].Genotype! : null;
-        if (gUniversalPt == null)
-        {
-            Console.WriteLine($"No genotype at '{Config.FadeShortGenoFile}'. Run 'dotnet run -- train' first.");
-            return;
-        }
-        Console.WriteLine($"Universal genotype: {gUniversalPt}  [{fsVariantsPt.Length} variant(s)]");
+        Console.WriteLine(gUniversalPt != null
+            ? $"Universal genotype: {gUniversalPt}  [{fsVariantsPt.Length} variant(s)]"
+            : $"FadeShort: no genotype at '{Config.FadeShortGenoFile}' — retired, not traded");
 
         var clusterGenosPt = new Dictionary<CoinCluster, FadeShortGenotype>();
         foreach (CoinCluster cl in Enum.GetValues<CoinCluster>())
         {
+            if (gUniversalPt == null) break;
             string clFile = CoinClusterHelper.GenoFile(cl);
             clusterGenosPt[cl] = File.Exists(clFile)
                 ? JsonSerializer.Deserialize<FadeShortGenotypeDto>(File.ReadAllText(clFile))!.ToGenotype()
@@ -279,7 +273,7 @@ static class PapertradeCommands
             // ── FadeShort ─────────────────────────────────────────────────────────
             // Router-gated (suppressed in confirmed Bull), mirroring the backtests.
             bool fsRoutedOn = ptRouting == null || ptRouting.FadeShortActive;
-            if (fsRoutedOn && !cts.Token.IsCancellationRequested)
+            if (gUniversalPt != null && fsRoutedOn && !cts.Token.IsCancellationRequested)
             {
                 Console.WriteLine($"── FadeShort {new string('─', 93)}");
                 Console.WriteLine($"{"Coin",-18}  {"State",-14} {"Entry",12}  {"Current",12}  {"Unrealised",11}  {"Bars",5}  {"Stop",12}  {"Target",12}");
@@ -478,7 +472,7 @@ static class PapertradeCommands
                 double ptGuardMult = guardSession?.GetMult(DateTime.UtcNow) ?? 1.0;
 
                 // FadeShort positions
-                if (true)   // shadow: computed even when the router gates FadeShort off
+                if (gUniversalPt != null)   // shadow: computed even when the router gates FadeShort off
                 {
                     foreach (var (sym, h1, m15, passes, _, _) in coinData)
                     {
@@ -632,7 +626,7 @@ static class PapertradeCommands
                 {
                     state      = ptRouting.Regime.ToString(),
                     confidence = Math.Round(ptRouting.Confidence, 2),
-                    FadeShort  = ptRouting.FadeShortActive,
+                    FadeShort  = gUniversalPt != null && ptRouting.FadeShortActive,
                     Grid       = ptRouting.GridActive,
                     SwingLong  = ptRouting.SwingLongActive,
                     DipLong    = ptRouting.DipLongActive,

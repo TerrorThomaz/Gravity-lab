@@ -98,20 +98,13 @@ public class GenotypeBoundsTests
         }
     }
 
-    // ── FadeShort payoff-ratio constraint (step 1) ───────────────────────────────────────────
-    //
-    // The committed genotype pairs StopLossAtrMult = 0.30 (the floor of [0.3, 2.0]) with
-    // TakeProfitAtrMult = 23.27 (against a ceiling of 25). A 77:1 payoff ratio almost never reaches
-    // its target, and when it does the win is enormous — which is precisely "99% of the edge lives
-    // in the top 1% of trades", stated as arithmetic rather than as a statistic.
-    //
-    // A CONSTRAINT, not a penalty: an inexpressible genotype costs zero trials and cannot be traded
-    // off against other terms, whereas a penalty can always be outbid by a large enough `gain`.
-
+    // ── FadeShort payoff shape is NOT capped (2026-10-03) ─────────────────────────────────────
+    // The 6:1 cap was removed on edgetest evidence (see FadeShortGenotype): the live 77:1 genotype's
+    // tail is FadeShort's mechanism. Pinned so a future "cleanup" cannot silently reinstate a cap.
     [Fact]
-    public void FadeShort_TheCommittedLotteryTicket_ProjectsBackIntoTheConstraint()
+    public void FadeShort_TheLiveConvexGenotype_SurvivesClampUnchanged()
     {
-        var lottery = new FadeShortGenotype
+        var live = new FadeShortGenotype
         {
             EmaPeriod = 46, AdxThreshold = 14.2, LookbackCandles = 243,
             RsiOverbought = 65, RsiDivThreshold = 5.4, MinRallyAtrMult = 16.3,
@@ -120,34 +113,14 @@ public class GenotypeBoundsTests
             MaxHoldCandles = 72, PositionSizePct = 0.05,
             RegimeSustainBars = 0, RegimeEmaPeriod = 152, RegimeSlopeLookback = 51,
         };
-
-        var c = lottery.ClampToBounds();
-        Assert.True(c.TakeProfitAtrMult / c.StopLossAtrMult <= FadeShortGenotype.MaxPayoffRatio + 1e-9,
-            $"77:1 genotype survived as {c.TakeProfitAtrMult / c.StopLossAtrMult:F1}:1");
+        var c = live.ClampToBounds();
+        Assert.Equal(0.30, c.StopLossAtrMult, 9);
+        Assert.Equal(23.27, c.TakeProfitAtrMult, 9);
     }
 
+    // Operators must still keep stop and target inside their own ranges.
     [Fact]
-    public void FadeShort_EveryOperator_RespectsThePayoffRatioCap()
-    {
-        var rng = new Random(14);
-        var g = FadeShortGenotype.Random(rng);
-        for (int i = 0; i < 400; i++)
-        {
-            AssertRatio(g, "Random/Mutate");
-            AssertRatio(FadeShortGenotype.FromVector(g.ToVector()), "FromVector");
-            AssertRatio(g.ClampToBounds(), "ClampToBounds");
-            g = i % 2 == 0 ? g.Mutate(rng, 1.0) : FadeShortGenotype.Random(rng);
-        }
-
-        static void AssertRatio(FadeShortGenotype g, string via)
-            => Assert.True(g.TakeProfitAtrMult / g.StopLossAtrMult <= FadeShortGenotype.MaxPayoffRatio + 1e-9,
-                $"{via} produced TP {g.TakeProfitAtrMult:F2} / Stop {g.StopLossAtrMult:F2} = " +
-                $"{g.TakeProfitAtrMult / g.StopLossAtrMult:F1}:1, over the {FadeShortGenotype.MaxPayoffRatio}:1 cap");
-        }
-
-    // The projection must never leave a gene outside its own range while satisfying the ratio.
-    [Fact]
-    public void FadeShort_RatioProjection_KeepsBothGenesInBounds()
+    public void FadeShort_Operators_KeepStopAndTargetInBounds()
     {
         var rng = new Random(15);
         for (int i = 0; i < 400; i++)

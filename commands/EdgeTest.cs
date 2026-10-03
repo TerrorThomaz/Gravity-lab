@@ -145,13 +145,16 @@ public static class EdgeTest
         var flVariants = StrategyPipeline.LoadVariants<FadeLongGenotypeDto, FadeLongGenotype>(
             "fade_long", d => d.ToGenotype(), d => (d.AtrLow, d.AtrHigh));
 
-        if (fsVariants.Length == 0 || gridVariants.Length == 0)
+        // Any strategy without a genotype is simply absent (FadeShort retired 2026-10-03); Grid is the floor.
+        if (gridVariants.Length == 0)
         {
-            Console.WriteLine("Missing FadeShort or Grid genotype — run 'train' and 'gridtrain' first.");
+            Console.WriteLine("Missing Grid genotype — run 'gridtrain' first.");
             return;
         }
 
-        var symbols = Config.OosCoins.Concat(new[] { "BTCUSDT", "ETHUSDT" }).Distinct().ToList();
+        // GRAVITY_EDGE_UNIVERSE=backtest: research switch to run on Config.BacktestCoins (default: OosCoins).
+        var universe = Environment.GetEnvironmentVariable("GRAVITY_EDGE_UNIVERSE") == "backtest" ? Config.BacktestCoins : Config.OosCoins;
+        var symbols = universe.Concat(new[] { "BTCUSDT", "ETHUSDT" }).Distinct().ToList();
         Console.WriteLine($"  Fetching {symbols.Count} symbols (never-trained OOS set + BTC/ETH anchors)…");
         var fetched = await StrategyPipeline.FetchFifteenMinAsync(client, symbols, Batches);
 
@@ -221,6 +224,10 @@ public static class EdgeTest
             signalAnchors.Add(($"{label}Rnd", randomByCoin));
         }
 
+        // Research: GRAVITY_TRACE_RIPSHORT=<csv> records every RipShort exit's reason and levels.
+        string? rsTracePath = Environment.GetEnvironmentVariable("GRAVITY_TRACE_RIPSHORT");
+        if (rsTracePath is { Length: > 0 }) RipShortSimulator.Trace = new();
+
         // ── 1. Raw book: every strategy on every OOS coin, NO gating of any kind ──────────────
         var raw = new List<Booked>();
         foreach (var f in fetched)
@@ -253,6 +260,7 @@ public static class EdgeTest
             if (StrategyPipeline.SelectVariant(slVariants, f.m15) is { } sl)
                 Add("SwingLong", SwingLongSimulator.GetSwingLongReturns(sl, f.h1, f.m15)
                     .Select(t => (t.Time, t.Return, t.EntryTime, t.EntryPrice)));
+            RipShortSimulator.TraceSymbol = f.sym;
             if (StrategyPipeline.SelectVariant(rsVariants, f.m15) is { } rs)
                 Add("RipShort", RipShortSimulator.GetRipShortReturns(rs, f.h1, f.m15)
                     .Select(t => (t.Time, t.Return, t.EntryTime, t.EntryPrice)));
@@ -268,6 +276,17 @@ public static class EdgeTest
             Console.WriteLine(_crowding != null
                 ? $"  CROWDING cap ON (GRAVITY_CROWDING={_crowding.Strength:F2}), {_crowding.Symbols} symbols — charges same-side open positions against the {MaxConcurrent}-slot budget\n"
                 : "  CROWDING cap requested but BTC/ETH anchors missing — INACTIVE\n");
+        }
+
+        if (RipShortSimulator.Trace is { } rsTrace && rsTracePath is { Length: > 0 })
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            File.WriteAllLines(rsTracePath, new[] { "symbol,entry_time,exit_time,reason,entry,stop_px,target,exit_px,cost_stop,cost_other,size_mult" }
+                .Concat(rsTrace.Select(t => string.Join(",", t.Symbol, t.EntryTime.ToString("yyyy-MM-dd HH:mm:ss"), t.ExitTime.ToString("yyyy-MM-dd HH:mm:ss"),
+                    t.Reason, t.Entry.ToString("R", inv), t.StopPx.ToString("R", inv), t.Target.ToString("R", inv), t.ExitPx.ToString("R", inv),
+                    t.CostStop.ToString("R", inv), t.CostOther.ToString("R", inv), t.SizeMult.ToString("R", inv)))));
+            Console.WriteLine($"  RipShort trace: {rsTrace.Count} exits → {rsTracePath}");
+            RipShortSimulator.Trace = null;
         }
 
         _prices = fetched.Where(f => f.h1 is { Length: > 0 })

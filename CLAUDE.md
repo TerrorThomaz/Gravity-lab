@@ -166,9 +166,14 @@ collection.**
 
 **C# default is now inverse-vol (2026-09-26).** `CovarianceSizing` (`GRAVITY_COVSIZE`, ON by default) used to default to a Composite of expectancy × Kelly × PF / downside, scored on the same backtest it then sized. That re-fits what it reports. Its default metric is now `InverseVol`: size by 1/σ only, asking the backtest nothing about where the edge is. The other metrics stay selectable by name (`GRAVITY_SIZEMETRIC=composite|kelly|...`), and `QuantMethodsTests` pins the new default. `StrategyAllocator` (ERC + families, `hmmrisk` / `GRAVITY_HMM_SIZE=1`) remains opt-in. With two sleeves its ERC equals inverse-vol anyway.
 
-### Strategy suite — 3 LIVE, 4 disabled (as of 2026-09-23)
+### Strategy suite — 2 LIVE (Grid, GridShort), 5 disabled (as of 2026-10-03)
 
-**Only FadeShort, Grid and GridShort have genotypes on disk.** FadeLong, DipLong, RipShort and
+**FadeShort RETIRED 2026-10-03** (`genotypes/fade_short_genotype.json.DISABLED_2026-10-03`): its edge
+was an execution-model artefact — see "FadeShort stop fills" under Execution modelling. Papertrade,
+hyperliquid-papertrade and edgetest now run without it (it simply does not trade); only the
+FadeShort-specific commands (`train`, `backtest`, `walkforward`) still need the file.
+
+**Only Grid and GridShort have genotypes on disk.** FadeShort, FadeLong, DipLong, RipShort and
 SwingLong are disabled (`genotypes/<name>_genotype.json.DISABLED_<date>`); every loader treats a
 missing genotype as "skip", so they simply do not trade. They were retired on `edgetest` evidence:
 each was a NEGATIVE contributor out-of-sample, and DipLong/RipShort lost money *in their own home
@@ -347,6 +352,20 @@ precondition relaxed so orders genuinely rest and an `everFilled` flag so an unf
 abandoned on the next bar. `GetGridSessionReturnsSameBarFill` reproduces the old behaviour and
 exists **only** so the null control can prove it still detects the defect.
 
+**FadeShort stop fills — the second execution defect (found 2026-10-03, fixed).** FadeShort's hard
+and MAE stops TRIGGERED on the 15m close but FILLED at the stop level. No venue offers that: a resting
+stop fills intrabar (on the wick), a bot-managed stop — how papertrade works, re-running each 15m
+cycle — fills at market after the close. The hybrid let every intrabar spike through for free, so a
+"tight" stop was really a loose one; the GA drove `StopLossAtrMult` to its 0.3 floor. edgetest
+(OOS, maker, crowding 0.5): optimistic PF 1.10, +2.2pp book CAGR → close-trigger/close-fill PF 0.97,
++0.2pp; wick-trigger/gap-aware PF 0.96, +0.3pp; book Sharpe 1.09 → 0.68–0.75. Default is now the live
+execution (seen at the close, filled at the close; `FadeShortSimulator.StopExitPx`, pinned by
+`FadeShortStopFillTests`); `GRAVITY_FS_WICKSTOPS=1` models exchange-resting stops. A 15% absolute
+loss cap was tested and does nothing: the worst trades gap straight through (−50% even capped).
+Same day: FadeShort's 6:1 payoff cap was removed — `ToGenotype()` → `ClampToBounds()` had silently
+rewritten the live 0.3/23.3-ATR genotype to 2.0/12 on every load, so the file never said what traded;
+capped and uncapped measured the same. Grid and RipShort were checked: both trigger on wicks.
+
 **AUDIT (2026-09-24): the defect is confined to the grid family.** All four dual-timeframe
 simulators take `h1Ref = ih1 - 1` (the last fully-closed hourly bar), `h4Ref = h1Ref/4 - 1`, and
 enter at `m15[nextBar].Open` — the decision strictly precedes the fill. `AccumulationGridSimulator`
@@ -494,19 +513,19 @@ not price for you; accept when it helps both. It was binary at first and flagged
 defect when FadeShort adds +2.0pp CAGR; a gate that cries wolf gets ignored, which is how
 `VERDICT A edge=A robustness=A` became meaningless.
 
-**Current standing (2026-09-23, 3 live strategies, 57,516 recorded trials):**
+**Current standing (2026-10-03, Grid + GridShort, maker pricing, crowding 0.5, honest fills):**
 
-| book | CAGR | annSharpe | maxDD | Calmar | DSR |
-|---|---|---|---|---|---|
-| with FadeShort | 11.4% | 2.62 | 3.9% | 2.96 | 0.941 |
-| without FadeShort | 9.4% | 6.38 | 0.5% | — | — |
+| book | PF | CAGR | annSharpe | maxDD | Calmar | DSR |
+|---|---|---|---|---|---|---|
+| raw (no gate) | 1.29 | 11.0% | 2.26 | 3.3% | 3.36 | 0.838 |
+| rolling-gate (scorecard headline) | 1.27 | 1.6% | 1.73 | 0.9% | 1.68 | 0.223 |
+| random-gate null | 1.27 | 1.4% | 1.99 | 0.5% | 2.94 | 0.624 |
 
-Grade **B** (6/7 criteria). Deflated Sharpe 0.941 against a 0.95 bar is the sole failure and is a
-coin-flip distinction on a threshold chosen by hand; the trial count is a **lower bound** because
-pre-instrumentation history is unrecoverable, so treat it as "borderline", not "passing". FadeShort
-is kept deliberately: +2.0pp CAGR for 7.8x the drawdown. Two caveats that no statistic prices: the
-roster was chosen by looking at OOS results on this window (selection on the test set), and without
-FadeShort the book is two correlated grid variants.
+Grid: accept (ΔSharpe +1.57). GridShort: trade-off (+0.1pp CAGR, −0.03 Sharpe). The rolling gate
+LOSES to the random-gate null here — on a two-grid book it only cuts exposure — so the raw book is
+the better read. Caveats: the book is two correlated grid variants; the roster was chosen by looking
+at OOS results on this window; the trial count is a lower bound. Superseded standing (2026-09-23,
+FadeShort credited under the optimistic stop fill): 11.4% / 2.62 / DSR 0.941.
 
 ### Market-neutral research (`scripts/market_neutral_research.py`)
 

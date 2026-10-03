@@ -194,9 +194,8 @@ public static class FadeShortSimulator
 
                 if (hitStop || hitTarget || hitTrail || timedOut)
                 {
-                    double exitPx = hitHardStop ? hardStop :
-                                    hitMae      ? maeStop  :
-                                    hitTarget   ? target   : price;
+                    // A stop is SEEN at the close and filled there (see ExitFillNote below), never at its level.
+                    double exitPx = hitStop ? price : hitTarget ? target : price;
                     double ret = (entry - exitPx) / entry * 100.0
                                - TradeCost(hitStop, atrEntry, entry, EntryBarNotional(candles, entryIdx), g.PositionSizePct, isTp: hitTarget && !hitStop);
                     result.Add((candles[i].Time, ret, "fade_short", entryRegimeBars, entryTime, entry));
@@ -304,6 +303,17 @@ public static class FadeShortSimulator
 
         var m15Closes = CandleExt.Closes(m15);
         var m15Lows   = CandleExt.Lows(m15);
+        var m15Highs  = CandleExt.Highs(m15);
+
+        // ExitFillNote (2026-10-03). Stops used to TRIGGER on the 15m close but FILL at the stop level —
+        // an execution no venue offers: a resting stop fills intrabar (on the wick), a bot-managed stop
+        // fills at market after the close. That hybrid let every intrabar spike through for free, so
+        // a "tight" stop was really a loose one; the GA drove StopLossAtrMult to its 0.3 floor and
+        // edgetest credited FadeShort with PF 1.10 / +2.2pp book CAGR that both honest models erase
+        // (close→close PF 0.97, wick PF 0.96). Default = the live bot's execution: seen at the close,
+        // filled at the close. GRAVITY_FS_WICKSTOPS=1 = exchange-resting stops: triggered on the 15m
+        // HIGH, filled at the tighter level touched but no better than the bar's open (gaps).
+        bool   wickStops = Environment.GetEnvironmentVariable("GRAVITY_FS_WICKSTOPS") == "1";
 
         // Consecutive uptrend bars for regime-conditional fold scoring.
         int[] upRegimeBarsAtBar = new int[h1.Length];
@@ -426,8 +436,9 @@ public static class FadeShortSimulator
                 if (lockArmed && ExitRatchet.LockPrice(false, entry, atrEntry, trailLow, ratchet) is double lkPxS)
                     hardStop = ExitRatchet.Tighten(false, hardStop, lkPxS);
 
-                bool hitHardStop = m15Price >= hardStop;
-                bool hitMae      = m15Price >= maeStop;
+                double probe     = wickStops ? m15Highs[im15] : m15Price;
+                bool hitHardStop = probe >= hardStop;
+                bool hitMae      = probe >= maeStop;
                 bool hitStop     = hitHardStop || hitMae;
                 bool hitTarget   = m15Price <= target;
                 bool hitTrail    = trailArmed && m15Price > trailLow + g.TrailingStopAtrMult * atrEntry;
@@ -435,9 +446,8 @@ public static class FadeShortSimulator
 
                 if (hitStop || hitTarget || hitTrail || timedOut)
                 {
-                    double exitPx = hitHardStop ? hardStop :
-                                    hitMae      ? maeStop  :
-                                    hitTarget   ? target   : m15Price;
+                    double exitPx = hitStop   ? StopExitPx(wickStops, m15Price, m15[im15].Open, hitHardStop ? hardStop : double.MaxValue, hitMae ? maeStop : double.MaxValue) :
+                                    hitTarget ? target   : m15Price;
                     double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: false);
                     double ret = (entry - exitPx) / entry * 100.0
                                - TradeCost(hitStop, atrEntry, entry, EntryBarNotional(h1, entryIH1), g.PositionSizePct, isTp: hitTarget && !hitStop)
@@ -463,6 +473,11 @@ public static class FadeShortSimulator
         int finalHold = inTrade ? h1.Length - 1 - entryIH1 : 0;
         return (result, new FadeShortTradeState(inTrade, entry, hardStop, maeStop, target, trailArmed, trailLow, finalHold));
     }
+
+    // Short-side stop fill (see ExitFillNote). Close-triggered: the close. Wick-triggered: the tighter
+    // level touched (pass double.MaxValue for a level not touched), no better than the bar's open.
+    internal static double StopExitPx(bool wickStops, double close, double open, double hardLevel, double maeLevel)
+        => wickStops ? Math.Max(Math.Min(hardLevel, maeLevel), open) : close;
 
     // Entry bar notional in quote currency. Zero when volume missing (impact term vanishes).
     internal static double EntryBarNotional(ReadOnlySpan<Candle> bars, int i)

@@ -60,11 +60,10 @@ public class RipShortGA
     private static double FoldScore(
         List<(double Return, int RegimeBars)> returns,
         double posFrac,
-        int    sustainedBars,
         FitnessConfig cfg,
         double volWeight = 1.0)
         => FoldScoreHelper.CanonicalRegime(
-            returns, posFrac, sustainedBars, MinTradesPerFold, cfg, volWeight, statBonusCeiling: 1.0);
+            returns, posFrac, MinTradesPerFold, cfg, volWeight, statBonusCeiling: 1.0);
 
     private double Fitness(RipShortGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
     {
@@ -98,7 +97,7 @@ public class RipShortGA
                     .Where(t => t.w >= 0.05)
                     .Select(t => (t.Return, t.RegimeBars)))
                 .ToList();
-            return FoldScore(all, posFrac, ind.RegimeSustainedBars, _cfg, volWeight);
+            return FoldScore(all, posFrac, _cfg, volWeight);
         }
 
         // Walk-forward folds on CALENDAR TIME (BTC regime-aware windows when available, else per-coin %).
@@ -141,10 +140,10 @@ public class RipShortGA
             }
 
             // Thin folds enter aggregate at ThinFoldScore; only scored folds contribute directly.
-            int scoredTrades = foldRet.Count(t => t.RegimeBars >= ind.RegimeSustainedBars);
+            int scoredTrades = foldRet.Count;
             if (scoredTrades < MinTradesPerFold) continue;
 
-            foldScores.Add(FoldScore(foldRet, posFrac, ind.RegimeSustainedBars, _cfg, volWeight));
+            foldScores.Add(FoldScore(foldRet, posFrac, _cfg, volWeight));
             foldCounts.Add(scoredTrades);
         }
 

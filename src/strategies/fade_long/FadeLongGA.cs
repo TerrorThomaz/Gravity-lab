@@ -55,18 +55,16 @@ public class FadeLongGA
     private static double FoldScore(
         List<(double Return, int RegimeBars)> returns,
         double posFrac,
-        int    sustainedBars,
         FitnessConfig cfg,
         double volWeight = 1.0)
-        => FoldScoreHelper.CanonicalRegime(returns, posFrac, sustainedBars, MinTradesPerFold, cfg, volWeight, statBonusCeiling: 1.5);
+        => FoldScoreHelper.CanonicalRegime(returns, posFrac, MinTradesPerFold, cfg, volWeight, statBonusCeiling: 1.5);
 
     private double FoldScoreRegime(
         List<(double Return, int RegimeBars, MarketRegime Regime)> returns,
         double posFrac,
-        int    sustainedBars,
         FitnessConfig cfg,
         double volWeight = 1.0)
-        => FoldScoreHelper.CanonicalRegimeStratified(returns, posFrac, sustainedBars, MinTradesPerFold, cfg, volWeight, statBonusCeiling: 1.5);
+        => FoldScoreHelper.CanonicalRegimeStratified(returns, posFrac, MinTradesPerFold, cfg, volWeight, statBonusCeiling: 1.5);
 
     private double Fitness(FadeLongGenotype ind, IReadOnlyList<CoinData> coins, bool useValidation, int folds = 5)
     {
@@ -103,7 +101,7 @@ public class FadeLongGA
                     .ToList();
                 var tradeTags = RegimeBarLookup.TagRegimes(_btcSeries, allRegime.Select(t => t.Time).ToList());
                 var allTagged = allRegime.Select((t, i) => (t.Return, t.RegimeBars, tradeTags[i])).ToList();
-                return FoldScoreRegime(allTagged, posFrac, ind.RegimeSustainedBars, _cfg, volWeight);
+                return FoldScoreRegime(allTagged, posFrac, _cfg, volWeight);
             }
             else
             {
@@ -113,7 +111,7 @@ public class FadeLongGA
                         .Where(t => t.w >= 0.05)
                         .Select(t => (t.Return, t.RegimeBars)))
                     .ToList();
-                return FoldScore(all, posFrac, ind.RegimeSustainedBars, _cfg, volWeight);
+                return FoldScore(all, posFrac, _cfg, volWeight);
             }
         }
 
@@ -156,10 +154,10 @@ public class FadeLongGA
                                       .Select(t => (t.Return, t.RegimeBars)));
             }
 
-            int scoredTrades = foldRet.Count(t => t.RegimeBars >= ind.RegimeSustainedBars);
+            int scoredTrades = foldRet.Count;
             if (scoredTrades < MinTradesPerFold) continue;
 
-            foldScores.Add(FoldScore(foldRet, posFrac, ind.RegimeSustainedBars, _cfg, volWeight));
+            foldScores.Add(FoldScore(foldRet, posFrac, _cfg, volWeight));
             foldCounts.Add(scoredTrades);
         }
 

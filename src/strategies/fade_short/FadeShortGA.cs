@@ -86,11 +86,11 @@ public class FadeShortGA
         (_rng, _seed, _seedSupplied) = GaSearch.CreateRng(seed);
     }
 
-    // Regime-sustained fold score. sustainedBars=0 = plain Canonical (no filtering).
+    // Fold score over every trade (the RegimeSustainBars gene no longer filters what fitness sees).
     private static double FoldScore(List<(double Return, int RegimeBars)> returns, double posFrac,
-                                    int sustainedBars, FitnessConfig cfg, double volWeight = 1.0,
+                                    FitnessConfig cfg, double volWeight = 1.0,
                                     IReadOnlyList<double>? maePct = null)
-        => FoldScoreHelper.CanonicalRegime(returns, posFrac, sustainedBars, MinTradesPerFold, cfg,
+        => FoldScoreHelper.CanonicalRegime(returns, posFrac, MinTradesPerFold, cfg,
                                            volWeight, statBonusCeiling: 1.0, maePct: maePct);
 
     // Pooled per-coin folds with pre-computed indicators. EMA buffer rented per individual.
@@ -134,7 +134,7 @@ public class FadeShortGA
                     }
                 }
                 double volWeight = AverageVolCoverageFull(caches, cfg);
-                return FoldScore(all, posFrac, ind.RegimeSustainBars, cfg, volWeight, allMae);
+                return FoldScore(all, posFrac, cfg, volWeight, allMae);
             }
 
             // Per-coin folds; k from median coin length (not shortest).
@@ -162,7 +162,7 @@ public class FadeShortGA
                     }
                 }
                 double volWeight = AverageVolCoverageFull(caches, cfg);
-                return FoldScore(all, posFrac, ind.RegimeSustainBars, cfg, volWeight, allMae);
+                return FoldScore(all, posFrac, cfg, volWeight, allMae);
             }
 
             var foldScores = new List<double>(k);
@@ -196,7 +196,7 @@ public class FadeShortGA
                 if (foldReturns.Count < MinTradesPerFold) continue;
 
                 double volWeight = AverageVolCoverageFold(caches, k, f, cfg);
-                foldScores.Add(FoldScore(foldReturns, posFrac, ind.RegimeSustainBars, cfg, volWeight, foldMae));
+                foldScores.Add(FoldScore(foldReturns, posFrac, cfg, volWeight, foldMae));
                 foldCounts.Add(foldReturns.Count);
             }
 
@@ -276,7 +276,7 @@ public class FadeShortGA
             Console.WriteLine("  " + FinalistScreen.Format(FinalistScreen.OutlierSensitivity(
                 rets.Select(r => r.Return).ToList(),
                 r => FoldScore(r.Select(x => (x, 0)).ToList(),
-                               Math.Clamp(best.PositionSizePct, 0.01, 0.05), 0, FinalistScreen.ScreenCfg(_cfg)))));
+                               Math.Clamp(best.PositionSizePct, 0.01, 0.05), FinalistScreen.ScreenCfg(_cfg)))));
         else
             Console.WriteLine($"  outlier sensitivity: only {rets.Count} train trades — not scored");
     }

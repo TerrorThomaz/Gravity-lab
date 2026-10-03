@@ -79,10 +79,9 @@ public class FitnessPathRiskTests
     }
 }
 
-// CanonicalRegime drops trades whose RegimeBars fall under the sustain threshold. If the excursion
-// list is not filtered by the SAME predicate the two fall out of alignment, Canonical sees a
-// mismatched length and silently discards every excursion — the term vanishes with no error.
-// This was a real defect: the parameter was added to CanonicalRegime and then not passed on.
+// CanonicalRegime must pass excursions through aligned with returns, or Canonical sees a mismatched
+// length and silently discards every excursion — the term vanishes with no error. This was a real
+// defect: the parameter was added to CanonicalRegime and then not passed on.
 public class CanonicalRegimeExcursionAlignmentTests
 {
     private const int MinTrades = 5;
@@ -98,19 +97,34 @@ public class CanonicalRegimeExcursionAlignmentTests
         var r = Mixed();
         var deep = r.Select(_ => -30.0).ToList();
 
-        double without = FoldScoreHelper.CanonicalRegime(r, 1.0, 5, MinTrades, new FitnessConfig());
-        double with    = FoldScoreHelper.CanonicalRegime(r, 1.0, 5, MinTrades, new FitnessConfig(),
+        double without = FoldScoreHelper.CanonicalRegime(r, 1.0, MinTrades, new FitnessConfig());
+        double with    = FoldScoreHelper.CanonicalRegime(r, 1.0, MinTrades, new FitnessConfig(),
                                                          maePct: deep);
 
         Assert.True(with < without,
                     $"excursions were dropped by the regime filter: {with:F4} vs {without:F4}");
     }
 
+    // The loophole closed 2026-10-03: CanonicalRegime used to DROP trades under a sustain threshold
+    // that every GA took from a gene no simulator read — fitness could hide trades that were still
+    // traded live. Pinned as a property: the score cannot depend on RegimeBars at all.
+    [Fact]
+    public void CanonicalRegime_ScoresEveryTrade_RegardlessOfRegimeBars()
+    {
+        var r = Mixed();
+        var allSustained = r.Select(t => (t.Return, RegimeBars: 1000)).ToList();
+        var noneSustained = r.Select(t => (t.Return, RegimeBars: 0)).ToList();
+        double a = FoldScoreHelper.CanonicalRegime(r, 1.0, MinTrades, new FitnessConfig());
+        Assert.Equal(a, FoldScoreHelper.CanonicalRegime(allSustained, 1.0, MinTrades, new FitnessConfig()), 12);
+        Assert.Equal(a, FoldScoreHelper.CanonicalRegime(noneSustained, 1.0, MinTrades, new FitnessConfig()), 12);
+        Assert.Equal(a, FoldScoreHelper.Canonical(r.Select(t => t.Return).ToList(), 1.0, MinTrades, new FitnessConfig()), 12);
+    }
+
     [Fact]
     public void CanonicalRegime_WithoutExcursions_IsUnchanged()
     {
         var r = Mixed();
-        Assert.Equal(FoldScoreHelper.CanonicalRegime(r, 1.0, 5, MinTrades, new FitnessConfig()),
-                     FoldScoreHelper.CanonicalRegime(r, 1.0, 5, MinTrades, new FitnessConfig(), maePct: null), 12);
+        Assert.Equal(FoldScoreHelper.CanonicalRegime(r, 1.0, MinTrades, new FitnessConfig()),
+                     FoldScoreHelper.CanonicalRegime(r, 1.0, MinTrades, new FitnessConfig(), maePct: null), 12);
     }
 }

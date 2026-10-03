@@ -289,6 +289,8 @@ instance of the same class (tail-ratio step at n=100, `Simulator.SharpeRatio`'s 
 monotone and gradient-bearing across PF 1.0-3.0. **Any new statistic added to `Canonical` gets a
 case there** — a guard clause returning a constant fails it.
 
+**`CanonicalRegime` scores EVERY trade (loophole closed 2026-10-03).** It used to drop trades whose `RegimeBars` fell under a `sustainedBars` threshold that FadeShort, DipLong, FadeLong and RipShort each took from a GENE (`RegimeSustainBars` / `RegimeSustainedBars`) — and no simulator ever read that gene. So the GA could hide its own early-regime trades from fitness by raising the threshold while those trades were still taken live: the trade-level version of "withdraw from your worst fold". The parameter is gone from the scorer and every caller; the genes remain in the genotypes but are inert. Live impact today: none (FadeShort's gene is 0; RipShort's retrain sat at the minimum 10). `FitnessPathRiskTests` pins that the score cannot depend on `RegimeBars`.
+
 **`maePct`: intra-hold drawdown now reaches fitness.** `Canonical` and `CanonicalRegime` take an
 opt-in per-trade maximum adverse excursion; the balance walk dips to each trade's trough before
 settling it, so the drawdown term prices time at risk instead of only the settled return. Null or

@@ -535,7 +535,6 @@ public static class FoldScoreHelper
     public static double CanonicalRegime(
         List<(double Return, int RegimeBars)> returns,
         double posFrac,
-        int sustainedBars,
         int minTradesPerFold,
         FitnessConfig cfg,
         double volWeight = 1.0,
@@ -549,14 +548,15 @@ public static class FoldScoreHelper
         // register the added time at risk.
         IReadOnlyList<double>? maePct = null)
     {
-        // The regime filter drops trades, so the excursion list has to be filtered by the SAME
-        // predicate or the two fall out of alignment and Canonical silently discards a
-        // mismatched-length list. Index-based rather than Where(), for exactly that reason.
+        // EVERY trade is scored (2026-10-03). This used to drop trades whose RegimeBars fell under a
+        // `sustainedBars` threshold that each GA took from a GENE, while no simulator read that gene
+        // — so the GA could hide its own early-regime losers from fitness while still trading them
+        // live. Fitness now scores exactly what is traded. RegimeBars stays on the tuple for the
+        // callers that report it. Excursions stay index-aligned with returns.
         var mae = maePct is { } src && src.Count == returns.Count ? new List<double>(returns.Count) : null;
         var valid = new List<double>(returns.Count);
         for (int i = 0; i < returns.Count; i++)
         {
-            if (returns[i].RegimeBars < sustainedBars) continue;
             valid.Add(returns[i].Return);
             mae?.Add(maePct![i]);
         }
@@ -566,7 +566,6 @@ public static class FoldScoreHelper
     public static double CanonicalRegimeStratified(
         List<(double Return, int RegimeBars, MarketRegime Regime)> returns,
         double posFrac,
-        int sustainedBars,
         int minTradesPerFold,
         FitnessConfig cfg,
         double volWeight = 1.0,
@@ -584,7 +583,6 @@ public static class FoldScoreHelper
         var valid = new List<(double Return, int RegimeBars, MarketRegime Regime)>(returns.Count);
         for (int i = 0; i < returns.Count; i++)
         {
-            if (returns[i].RegimeBars < sustainedBars) continue;
             valid.Add(returns[i]);
             mae?.Add(maePct![i]);
         }

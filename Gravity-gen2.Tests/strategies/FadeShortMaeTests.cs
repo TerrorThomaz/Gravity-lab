@@ -100,8 +100,8 @@ public class FadeShortMaeTests
                                    .Select(i => (Return: i % 3 == 0 ? -1.0 : 2.0, RegimeBars: 10))
                                    .ToList();
 
-        double blind = FoldScoreHelper.CanonicalRegime(profitable, 0.05, 0, 5, new FitnessConfig());
-        double aware = FoldScoreHelper.CanonicalRegime(profitable, 0.05, 0, 5, new FitnessConfig(),
+        double blind = FoldScoreHelper.CanonicalRegime(profitable, 0.05, 5, new FitnessConfig());
+        double aware = FoldScoreHelper.CanonicalRegime(profitable, 0.05, 5, new FitnessConfig(),
                                                        maePct: mae);
 
         Assert.True(blind > 0, "fixture must clear the profit-factor gate for this to mean anything");

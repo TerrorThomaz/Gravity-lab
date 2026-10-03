@@ -5,6 +5,11 @@ namespace TradingGA;
 
 static class CandleFetcher
 {
+    // GRAVITY_OFFLINE=1: a symbol that already has a cache file is read from disk only — no top-up,
+    // no back-fill — so a run is reproducible and cannot hang on the network. Symbols with no cache
+    // still fetch, so nothing silently comes back empty.
+    public static bool Offline => Environment.GetEnvironmentVariable("GRAVITY_OFFLINE") == "1";
+
     // 4h candles from Bybit. batches=7 ≈ 3.2yr.
     public static async Task<List<Candle>> FetchSwingCandles(BybitRestClient client, string symbol, int batches = 7)
     {
@@ -78,6 +83,7 @@ static class CandleFetcher
 
         async Task<bool> FetchBatch15m(DateTime? endTime)
         {
+            if (Offline && cached.Count > 0) return false;
             for (int attempt = 0; attempt < 4; attempt++)
             {
                 if (attempt > 0) await Task.Delay(1500 * attempt);
@@ -472,6 +478,7 @@ static class CandleFetcher
     private static async Task<bool> FetchFundingBatch(
         SortedDictionary<DateTime, double> cached, BybitRestClient client, string symbol, DateTime? endTime)
     {
+        if (Offline && cached.Count > 0) return false;
         for (int attempt = 0; attempt < 4; attempt++)
         {
             if (attempt > 0) await Task.Delay(1500 * attempt);

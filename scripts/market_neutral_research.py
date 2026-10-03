@@ -671,6 +671,84 @@ def run_carry(mk: Market, p: CarryParams, shuffle_rng: np.random.Generator | Non
     return _trim(r, start), legs
 
 
+# ═══════════════════════════════════════════════════════════════════════════════════
+# Book — residual reversal ("pairs done right": each coin against the whole co-movement
+# structure, not one partner). The signal is a coin's trailing return with the dollar
+# direction and the top-k covariance PCs projected out — the same anchors the carry hedge
+# uses — and the book is long the most negative residuals, short the most positive, then
+# projected off those anchors again. All constants fixed before the first run.
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class ResidParams:
+    warmup_h: int = 24 * 30
+    rebalance_h: int = 24
+    signal_h: int = 24              # trailing return the residual is taken from
+    cov_h: int = 24 * 30
+    factors: int = 3
+    band: float = 0.005             # carry's executable band
+    universe_top: int = 40
+    quantile: float = 0.2
+    delay: int = 1
+
+
+def run_resid(mk: Market, p: ResidParams, shuffle_rng: np.random.Generator | None = None):
+    """shuffle_rng: control. Each rebalance assigns every coin ANOTHER universe member's
+    residual (a fresh permutation each time — the residual is a 24h return, not a persistent
+    level, so re-permuting does not inflate turnover the way it would for carry)."""
+    n, m = mk.close.shape
+    targets: dict[int, np.ndarray] = {}
+    start = max(p.warmup_h, p.cov_h)
+    for t in range(start, n - p.delay, p.rebalance_h):
+        uni = liquid_universe(mk, t - p.cov_h, t + 1, p.universe_top)
+        if len(uni) < 10:
+            continue
+        lr = log_returns(mk, t - p.cov_h, t + 1, uni)
+        res = factor_neutral(lr[-p.signal_h:].sum(axis=0), lr, p.factors)
+        if shuffle_rng is not None:
+            res = res[shuffle_rng.permutation(len(res))]
+        k = max(2, int(len(uni) * p.quantile))
+        order = np.argsort(res)
+        wu = np.zeros(len(uni))
+        wu[order[:k]], wu[order[-k:]] = 1.0 / k, -1.0 / k      # buy the laggards, sell the leaders
+        wu = factor_neutral(wu, lr, p.factors)
+        gross = np.abs(wu).sum()
+        if gross <= 1e-12:
+            continue
+        w = np.zeros(m)
+        w[uni] = wu / gross
+        targets[t + p.delay] = w
+    r = run_book(mk.close.values, mk.funding.values, mk.funding_mask.values,
+                 mk.funding_known.values, targets, mk.close.index, band=p.band)
+    return _trim(r, start)
+
+
+def report_resid(mk: Market, n_controls: int, seed: int) -> list[dict]:
+    p = ResidParams()
+    print(f"\n── RESID (residual reversal vs $ + top {p.factors} covariance PCs; {p.signal_h}h signal, "
+          f"{p.rebalance_h}h rebalance, band {p.band:.1%}) ──")
+    rows = []
+    r = run_resid(mk, p)
+    rows.append(summarize("resid: factor-neutral reversal", r))
+    print(f"  realised daily beta of the book to BTC: {btc_beta(mk, r):+.3f}")
+    ctrl = [summarize(f"shuffle#{k}", run_resid(mk, p, shuffle_rng=np.random.default_rng(seed + k)))
+            for k in range(n_controls)]
+    if ctrl:
+        c = pd.DataFrame(ctrl)
+        row = {"book": f"resid: PERMUTED-signal control (median of {n_controls})"}
+        row.update(c.drop(columns="book").median().to_dict())
+        rows.append(row)
+        print(f"  real net beats {(c['ann_net_%'] < rows[0]['ann_net_%']).mean():.0%} of controls")
+    # Sensitivity, printed in full and NOT candidates.
+    for nf in (1, 5):
+        rows.append(summarize(f"  sens factors={nf}", run_resid(mk, ResidParams(factors=nf))))
+    for sh, rb in ((72, 24), (24, 72)):
+        rows.append(summarize(f"  sens signal={sh}h rebalance={rb}h", run_resid(mk, ResidParams(signal_h=sh, rebalance_h=rb))))
+    print_table(rows, "RESID")
+    print("  net P&L by year (% of capital):", by_year(r).to_dict())
+    return rows
+
+
 def _trim(r: BookResult, start: int) -> BookResult:
     return BookResult(r.price[start:], r.funding[start:], r.cost[start:], r.turnover, r.index[start:],
                       r.orders)
@@ -1235,7 +1313,7 @@ def report_xcarry(mk: Market, n_controls: int, seed: int) -> list[dict]:
 # ═══════════════════════════════════════════════════════════════════════════════════
 
 def synthetic_market(seed: int, n_coins: int = 30, days: int = 540, coint_pairs: int = 5,
-                     funding_edge: bool = True) -> Market:
+                     funding_edge: bool = True, idio_hl_h: float | None = None) -> Market:
     rng = np.random.default_rng(seed)
     n = days * 24
     idx = pd.date_range("2022-01-01", periods=n, freq="1h")
@@ -1244,7 +1322,14 @@ def synthetic_market(seed: int, n_coins: int = 30, days: int = 540, coint_pairs:
     cols.append("BTCUSDT"); logp.append(mkt + np.cumsum(rng.normal(0, 0.002, n)))
     for i in range(1, n_coins):
         beta = rng.uniform(0.8, 1.6)
-        logp.append(beta * mkt + np.cumsum(rng.normal(0, 0.008, n)) + rng.uniform(-2, 2))
+        eps = rng.normal(0, 0.008, n)
+        if idio_hl_h is None:
+            idio = np.cumsum(eps)                       # idiosyncratic random walk: nothing to revert
+        else:                                           # planted: idiosyncratic part is OU(half-life)
+            phi, idio = 0.5 ** (1 / idio_hl_h), np.zeros(n)
+            for t in range(1, n):
+                idio[t] = phi * idio[t - 1] + eps[t]
+        logp.append(beta * mkt + idio + rng.uniform(-2, 2))
         cols.append(f"C{i:02d}USDT")
     # cointegrated partners: B = A·β + OU(half-life ~24h)
     for k in range(coint_pairs):
@@ -1358,6 +1443,22 @@ def selftest() -> int:
     s0 = summarize("x", r0)
     check(s0["ann_net_%"] < 1.0, f"no persistent funding dispersion → no net carry edge (ann {s0['ann_net_%']:.2f}%)")
 
+    print("selftest: resid finds planted idiosyncratic reversion, not noise; permuted control does not")
+    mk = synthetic_market(17, coint_pairs=0, funding_edge=False, idio_hl_h=24)
+    sr = summarize("x", run_resid(mk, ResidParams()))
+    sp = summarize("x", run_resid(mk, ResidParams(), shuffle_rng=np.random.default_rng(9)))
+    check(sr["ann_price_%"] > 5 and sr["t_weekly"] > 2, f"planted reversion: price {sr['ann_price_%']:+.1f}%/yr, t {sr['t_weekly']:.1f}")
+    check(sp["ann_price_%"] < sr["ann_price_%"] / 3, f"permuted control price {sp['ann_price_%']:+.1f}%/yr")
+    b = btc_beta(mk, run_resid(mk, ResidParams()))
+    check(abs(b) < 0.05, f"resid book carries no market beta ({b:+.3f})")
+    # On a random walk the book must lose roughly its costs: price P&L ≈ 0 (averaged over seeds —
+    # one seed's price P&L swings ±25%/yr at this synthetic idiosyncratic vol), net ≈ cost.
+    nulls = [summarize("x", run_resid(synthetic_market(sd, coint_pairs=0, funding_edge=False), ResidParams()))
+             for sd in (17, 18, 19, 20)]
+    pm = np.mean([z["ann_price_%"] for z in nulls])
+    check(abs(pm) < 8.0 and max(z["ann_net_%"] for z in nulls) < 1.0,
+          f"idiosyncratic random walk → no edge (mean price {pm:+.2f}%/yr over 4 seeds, cost {nulls[0]['ann_cost_%']:+.1f}%/yr)")
+
     print("selftest: xcarry earns the spread on correlated pairs")
     mk = synthetic_market(13, coint_pairs=5, funding_edge=True)
     rx, _ = run_xcarry(mk, XCarryParams())
@@ -1412,7 +1513,7 @@ def selftest() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("book", choices=["pairs", "carry", "xcarry", "grid", "fsmarket", "combo", "all",
+    ap.add_argument("book", choices=["pairs", "carry", "xcarry", "resid", "grid", "fsmarket", "combo", "all",
                                      "baseline", "selftest"])
     ap.add_argument("--trades", default=os.path.join(REPO, "reports", "edgetest_raw_trades.csv"),
                     help="C# trade log for the combo book's Grid sleeve")
@@ -1466,6 +1567,8 @@ def main() -> int:
         report_carry(mk, a.controls, a.seed)
     if a.book in ("xcarry", "all"):
         report_xcarry(mk, a.controls, a.seed)
+    if a.book == "resid":
+        report_resid(mk, a.controls, a.seed)
     print("\nRead: an edge needs (1) net > 0 with t_weekly ≳ 2, (2) a clear gap over its "
           "control row, and (3) survival on --universe oos. Grid rows are sensitivity, not "
           "candidates — do not pick the best one.")

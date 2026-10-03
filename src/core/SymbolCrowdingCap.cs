@@ -18,10 +18,13 @@ namespace TradingGA;
 // direction.
 //
 // EXACT NO-OP AT STRENGTH 0. Math.Pow(x, 0) is 1.0 for every finite x, so EffectiveSlots returns
-// n unchanged and the cap is bit-for-bit the pre-existing headcount. Strength defaults to 0, i.e.
-// OFF, and is opted into with GRAVITY_CROWDING. Without that, "the setting did nothing" cannot be
-// told apart from "the setting was never on" — the ambiguity the BtcAlignWeight pilot was designed
-// around.
+// n unchanged and the cap is bit-for-bit the pre-existing headcount — GRAVITY_CROWDING=0 restores
+// exactly that. Strength defaults to DefaultStrength = 0.5 since 2026-10-03, on edgetest evidence:
+// at an equal number of admitted trades it beat a plain headcount cut on every risk metric
+// (rolling-gate Sharpe 1.07 vs 0.88, raw maxDD 38.7% vs 56.4%) because it turns away crowded
+// SHORTS (FadeShort + GridShort pile into the same co-movement families) instead of starving
+// Grid the way a lower headcount does. Every book that builds a cap prints that it is ON, so
+// "the setting did nothing" can still be told apart from "the setting was never on".
 //
 // WHY MEAN PAIRWISE CORRELATION AND NOT EFFECTIVE BETS. For an equicorrelation block the two agree
 // exactly: n/EffectiveBets == 1 + (n−1)·rho. Away from it they differ, but a book holds ~20 open
@@ -49,15 +52,18 @@ namespace TradingGA;
 // add residual pairwise correlation (shrunk) on top of the factor term, or sector factors.
 public sealed class SymbolCrowdingCap
 {
-    // GRAVITY_CROWDING=<double>. 0 or unset → OFF. 1.0 charges the full variance inflation.
-    // Values above 1 are allowed and simply charge harder; negative values are clamped to 0 so the
-    // environment cannot flip this into a loosening device.
+    public const double DefaultStrength = 0.5;
+
+    // GRAVITY_CROWDING=<double>. Unset → DefaultStrength; 0 → OFF. 1.0 charges the full variance
+    // inflation (edgetest: lower risk again, but CAGR gives way — a risk-appetite call). Values above
+    // 1 are allowed and simply charge harder; negative values are clamped to 0 so the environment
+    // cannot flip this into a loosening device.
     public static double ConfiguredStrength =>
         double.TryParse(Environment.GetEnvironmentVariable("GRAVITY_CROWDING"),
                         System.Globalization.NumberStyles.Float,
                         System.Globalization.CultureInfo.InvariantCulture, out double v)
             ? Math.Max(0.0, v)
-            : 0.0;
+            : DefaultStrength;
 
     public const string BtcAnchor = "BTCUSDT";
     public const string EthAnchor = "ETHUSDT";

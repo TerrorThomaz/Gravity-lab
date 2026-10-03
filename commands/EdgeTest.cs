@@ -38,7 +38,8 @@ public static class EdgeTest
     private const int    Batches        = 113;
     private const double StartBalance   = 1000.0;
     private const double MaxPositionPct = 0.05;   // 5% of equity per position
-    private const int    MaxConcurrent  = 20;     // mirrors Config.MaxDirectionalConcurrent
+    // GRAVITY_EDGE_MAXCONC: research override for the headcount-control test; default mirrors Config.MaxDirectionalConcurrent.
+    private static readonly int MaxConcurrent = int.TryParse(Environment.GetEnvironmentVariable("GRAVITY_EDGE_MAXCONC"), out int mc) && mc > 0 ? mc : 20;
 
     // PER-STRATEGY concurrency caps, from PortfolioReplay.DefaultCaps — the production portfolio
     // layer applies these BEFORE the directional cap, and this harness did not. Without them one
@@ -74,6 +75,8 @@ public static class EdgeTest
     // obtained, instead of accruing their final return in a straight line. Static because Evaluate
     // is a static helper called from several places in a single-run command.
     private static Dictionary<string, (DateTime[] T, double[] C)> _prices = new();
+    // GRAVITY_CROWDING: correlation-aware charge on the shared budget (null = off, bit-identical).
+    private static SymbolCrowdingCap? _crowding;
 
     private static double PriceAt(string sym, DateTime t)
     {
@@ -256,6 +259,15 @@ public static class EdgeTest
             if (StrategyPipeline.SelectVariant(flVariants, f.m15) is { } fl)
                 Add("FadeLong", FadeLongSimulator.GetFadeLongReturns(fl, f.h1, f.m15)
                     .Select(t => (t.Time, t.Return, t.EntryTime, t.EntryPrice)));
+        }
+
+        if (SymbolCrowdingCap.ConfiguredStrength > 0)
+        {
+            var daily = fetched.Select(f => SymbolCovariance.ToDaily(f.sym, f.h1)).OfType<SymbolCovariance.DailySeries>().ToList();
+            _crowding = SymbolCrowdingCap.Build(daily, SymbolCrowdingCap.ConfiguredStrength);
+            Console.WriteLine(_crowding != null
+                ? $"  CROWDING cap ON (GRAVITY_CROWDING={_crowding.Strength:F2}), {_crowding.Symbols} symbols — charges same-side open positions against the {MaxConcurrent}-slot budget\n"
+                : "  CROWDING cap requested but BTC/ETH anchors missing — INACTIVE\n");
         }
 
         _prices = fetched.Where(f => f.h1 is { Length: > 0 })
@@ -812,7 +824,7 @@ public static class EdgeTest
 
         var ordered = book.OrderBy(t => t.Entry).ToList();
         var sized   = new List<MarkToMarket.Position>();
-        var open    = new List<(DateTime Exit, double Pnl, string Strategy)>();
+        var open    = new List<(DateTime Exit, double Pnl, string Strategy, string Symbol)>();
         var openPerStrategy = new Dictionary<string, int>();
         double realized = StartBalance;
         var slots = new Dictionary<string, (int Admitted, int Dropped)>();
@@ -839,6 +851,15 @@ public static class EdgeTest
             {
                 Tally(t.Strategy, false); continue;
             }
+            // Crowding: the same-side open positions, charged for their correlation (one-sided — it
+            // can only reject what the headcount admitted). Unknown direction → charged against both.
+            if (_crowding != null)
+            {
+                bool? lng = PortfolioReplay.IsLong(ProductionLabel(t.Strategy));
+                var same = open.Where(o => lng is null || PortfolioReplay.IsLong(ProductionLabel(o.Strategy)) is not bool d || d == lng)
+                               .Select(o => o.Symbol).ToList();
+                if (_crowding.Exceeds(same, t.Symbol, MaxConcurrent, t.Entry)) { Tally(t.Strategy, false); continue; }
+            }
             // Sized off REALISED equity, ignoring open P&L: a position is never sized on a gain
             // that has not been booked yet.
             double pos = Math.Max(0.0, realized * MaxPositionPct * Math.Clamp(t.Size, 0.0, 1.0));
@@ -847,7 +868,7 @@ public static class EdgeTest
             Tally(t.Strategy, true);
             openPerStrategy[t.Strategy] = mine + 1;
             sized.Add(new MarkToMarket.Position(t.Entry, t.Ret, t.Exit - t.Entry, pos, MarkPath(t)));
-            open.Add((t.Exit, t.Ret / 100.0 * pos, t.Strategy));
+            open.Add((t.Exit, t.Ret / 100.0 * pos, t.Strategy, t.Symbol));
         }
         if (sized.Count < 30) return null;
 

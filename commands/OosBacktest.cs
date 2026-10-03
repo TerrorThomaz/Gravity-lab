@@ -115,7 +115,6 @@ static class OosBacktest
     {
         Console.WriteLine($"=== Gravity-gen2 | OOS BACKTEST ({Config.OosCoins.Length} never-seen coins · full history · all strategies, router-gated) ===\n");
 
-        if (!File.Exists(Config.FadeShortGenoFile)) { Console.WriteLine("Missing FadeShort genotype — run 'train' first.");    return; }
         if (!File.Exists(Config.GridGenoFile))      { Console.WriteLine("Missing grid genotype — run 'gridtrain' first.");     return; }
 
         // Load variant arrays (currently one entry each; infrastructure ready for multi-variant)
@@ -135,7 +134,6 @@ static class OosBacktest
         // Representative single genotypes (for logging and hold-time calcs)
         var swingG = fsVariants.Length   > 0 ? fsVariants[0].Genotype!   : null;
         var gridG  = gridVariants.Length > 0 ? gridVariants[0].Genotype! : null;
-        if (swingG == null) { Console.WriteLine("Missing FadeShort genotype — run 'train' first."); return; }
         if (gridG  == null) { Console.WriteLine("Missing grid genotype — run 'gridtrain' first.");  return; }
 
         FadeLongGenotype?     flG     = flVariants.Length > 0 ? flVariants[0].Genotype : null;
@@ -1046,7 +1044,6 @@ static class OosBacktest
 
         var swingG = fsVariantsAC.Length   > 0 ? fsVariantsAC[0].Genotype!   : null;
         var gridG  = gridVariantsAC.Length > 0 ? gridVariantsAC[0].Genotype! : null;
-        if (swingG == null) { Console.WriteLine("Missing FadeShort genotype."); return; }
         if (gridG  == null) { Console.WriteLine("Missing grid genotype.");      return; }
 
         FadeLongGenotype?     flG     = flVariantsAC.Length > 0 ? flVariantsAC[0].Genotype : null;

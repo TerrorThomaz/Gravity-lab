@@ -202,8 +202,8 @@ public static class FadeLongSimulator
 
                 if (hitStop || hitTarget || hitTrail || timedOut)
                 {
-                    double exitPx = hitHardStop ? hardStop :
-                                    hitMae      ? maeStop  :
+                    // Stop seen at the 15m close is filled AT that close (bot-managed stop; see FadeShortSimulator ExitFillNote).
+                    double exitPx = hitStop     ? m15Price :
                                     hitTarget   ? target   : m15Price;
                     double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: true);
                     double ret = (exitPx - entry) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl;

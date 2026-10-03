@@ -35,7 +35,6 @@ static class FullTest
             agBearG = JsonSerializer.Deserialize<GravityGen2.Strategies.AccumulationGrid.AccumulationGridGenotype>(agJson.GetProperty("Bear").GetRawText());
         }
 
-        if (swingG == null) { Console.WriteLine("Missing FadeShort genotype — run 'train' first."); return; }
         if (gridG  == null) { Console.WriteLine("Missing grid genotype — run 'gridtrain' first."); return; }
 
         var fsVariants = StrategyPipeline.LoadVariants<FadeShortGenotypeDto, FadeShortGenotype>(

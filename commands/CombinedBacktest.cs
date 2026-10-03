@@ -163,7 +163,6 @@ static class CombinedBacktest
     {
         Console.WriteLine($"=== Gravity-gen2 | COMBINED BACKTEST (all strategies, router-gated, {Config.BacktestCoins.Length} coins, {DataSplit.ValLabel}) ===\n");
 
-        if (!File.Exists(Config.FadeShortGenoFile)) { Console.WriteLine($"Missing FadeShort genotype — run 'train' first.");     return; }
         if (!File.Exists(Config.GridGenoFile))      { Console.WriteLine($"Missing grid genotype — run 'gridtrain' first."); return; }
 
         // Load variant arrays (currently one entry each; infrastructure ready for multi-variant)
@@ -193,7 +192,6 @@ static class CombinedBacktest
         // Representative single genotypes (for portfolio hold-time calcs and logging)
         var swingG = fsVariants.Length > 0 ? fsVariants[0].Genotype! : null;
         var gridG  = gridVariants.Length > 0 ? gridVariants[0].Genotype! : null;
-        if (swingG == null) { Console.WriteLine("Missing FadeShort genotype — run 'train' first."); return; }
         if (gridG  == null) { Console.WriteLine("Missing grid genotype — run 'gridtrain' first.");  return; }
 
         // FadeLong was hardcoded off on the strength of a COMMENT ("PF=0.06 OOS, net drag"), not a

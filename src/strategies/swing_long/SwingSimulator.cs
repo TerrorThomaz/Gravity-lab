@@ -239,13 +239,16 @@ public static class FadeShortSimulator
 
     // ExecContext overload for multi-TF path.
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetFadeShortReturns(
-        FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, in ExecContext ctx)
+        FadeShortGenotype? g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, in ExecContext ctx)
         => GetFadeShortReturns(g, h1, m15, ctx.Funding, ctx.Ratchet);
 
+    // A null genotype = FadeShort not on the roster (retired 2026-10-03): no trades, so every
+    // backtest runs without it instead of refusing to start.
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetFadeShortReturns(
-        FadeShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
+        FadeShortGenotype? g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15,
         FundingRateSession? funding = null, RatchetConfig ratchet = default)
     {
+        if (g is null) return new();
         var (trades, _) = RunSwingMultiTF(g, h1, m15, funding: funding, ratchet: ratchet);
         return trades.Select(t => (t.Item1, t.Item2, t.Item3, t.Item5, t.Item6)).ToList();
     }
@@ -707,7 +710,8 @@ public static class SwingLongSimulator
 
                 if (hitStop || hitTarget || hitTrail || timedOut || hitTimeStop)
                 {
-                    double exitPx   = hitStop   ? hardStop :
+                    // Stop seen at the 15m close is filled AT that close (bot-managed stop; see FadeShortSimulator ExitFillNote).
+                    double exitPx   = hitStop   ? m15Price :
                                       hitTarget ? target   : m15Price;
                     double fundingPnl = FundingRateSession.PnlPct(entryTime, m15[im15].Time, funding, isLong: true);
                     double ret      = (exitPx - entry) / entry * 100.0

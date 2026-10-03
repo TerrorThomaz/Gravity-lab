@@ -210,7 +210,8 @@ public static class DipLongSimulator
 
                 if (hitStop || hitTarget || hitTrail || timedOut || hitTimeStop)
                 {
-                    double exitPx = hitStop   ? leg.HardStop :
+                    // Stop seen at the 15m close is filled AT that close (bot-managed stop; see FadeShortSimulator ExitFillNote).
+                    double exitPx = hitStop   ? m15Price :
                                     hitTarget ? leg.Target   : m15Price;
                     double fundingPnl = FundingRateSession.PnlPct(leg.EntryTime, m15[im15].Time, funding, isLong: true);
                     double ret = (exitPx - leg.Entry) / leg.Entry * 100.0

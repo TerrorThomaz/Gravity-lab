@@ -216,10 +216,13 @@ async def run(once: bool) -> int:
 
 
 def main() -> int:
+    global OUT
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--out", default=OUT, help="output root (default: <repo>/data/recorder)")
     a = ap.parse_args()
+    OUT = os.path.abspath(os.path.expanduser(a.out))
     if a.selftest:
         return selftest()
     try:

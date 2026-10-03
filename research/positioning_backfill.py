@@ -91,14 +91,22 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", default="2021-01-01")
     ap.add_argument("--symbols", default="")
+    ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--cache", default=os.path.join(mnr.REPO, "candle_cache"))
     a = ap.parse_args()
     since = int(time.mktime(time.strptime(a.since, "%Y-%m-%d"))) * 1000
     syms = a.symbols.split(",") if a.symbols else sorted(set(mnr.config_symbols("BacktestCoins") + mnr.config_symbols("OosCoins") + ["BTCUSDT", "ETHUSDT"]))
-    t0 = time.time()
-    for i, s in enumerate(syms):
+    t0, done = time.time(), [0]
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(s: str) -> None:
         oi, lsr = backfill(s, "oi", since, a.cache), backfill(s, "lsr", since, a.cache)
-        print(f"[{i + 1}/{len(syms)}] {s:<16} +{oi} OI rows, +{lsr} L/S rows  ({time.time() - t0:.0f}s)", flush=True)
+        done[0] += 1
+        print(f"[{done[0]}/{len(syms)}] {s:<16} +{oi} OI rows, +{lsr} L/S rows  ({time.time() - t0:.0f}s)", flush=True)
+
+    # 8 symbols in parallel at ~8 req/s each ≈ 64 req/s, under Bybit's public 600 req / 5 s per IP.
+    with ThreadPoolExecutor(max_workers=a.workers) as ex:
+        list(ex.map(one, syms))
     return 0
 
 

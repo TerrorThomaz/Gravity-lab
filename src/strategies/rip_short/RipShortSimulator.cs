@@ -40,6 +40,13 @@ public static class RipShortSimulator
         double LockTriggerAtrMult  = 0.0,
         double LockProfitAtrMult   = 0.0);
 
+    // Research trace (null = off, the default): one row per closed trade with the exit reason and the
+    // levels it was decided on, so the exit 15m bar can be replayed on 1m data (same-bar stop/target
+    // order, gaps through the stop). Set by edgetest under GRAVITY_TRACE_RIPSHORT; never read here.
+    public static List<(string Symbol, DateTime EntryTime, DateTime ExitTime, string Reason, double Entry, double StopPx,
+                        double Target, double ExitPx, double CostStop, double CostOther, double SizeMult)>? Trace;
+    public static string TraceSymbol = "";   // set by the caller before each coin when Trace is on
+
     // Time = EXIT bar. EntryPrice = blended entry if DCA fired.
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetRipShortReturns(
         RipShortGenotype g, ReadOnlySpan<Candle> h1, ReadOnlySpan<Candle> m15, FundingRateSession? funding = null,
@@ -329,6 +336,10 @@ public static class RipShortSimulator
                     double ret = ((entry - exitPx) / entry * 100.0 - TradeCost(hitStop, atrEntry, entry) + fundingPnl) * dcaSizeMult;
                     string kind = dcaDone ? "ripshort_dca" : everWaited ? "ripshort_wait" : "ripshort";
                     result.Add((m15[im15].Time, ret, kind, entryRegimeBars, entryTime, entry));
+                    if (Trace is { } tr)
+                        lock (tr) tr.Add((TraceSymbol, entryTime, m15[im15].Time,
+                                          hitStop ? "stop" : hitTarget ? "target" : hitTrail ? "trail" : timedOut ? "time" : "timestop",
+                                          entry, stopPx, target, exitPx, TradeCost(true, atrEntry, entry), TradeCost(false, atrEntry, entry), dcaSizeMult));
                     inTrade = false;
                 }
             }

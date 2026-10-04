@@ -1,0 +1,311 @@
+continuation model — building …
+   backtest: 89 coins, 605,032 rung fills  [22s]
+   oos: 63 coins, 407,887 rung fills  [15s]
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:132: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:160: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+
+   LONG continuation model: 1,230,000 checkpoints, next-24h win 49%
+   derived management rules: +d_ema50(+0.20)  −rsi14(-0.20)  +breadth(+0.17)  −mdd2160(-0.13)  −hi720(-0.13)  −d_ema200(-0.10)  +disp24(+0.09)  +mvol(+0.08)
+
+   SHORT continuation model: 1,230,000 checkpoints, next-24h win 52%
+   derived management rules: −d_ema50(-0.20)  −breadth(-0.16)  +rsi14(+0.16)  +d_ema200(+0.13)  +mdd2160(+0.12)  +hi720(+0.11)  −latr(-0.08)  −disp24(-0.08)
+
+── VALIDATION (2024-01 → 2025-06): structural-default entries, baseline exits vs the continuation exit ──
+   bt   BASELINE trades  3617  ann  +14.9%  Sharpe +0.50
+   bt   CONT     trades  3166  ann  +38.9%  Sharpe +1.32   median hold 21h (exited early 97%)   CONT − BASELINE daily t +0.77
+        permuted-label nulls Sharpe [1.02, 1.02, 1.02, 1.07, 1.16] → beats 5/5
+        hold-shuffled nulls  Sharpe [0.22, 1.42, 0.83, 1.36, 0.91] → beats 3/5
+        → bt FAIL
+   oos  BASELINE trades  3487  ann  +22.9%  Sharpe +0.72
+   oos  CONT     trades  3077  ann  +45.8%  Sharpe +1.48   median hold 21h (exited early 96%)   CONT − BASELINE daily t +0.68
+        permuted-label nulls Sharpe [1.42, 1.42, 1.42, 1.38, 1.57] → beats 4/5
+        hold-shuffled nulls  Sharpe [1.33, 1.4, 1.24, 0.97, 1.88] → beats 4/5
+        → oos FAIL
+
+VERDICT: FAIL (both universes required). Block B untouched.

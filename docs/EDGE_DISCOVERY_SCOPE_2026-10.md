@@ -781,3 +781,35 @@ STRUCT = per side, the best discovery rung type:
 **C# port.** The current Grid genes cannot express it (step ≤ 2 ATR, no time-only or trailing
 exit, rungs rest for a whole session). It needs a simulator mode, plus a `RandomWalkNullTests`
 entry.
+
+## Continuation model: learned in-trade management (2026-10-04, `research/contmodel.py`): FAIL
+
+**Setup.**
+- Structural-default entries (k3 rungs).
+- Every 4h, the EV of the next 24h from: indicators now, Δ since entry (momentum, RSI, breadth,
+  market, funding, ADX), and trade state (unrealised P&L, age, MFE, giveback).
+- Exit when EV < 0.
+
+**Derived management rules: the same as the entry rules.**
+- Hold longs while above EMA50, RSI low, breadth high and the market not in drawdown.
+- Hold shorts while the mirror holds.
+- **None of the Δ-since-entry or trade-state features made the top 8.** "Momentum weakening since
+  entry" adds no information on candles beyond the indicator levels.
+
+**Validation book:**
+
+| | baseline (fixed exits) | CONT | CONT − baseline | permuted-label nulls | hold-shuffled nulls |
+|---|---|---|---|---|---|
+| BT | Sharpe +0.50, +15%/yr | **+1.32, +39%/yr** | t +0.77 | 1.02–1.16 → beats 5/5 | 0.22–1.42 → beats 3/5 |
+| OOS | Sharpe +0.72, +23%/yr | **+1.48, +46%/yr** | t +0.68 | 1.38–1.57 → beats 4/5 | 0.97–1.88 → beats 4/5 |
+
+**Reading.**
+- CONT doubles the book. **But permuted-label models (which effectively exit at the first
+  checkpoint) get most of it:** the gain is mainly from HOLDING SHORTER (median 21h, 96% exited
+  early), not from reading the trade.
+- The learned timing adds ~+0.1–0.3 Sharpe over that, not significant.
+
+**Two lessons.**
+1. The structural default's exits are too long, especially the short side's 3-ATR trail (up to
+   168h).
+2. Sentiment *changes* need data candles don't have: the recorder's OI, liquidations and book.

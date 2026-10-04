@@ -1189,3 +1189,44 @@ Per-sleeve stress behaviour (%/day; downside beta = beta on BTC/ETH down days):
   risk to hedge is carry's.
 - All of this is seen data, and the hybrid was chosen after the one-shot. Its weight in the live book
   waits for its forward test.
+
+## PRE-REGISTRATION: two carry trials (written 2026-10-05, before any statistic)
+
+Code: `research/carry_hedge.py` (committed with this section; the selftest pins the loop to
+`run_book` exactly).
+
+**Context: carry by leg** (OosCoins, %/yr):
+
+| leg | price | funding |
+|---|---|---|
+| long | −8.3 | +17.8 (−5.2 paid on positive rates, +23.1 received on negative) |
+| short | +9.0 | +6.6 |
+
+Costs are −12.1 and the net is +13.0. The long leg earns funding, so spot longs wholesale would cost
+~18%/yr. That idea is rejected by arithmetic, not by a test.
+
+**Trial A — volatility-managed carry** (tail control, Moreira & Muir 2017; fixed windows, nothing
+fitted). Each day, carry's targets are multiplied by min(1, σ_ref/σ_7d):
+- σ_7d = std of plain carry's daily net over the 7 days before;
+- σ_ref = median of σ_7d over the 180 days before.
+
+PASS requires all of the following:
+- **no-bleed** in both universes (net Sharpe > 0 full window and both halves);
+- **a better worst-1% day** than plain carry in both universes;
+- **a better book:** ERC(carry_A, Grid, GridShort) has a higher Sharpe AND a maxDD no worse than the
+  plain book;
+- **beats placebo:** its worst-1% day beats ≥ 90% of 100 placebos (the same scale series permuted
+  in 30-day blocks) on OosCoins.
+
+**Trial B — venue switch for paying longs.** At each rebalance, a long in a coin with a Bybit USDT
+spot market and trailing-7d mean funding > 0 is held on spot (no funding) until the next rebalance.
+Every perp↔spot move of a held long pays 2 taker sides. Spot listing is today's (29/100 OosCoins,
+79/100 BacktestCoins), applied to the past.
+
+PASS requires all of the following:
+- **no-bleed** in both universes;
+- **a higher net Sharpe** than plain carry in both universes;
+- **a higher Sharpe in both halves**, in both universes.
+
+Both trials run on seen data (2021 →), so a pass is tier T1 information and adoption still needs
+forward data. Two trials count toward the research trial ledger.

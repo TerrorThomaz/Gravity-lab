@@ -558,3 +558,37 @@ block B, not evidence.
 1. TREND sleeve: market 30d sign, all coins, daily, 7d hold, real funding.
 2. Grid dips gated by trend: k2 rungs only with the 30d trend, 12h–3d hold.
 3. k3 long rungs held 72h.
+
+## PRE-REGISTRATION: block B one-shot tests (written 2026-10-04, before any block-B read)
+
+Block B = trades entered from 2025-07-01 to the end of the cache (2026-10-02). Lookback data from
+before 2025-07-01 may be used for signals. Trades whose exit falls past the end of the data are
+dropped. Both universes (BacktestCoins, OosCoins) are evaluated separately, and BOTH must pass.
+Code: `research/blockB_test.py`, committed together with this section. **Run once. Nothing is
+tuned afterwards.**
+
+**Trial 1: TREND sleeve.**
+- signal = the sign of the equal-weight universe market's trailing 720h log return, at the close
+  of the 00:00 UTC hourly bar;
+- every coin, every day: side = signal, entry at the next open (taker), exit at the close 168h
+  later (taker);
+- net = side · log return − 0.21% − funding;
+- funding = real per-symbol settlements (a long pays a positive rate); the 0.01%/8h floor applies
+  either way where data is missing, including after a symbol's last cached settlement.
+- Baselines: the same entries always long, and always short.
+- **PASS:** mean net > 0 AND mean net > max(always-long, always-short), in both universes.
+  Week-clustered t is reported but not gated: 15 months is about 65 weeks and a few regimes, so
+  power is low by construction.
+
+**Trial 2: Grid dips gated by trend.**
+- one-bar k=2 rungs on 1h bars (`grid_paths.fills`: close_t ∓ 2·ATR14, per rung, touch fill,
+  maker entry), arming bar in block B;
+- kept only if the rung's side equals the trend signal at the arming bar (the same 720h market
+  sign, evaluated hourly);
+- exit at the close 24h after the fill bar (PRIMARY; 12h and 72h reported), taker;
+- net = side · ln(exit / fill px) − 0.125% − funding (as above).
+- **PASS:** with-trend mean net > 0 at 24h AND (with-trend − against-trend) > 0 at 24h, in both
+  universes.
+
+**Trials charged:** 2. If either passes, the next evidence is forward or papertrade data, not more
+of B.

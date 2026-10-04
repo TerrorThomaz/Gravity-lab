@@ -927,3 +927,32 @@ rows, maxDD, and the per-label loss distribution.
 measurement, so modulating the live GA grid's rungs with it is not justified yet. A better
 classifier input (the recorder's data) is the prerequisite, not more plumbing. The plumbing itself
 works: overlay labels, caps, hard stop, decision loading.
+
+## Why the overlay failed: risk was never in the objective (user's diagnosis, 2026-10-04)
+
+**The gap.** Every objective in the edge-finding pipeline was per-trade EV. Volatility, drawdown,
+MAE and correlated concurrency were never priced. Deep rungs fill in flushes, so they are one
+correlated bet, not many independent ones.
+
+**Evidence** (BT + overlay, `edgetest` raw trades 2024 →).
+- The overlay has 4× the GA grid's per-trade std (6.4–6.7 vs 1.5–1.7).
+- Its mean is NEGATIVE under the authority: long −0.17%, short −0.55%.
+- 58% of overlay long entries came in hours with ≥ 10 simultaneous deep fills, at a mean of
+  −0.66% and **69% of all overlay losses**. Isolated / small clusters were positive.
+
+**But the cluster sign is not stable** (`research/cluster_discovery.py`, discovery 2020–23).
+- Long 10+ clusters were POSITIVE (+0.29 BT / +0.15 OOS).
+- The causal "≥ 3 deep fills in the previous bar" proxy was +0.91 / +0.66 for longs.
+- **For shorts it is negative in both periods and both universes** (discovery −0.83 / −0.63):
+  shorting into a squeeze cascade is a stable loser.
+
+**Two unexposed things, both machinery gaps, not new trials.**
+1. **Risk.** The objective and the policy need book-level risk: train and score on risk-adjusted
+   targets, add correlated-exposure features (previous-bar deep fills, market 1h move, open
+   overlay positions), and give the policy a correlated-exposure budget.
+2. **Cost-model mismatch.** The research labels used flat costs and real funding. The C# authority
+   uses ATR-scaled slippage, a stop gap and floor funding for the grid family. The research EV was
+   systematically optimistic for exactly the high-ATR deep rungs. Research labels must use a Python
+   mirror of `TradeCosts`.
+
+**Rule going forward:** only rules with the same sign in discovery AND validation are eligible.

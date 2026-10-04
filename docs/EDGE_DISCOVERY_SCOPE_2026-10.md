@@ -761,3 +761,23 @@ That is "buy dips in strength, sell rips in weakness", rediscovered without bein
 
 **Lead, not evidence:** "always-on grid that prefers deep rungs and longer exits" (what the nulls
 converge to). It was found by looking, so it needs forward data.
+
+**STRUCT vs ALWAYS** (2026-10-04, `research/struct_vs_dyn.py`; INFORMATIONAL, because validation
+had already been seen).
+
+STRUCT = per side, the best discovery rung type:
+- long: k3 + TIME24 (discovery mean +0.28%, 55% wins);
+- short: k3 + TRAIL30 (+0.10%).
+
+| | STRUCT | ALWAYS (logistic) | STATIC k1 TPSL1 | ALWAYS − STRUCT |
+|---|---|---|---|---|
+| BT | Sharpe +0.50, +15%/yr | +0.91 | −1.51 | +0.52 [t 0.64] |
+| OOS | Sharpe +0.72, +23%/yr | +1.49 | −2.83 | +0.96 [t 1.18] |
+
+**Reading.**
+- The structural default alone turns the grid from a heavy loser into a positive book.
+- The indicator rules add a consistent but non-significant ~+0.5–1.0 Sharpe on top.
+
+**C# port.** The current Grid genes cannot express it (step ≤ 2 ATR, no time-only or trailing
+exit, rungs rest for a whole session). It needs a simulator mode, plus a `RandomWalkNullTests`
+entry.

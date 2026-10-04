@@ -30,7 +30,10 @@ Fixed before the first run (2026-10-04):
                Position management: at most one open position per coin and side; nothing new is armed
                on a coin/side while it is open; ≤ 12 open per side (arrival order); 5% of capital per
                position; P&L booked at exit (realised; a stated simplification).
-  baselines    STATIC grid (always k=1 with TPSL1, both sides); RANDOM rung type each bar; and
+  baselines    STATIC grid (always k=1 with TPSL1, both sides); RANDOM rung type each bar;
+               STRUCT (added 2026-10-04, after the first validation run, so INFORMATIONAL): per side,
+               the one rung type with the best discovery mean net, always armed. ALWAYS vs STRUCT
+               isolates the value of the indicator rules; and
                5 refits with permuted labels (NULLS).
   significance the book's DAILY P&L: annualised Sharpe, t, deflated Sharpe at N = 32 trials.
   pass         ALWAYS on validation, BOTH universes: Sharpe > 0, > STATIC and > RANDOM, beats all
@@ -240,6 +243,8 @@ def policy_book(D, models, mode, rng=None):
         side_types = [ti for ti, (ss, kk, e) in enumerate(types) if ss == side]
         if mode == "STATIC":
             choice = types.index((side, 1, "TPSL1")); best = 0.0
+        elif mode == "STRUCT":                         # structural default: per side, the type with the best DISCOVERY mean net
+            choice = max(side_types, key=lambda ti: models[types[ti]]["mean"]); best = 0.0
         elif mode == "RANDOM":
             choice = side_types[rng.integers(len(side_types))]; best = 0.0
         else:

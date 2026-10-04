@@ -71,22 +71,38 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--trades", default=os.path.join(mnr.REPO, "reports", "live_book_trades_2026-10-04.csv"))
     a = ap.parse_args()
+    import binance_trend as bt
     book, S = book_daily(a.trades)
     book, S = book.iloc[:-1], S.iloc[:-1]                                 # the last day is incomplete
+    days, O, C, F, K = bt.load()
+    S["trend"] = pd.Series(bt.sleeve(O, C, F, K, hybrid=True)[0], index=days).reindex(S.index).fillna(0.0)
     bms = benchmarks(book.index)
+    b20 = np.array([1 - bt.BUDGET, bt.BUDGET])
+    ex_gs, _ = mnr.erc_combine(S[["carry", "grid"]])
+    books = {"BOOK (ERC carry+Grid+GridShort)": book,
+             "BOOK + trend hybrid @20% risk": bt.budget_combine(pd.DataFrame({"b": book, "t": S.trend}), b20),
+             "BOOK ex-GridShort (ERC carry+Grid)": ex_gs,
+             "BOOK ex-GridShort + trend @20%": bt.budget_combine(pd.DataFrame({"b": ex_gs, "t": S.trend}), b20)}
     rows = []
-    for name, x in [("BOOK (ERC carry+Grid+GridShort)", book), ("Grid", S.grid), ("GridShort", S.gridshort),
-                    ("carry", S.carry), ("Grid+GridShort (sum)", S.grid + S.gridshort)]:
+    for name, x in [*books.items(), ("Grid", S.grid), ("GridShort", S.gridshort), ("carry", S.carry),
+                    ("trend hybrid", S.trend)]:
         rows += report(name, x, bms)
     print(f"S8 buy-and-hold check, {book.index[0]:%Y-%m-%d} → {book.index[-1]:%Y-%m-%d} ({len(book) / 365:.1f}y), "
           f"INFORMATION (seen data)\n")
     with pd.option_context("display.width", 260, "display.max_columns", 30, "display.float_format", lambda v: f"{v:,.2f}"):
         print(pd.DataFrame(rows).to_string(index=False))
-    # the book's worst market days: does it hold up when buy-and-hold crashes?
-    for bn, b in bms.items():
-        w = b <= b.quantile(0.05)
-        print(f"\n  on the 5% worst {bn} days (B&H {100 * b[w].mean():+.2f}%/day): book {100 * book[w].mean():+.3f}, "
-              + ", ".join(f"{c} {100 * S[c][w].mean():+.3f}" for c in S.columns) + " %/day")
+    # hedge test: what each sleeve does on the market's and on the book's worst days (%/day)
+    cols = {**books, **{c: S[c] for c in S.columns}}
+    masks = {f"worst 5% {bn} days": b <= b.quantile(0.05) for bn, b in bms.items()}
+    masks["worst 5% BOOK days"] = book <= book.quantile(0.05)
+    masks["BTC/ETH down >20% over 30d"] = (1 + bms["BTC/ETH"]).rolling(30).apply(np.prod, raw=True) < 0.8
+    hed = pd.DataFrame({m: {c: 100 * x[w].mean() for c, x in cols.items()} for m, w in masks.items()})
+    hed["downside beta (BTC/ETH<0 days)"] = [float(np.polyfit(bms["BTC/ETH"][bms["BTC/ETH"] < 0], x[bms["BTC/ETH"] < 0], 1)[0])
+                                            for x in cols.values()]
+    print("\nHEDGE TEST — mean %/day on stress days (a hedge is positive here), and downside beta (a hedge is < 0)")
+    print(f"  stress days: {', '.join(f'{m} n={int(w.sum())}' for m, w in masks.items())}")
+    with pd.option_context("display.width", 260, "display.float_format", lambda v: f"{v:+,.3f}"):
+        print(hed.to_string())
     return 0
 
 

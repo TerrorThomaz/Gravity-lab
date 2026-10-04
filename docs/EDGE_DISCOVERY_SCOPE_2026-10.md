@@ -1160,3 +1160,32 @@ only, which flatters the benchmark) and 50/50 BTC/ETH, spot, rebalanced daily.
   edgetest: RAW Sharpe 2.29 for Grid + GridShort.
 - The grid's daily beta of ~0 does not mean "no market risk": its edge is market-wide dip rebound on
   an hours scale. Daily beta misses intraday exposure.
+
+### Rerun with the trend hybrid in the book, and a hedge test (2026-10-05, information)
+
+| book | Sharpe | CAGR | maxDD | worst 5% BTC/ETH days | worst 5% book days | downside beta |
+|---|---|---|---|---|---|---|
+| ERC carry + Grid + GridShort (live) | 1.63 | 7.4% | −4.9% | −0.050%/day | −0.44 | +0.009 |
+| **+ trend hybrid at 20% risk** | **1.82** | **9.5%** | **−4.6%** | **+0.066** | **−0.37** | **−0.009** |
+| ex-GridShort (ERC carry + Grid) | 1.40 | 11.8% | −7.2% | −0.094 | −0.78 | +0.015 |
+| ex-GridShort + trend at 20% | 1.63 | 14.2% | −5.5% | +0.047 | −0.68 | −0.007 |
+
+Per-sleeve stress behaviour (%/day; downside beta = beta on BTC/ETH down days):
+
+| sleeve | worst EW-OOS days | worst BTC/ETH days | worst book days | BTC/ETH −20% in 30d | downside beta |
+|---|---|---|---|---|---|
+| carry | −0.14 | −0.08 | **−1.95** | +0.07 | +0.009 |
+| Grid | −0.09 | −0.09 | −0.12 | +0.03 | +0.016 |
+| GridShort | +0.01 | +0.01 | −0.03 | −0.00 | −0.001 |
+| **trend hybrid** | **+1.14** | **+1.90** | **+0.40** | **+0.72** | **−0.30** |
+
+- **The trend hybrid is the only real hedge.** It is strongly positive on crash days and through
+  drawdowns, with a downside beta of −0.30. At a 20% risk budget it turns the book's crash-day
+  result from negative to positive.
+- **GridShort is a diversifier, not a hedge.** It is flat on every kind of stress day. Removing it
+  still costs the book: Sharpe 1.63 → 1.40, maxDD −4.9% → −7.2%. Part of that is mechanical: under
+  ERC, its low vol takes risk weight away from carry.
+- **The book's own worst days come from carry** (−1.95%/day on them), not from the grid. The tail
+  risk to hedge is carry's.
+- All of this is seen data, and the hybrid was chosen after the one-shot. Its weight in the live book
+  waits for its forward test.

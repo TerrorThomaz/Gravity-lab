@@ -1,0 +1,19 @@
+{
+  "AdxThreshold": 11.307305744153032,
+  "BbPeriod": 20,
+  "BbWidthMaxPct": 4.913115985441541,
+  "EmaPeriod": 20,
+  "GridStepAtrMult": 1.3946470411236618,
+  "GridLevels": 3,
+  "TakeProfitAtrMult": 2.253571721098186,
+  "HardStopAtrMult": 2.958215799163196,
+  "MaxHoldCandles": 140,
+  "BailOutAtrMult": 2.917243100547811,
+  "RungSellFrac": 1.5723734634101272,
+  "ReanchorAlpha": 0.1809146450371084,
+  "SlopeThreshold": -0.00837125961127284,
+  "SlopeLookback": 10,
+  "Fitness": 0.20092762806424938,
+  "AtrLow": 0,
+  "AtrHigh": 9999
+}

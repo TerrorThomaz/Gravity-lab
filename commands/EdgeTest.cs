@@ -334,6 +334,18 @@ public static class EdgeTest
                                        f => (f.h1.Select(c => c.Time).ToArray(),
                                              f.h1.Select(c => c.Close).ToArray()));
 
+        // GRAVITY_EDGE_FROM=yyyy-MM-dd: score only trades ENTERED on or after that date (the forward test,
+        // docs/FORWARD_TEST_GRID_2026-10.md). Simulators still run over the full history so indicators and
+        // sessions are warmed up exactly as in production; only the booked trades are filtered. The rolling
+        // gates have no trailing trades to fit on, so read the RAW row.
+        if (Environment.GetEnvironmentVariable("GRAVITY_EDGE_FROM") is { Length: > 0 } fromStr)
+        {
+            var from = DateTime.SpecifyKind(DateTime.Parse(fromStr, System.Globalization.CultureInfo.InvariantCulture), DateTimeKind.Utc);
+            int before = raw.Count;
+            raw.RemoveAll(t => t.Entry < from);
+            Console.WriteLine($"  FORWARD WINDOW: trades entered from {from:yyyy-MM-dd} only — {raw.Count} of {before} kept\n");
+        }
+
         if (raw.Count == 0) { Console.WriteLine("  No trades generated."); return; }
         Console.WriteLine($"  Raw book: {raw.Count} trades, {raw.Select(t => t.Symbol).Distinct().Count()} coins, " +
                           $"{raw.Select(t => t.Strategy).Distinct().Count()} strategies\n");

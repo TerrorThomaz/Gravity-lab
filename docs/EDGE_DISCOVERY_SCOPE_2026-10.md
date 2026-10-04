@@ -956,3 +956,27 @@ correlated bet, not many independent ones.
    mirror of `TradeCosts`.
 
 **Rule going forward:** only rules with the same sign in discovery AND validation are eligible.
+
+## PRE-REGISTRATION: overlay v2 — authority costs + risk-aware decisions (2026-10-04, before any run)
+
+**Machinery fixes.**
+- `research/tradecosts.py`: a Python mirror of `TradeCosts.RoundTripPct` and the funding floor,
+  parity-pinned by `TradeCostsParityTests` on the C# side.
+- `research/rulepath2.py`: k3 labels that mirror `StructGridSimulator`'s overlay exits exactly
+  (selftest against the C# test cases), under authority costs, the funding floor and the GA hard
+  stop.
+
+**Risk awareness.**
+- New features: mz1, mz4 and prevk3 (correlated exposure).
+- Decision: arm only if EV ≥ 0.1·σ_type, i.e. a predicted per-trade Sharpe of at least ~0.1.
+- The stable cascade rule: no overlay short when prevk3 ≥ 3.
+- An exposure budget: overlay caps 4 per side (were 12).
+
+**Measure.** `edgetest` with `GRAVITY_GRID_OVERLAY=reports/overlay_decisions_v2_<u>.csv`, both
+universes, against the GA-only runs already on record.
+
+**PASS (same rule as v1):** in BOTH universes, the acceptance gate rates BOTH overlay labels
+"accept — better on both".
+
+**Honesty note.** The 2024+ window has been viewed several times (v1 and its post-mortem), so even
+a pass is suggestive, not confirmatory. Forward data decides. **Trials charged:** 1 more (v2).

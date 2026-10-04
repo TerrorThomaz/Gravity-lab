@@ -17,9 +17,11 @@ public static class PortfolioReplay
         ["gridshort"]  = 12,
         ["accumgrid"]  = 12,
         // Dynamic-grid overlay (research, edgetest GRAVITY_GRID_OVERLAY): its own slots, so the GA
-        // grid's admitted trades are not displaced by the overlay.
-        ["gridoverlay"]      = 12,
-        ["gridshortoverlay"] = 12,
+        // grid's admitted trades are not displaced by the overlay. 4, not 12: an exposure budget.
+        // Deep rungs fill in flushes, so a dozen of them is one correlated bet (overlay v1 used 12 and
+        // took 24% maxDD; post-mortem 2026-10-04).
+        ["gridoverlay"]      = 4,
+        ["gridshortoverlay"] = 4,
     };
 
     private static readonly HashSet<string> LongStrategies = new(StringComparer.OrdinalIgnoreCase)

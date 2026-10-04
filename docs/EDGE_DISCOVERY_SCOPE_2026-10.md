@@ -592,3 +592,37 @@ tuned afterwards.**
 
 **Trials charged:** 2. If either passes, the next evidence is forward or papertrade data, not more
 of B.
+
+## BLOCK B RESULT (run once, 2026-10-04, pre-registration 3bda0da): BOTH FAIL
+
+**Trial 1, TREND sleeve, 7d hold.**
+
+| | trend | always-long | always-short | long share | verdict |
+|---|---|---|---|---|---|
+| BT | −0.06% [−0.1] | −1.35 | +0.93 | 34% | FAIL |
+| OOS | +0.21% [+0.3] | −1.59 | +1.17 | 28% | FAIL |
+
+Block B was a persistent alt downtrend, and always-short beats the sleeve. The 30d signal
+whipsawed into longs at the wrong times:
+- 2025-07: −6.5 / −6.0;
+- 2026-08: −5.6 / −6.8;
+- 2026-09 recovered (+11.9 / +9.1).
+
+**Trial 2, k2 dips gated by trend, 24h (primary).**
+
+| | with trend | against trend | diff | verdict |
+|---|---|---|---|---|
+| BT | −0.42% [−1.4] | −0.36 | −0.06 | FAIL |
+| OOS | −0.23% [−1.0] | −0.33 | +0.11 | FAIL |
+
+At 72h (reported only), with-trend is −0.10 / +0.23 against −0.36 / −0.31: the right sign, but
+not significant.
+
+**Reading.**
+- The block-A trend effect (t ~2, sign-flipping by year) did not carry into 15 more months.
+- That is consistent with the "few regimes" diagnosis: a real but weak, regime-dependent effect,
+  or none.
+- The persistent negative alt drift that made always-short win in B was NOT a trial, and is not
+  claimed.
+- Block B is now spent for these two hypotheses. Further evidence on them can come only from
+  forward data.

@@ -1,0 +1,17 @@
+BLOCK B one-shot (2025-07-01 → data end 2026-10-02 10:00), pre-registered 2026-10-04
+
+[backtest] TRIAL 1 TREND, 7d hold: n 35273 entries (34% long)
+   trend -0.059% [t -0.1]   always-long -1.345   always-short +0.925   → FAIL
+   by entry month: 2025-07 -6.47  2025-08 +0.94  2025-09 -2.06  2025-10 +1.27  2025-11 +2.27  2025-12 +1.01  2026-01 -2.14  2026-02 +1.92  2026-03 -0.12  2026-04 -2.61  2026-05 -0.09  2026-06 +2.34  2026-07 +2.60  2026-08 -5.58  2026-09 +11.91
+[backtest] TRIAL 2 k2 dips with trend, 24h (primary): with -0.417% [t -1.4]  against -0.356% [t -0.8]  diff -0.061  (n (14171, 13799)) → FAIL
+      12h (reported): with -0.356 [t -1.9]  against -0.283 [t -0.8]
+      72h (reported): with -0.098 [t -0.1]  against -0.360 [t -0.7]
+
+[oos] TRIAL 1 TREND, 7d hold: n 25493 entries (28% long)
+   trend +0.211% [t +0.3]   always-long -1.591   always-short +1.171   → FAIL
+   by entry month: 2025-07 -6.03  2025-08 +1.33  2025-09 -3.24  2025-10 +1.05  2025-11 +1.60  2025-12 +1.16  2026-01 -1.68  2026-02 +3.02  2026-03 -0.26  2026-04 -0.84  2026-05 +2.36  2026-06 +5.05  2026-07 +1.72  2026-08 -6.80  2026-09 +9.07
+[oos] TRIAL 2 k2 dips with trend, 24h (primary): with -0.228% [t -1.0]  against -0.334% [t -0.8]  diff +0.106  (n (11575, 10589)) → FAIL
+      12h (reported): with -0.130 [t -0.9]  against -0.388 [t -1.1]
+      72h (reported): with +0.231 [t +0.4]  against -0.312 [t -0.7]
+
+VERDICT  Trial 1 TREND: FAIL   Trial 2 trend-gated dips: FAIL   (both universes required)

@@ -1297,3 +1297,26 @@ estimate breached on 24 days (peak 1.64x).
 - At peak gross the whole equity sits in correlated dip-buys during a flush.
 - The 30% cap was chosen after seeing its effect.
 - Carry and trend are not in C#, so this cannot yet reach edgetest (S1).
+
+### SleeveSizer ported to C# and run through edgetest (2026-10-05)
+
+- **The code:** `src/core/SleeveSizer.cs`, parity-tested against `research/cov_sizing.py`
+  (`SleeveSizerTests`, 802 tests pass).
+- **The run:** `GRAVITY_EDGE_SLEEVES=reports/sleeves dotnet run -- edgetest`.
+  - Grid and GridShort are edgetest's own trades, marked daily on real prices.
+  - Carry and trend come from `research/export_sleeves.py`.
+
+| sizing (grid cap 30%) | CAGR | vol | Sharpe | maxDD | DSR | mean gross |
+|---|---|---|---|---|---|---|
+| inverse vol, capital split | 8.4% | 4.7% | 1.74 | −5.7% | 0.246 | 0.20 |
+| ERC, C# mean-diag shrink, scaled to gross 1 | 21.9% | 14.7% | 1.42 | −11.8% | 0.077 | 0.73 |
+| ERC, correlation shrink, scaled | 20.8% | 9.1% | 2.12 | −5.7% | 0.567 | 0.51 |
+| **ERC, correlation shrink, scaled, weight ≤ 1** | **19.3%** | **8.3%** | **2.16** | **−5.7%** | **0.599** | 0.47 |
+
+- **Grid cap 60% (live), best row:** 12.8% / Sharpe 1.82 / DSR 0.307.
+- **The 30% cap holds under MTM:** Grid's MTM Sharpe goes 2.02 → 2.29 and GridShort's 0.65 → 0.81.
+- **Python booked-at-exit overstated the Sharpe**, as expected: 2.66 in Python against 2.16 under
+  MTM.
+- **The DSR of 0.60 is below the 0.95 bar.** The trial ledger's count dominates it, and the sizing
+  and the 30% cap were both chosen on this window, so the result is information until forward data
+  arrives.

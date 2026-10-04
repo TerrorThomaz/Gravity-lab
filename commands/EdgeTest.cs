@@ -358,6 +358,15 @@ public static class EdgeTest
                     $"{t.Entry:yyyy-MM-dd HH:mm:ss},{t.Exit:yyyy-MM-dd HH:mm:ss},{t.Symbol},{t.Strategy},{t.Ret:F4},{t.EntryPrice}"))
                .Prepend("entry_time,exit_time,symbol,strategy,return_pct,entry_price"));
 
+        // GRAVITY_EDGE_SLEEVES=<dir with carry.csv, trend.csv from research/export_sleeves.py>: the whole
+        // book across sleeves, sized by SleeveSizer (research/cov_sizing.py's rule) instead of the shared
+        // trade-slot replay. Grid sleeves come from THIS engine, marked to market on real prices.
+        if (Environment.GetEnvironmentVariable("GRAVITY_EDGE_SLEEVES") is { Length: > 0 } sleeveDir)
+        {
+            RunSleeves(raw, sleeveDir);
+            return;
+        }
+
         // ── 2. The books ──────────────────────────────────────────────────────────────────────
         // Regime at entry, once, for every trade (binary search over the classified BTC series).
         var regimes = RegimeBarLookup.TagRegimes(btcRegime, raw.Select(t => t.Entry).ToList());
@@ -889,6 +898,100 @@ public static class EdgeTest
     // Concurrency-capped replay at 5% of running equity per position, then a daily marked-to-market
     // curve through MarkToMarket — which books each trade exactly once, at its close, and accrues
     // open positions linearly so a drawdown inside a hold is visible rather than hidden.
+    // One grid strategy as a sleeve: fixed capital (no compounding inside the sleeve, so the daily
+    // series is P&L per unit of sleeve capital), 5% per session, the per-strategy cap, and an exposure
+    // cap on open notional (a session that does not fit is cut to the headroom). Marked to market daily.
+    private static (Dictionary<DateTime, double> Pnl, Dictionary<DateTime, double> Gross) GridSleeve(
+        List<Booked> raw, string strategy, double expCap)
+    {
+        var open = new List<(DateTime Exit, double Pos)>();
+        var sized = new List<MarkToMarket.Position>();
+        var gross = new Dictionary<DateTime, double>();
+        foreach (var t in raw.Where(t => t.Strategy == strategy).OrderBy(t => t.Entry))
+        {
+            open.RemoveAll(o => o.Exit <= t.Entry);
+            if (open.Count >= CapFor(t.Strategy)) continue;
+            double pos = Math.Min(StartBalance * MaxPositionPct * Math.Clamp(t.Size, 0.0, 1.0),
+                                  Math.Max(0.0, expCap * StartBalance - open.Sum(o => o.Pos)));
+            if (pos <= 0) continue;
+            open.Add((t.Exit, pos));
+            sized.Add(new MarkToMarket.Position(t.Entry, t.Ret, t.Exit - t.Entry, pos, MarkPath(t)));
+            for (var d = t.Entry.Date; d <= t.Exit.Date; d = d.AddDays(1))
+                gross[d] = Math.Min(expCap, gross.GetValueOrDefault(d) + pos / StartBalance);   // upper bound per day
+        }
+        var pnl = new Dictionary<DateTime, double>();
+        if (sized.Count == 0) return (pnl, gross);
+        var c = MarkToMarket.Compute(sized, StartBalance, TimeSpan.FromDays(1)).Curve;
+        for (int i = 1; i < c.Count; i++)
+            pnl[c[i - 1].Time.Date] = pnl.GetValueOrDefault(c[i - 1].Time.Date) + (c[i].Equity - c[i - 1].Equity) / StartBalance;
+        return (pnl, gross);
+    }
+
+    private static (Dictionary<DateTime, double> Pnl, Dictionary<DateTime, double> Gross) ReadSleeve(string path)
+    {
+        var pnl = new Dictionary<DateTime, double>();
+        var gross = new Dictionary<DateTime, double>();
+        foreach (var line in File.ReadLines(path).Skip(1))
+        {
+            var f = line.Split(',');
+            var d = DateTime.SpecifyKind(DateTime.Parse(f[0], System.Globalization.CultureInfo.InvariantCulture), DateTimeKind.Utc).Date;
+            pnl[d] = double.Parse(f[1], System.Globalization.CultureInfo.InvariantCulture);
+            gross[d] = double.Parse(f[2], System.Globalization.CultureInfo.InvariantCulture);
+        }
+        return (pnl, gross);
+    }
+
+    private static void RunSleeves(List<Booked> raw, string dir)
+    {
+        Console.WriteLine("═══ SLEEVE BOOK — SleeveSizer across carry, Grid, GridShort, trend (gross notional ≤ 1) ═══\n");
+        var ext = new[] { "carry", "trend" }.ToDictionary(n => n, n => ReadSleeve(Path.Combine(dir, n + ".csv")));
+        var configs = new (string Name, SleeveSizer.Method M, bool Scale, double MaxW)[]
+        {
+            ("inverse vol, capital split (sum 1)",        SleeveSizer.Method.InverseVol,        false, double.PositiveInfinity),
+            ("ERC, C# mean-diag shrink, scaled to gross", SleeveSizer.Method.ErcMeanDiagShrink, true,  double.PositiveInfinity),
+            ("ERC, correlation shrink, scaled to gross",  SleeveSizer.Method.ErcCorrShrink,     true,  double.PositiveInfinity),
+            ("ERC, correlation shrink, scaled, w ≤ 1",    SleeveSizer.Method.ErcCorrShrink,     true,  1.0),
+        };
+        foreach (double expCap in new[] { 0.60, 0.30 })
+        {
+            var sl = new Dictionary<string, (Dictionary<DateTime, double> Pnl, Dictionary<DateTime, double> Gross)>
+            {
+                ["carry"] = ext["carry"], ["grid"] = GridSleeve(raw, "Grid", expCap),
+                ["gridshort"] = GridSleeve(raw, "GridShort", expCap), ["trend"] = ext["trend"],
+            };
+            var names = sl.Keys.ToArray();
+            DateTime d0 = names.Max(n => sl[n].Pnl.Keys.Min()), d1 = names.Min(n => sl[n].Pnl.Keys.Max());
+            var days = Enumerable.Range(0, (int)(d1 - d0).TotalDays + 1).Select(i => d0.AddDays(i)).ToArray();
+            var pnl = names.Select(n => days.Select(d => sl[n].Pnl.GetValueOrDefault(d)).ToArray()).ToArray();
+            var gross = names.Select(n => days.Select(d => sl[n].Gross.GetValueOrDefault(d)).ToArray()).ToArray();
+            Console.WriteLine($"  grid exposure cap {expCap:P0} of sleeve capital; {d0:yyyy-MM-dd} → {d1:yyyy-MM-dd}");
+            Console.WriteLine("    sleeves (MTM, per unit capital): " + string.Join("  ", names.Select((n, i) =>
+                $"{n} Sharpe {DailySharpe(pnl[i]):F2} mean gross {gross[i].Average():F2}")));
+            Console.WriteLine($"    {"book",-44} {"CAGR",7} {"vol",6} {"Sharpe",7} {"maxDD",7} {"DSR",6} {"gross μ/peak",13}  avg weights ({string.Join("/", names)})");
+            foreach (var cfg in configs)
+            {
+                var r = SleeveSizer.Size(days, pnl, gross, cfg.M, cfg.Scale, maxWeight: cfg.MaxW);
+                double eq = 1, peak = 1, mdd = 0;
+                foreach (var x in r.Daily) { eq *= 1 + x; peak = Math.Max(peak, eq); mdd = Math.Max(mdd, 1 - eq / peak); }
+                double yrs = days.Length / 365.0, cagr = Math.Pow(eq, 1 / yrs) - 1;
+                double mu = r.Daily.Average(), sd = Math.Sqrt(r.Daily.Select(v => (v - mu) * (v - mu)).Average());
+                double dsr = StatisticalTests.DeflatedSharpeRatio(r.Daily.ToList(), GaTrials, r.Daily.Length).Dsr;
+                var aw = Enumerable.Range(0, names.Length).Select(i => r.Weights.Average(w => w[i]));
+                Console.WriteLine(FormattableString.Invariant(
+                    $"    {cfg.Name,-44} {cagr * 100,6:F1}% {sd * Math.Sqrt(365) * 100,5:F1}% {DailySharpe(r.Daily),7:F2} {-mdd * 100,6:F1}% {dsr,6:F3} {r.Gross.Average(),6:F2}/{r.Gross.Max(),4:F2}   {string.Join("/", aw.Select(v => v.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)))}"));
+            }
+            Console.WriteLine();
+        }
+        Console.WriteLine("  Carry and trend are read from research/export_sleeves.py (Python engine, authority cost constants);");
+        Console.WriteLine("  Grid / GridShort are this engine's trades, marked daily on real prices. Seen data: information.");
+    }
+
+    private static double DailySharpe(double[] x)
+    {
+        double mu = x.Average(), sd = Math.Sqrt(x.Select(v => (v - mu) * (v - mu)).Average());
+        return sd > 1e-12 ? mu / sd * Math.Sqrt(365.0) : 0.0;
+    }
+
     private static Stats? Evaluate(List<Booked> book)
     {
         if (book.Count < 30) return null;

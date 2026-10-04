@@ -618,6 +618,7 @@ which both FAILED.
   next to the static default would separate "structure" from "indicators".
 - Porting the dynamic grid into the C# Grid comes only after forward evidence.
 - `StructGridSimulator` (`GRAVITY_GRID_STRUCT=1` in edgetest) holds the frozen structural-default rungs (k3; long 24h, short 3-ATR trail). Against the LIVE GA grid it is NOT an improvement: the same CAGR, but maxDD 40% vs 3.3% (no hard stop; worst trades −55% / −205%). It beat only a static 1-ATR strawman. Kept for research.
+- Dynamic-grid OVERLAY (option 1, `GRAVITY_GRID_OVERLAY=reports/overlay_decisions_<u>.csv`, decisions from `research/overlay_decisions.py`): classifier-armed k3 rungs ADDED on top of the unchanged GA grid, with the GA hard stop. FAILED in both universes (2024 → data end). Raw Sharpe 2.26 → 0.22 (OOS) and 2.91 → 0.77 (BT), maxDD ~3% → ~23%; the overlay labels were rated REJECT or TRADE-OFF. The classifier armed ~80% of fills, so it barely discriminates. Option 2 (modulating the GA rungs) waits for a classifier input that beats this: the recorder data.
 
 ### Discord bot
 

@@ -980,3 +980,29 @@ universes, against the GA-only runs already on record.
 
 **Honesty note.** The 2024+ window has been viewed several times (v1 and its post-mortem), so even
 a pass is suggestive, not confirmatory. Forward data decides. **Trials charged:** 1 more (v2).
+
+## RESULT: overlay v2 (authority costs + risk-aware) — FAIL (2026-10-04, pre-registration 554908b)
+
+| `edgetest` raw book | PF | CAGR | Sharpe | maxDD | GridOverlay | GridShortOverlay |
+|---|---|---|---|---|---|---|
+| OOS, GA only | 1.29 | 11.0% | 2.26 | 3.3% | — | — |
+| OOS, + v1 | 1.04 | 2.1% | 0.22 | 24.0% | TRADE-OFF | REJECT |
+| OOS, + v2 | 1.16 | 9.7% | 1.09 | 13.8% | **REJECT** | accept |
+| BT, GA only | 1.37 | 19.2% | 2.91 | 2.4% | — | — |
+| BT, + v1 | 1.07 | 12.6% | 0.77 | 22.4% | REJECT | TRADE-OFF |
+| BT, + v2 | 1.20 | 18.2% | 1.68 | 10.2% | **REJECT** | REJECT |
+
+**Reading.**
+- **The fixes cut the damage by more than half:** maxDD 23% → 10–14%, and raw Sharpe back above 1.
+- **The overlay still subtracts.** The long overlay is strictly dominated in both universes.
+
+**Root cause, exposed by fix 2.** Under authority costs and the GA hard stop, **every k3 rung type
+is ~0 or negative on average even in discovery**: long best +0.02%/trade, all shorts −0.26 to
+−0.55%. The "+0.28% structural edge" was the cost mismatch, because deep rungs fill at peak ATR,
+where ATR-scaled slippage is highest. A classifier cannot build a book improvement from a rung that
+averages ≤ 0 after costs unless it is far more selective than any feature here allows.
+
+**Consequence.** The deep-rung engine is the wrong lever. Option 2 (modulating the GA grid's own
+1–2 ATR maker rungs, which cost far less) is the remaining path. Its classifier must be trained on
+the GA grid's OWN sessions under authority costs. Caveat: the earlier meta-labeler on GA Grid trades
+did not beat random gates, so option 2 needs a new information source to have a real chance.

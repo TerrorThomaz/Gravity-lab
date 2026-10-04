@@ -620,7 +620,21 @@ which both FAILED.
 - Decision points: 9 months (retire if Sharpe < 0.5 or PF < 1.05) and 12 months (confirmed if
   Sharpe ≥ 2 and PF ≥ 1.15 in both universes). Kill-switch at maxDD > 10%.
 - The recorder (`gravity-recorder.service`) is QC'd by `research/recorder_qc.py`.
-- Both units point at the research worktree: repoint them to `%h/Gravity-lab` after merge.
+- **Second forward test: the BTC+ETH trend HYBRID** (spot long, perp short;
+  `docs/FORWARD_TEST_TREND_HYBRID_2026-10.md`).
+  - `gravity-trendshadow.timer` logs a decision daily at 00:20 UTC to
+    `~/Gravity-lab/data/forward/trend_hybrid/decisions.csv` (append-only).
+  - Evaluate with `research/binance_trend.py --fetch && --evaluate`.
+  - The 12-month screen (2027-10-05) checks: no bleed, alpha vs buy-and-hold > 0, and a positive mean
+    on the book's worst days.
+- **All three units run from `~/Gravity-lab-forward`**: a permanent worktree, detached at the frozen
+  commit 0d4af79, with `candle_cache` symlinked into `~/Gravity-lab`.
+  - They must never point at a `/tmp` worktree. `/tmp` is tmpfs, so a reboot would silently stop the
+    forward tests.
+  - Do not move that worktree's HEAD during the window.
+- **Acceptance standard S8** (`docs/RESEARCH_REVIEW_2026-10.md`), which uses `research/power_check.py`.
+  A sleeve passes by alpha against the live book OR standalone (t ≥ 2 + placebo, Sharpe ≥ buy-and-hold).
+  Both routes need no-bleed (net Sharpe > 0, both halves) and alpha vs B&H > 0. Always report power.
 
 **DEFERRED: live/forward (the user's call, 2026-10-04: not now).** When live work resumes:
 - `research/trend_forward.py --shadow` is a frozen forward test of per-coin trend + ATR trail

@@ -873,3 +873,31 @@ crowding 0.5, identical code and data):
   static grid, not the GA grid.
 - Path exits without a hard stop carry tail risk that realised-P&L books understate. `edgetest`'s
   mark-to-market caught it.
+
+## PRE-REGISTRATION: dynamic-grid overlay, option 1 (written 2026-10-04, before any run)
+
+**Design (the user's correction: augment, never replace).**
+- **The GA Grid / GridShort run UNCHANGED.**
+- An overlay ADDS deep k=3 one-bar rungs (`StructGridSimulator.GetOverlayReturns`), under the
+  labels GridOverlay / GridShortOverlay with their own 12-slot caps.
+- **Decisions:** `research/overlay_decisions.py`. For every k=3 fill with an arming bar ≥
+  2024-01-01, the rulepath logistic models (`reports/rulepath_models.json`, trained on
+  BacktestCoins < 2024; untouched since) score the 5 exits. The best one is armed only if its
+  EV > 0.
+- **Hard stop:** the GA genotype's `HardStopAtrMult` × the arming ATR from the fill, intrabar,
+  taker + stop-gap premium.
+
+**Why only from 2024.** The models' market-wide features are shared across coins, so any
+decision inside 2020–23 would leak. Before 2024 the two books are identical, and every difference
+comes from 2024-01 → data end. That period includes block B: not pristine for trend rules, but
+this hypothesis has never been tested on it.
+
+**Measure.** `edgetest` with `GRAVITY_GRID_OVERLAY=reports/overlay_decisions_<u>.csv`, against the
+same `edgetest` without it, on both universes (OosCoins default; BacktestCoins via
+`GRAVITY_EDGE_UNIVERSE=backtest`).
+
+**PASS:** in BOTH universes, the leave-one-out acceptance gate rates BOTH overlay labels
+"accept — better on both" (ΔSharpe > 0 and ΔCAGR > 0). Reported, not gated: the raw and gated book
+rows, maxDD, and the per-label loss distribution.
+
+**Trials charged:** 1 (the models and their decision rule are reused unchanged).

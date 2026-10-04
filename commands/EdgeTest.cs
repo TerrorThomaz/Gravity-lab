@@ -62,6 +62,8 @@ public static class EdgeTest
         "FadeLong"  => "fadelong",
         "RipShort"  => "ripshort",
         "AccumGrid" => "accumgrid",
+        "GridOverlay"      => "gridoverlay",
+        "GridShortOverlay" => "gridshortoverlay",
         _           => strategy,
     };
 
@@ -92,6 +94,25 @@ public static class EdgeTest
     // simulator computes price levels from these, and an infinite level would produce NaN rather
     // than a disabled check.
     private static readonly bool StructGrid = Environment.GetEnvironmentVariable("GRAVITY_GRID_STRUCT") == "1";
+
+    // GRAVITY_GRID_OVERLAY=<csv from research/overlay_decisions.py>: the dynamic-grid overlay (option 1).
+    // The GA Grid/GridShort run UNCHANGED; deep k=3 rungs are ADDED under their own labels whenever the
+    // classifier armed one, with the GA genotype's HardStopAtrMult as an intrabar hard stop.
+    private static Dictionary<(string Sym, int Side), Dictionary<DateTime, string>>? LoadOverlay()
+    {
+        var path = Environment.GetEnvironmentVariable("GRAVITY_GRID_OVERLAY");
+        if (path is not { Length: > 0 }) return null;
+        var d = new Dictionary<(string, int), Dictionary<DateTime, string>>();
+        foreach (var line in File.ReadLines(path).Skip(1))
+        {
+            var p = line.Split(',');
+            var key = (p[0], int.Parse(p[2], System.Globalization.CultureInfo.InvariantCulture));
+            if (!d.TryGetValue(key, out var m)) d[key] = m = new();
+            m[DateTime.SpecifyKind(DateTime.Parse(p[1], System.Globalization.CultureInfo.InvariantCulture), DateTimeKind.Utc)] = p[3];
+        }
+        Console.WriteLine($"  DYNAMIC-GRID OVERLAY ON: {d.Values.Sum(v => v.Count)} armed decisions for {d.Count} symbol-sides from {path}\n");
+        return d;
+    }
 
     private static GridGenotype CloneWithStopsRemoved(GridGenotype g) => new()
     {
@@ -231,6 +252,7 @@ public static class EdgeTest
         if (rsTracePath is { Length: > 0 }) RipShortSimulator.Trace = new();
 
         // ── 1. Raw book: every strategy on every OOS coin, NO gating of any kind ──────────────
+        var overlay = LoadOverlay();
         var raw = new List<Booked>();
         foreach (var f in fetched)
         {
@@ -261,6 +283,17 @@ public static class EdgeTest
                 Add("GridShort", (StructGrid ? StructGridSimulator.GetReturns(f.h1, isLong: false)
                                              : GridShortSimulator.GetGridShortSessionReturns(gs, f.h1))
                     .Select(t => (t.Time, t.Return, t.EntryTime, t.EntryPrice)));
+            if (overlay != null)
+            {
+                foreach (var (isLong, label, geno) in new[] { (true, "GridOverlay", StrategyPipeline.SelectVariant(gridVariants, f.m15)),
+                                                              (false, "GridShortOverlay", StrategyPipeline.SelectVariant(gsVariants, f.m15)) })
+                {
+                    if (geno is null || !overlay.TryGetValue((f.sym, isLong ? 1 : -1), out var dec)) continue;
+                    Add(label, StructGridSimulator.GetOverlayReturns(f.h1, isLong, t => dec.TryGetValue(t, out var e) ? e : null,
+                                                                     hardStopAtr: geno.HardStopAtrMult)
+                        .Select(t => (t.Time, t.Return, t.EntryTime, t.EntryPrice)));
+                }
+            }
             if (StrategyPipeline.SelectVariant(dlVariants, f.m15) is { } dl)
                 Add("DipLong", DipLongSimulator.GetDipLongReturns(dl, f.h1, f.m15)
                     .Select(t => (t.Time, t.Return, t.EntryTime, t.EntryPrice)));

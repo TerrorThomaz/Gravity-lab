@@ -52,4 +52,34 @@ public class StructGridTests
         Assert.Equal(T0.AddHours(41), r[0].EntryTime);
         Assert.True(r[0].Return > 0, $"short from 103 back to ~100 should profit, got {r[0].Return:F3}");
     }
+
+    [Fact]
+    public void Overlay_NoDecision_NoTrades()
+    {
+        var bars = Flat(80, dip: 40, low: 96.9);
+        Assert.Empty(StructGridSimulator.GetOverlayReturns(bars, true, _ => null, hardStopAtr: 3.0));
+    }
+
+    [Fact]
+    public void Overlay_TakeProfitIsAMakerFillAtTheTarget()
+    {
+        var bars = Flat(80, dip: 40, low: 96.9);                 // fill 97, a = 1 → TP 98 (TPSL1)
+        bars[42] = new Candle(T0.AddHours(42), 97.5, 98.2, 97.4, 97.8, 1_000_000);
+        for (int i = 41; i < 42; i++) bars[i] = new Candle(T0.AddHours(i), 97.2, 97.6, 97.0, 97.3, 1_000_000);
+        var r = StructGridSimulator.GetOverlayReturns(bars, true, t => t == T0.AddHours(39) ? "TPSL1" : null, hardStopAtr: 3.0);
+        Assert.Single(r);
+        Assert.Equal(T0.AddHours(42), r[0].Time);
+        Assert.True(r[0].Return > 0.9 && r[0].Return < 1.1, $"97 → 98 ≈ +1.03% less maker costs, got {r[0].Return:F3}");
+    }
+
+    [Fact]
+    public void Overlay_HardStopFiresIntrabarBeforeAnyCloseRule()
+    {
+        var bars = Flat(80, dip: 40, low: 96.9);                 // fill 97, hard stop 97 − 3·1 = 94
+        bars[41] = new Candle(T0.AddHours(41), 96.5, 96.8, 93.5, 96.0, 1_000_000);   // wicks through 94, closes back above
+        var r = StructGridSimulator.GetOverlayReturns(bars, true, t => t == T0.AddHours(39) ? "TIME24" : null, hardStopAtr: 3.0);
+        Assert.Single(r);
+        Assert.Equal(T0.AddHours(41), r[0].Time);
+        Assert.True(r[0].Return < -3.0, $"stopped at 94 from 97 ≈ −3.1% plus taker + gap, got {r[0].Return:F3}");
+    }
 }

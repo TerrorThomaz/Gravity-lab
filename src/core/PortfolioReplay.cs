@@ -16,13 +16,17 @@ public static class PortfolioReplay
         ["grid"]       = 12,
         ["gridshort"]  = 12,
         ["accumgrid"]  = 12,
+        // Dynamic-grid overlay (research, edgetest GRAVITY_GRID_OVERLAY): its own slots, so the GA
+        // grid's admitted trades are not displaced by the overlay.
+        ["gridoverlay"]      = 12,
+        ["gridshortoverlay"] = 12,
     };
 
     private static readonly HashSet<string> LongStrategies = new(StringComparer.OrdinalIgnoreCase)
-        { "diplong", "fadelong", "swing_long", "grid", "accumgrid" };
+        { "diplong", "fadelong", "swing_long", "grid", "accumgrid", "gridoverlay" };
 
     private static readonly HashSet<string> ShortStrategies = new(StringComparer.OrdinalIgnoreCase)
-        { "swing", "fade_short", "ripshort", "gridshort" };
+        { "swing", "fade_short", "ripshort", "gridshort", "gridshortoverlay" };
 
     // Direction of a strategy. Null = unknown label → callers should be conservative.
     public static bool? IsLong(string strategy) =>

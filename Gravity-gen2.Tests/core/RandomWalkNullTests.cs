@@ -143,6 +143,22 @@ public class RandomWalkNullTests
             $"StructGrid ({(isLong ? "long" : "short")}) earned {mean:F4}% per trade (t={t:F2}) on a driftless random walk over {n} trades.");
     }
 
+    [Theory]
+    [InlineData(true, "TIME24")] [InlineData(true, "TPSL1")] [InlineData(true, "TPSL2")] [InlineData(true, "TRAIL15")] [InlineData(true, "TRAIL30")]
+    [InlineData(false, "TIME24")] [InlineData(false, "TPSL1")] [InlineData(false, "TPSL2")] [InlineData(false, "TRAIL15")] [InlineData(false, "TRAIL30")]
+    public void GridOverlay_OnADriftlessRandomWalk_DoesNotProfit(bool isLong, string exit)
+    {
+        var all = new List<double>();
+        for (int sd = 0; sd < 200; sd++)
+            all.AddRange(StructGridSimulator.GetOverlayReturns(FatRandomWalk(3000, 7000 + sd), isLong, _ => exit, hardStopAtr: 3.0).Select(x => x.Return));
+        int n = all.Count;
+        double mean = n > 0 ? all.Average() : 0;
+        double sdv = n > 1 ? Math.Sqrt(all.Select(x => (x - mean) * (x - mean)).Sum() / (n - 1)) : 0;
+        double t = sdv > 1e-12 ? mean / (sdv / Math.Sqrt(n)) : 0;
+        Assert.True(n >= 300, $"fixture produced only {n} trades");
+        Assert.True(t < 2.0, $"GridOverlay {(isLong ? "long" : "short")} {exit} earned {mean:F4}% per trade (t={t:F2}) on a driftless random walk over {n} trades.");
+    }
+
     // THE GATE MUST BE SHOWN TO WORK. A null control that has never rejected anything is not a
     // control. This reintroduces the exact defect via the fillOnArmBar flag and asserts the
     // property above is violated — so if someone "simplifies" the test into something that always

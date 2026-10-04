@@ -627,8 +627,16 @@ which both FAILED.
   - Evaluate with `research/binance_trend.py --fetch && --evaluate`.
   - The 12-month screen (2027-10-05) checks: no bleed, alpha vs buy-and-hold > 0, and a positive mean
     on the book's worst days.
+- **Third forward test: carry, plain vs vol-managed** (`docs/FORWARD_TEST_CARRY_2026-10.md`).
+  - No logger: it is recomputed from the archived cache with `research/carry_hedge.py --forward`.
+  - The 12-month screen decides: retire carry if it bleeds; vol-managed replaces plain if its tail and
+    book Sharpe are better.
+- **Carry's tail is short squeezes** of its high-funding shorts (−1.8 of −2.2%/day on its worst
+  days). Nothing tested both hedges that and profits (`research/carry_hedge_diag.py`): momentum
+  bleeds, alts−BTC hedges but bleeds, and trend profits but hedges market crashes, not squeezes.
 - **All three units run from `~/Gravity-lab-forward`**: a permanent worktree, detached at the frozen
-  commit 0d4af79, with `candle_cache` symlinked into `~/Gravity-lab`.
+  commit b007e83 (advanced from 0d4af79; only research files were added), with `candle_cache`
+  symlinked into `~/Gravity-lab`.
   - They must never point at a `/tmp` worktree. `/tmp` is tmpfs, so a reboot would silently stop the
     forward tests.
   - Do not move that worktree's HEAD during the window.

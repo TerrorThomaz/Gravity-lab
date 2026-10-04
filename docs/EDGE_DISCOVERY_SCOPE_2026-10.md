@@ -626,3 +626,36 @@ not significant.
   claimed.
 - Block B is now spent for these two hypotheses. Further evidence on them can come only from
   forward data.
+
+## PRE-REGISTRATION: cross-sectional momentum (written 2026-10-04, before any run)
+
+**Source.** Liu, Tsyvinski & Wu (2022, *Journal of Finance*): weekly long-short on past-return
+quintiles is one of the three crypto factors. It is market-neutral, so it is independent of the
+market-level effects that failed above. Code: `research/csmom.py`, committed with this section.
+
+**Rule.**
+- Rebalance at the close of the Monday 00:00 UTC hourly bar. Trade at the next open (taker), hold
+  to the next rebalance's open.
+- Eligible coins: a valid price over the full look-back, and NOT in the bottom 20% of trailing-30d
+  quote volume among the coins with prices that week.
+- Rank by the past log return over L = 3 weeks (PRIMARY; 1, 2 and 4 weeks reported only).
+- Long the top quintile, short the bottom quintile, equal weight, dollar-neutral (+0.5 / −0.5
+  gross).
+- Costs: taker 0.105% per side on turnover Σ|Δw|.
+- Funding: real per coin (longs pay positive rates, shorts receive); the floor applies on |w| where
+  data is missing.
+- A coin with no price at exit is marked at its last price that week.
+
+**Block A test** (weeks before 2025-07-01), both universes. **PASS requires all of:**
+- mean weekly net > 0 with t ≥ 2 (weekly, NW lag 1), in BOTH universes;
+- both halves of A positive in both universes;
+- beats ≥ 95% of 500 random-ranking placebos (the same weekly structure with shuffled ranks), in
+  both universes.
+
+The t ≥ 2 bar (not 3) applies because this is ONE trial of a published, theory-backed factor; see
+the method note above.
+
+**Block B.** Run ONCE, and only if block A passes: the same code from 2025-07-01. PASS = mean net
+> 0 in both universes (t reported).
+
+**Trials charged:** 1.

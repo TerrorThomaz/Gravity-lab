@@ -611,6 +611,17 @@ which both FAILED.
   Every one of them passed a random-walk null and was caught by a positive control or an
   implausible number.
 
+**FORWARD TEST RUNNING (2026-10-05 →): `docs/FORWARD_TEST_GRID_2026-10.md`.**
+- The live GA grid is frozen: genotype copies and SHA256s in `genotypes/frozen/forward_2026-10-05/`.
+  **Do not retrain Grid / GridShort during the window.**
+- `gravity-cacherefresh.timer` (systemd user) runs `cacherefresh` daily, so the candle and funding
+  caches stay current and delisted coins don't vanish from the evidence.
+- Evaluate with `GRAVITY_OFFLINE=1 GRAVITY_EDGE_FROM=2026-10-05 dotnet run -- edgetest` (RAW row).
+- Decision points: 9 months (retire if Sharpe < 0.5 or PF < 1.05) and 12 months (confirmed if
+  Sharpe ≥ 2 and PF ≥ 1.15 in both universes). Kill-switch at maxDD > 10%.
+- The recorder (`gravity-recorder.service`) is QC'd by `research/recorder_qc.py`.
+- Both units point at the research worktree: repoint them to `%h/Gravity-lab` after merge.
+
 **DEFERRED: live/forward (the user's call, 2026-10-04: not now).** When live work resumes:
 - `research/trend_forward.py --shadow` is a frozen forward test of per-coin trend + ATR trail
   (spec frozen at 40377fa; its informational backtest had block-A Sharpe −0.13).

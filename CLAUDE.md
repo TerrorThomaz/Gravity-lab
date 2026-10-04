@@ -581,6 +581,43 @@ Per `docs/RIGOR_REWORK_2026-09.md` (null controls before statistics), `selftest`
 
 Under taker costs (the default) pairs on OOS was −4.6%/yr: its 172x/yr turnover makes execution the whole answer. Survivorship: 37 of the 101 OosCoins are delisted and Bybit returns no history for them, so the OOS universe is survivors only.
 
+### Edge-discovery programme over generic grid entries (2026-10-03/04)
+
+Full scope, pre-registrations and results: `docs/EDGE_DISCOVERY_SCOPE_2026-10.md`. Scripts are in
+`research/` (`grid_paths`, `context_gate`, `queue_fill`, `discover15`, `discover1h`, `trend_control`,
+`csmom`, `rulepath`, `trend_forward`, `gbm_np`), all selftest-gated. Block A = before 2025-07-01.
+Block B (2025-07-01 →) was used ONCE for two pre-registered trials (trend sleeve, trend-gated dips),
+which both FAILED.
+
+- **Searched single-coin entry edges on candles: none survive.** Generic rung fills move with the
+  coin's drift. Open searches (GBM, 15m and 1h) find real but sub-cost, market-direction
+  information. Strategy setups add at most ~+0.15% (FadeShort), or subtract (SwingLong).
+- **The rule-path detector (`rulepath.py`) CAN find rule sets.** It rediscovered "buy dips in
+  strength, sell rips in weakness" (long: above EMA50, below EMA200, low RSI, high breadth; short:
+  high RSI, low breadth), consistently across 5 exits.
+  - **Structure is the big lever:** a static 1-ATR TP/SL grid loses heavily (−43 / −89%/yr in
+    2024–25H1). An always-on grid choosing its rung type per bar is positive (Sharpe 0.9 / 1.5).
+  - **The indicator layer adds little:** permuted-label models reach Sharpe 0.6–1.5, and the
+    margin is significant on neither universe. FAIL at t ≥ 3.
+- **Positive control:** a market 30d trend rule pays at 3–7d holds in block A (t ~2, flips sign by
+  year) and is invisible at ≤ 12h. Cross-sectional momentum: positive on liquid coins (t 1.35),
+  reverses on small coins. FAIL.
+- **Measurement traps found. Never repeat them:**
+  - "average per day, then t across days" puts look-ahead in the weights;
+  - labelling a bar by its DEEPEST rung conditions on the bar's full extreme;
+  - a hedge window that starts before the fill;
+  - a slot cap that breaks same-bar ties by exit time admits quick winners first.
+
+  Every one of them passed a random-walk null and was caught by a positive control or an
+  implausible number.
+
+**DEFERRED: live/forward (the user's call, 2026-10-04: not now).** When live work resumes:
+- `research/trend_forward.py --shadow` is a frozen forward test of per-coin trend + ATR trail
+  (spec frozen at 40377fa; its informational backtest had block-A Sharpe −0.13).
+- A frozen forward shadow of the always-on logistic dynamic grid (`reports/rulepath_models.json`)
+  next to the static default would separate "structure" from "indicators".
+- Porting the dynamic grid into the C# Grid comes only after forward evidence.
+
 ### Discord bot
 
 `bot/discord_bot.py` manages a single long-running dotnet subprocess whose mode is switchable at runtime (`papertrade` — the `GRAVITY_MODE` default — plus `livetrain`/`compare` and a separate autoevolve stream).

@@ -901,3 +901,29 @@ same `edgetest` without it, on both universes (OosCoins default; BacktestCoins v
 rows, maxDD, and the per-label loss distribution.
 
 **Trials charged:** 1 (the models and their decision rule are reused unchanged).
+
+## RESULT: dynamic-grid overlay (option 1) — FAIL (2026-10-04, pre-registration 223a67a)
+
+| `edgetest` | raw PF | raw CAGR | raw Sharpe | raw maxDD | gated book Sharpe / DSR | GridOverlay verdict | GridShortOverlay verdict |
+|---|---|---|---|---|---|---|---|
+| OOS, GA only | 1.29 | 11.0% | 2.26 | 3.3% | 1.73 / 0.223 | — | — |
+| OOS, + overlay | 1.04 | 2.1% | 0.22 | 24.0% | 0.74 / 0.000 | TRADE-OFF (ΔSharpe −0.86) | REJECT (dominated) |
+| BT, GA only | 1.37 | 19.2% | 2.91 | 2.4% | 2.49 / 0.909 | — | — |
+| BT, + overlay | 1.07 | 12.6% | 0.77 | 22.4% | 1.33 / 0.109 | REJECT (dominated) | TRADE-OFF |
+
+**Overlay trades.**
+- 59–63% losers, mean loss −3.7 to −4.3%, p99 −16 to −20%.
+- Worst −21 / −27% (long), and −50% (short) even with the hard stop: a gap through it.
+- The GA grid's own trades: 45–54% losers, mean loss ~−1.05%, worst −5 to −8%.
+
+**Reading.**
+- Classifier-armed deep rungs make the book worse in both universes, out of time (2024 →).
+- The classifier armed 78–81% of deep-rung fills, so it barely discriminates. Its EV estimates came
+  from realised-P&L labels with flat costs and real funding. Under the authority's ATR-scaled costs,
+  floor funding and mark-to-market they don't hold.
+- Option 1 fails its pre-registered rule.
+
+**Consequence for option 2.** The classification has not shown value under the authoritative
+measurement, so modulating the live GA grid's rungs with it is not justified yet. A better
+classifier input (the recorder's data) is the prerequisite, not more plumbing. The plumbing itself
+works: overlay labels, caps, hard stop, decision loading.

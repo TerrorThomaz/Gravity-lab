@@ -1131,3 +1131,32 @@ own, and a hedge must still profit in general so it does not bleed through adver
 **Verdict under S8:** tier T1 standalone (marginal). It qualifies as a no-bleed hedge candidate and
 goes to the forward shadow, the only route to T3. It must not be sized into the live book on this
 evidence.
+
+## S8 BUY-AND-HOLD CHECK: live book and sleeves (2026-10-05, `research/bh_check.py`, information)
+
+Window 2021-12-22 → 2026-10-03 (the book's history). Benchmarks: equal-weight OosCoins (survivors
+only, which flatters the benchmark) and 50/50 BTC/ETH, spot, rebalanced daily.
+
+| | Sharpe | beta | alpha %/yr (t) | maxDD | B&H scaled to its vol: CAGR / maxDD |
+|---|---|---|---|---|---|
+| B&H EW-OOS / BTC/ETH | −0.13 / 0.34 | 1 | — | | |
+| BOOK (ERC carry + Grid + GridShort) | 1.63 | 0.00 | +7.3 (3.8) | −4.9% | −0.7% / −9.4% (EW), 1.5% / −8.0% (BTC/ETH) |
+| Grid | 2.40 | 0.02 | +10.8 (5.6) | −3.1% | |
+| GridShort | 0.90 | −0.01 | +1.9 (2.0) | −2.4% | |
+| carry | 0.59 | 0.00 | +13.3 (1.3) | −21.4% | −5.3% / −41% (EW) |
+| trend hybrid, same window | 0.73 | −0.10 | +39.6 | | |
+
+- Every sleeve and the whole book PASS S8 against both benchmarks: beta ≈ 0, positive alpha, and a
+  Sharpe above buy-and-hold's in both halves.
+- **On the worst 5% market days** (EW B&H −9.9%/day), the book loses only −0.06%/day: carry −0.14,
+  Grid −0.09, GridShort +0.01.
+
+**Caveats.**
+- The window is a weak one for buy-and-hold: alts were flat to down, and BTC/ETH reached only
+  Sharpe 0.34 against 0.84 over 2017 → 2026. The bar was low here.
+- Carry (0.59) and the hybrid (0.73) would not clear an 0.84 benchmark. Grid (2.4) and the book (1.6)
+  would.
+- Grid P&L here is booked at exit, which overstates its Sharpe. The mark-to-market authority is
+  edgetest: RAW Sharpe 2.29 for Grid + GridShort.
+- The grid's daily beta of ~0 does not mean "no market risk": its edge is market-wide dip rebound on
+  an hours scale. Daily beta misses intraday exposure.

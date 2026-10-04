@@ -259,7 +259,10 @@ def policy_book(D, models, mode, rng=None):
             continue
         trades.append((int(fl["f"][c]), int(xb[c]), int(fl["j"][c]), side, float(net[c])))
     # position management: one open per coin/side, ≤ CAP per side, arrival order
-    trades.sort()
+    # Arrival order must be outcome-blind. Sorting the tuples whole broke ties at the same fill bar by
+    # EXIT bar, so when the cap bound the quick winners (fast take-profits) took the slots first:
+    # look-ahead. The STATIC baseline printed Sharpe +6.4 from it.
+    trades.sort(key=lambda x: (x[0], x[2], x[3]))
     open_until = {}
     open_side = {1: [], -1: []}
     pnl = np.zeros(T)

@@ -703,3 +703,21 @@ pass per 6h bar.
 - Kill switch: drawdown > 25%.
 
 `--backtest` is information only.
+
+**Informational backtest of the frozen spec (run after the freeze, 40377fa).**
+
+| | ann | vol | Sharpe | maxDD |
+|---|---|---|---|---|
+| Block A | −10.2% | 76% | −0.13 | −93% |
+| Block B | +21.5% | 58% | +0.37 | −53% |
+
+- 1,871 trades, 39% winners.
+- **Longs +2.31% mean gross, shorts −0.73%.**
+- By year: 2025 −68%, 2026 +36%.
+
+**Reading.**
+- The literature design does not show an edge on our universe before the holdout.
+- The sizing rule (1% daily vol PER position, up to 20 correlated coins) gives a 60–76% book vol.
+  That only scales risk; it does not change the Sharpe.
+- The long/short asymmetry matches the papers' 70/30 long tilt. Survivorship flatters longs here.
+- No change is made to the frozen spec. Whether to run it forward is a decision, recorded below.

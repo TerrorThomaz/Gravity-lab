@@ -20,6 +20,7 @@ two changes above. Book = ERC(carry variant, Grid, GridShort), as research/power
 
 Run:  python3 research/carry_hedge.py --selftest
       python3 research/carry_hedge.py --run
+      python3 research/carry_hedge.py --forward [--trades <edgetest trade log from the forward window>]
 """
 
 from __future__ import annotations
@@ -199,6 +200,50 @@ def run() -> int:
     return 0
 
 
+# ── forward test (docs/FORWARD_TEST_CARRY_2026-10.md) ─────────────────────────────────────────────
+FWD_START = pd.Timestamp("2026-10-05")
+
+
+def forward(trades: str) -> int:
+    """Plain and vol-managed carry, recomputed from the cache over full history (warm-ups need it),
+    reported from FWD_START. Run after the daily cacherefresh has topped up candles and funding."""
+    from bh_check import benchmarks
+    res = {}
+    for u in ("oos", "backtest"):
+        mk = mnr.build_market(mnr.config_symbols("OosCoins" if u == "oos" else "BacktestCoins"), CACHE)
+        targets, band, _ = carry_targets(mk)
+        C, Fd, K, idx = mk.close.values, mk.funding.values, mk.funding_known.values, mk.close.index
+        plain = book_loop(C, Fd, K, targets, band, index=idx).resample("1D").sum()
+        sc = vol_scale(plain)
+        A = book_loop(C, Fd, K, targets, band, scale_day=sc.reindex(idx.floor("D")).values, index=idx).resample("1D").sum()
+        res[u] = {"plain": plain[plain.index >= FWD_START].iloc[:-1], "A": A[A.index >= FWD_START].iloc[:-1]}
+    f = res["oos"]["plain"]
+    if len(f) < 2:
+        print("no complete forward days yet"); return 0
+    bms = benchmarks(f.index)
+    print(f"CARRY forward {f.index[0]:%Y-%m-%d} → {f.index[-1]:%Y-%m-%d} ({len(f)} days)")
+    for u, o in res.items():
+        for name, x in o.items():
+            e = (1 + x).cumprod()
+            line = (f"  [{u}] {name:5s} Sharpe {sharpe(x):+.2f}  sum {100 * x.sum():+.1f}%  maxDD {100 * (e / e.cummax() - 1).min():.1f}%  "
+                    f"worst-1% day {100 * x.quantile(0.01):+.2f}%")
+            if u == "oos":
+                for bn, b in bms.items():
+                    beta = float(np.polyfit(b.values, x.values, 1)[0])
+                    line += f" | vs {bn} (Sharpe {sharpe(b):+.2f}): alpha {100 * (x - beta * b).mean() * 365:+.1f}%/yr"
+            print(line)
+    if os.path.exists(trades):
+        from power_check import book_daily
+        _, S = book_daily(trades)
+        S = S[S.index >= FWD_START].iloc[:-1]
+        if len(S) > 20:
+            for name in ("plain", "A"):
+                SS = S.copy(); SS["carry"] = res["oos"][name].reindex(SS.index).fillna(0.0)
+                b, _ = mnr.erc_combine(SS)
+                print(f"  book ERC(carry {name}, Grid, GridShort): Sharpe {sharpe(b):+.2f}")
+    return 0
+
+
 def selftest() -> int:
     """The loop reproduces run_book; scale 0 means flat; spot longs pay no funding; vol_scale is causal."""
     rng = np.random.default_rng(1)
@@ -227,7 +272,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--run", action="store_true")
+    ap.add_argument("--forward", action="store_true")
+    ap.add_argument("--trades", default=os.path.join(mnr.REPO, "reports", "edgetest_raw_trades.csv"))
     a = ap.parse_args()
+    if a.forward:
+        return forward(a.trades)
     return selftest() if a.selftest else run() if a.run else (ap.print_help() or 1)
 
 

@@ -127,8 +127,7 @@ def run() -> int:
         targets, band, r = carry_targets(mk)
         C, Fd, K, idx = mk.close.values, mk.funding.values, mk.funding_known.values, mk.close.index
         plain_h = book_loop(C, Fd, K, targets, band, index=idx)
-        ref = pd.Series(r.net, index=idx)
-        assert abs(plain_h.sum() - ref.sum()) < 1e-9, "loop is not run_book"
+        assert abs(plain_h.sum() - r.net.sum()) < 1e-9, "loop is not run_book"     # r is trimmed to post-warmup
         plain = plain_h.resample("1D").sum()
         sc = vol_scale(plain)
         sc_h = sc.reindex(idx.floor("D")).values

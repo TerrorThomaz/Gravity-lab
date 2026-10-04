@@ -91,7 +91,7 @@ def exit_paths(kind, hmax, tp, sla, side, f, j, px, a, O, H, L, C):
         o_next = np.where(nxt_ok, O[np.minimum(bi + 1, T - 1), j], np.nan)
         if kind in ("tpsl", "trail"):
             hit_sl = live & np.where(s > 0, c <= stop, c >= stop) & np.isfinite(c)
-            xpx[hit_sl] = o_next[hit_sl]; xbar[hit_sl] = bi[hit_sl] + 1; done |= hit_sl
+            xpx[hit_sl] = o_next[hit_sl]; xbar[hit_sl] = np.where(nxt_ok, bi + 1, -1)[hit_sl]; done |= hit_sl   # no next open → unlabelled
             live &= ~hit_sl
         if kind == "tpsl":
             hit_tp = live & np.where(s > 0, hi >= tgt * (1 + THROUGH), lo <= tgt * (1 - THROUGH))

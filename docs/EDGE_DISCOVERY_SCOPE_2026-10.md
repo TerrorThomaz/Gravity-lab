@@ -721,3 +721,43 @@ pass per 6h bar.
   That only scales risk; it does not change the Sharpe.
 - The long/short asymmetry matches the papers' 70/30 long tilt. Survivorship flatters longs here.
 - No change is made to the frozen spec. Whether to run it forward is a decision, recorded below.
+
+## Rule-path detector + logistic dynamic grid (2026-10-04, `research/rulepath.py`): FAIL
+
+**Setup.**
+- 1.01M rung fills, each run through 5 path exits.
+- 30 per-rung-type logistic models, fitted on discovery (< 2024).
+- Validated as a managed book, 2024-01 → 2025-06.
+
+**Two artefacts were caught before the result.**
+- A crash on final-bar stops.
+- A **look-ahead in the cap**: tie-breaking same-bar fills by exit bar let quick winners take the
+  slots, so STATIC printed Sharpe +6.4. The arrival order is now outcome-blind.
+
+**Derived rules (discovery coefficients), consistent across exits.**
+- Long rungs win more when price is above EMA50 but below EMA200, RSI is low and breadth is high.
+- k3 long rungs add the coin's 7d strength.
+- Short rungs win more when RSI is high and breadth is low.
+
+That is "buy dips in strength, sell rips in weakness", rediscovered without being told.
+
+**Validation book** (Sharpe on daily P&L; DSR at N = 32):
+
+| | ALWAYS | GATED | STATIC (k1 TPSL1) | RANDOM | permuted-label nulls (ALWAYS) |
+|---|---|---|---|---|---|
+| BT | **+0.91** [t 1.1], +31%/yr | +0.75 | −1.51, −43%/yr | +1.06 | 0.59–1.49 → beats 2/5 |
+| OOS | **+1.49** [t 1.8], +54%/yr | +1.02 | −2.83, −89%/yr | −0.16 | 0.64–1.28 → beats 5/5 |
+
+**Reading.**
+- The static 1-ATR take-profit grid is a heavy loser.
+- Choosing the rung type per bar turns it positive. **But most of that comes from the STRUCTURE of
+  the choice, not the indicators.** Permuted-label models (which keep each type's base win rate
+  and its W̄ / L̄) reach Sharpe 0.6–1.5 by preferring deeper rungs and longer exits. In BT, random
+  rung types do as well.
+- The indicator conditioning adds value only on OosCoins (beats 5/5 nulls, t 1.8). It fails the
+  t ≥ 3 bar and the "beats all nulls in both universes" rule.
+- The rules are real enough to rediscover. They aren't strong enough to beat a good structural
+  default by a margin these 18 months can confirm.
+
+**Lead, not evidence:** "always-on grid that prefers deep rungs and longer exits" (what the nulls
+converge to). It was found by looking, so it needs forward data.

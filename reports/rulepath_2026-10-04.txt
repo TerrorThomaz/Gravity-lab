@@ -1,0 +1,64 @@
+rule-path detector — building rung fills and path-exit labels (block A) …
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:129: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:157: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+   backtest: 89 coins, 605,032 rung fills × 5 exits labelled  [24s]
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:129: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)
+/tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/research/rulepath.py:157: RuntimeWarning: Mean of empty slice
+  put("breadth", np.nanmean(np.where(np.isfinite(C) & np.isfinite(e720), C > e720, np.nan), axis=1))
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+   oos: 63 coins, 407,887 rung fills × 5 exits labelled  [16s]
+
+── DISCOVERY (BacktestCoins, before 2024): rung types, base win rate, mean net, top derived rules ──
+   L k1 TIME24   n  138238  win 49%  mean -0.164%   +d_ema50(+0.26)  −rsi14(-0.25)  −d_ema200(-0.21)  +breadth(+0.17)
+   L k1 TPSL1    n  138354  win 59%  mean -0.208%   +d_ema50(+0.28)  +breadth(+0.16)  −rsi14(-0.13)  −mz720(-0.10)
+   L k1 TPSL2    n  138330  win 43%  mean -0.210%   +d_ema50(+0.28)  +breadth(+0.19)  −d_ema200(-0.13)  −rsi14(-0.09)
+   L k1 TRAIL15  n  138340  win 36%  mean -0.292%   +d_ema50(+0.30)  +breadth(+0.16)  −rsi14(-0.16)  −d_ema200(-0.13)
+   L k1 TRAIL30  n  138085  win 34%  mean -0.579%   +breadth(+0.29)  +d_ema50(+0.24)  −rsi14(-0.17)  −d_ema200(-0.16)
+   L k2 TIME24   n   25316  win 53%  mean -0.031%   −rsi14(-0.41)  +d_ema50(+0.39)  −d_ema200(-0.25)  +breadth(+0.18)
+   L k2 TPSL1    n   25350  win 64%  mean -0.120%   +d_ema50(+0.46)  +breadth(+0.28)  −d_ema200(-0.26)  −mz720(-0.24)
+   L k2 TPSL2    n   25320  win 48%  mean -0.094%   +d_ema50(+0.45)  +breadth(+0.29)  −d_ema200(-0.26)  −rsi14(-0.19)
+   L k2 TRAIL15  n   25319  win 40%  mean -0.094%   +d_ema50(+0.37)  +breadth(+0.21)  −rsi14(-0.21)  −d_ema200(-0.15)
+   L k2 TRAIL30  n   25280  win 37%  mean -0.344%   +d_ema50(+0.42)  −rsi14(-0.36)  +breadth(+0.30)  −d_ema200(-0.20)
+   L k3 TIME24   n    7997  win 55%  mean +0.278%   +z168(+0.38)  −rsi14(-0.35)  −d_ema200(-0.32)  +d_ema50(+0.28)
+   L k3 TPSL1    n    8040  win 66%  mean -0.079%   −d_ema200(-0.57)  +d_ema50(+0.54)  +z168(+0.44)  −mdd2160(-0.25)
+   L k3 TPSL2    n    8013  win 53%  mean +0.117%   −d_ema200(-0.49)  +z168(+0.38)  +breadth(+0.29)  +disp24(+0.24)
+   L k3 TRAIL15  n    7998  win 45%  mean +0.077%   +z168(+0.36)  −d_ema200(-0.34)  +rsi14(+0.21)  +disp24(+0.21)
+   L k3 TRAIL30  n    7994  win 39%  mean -0.155%   −d_ema200(-0.44)  +z168(+0.29)  +mz24(+0.20)  +breadth(+0.19)
+   S k1 TIME24   n  121329  win 51%  mean -0.168%   +rsi14(+0.24)  +mdd2160(+0.13)  +mz168(+0.11)  −d_ema50(-0.09)
+   S k1 TPSL1    n  121541  win 59%  mean -0.211%   +rsi14(+0.12)  −mz720(-0.09)  +lbbw(+0.07)  −z4(-0.07)
+   S k1 TPSL2    n  121539  win 44%  mean -0.136%   +rsi14(+0.11)  +mdd2160(+0.09)  +hi720(+0.08)  +mz168(+0.08)
+   S k1 TRAIL15  n  121375  win 37%  mean -0.146%   −breadth(-0.12)  −d_ema50(-0.12)  +rsi14(+0.11)  +hi720(+0.10)
+   S k1 TRAIL30  n  121114  win 37%  mean -0.028%   −breadth(-0.23)  +mdd2160(+0.17)  +hi720(+0.15)  −disp24(-0.11)
+   S k2 TIME24   n   20280  win 53%  mean -0.103%   +mz168(+0.13)  +mdd2160(+0.12)  +rsi14(+0.12)  −d_ema200(-0.11)
+   S k2 TPSL1    n   20308  win 61%  mean -0.290%   +rsi14(+0.27)  −z24(-0.13)  −z4(-0.12)  +lbbw(+0.12)
+   S k2 TPSL2    n   20308  win 48%  mean -0.120%   +rsi14(+0.24)  −z4(-0.13)  +mdd2160(+0.13)  −z24(-0.10)
+   S k2 TRAIL15  n   20289  win 40%  mean -0.077%   +rsi14(+0.23)  −z24(-0.14)  −breadth(-0.14)  −z4(-0.13)
+   S k2 TRAIL30  n   20260  win 38%  mean +0.027%   −breadth(-0.25)  +mz168(+0.19)  −z168(-0.18)  +hi720(+0.16)
+   S k3 TIME24   n    6172  win 55%  mean -0.036%   −breadth(-0.23)  +d_ema50(+0.22)  −z168(-0.18)  +mz168(+0.17)
+   S k3 TPSL1    n    6181  win 64%  mean -0.427%   −d_ema50(-0.22)  +disp24(+0.18)  −mz720(-0.18)  +rsi14(+0.17)
+   S k3 TPSL2    n    6181  win 52%  mean -0.168%   −z168(-0.22)  −breadth(-0.19)  +disp24(+0.18)  +res24(+0.17)
+   S k3 TRAIL15  n    6175  win 43%  mean -0.047%   −breadth(-0.27)  −z24(-0.24)  +res24(+0.23)  −z168(-0.19)
+   S k3 TRAIL30  n    6168  win 40%  mean +0.102%   −breadth(-0.43)  −rsi14(-0.31)  +d_ema50(+0.30)  −z168(-0.23)
+
+── VALIDATION (2024-01 → 2025-06): the dynamic grid as a managed book ──
+   bt  ALWAYS  trades   6987  ann  +31.3%  Sharpe +0.91  t +1.11  DSR(N=32) 0.152
+   bt  GATED   trades   5761  ann  +27.4%  Sharpe +0.75  t +0.92  DSR(N=32) 0.109
+   bt  STATIC  trades  46900  ann  -42.5%  Sharpe -1.51  t -1.85  DSR(N=32) 0.000
+   bt  RANDOM  trades  14621  ann  +32.1%  Sharpe +1.06  t +1.30  DSR(N=32) 0.203
+        permuted-label nulls (ALWAYS): Sharpe [0.78, 1.49, 1.29, 1.36, 0.59] → real beats 2/5
+        → bt FAIL
+   oos ALWAYS  trades   6873  ann  +53.9%  Sharpe +1.49  t +1.82  DSR(N=32) 0.379
+   oos GATED   trades   5462  ann  +37.6%  Sharpe +1.02  t +1.25  DSR(N=32) 0.185
+   oos STATIC  trades  45231  ann  -89.0%  Sharpe -2.83  t -3.47  DSR(N=32) 0.000
+   oos RANDOM  trades  14597  ann   -4.7%  Sharpe -0.16  t -0.19  DSR(N=32) 0.011
+        permuted-label nulls (ALWAYS): Sharpe [0.94, 0.89, 1.28, 1.24, 0.64] → real beats 5/5
+        → oos FAIL
+
+VERDICT (ALWAYS, both universes): FAIL.  Models → /tmp/claude-1000/-home-thomas-Gravity-lab/6ba47351-0f87-43a9-885d-98684d3f58bb/scratchpad/main/reports/rulepath_models.json
+Trials: 32 (30 rung-type models + 2 policies), fixed before the run. Block B untouched.

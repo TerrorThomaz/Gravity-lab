@@ -10,8 +10,9 @@ namespace TradingGA;
 // through it.
 //   LONG  exit: the close of the bar `LongHold` (24) bars after the fill bar. Taker.
 //   SHORT exit: trailing stop TrailAtr (3) × arming ATR from the extreme CLOSE since the fill bar's
-//               close. Triggered by a close beyond the stop; exits at the next open (taker, stop gap
-//               charged). Otherwise the close ShortMaxHold (168) bars after the fill.
+//               close. Triggered by a close beyond the stop; exits at the next open (taker; no
+//               stop-gap premium, since the open already contains the gap). Otherwise the close
+//               ShortMaxHold (168) bars after the fill.
 // Exit monitoring starts the bar after the fill; a new order is armed only once the position is
 // closed. Maker entry, taker exit, via TradeCosts. Funding via FundingRateSession.PnlPct (null = floor).
 //
@@ -26,7 +27,7 @@ public static class StructGridSimulator
 {
     public const double K = 3.0, Through = 0.0005, TrailAtr = 3.0;
     public const int AtrPeriod = 14, LongHold = 24, ShortMaxHold = 168;
-    private const double StopGapAtrK = 0.18;                    // same gap premium as GridSimulator
+    private const double StopGapAtrK = 0.18;                    // unused while isStop is false; kept for parity with GridSimulator
 
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)>
         GetReturns(ReadOnlySpan<Candle> h1, bool isLong, FundingRateSession? funding = null,
@@ -75,7 +76,12 @@ public static class StructGridSimulator
             if (xb < 0) break;                                   // exit falls past the data: unlabelled, stop
 
             double gross = s * (xpx / px - 1.0) * 100.0;
-            double cost = TradeCosts.RoundTripPct(TradeCosts.AtrPct(a, px), isStop, StopGapAtrK,
+            // No stop-gap premium even on trail exits: StopGapPct prices a stop that fills AT a level
+            // intrabar (the level may not be available). This exit triggers on a close and fills at
+            // the next bar's actual OPEN, so the gap is already in xpx; charging it again double-counts.
+            // Still taker, with ATR-scaled slippage. (The first port charged it: C# shorts −0.39%/trade
+            // vs Python +0.38% on the same window.)
+            double cost = TradeCosts.RoundTripPct(TradeCosts.AtrPct(a, px), isStop: false, StopGapAtrK,
                                                   entryMaker: true, exitMaker: false);
             double fund = FundingRateSession.PnlPct(tm[f], tm[xb], funding, isLong);
             res.Add((tm[xb], gross - cost + fund, isLong ? "struct_long" : "struct_short", tm[f], px));

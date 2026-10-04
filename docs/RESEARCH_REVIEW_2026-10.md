@@ -92,6 +92,18 @@ and the DSR for any T2 claim counts them, alongside `ga_trials.json`.
 **S7 — No new candle-only searches** unless they bring a new information source, a new universe or
 a new horizon. Re-running the same features through a different model is out.
 
+**S8 — Acceptance is two-way, and power is always reported** (added 2026-10-04, after
+`research/power_check.py`).
+- A strategy passes if it adds to the live book OR stands on its own:
+  - **Book addition:** alpha t ≥ 2 against the live book's daily P&L.
+  - **Standalone:** t ≥ 2 and beats its placebo.
+- **Both routes require "no bleed":** net Sharpe > 0 over the full window and in both halves. A
+  hedge that loses money in general is insurance we would pay for through every adverse stretch,
+  and is rejected however well it correlates.
+- New sleeves enter at a fixed risk budget (default 20%), not equal risk.
+- Every verdict states the test's power at Sharpe 0.5 and 1.0. "Not significant" alone is no
+  longer a finding.
+
 ## 5. Recommended priorities
 
 1. **Prove or disprove the base.** Forward shadow evidence for the live GA grid, against a frozen

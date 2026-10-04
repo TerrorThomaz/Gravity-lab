@@ -1059,3 +1059,39 @@ No funding is charged in this sleeve. Seen data: this is a hypothesis, not evide
    behaviour on the book's worst days), not its standalone t.
 3. Sleeves enter at a risk budget, not equal risk; ERC applies only among sleeves of similar quality.
 4. Slow strategies need longer history (Binance spot 2017+) to be testable at all.
+
+## PRE-REGISTRATION: Binance BTC+ETH market trend, one trial (written 2026-10-04, before any statistic)
+
+Code: `research/binance_trend.py` (committed with this section; data fetched, only coverage inspected).
+
+**Spec.** Market TSMOM, the trial-1 sleeve that the power check flagged (it was positive on the book's
+worst days):
+- **Data:** Binance spot daily BTCUSDT and ETHUSDT, 2017-08-17 →. Window from 2017-09-16 (after the
+  30d lookback) to 2026-10-03.
+- **Signal:** the sign of the equal-weight (BTC, ETH) 30d log return at the daily close.
+- **Position:** 7 overlapping daily cohorts, half in each coin, held 7 days, never levered.
+- **Costs:** taker 0.105% per side, charged on the net daily change.
+- **Funding:** Binance perp funding where available (2019-09 →), otherwise BitMEX (BTC 2016-05 →,
+  ETH 2018-08 →), otherwise the 0.01%/8h floor charged on either side. A long pays a positive rate.
+- **Live book:** ERC(carry, Grid, GridShort) daily, from the frozen genotypes' edgetest trade log
+  (`reports/live_book_trades_2026-10-04.csv`).
+- **Added at a risk budget of 20%:** w ∝ b/σ with trailing 90d vols. The 10% and 30% budgets are
+  printed for information, not as candidates.
+
+**Acceptance criteria** (user, 2026-10-04: a strategy is judged on what it adds to the book OR on its
+own, and a hedge must still profit in general so it does not bleed through adverse periods):
+- **No-bleed condition:** net Sharpe > 0 over the full window AND in both halves (split at the
+  midpoint date).
+- **STANDALONE PASS:** no-bleed, AND weekly t ≥ 2 over the full window, AND the real Sharpe beats
+  ≥ 90% of 100 circular time-shifts of the signal (placebo: same signal mix, broken timing).
+- **BOOK-ADDITION PASS:** no-bleed, AND alpha t ≥ 2 (weekly sleeve regressed on the weekly book) over
+  the book's history (2021-12-22 →).
+
+**What is clean and what is not.**
+- 2017-09 → 2020-03-24 has never been used (the Bybit cache starts 2020-03-25). It is reported on its
+  own; its power at Sharpe 1 is only ~40%.
+- 2020-03 → 2026-10 was seen through the alt equal-weight trend tests, so the market drift is known.
+- The book overlap is seen data, and alpha power at the measured IR ≈ 0.6 is ~35%.
+- A PASS here is tier T1 at best. Adoption still needs forward data (S4, T3).
+- A FAIL on the book-addition rule alone, with no-bleed met, is "unproven", not "absent" (power
+  check).

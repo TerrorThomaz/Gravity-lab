@@ -22,6 +22,8 @@ Decision rules: see the pre-registration. Run once.
 Run:  python3 research/binance_trend.py --fetch      (data only, no statistics)
       python3 research/binance_trend.py --selftest
       python3 research/binance_trend.py --run --trades <edgetest trade log>
+      python3 research/binance_trend.py --shadow            (daily forward logger, HYBRID spec)
+      python3 research/binance_trend.py --fetch && python3 research/binance_trend.py --evaluate
 """
 
 from __future__ import annotations
@@ -130,9 +132,10 @@ def load():
     return days, O, C, F, K
 
 
-def sleeve(O, C, F, K, shift: int = 0):
+def sleeve(O, C, F, K, shift: int = 0, hybrid: bool = False):
     """Daily net return (open t → open t+1) of the frozen sleeve. shift > 0 rolls the signal
-    circularly (placebo: same signal statistics, broken timing)."""
+    circularly (placebo: same signal statistics, broken timing). hybrid: longs held on SPOT (no
+    funding), shorts on the perp (funding as before) — the forward-test spec."""
     D = len(C)
     lc = np.log(C)
     s = np.full(D, np.nan)
@@ -148,7 +151,8 @@ def sleeve(O, C, F, K, shift: int = 0):
     ret = np.zeros(D)
     ret[:-1] = (P[:-1] * (O[1:] / O[:-1] - 1)).sum(1)
     trade = np.abs(np.diff(np.vstack([np.zeros((1, 2)), P]), axis=0)).sum(1)
-    fund = np.where(K, -P * F, -np.abs(P) * FLOOR_DAY).sum(1)
+    fund = np.where(K, -P * F, -np.abs(P) * FLOOR_DAY)
+    fund = np.where(P < 0, fund, 0.0).sum(1) if hybrid else fund.sum(1)
     return ret - COST * trade + fund, pos, (ret, COST * trade, fund)
 
 
@@ -234,6 +238,78 @@ def run(trades: str) -> int:
     return 0
 
 
+# ── forward test of the HYBRID (docs/FORWARD_TEST_TREND_HYBRID_2026-10.md) ─────────────────────────
+FWD_START = pd.Timestamp("2026-10-05")
+FWD_OUT = os.path.expanduser("~/Gravity-lab/data/forward/trend_hybrid")
+
+
+def shadow(out: str) -> int:
+    """Log the decision for every newly CLOSED day: signal, the next day's exposure, the closes and the
+    day's funding. Append-only; a day logged after the next one began is flagged late=1."""
+    os.makedirs(out, exist_ok=True)
+    now = pd.Timestamp.now("UTC").tz_localize(None)
+    cl, fd = {}, {}
+    for a, (bn, _) in ASSETS.items():
+        k = _get(f"https://api.binance.com/api/v3/klines?symbol={bn}&interval=1d&limit=120")
+        k = pd.DataFrame([r[:5] for r in k], columns=["t", "open", "high", "low", "close"]).astype(float)
+        k.index = pd.to_datetime(k.t.astype("int64"), unit="ms")
+        cl[a] = k.close[k.index + pd.Timedelta(days=1) <= now]           # closed days only
+        f = _get(f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={bn}&limit=1000")
+        f = pd.Series([float(x["fundingRate"]) for x in f], index=pd.to_datetime([x["fundingTime"] for x in f], unit="ms"))
+        fd[a] = f.groupby((f.index - pd.Timedelta(milliseconds=1)).floor("D")).sum()
+    days = cl["BTC"].index.intersection(cl["ETH"].index)
+    lc = np.log(np.column_stack([cl[a].reindex(days).values for a in ASSETS]))
+    sig = pd.Series(np.r_[np.full(LOOK, np.nan), np.sign((lc[LOOK:] - lc[:-LOOK]).mean(1))], index=days)
+    path = os.path.join(out, "decisions.csv")
+    log = pd.read_csv(path, parse_dates=["day"]) if os.path.exists(path) else pd.DataFrame(columns=["day"])
+    seen = set(log.day)
+    rows = []
+    for i, d in enumerate(days):
+        if d in seen or d < FWD_START - pd.Timedelta(days=HOLD) or not np.isfinite(sig.iloc[i]):
+            continue
+        nxt = sig.iloc[max(0, i - HOLD + 1): i + 1].sum() / HOLD                # exposure for day d+1
+        rows.append({"day": d, "signal": int(sig.iloc[i]), "exposure_next": round(float(nxt), 6),
+                     "btc_close": cl["BTC"][d], "eth_close": cl["ETH"][d],
+                     "btc_funding_day": fd["BTC"].get(d, np.nan), "eth_funding_day": fd["ETH"].get(d, np.nan),
+                     "late": int(now > d + pd.Timedelta(days=2)), "logged_utc": f"{now:%Y-%m-%d %H:%M}"})
+    if rows:
+        pd.DataFrame(rows).to_csv(path, mode="a", header=not os.path.exists(path), index=False)
+    print(f"trend hybrid shadow: last closed day {days[-1]:%Y-%m-%d}, signal {int(sig.iloc[-1]):+d}, "
+          f"appended {len(rows)} row(s) to {path}")
+    return 0
+
+
+def evaluate(trades: str, out: str) -> int:
+    """Forward rows only (from FWD_START), recomputed from freshly fetched data (run --fetch first) and
+    checked against the logged decisions. Compares with 50/50 buy-and-hold and the live book."""
+    from power_check import alpha_t, book_daily
+    days, O, C, F, K = load()
+    net, pos, _ = sleeve(O, C, F, K, hybrid=True)
+    x = pd.Series(net, index=days)
+    bh = pd.Series(0.5 * (O[1:] / O[:-1] - 1).sum(1), index=days[:-1])
+    log = pd.read_csv(os.path.join(out, "decisions.csv"), parse_dates=["day"]).set_index("day")
+    ex = pd.Series(pos, index=days).shift(-1).reindex(log.index)
+    bad = (ex - log.exposure_next).abs() > 1e-6
+    print(f"integrity: {len(log)} logged decisions, {int(bad.sum())} mismatch the recomputation, {int(log.late.sum())} late")
+    f = x[(x.index >= FWD_START)].iloc[:-1]                      # the last day's open→open is not complete
+    if len(f) < 2:
+        print("no complete forward days yet"); return 0
+    b = bh.reindex(f.index)
+    beta = float(np.polyfit(b.values, f.values, 1)[0]) if len(f) > 10 else float("nan")
+    mdd = lambda s: 100 * ((1 + s).cumprod() / (1 + s).cumprod().cummax() - 1).min()
+    print(f"forward {f.index[0]:%Y-%m-%d} → {f.index[-1]:%Y-%m-%d} ({len(f)} days): hybrid Sharpe {sharpe(f):+.2f}, "
+          f"maxDD {mdd(f):.1f}%, sum {100 * f.sum():+.1f}% | buy&hold Sharpe {sharpe(b):+.2f}, maxDD {mdd(b):.1f}% | "
+          f"beta {beta:.2f}, alpha vs B&H {100 * (f - beta * b).mean() * 365:+.1f}%/yr")
+    book, _ = book_daily(trades)
+    j = book.index.intersection(f.index)
+    if len(j) > 20:
+        bb, xb = book.reindex(j), f.reindex(j)
+        w = bb <= bb.quantile(0.05)
+        print(f"vs live book: ρ {np.corrcoef(xb, bb)[0, 1]:+.2f}, alpha t {alpha_t(xb.values, bb.values):+.2f}, "
+              f"on the book's worst 5% days {100 * xb[w].mean():+.3f}%/day")
+    return 0
+
+
 def selftest() -> int:
     """Sleeve accounting on a synthetic path: a steady uptrend → long, earns the drift less costs and
     funding; netting charges no cost while the signal holds; a placebo shift is a permutation."""
@@ -252,7 +328,12 @@ def selftest() -> int:
     assert np.allclose(fu2[200], -FLOOR_DAY), "floor must cost either side"
     a, b = sleeve(O, C, F, K, shift=37)[1], pos
     assert abs(np.sort(a[LOOK + HOLD:]).sum() - np.sort(b[LOOK + HOLD:]).sum()) < 60, "shift changed the signal mix"
-    print("selftest: OK (long in trend, netting, funding sign + floor, placebo shift)")
+    _, _, (_, _, fuh) = sleeve(O, C, F, K, hybrid=True)
+    assert np.allclose(fuh[200], 0.0), "hybrid long is spot: no funding"
+    Cd = C.copy(); Cd[60:] = Cd[60:] * np.exp(-np.linspace(0, 3, D - 60))[:, None] ** 2   # turn into a downtrend
+    _, posd, (_, _, fud) = sleeve(Cd, Cd, F, K, hybrid=True)
+    assert posd[-1] < 0 and fud[-1] > 0, "hybrid short on the perp must receive a positive rate"
+    print("selftest: OK (long in trend, netting, funding sign + floor, placebo shift, hybrid funding)")
     return 0
 
 
@@ -261,12 +342,19 @@ def main() -> int:
     ap.add_argument("--fetch", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--run", action="store_true")
+    ap.add_argument("--shadow", action="store_true")
+    ap.add_argument("--evaluate", action="store_true")
+    ap.add_argument("--out", default=FWD_OUT)
     ap.add_argument("--trades", default=os.path.join(mnr.REPO, "reports", "live_book_trades_2026-10-04.csv"))
     a = ap.parse_args()
     if a.fetch:
         return fetch()
     if a.selftest:
         return selftest()
+    if a.shadow:
+        return shadow(a.out)
+    if a.evaluate:
+        return evaluate(a.trades, a.out)
     if a.run:
         return run(a.trades)
     ap.print_help()

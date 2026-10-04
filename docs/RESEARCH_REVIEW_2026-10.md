@@ -100,6 +100,11 @@ a new horizon. Re-running the same features through a different model is out.
 - **Both routes require "no bleed":** net Sharpe > 0 over the full window and in both halves. A
   hedge that loses money in general is insurance we would pay for through every adverse stretch,
   and is rejected however well it correlates.
+- **Market neutralisation:** every sleeve reports its beta and alpha against buy-and-hold of its own
+  universe.
+  - A return explained by beta (alpha ≤ 0) fails both routes.
+  - The standalone route also needs Sharpe ≥ buy-and-hold's: about B&H's return at less risk passes;
+    less return at the same risk does not. (User, 2026-10-04.)
 - New sleeves enter at a fixed risk budget (default 20%), not equal risk.
 - Every verdict states the test's power at Sharpe 0.5 and 1.0. "Not significant" alone is no
   longer a finding.

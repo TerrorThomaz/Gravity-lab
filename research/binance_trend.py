@@ -207,7 +207,7 @@ def run(trades: str) -> int:
         print(pd.DataFrame(tab).set_index("").to_string())
     print(f"  placebo (100 circular signal shifts): real Sharpe {sharpe(xs):+.2f} beats {pct:.0%}; "
           f"placebo median {np.median(plac):+.2f}, p90 {np.quantile(plac, 0.9):+.2f}")
-    print(f"  clean-window power at true Sharpe 1: {1 - 0.5 * math.erfc(-(math.sqrt(yrs) - 2) / math.sqrt(2)):.0%} "
+    print(f"  clean-window power at true Sharpe 1: {0.5 * math.erfc(-(math.sqrt(yrs) - 2) / math.sqrt(2)):.0%} "
           f"(t ≈ SR·√{yrs:.1f}y)")
 
     book, _ = book_daily(trades)

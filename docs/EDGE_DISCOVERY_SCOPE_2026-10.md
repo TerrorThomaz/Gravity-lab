@@ -1095,3 +1095,39 @@ own, and a hedge must still profit in general so it does not bleed through adver
 - A PASS here is tier T1 at best. Adoption still needs forward data (S4, T3).
 - A FAIL on the book-addition rule alone, with no-bleed met, is "unproven", not "absent" (power
   check).
+
+## BINANCE TREND RESULT (run once, 2026-10-04, pre-registration 6d13336): standalone PASS (marginal), book addition FAIL (unproven), no-bleed met
+
+| | Sharpe | weekly t | CAGR | vol | maxDD |
+|---|---|---|---|---|---|
+| full 2017-09 → 2026-10 | +0.66 | **2.02** | 23.7% | 63% | −81% |
+| half 1 / half 2 | +0.69 / +0.63 | 1.49 / 1.40 | | | |
+| CLEAN pre-2020-03 (never seen) | +0.09 | 0.21 | −19.2% | 75% | −77% |
+
+- **Cost and funding:** price +53.6%/yr, costs −2.0, funding **−10.1**. Longs in bull markets pay.
+  95% of coin-days had a real funding rate.
+- **Placebo:** the real Sharpe beats 100% of 100 signal shifts (placebo median −0.01, p90 +0.32).
+- **By year:** positive in every year except 2018 (−0.64) and the flat 2019 (+0.23).
+- **Against the live book** (2021-12 → 2026-10): ρ −0.02, alpha t **+1.58**. On the book's worst 5%
+  days the sleeve makes **+0.39%/day** while the book loses −0.44%.
+- **At a 20% risk budget** (about 2% of capital, given the vols): book Sharpe 1.63 → **1.80**, maxDD
+  −4.9% → −4.6%, CAGR 7.4% → 9.4%, weekly t 3.76 → 4.10. At 10% the Sharpe is the same (1.80) with
+  maxDD −2.8%; at 30% it is 1.71.
+
+**Reading it honestly.**
+- The standalone pass sits exactly at the bar (t 2.02), and the only never-seen stretch is flat:
+  clean Sharpe +0.09, power ~34% at Sharpe 1.
+- Information, not pre-registered:
+  - without 2017 (3.5 months of mania, Sharpe 2.9), the full window gives Sharpe 0.56, t 1.71;
+  - 2018 → 2020-03 alone gives −0.31.
+- The evidence for the timing (placebo 100%) is strong, but its size rests mostly on 2020+ data that
+  had been seen through the alt trend tests.
+- The book-addition rule fails at alpha t 1.58. Alpha power was ~35%, so this is "unproven", not
+  "absent". The point estimates all point the same way: a higher book Sharpe, a lower drawdown, and
+  profits on exactly the days the grid loses.
+- The printout's clean-window power line had its sign inverted (it printed 66%; the correct figure is
+  34%). It was fixed after the run; no decision rule used it.
+
+**Verdict under S8:** tier T1 standalone (marginal). It qualifies as a no-bleed hedge candidate and
+goes to the forward shadow, the only route to T3. It must not be sized into the live book on this
+evidence.

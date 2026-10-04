@@ -43,7 +43,7 @@ def atr_pct(mk) -> pd.DataFrame:
 
 def sleeve(trades: pd.DataFrame, strategy: str, atr: pd.DataFrame, mode: str, exp_cap: float) -> pd.Series:
     g = trades[trades.strategy == strategy].sort_values("entry_time")
-    ref = atr.median(axis=1)
+    ref = atr.median(axis=1) if atr is not None else None
     hours = (g.entry_time.dt.floor("h") - pd.Timedelta(hours=1))
     open_, pnl = [], []
     for (et, xt, sym, r), hr in zip(g[["entry_time", "exit_time", "symbol", "return_pct"]].itertuples(index=False), hours):

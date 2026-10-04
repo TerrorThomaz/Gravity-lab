@@ -1263,3 +1263,37 @@ separate commit, then run.
   passes (0.52 / 0.62).
 - The verdicts stand as pre-registered. Vol-managed carry is a strong but unproven idea, and it waits
   on carry's own forward evidence.
+
+## SIZING RECALCULATED (2026-10-05, `research/cov_sizing.py`, `research/bet_sizing.py`; information, seen data)
+
+**Book:** carry, Grid, GridShort, trend hybrid. **Window:** 2021-12 → 2026-10.
+
+**Constraint:** the book's gross notional ≤ 1 (no leverage). The scale comes from trailing 90d data,
+plus a hard daily cap that shrinks the book to gross 1 on breach days. Without that cap the trailing
+estimate breached on 24 days (peak 1.64x).
+
+| sizing | grid cap | CAGR | vol | Sharpe | maxDD | mean gross |
+|---|---|---|---|---|---|---|
+| inverse vol, capital split (sum 1) | 60% | 8.2% | 4.3% | 1.85 | −5.7% | 0.21 |
+| ERC with the C# shrink, scaled to gross ≤ 1 | 60% | 16.8% | 11.6% | 1.39 | −10.6% | 0.61 |
+| ERC with correlation-only shrink, scaled | 60% | 12.7% | 5.6% | 2.17 | −5.7% | 0.35 |
+| **ERC with correlation-only shrink, scaled** | **30%** | **20.6%** | **7.2%** | **2.66** | **−5.7%** | **0.47** |
+| equal capital, 25% each | 60% | 16.1% | 14.0% | 1.14 | −12.1% | — |
+| buy & hold BTC/ETH (scaled to 10% vol) | | 3.3% (3.0%) | 57% (10%) | 0.34 | −70% (−17%) | |
+
+**Why it moves.**
+1. **Capital splits leave the grid's capital idle:** mean gross is 0.2. Scaling risk weights up to
+   the gross limit puts it to work.
+2. **The C# shrink pulls weights toward equal.** It inflates the low-vol sleeves' variance, so the
+   high-vol trend and carry get more weight and Sharpe falls. Shrinking correlations only keeps each
+   sleeve's own vol.
+3. **The grid's 30% exposure cap halves its peak gross,** so twice the multiplier fits under the
+   limit, and Grid's own Sharpe rises from 2.40 to 2.82.
+
+**Caveats.**
+- The grid sleeves are booked at exit, which overstates their Sharpe (edgetest MTM: 2.29 against
+  2.82 booked).
+- GridShort, the weakest sleeve, gets the largest multiplier (1.64) purely for its low vol.
+- At peak gross the whole equity sits in correlated dip-buys during a flush.
+- The 30% cap was chosen after seeing its effect.
+- Carry and trend are not in C#, so this cannot yet reach edgetest (S1).

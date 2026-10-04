@@ -1,0 +1,193 @@
+
+═══ EDGE TEST — walk-forward gate, portfolio Sharpe, deflated ═══
+
+  Fetching 102 symbols (never-trained OOS set + BTC/ETH anchors)…
+  [cache] CAKEUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] XTZUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] NEOUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] FLOWUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] KAVAUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] DASHUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] THETAUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] IOSTUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ONTUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] YFIUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] BNTUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] KNCUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] WOOUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ZRXUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] COTIUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] CKBUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] CHRUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] TRBUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] SAFEUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] IDUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] RONINUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] BLURUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ARKMUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] BICOUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] EGLDUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] IOTAUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ZECUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] WAVESUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] QTUMUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ASTRUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] METISUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] CELOUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] LSKUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] CVXUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] MASKUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] LQTYUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] SSVUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] XVSUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] RSRUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ILVUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] SLPUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ALICEUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] YGGUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] PEOPLEUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] RAREUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] NMRUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] PHAUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ARPAUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] POLYXUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] DIAUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] DUSKUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] SUNUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] CVCUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] TWTUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ACHUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] HIGHUSDT: 1 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] POWRUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] SUPERUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] IOTXUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] LITUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] MOVRUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] MINAUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] BTCUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ETHUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  BTC regime series: 56507 h1 bars (2020-03-25 → 2026-10-02)
+
+  [harvest] DipLong: setups on 63 coins, 8616 anchors
+  [harvest] SwingLong: setups on 63 coins, 20994 anchors
+  CROWDING cap ON (GRAVITY_CROWDING=0.50), 65 symbols — charges same-side open positions against the 20-slot budget
+
+  Raw book: 8220 trades, 63 coins, 2 strategies
+
+  PER-TRADE (what the other commands report) vs PORTFOLIO (what you actually earn)
+  Book                          PF   mean%       CAGR  annSharpe    maxDD   Calmar     DSR    days
+  ──────────────────────────────────────────────────────────────────────────────────────────────────
+  RAW (no gate)               1.29  0.145%      11.0%       2.26      3.3%     3.36   0.838    2117
+  STATIC gate (in-sample)     1.29  0.145%       5.8%       2.30      1.6%     3.60   0.860    2117
+  ROLLING regime gate         1.27  0.138%       1.6%       1.73      0.9%     1.68   0.223    1685
+  ROLLING coin screen         1.43  0.192%       1.5%       1.79      0.5%     3.19   0.284    1749
+  ROLLING regime + coin       1.40  0.181%       0.7%       1.64      0.4%     1.82   0.175    1669
+    ↳ same trades, flat size  1.27  0.138%       1.7%       1.96      0.5%     3.40   0.390    1685
+  ROLLING gate + risk parity  1.27  0.138%       1.7%       1.77      1.0%     1.76   0.247    1685
+  RANDOM gate (null, 81%)     1.27  0.136%       1.4%       1.99      0.5%     2.94   0.624    2117
+
+  ── Deflated Sharpe (daily returns of ROLLING regime + coin) ──
+     observed daily SR     0.0858   (annualised   1.64)
+     E[max SR] of 149497 trials   0.1097   ← what pure search buys
+     PSR vs zero           0.9996
+     DEFLATED SR           0.1748   ✗ indistinguishable from the best of random
+
+
+  ── GA SELECTION DIAGNOSTIC: per-trade fitness vs portfolio outcome ──
+     strategy        GA PerTradeSharpe | portfolio annSharpe     CAGR    maxDD
+     Grid                     0.1142 |               1.76      1.5%     0.9%
+     GridShort                0.0064 |               0.17      0.1%     0.6%
+
+  ── IS THE WINDOW ADVERSE? regime mix, and per-strategy PF within each ──
+     window regime mix (h1 bars): Bull 48%  Bear 44%  Ranging 8%  HighVol 0%
+     strategy                     Bull               Bear            Ranging            HighVol
+     Grid                   1.49 n=2893         1.09 n=1423         1.33 n=981                n<20
+     GridShort              1.10 n=895          1.00 n=246          1.03 n=200                n<20
+
+  ── GATE EFFECT: raw vs admitted, per strategy x regime ──
+     strategy       regime      raw n   adm n   kept   rawPF   admPF
+     Grid           Bull         3225    2893    90%    1.46    1.49
+     Grid           Bear         1842    1423    77%    1.16    1.09
+     Grid           Ranging      1115     981    88%    1.37    1.33
+     GridShort      Bull         1135     895    79%    1.17    1.10
+     GridShort      Bear          576     246    43%    1.00    1.00
+     GridShort      Ranging       327     200    61%    1.29    1.03
+
+  ── DOES THE GATE PREDICT? trailing PF vs next-period realised PF ──
+     145 (bucket, month) predictions with >=20 trades each side
+     Spearman(trailing PF, next-period PF):  0.007
+     gate said ON  ( 118): mean-of-period PF  1.501
+     gate said OFF (  27): mean-of-period PF  2.180
+     ^ mean OF RATIOS — biased up by periods with tiny gross losses, and not
+       what a portfolio earns. The trade-weighted figures below are.
+     POOLED  gate ON  (  5629 trades): mean  0.1270%  PF 1.249
+     POOLED  gate OFF (   888 trades): mean  0.1940%  PF 1.419
+     GATE LIFT: -0.0670% per trade   t = -1.33   ← within noise: the gate de-risks, it does not select
+
+  ── LOSS DISTRIBUTION per strategy (raw book) ──
+     strategy        trades   loss%  meanLoss  p99 loss    worst  medHold
+     Grid              6182     45%    -1.05%    -4.25%   -6.99%       6h
+     GridShort         2038     54%    -1.10%    -3.83%   -4.63%       7h
+
+  ── RISK PARITY multipliers (inverse trailing vol, mean-normalised) ──
+     strategy        median x     min     max   (1.00 = unchanged)
+     Grid                1.07    0.98    1.16
+     GridShort           0.92    0.84    1.02
+
+  ── FILL-MODEL SENSITIVITY (Grid) ──
+     fill model                   PF     mean%  perTradeSharpe   trades
+     next-bar (honest)          1.34    0.165%          0.1168     6182
+     same-bar (RETIRED)         1.64    0.276%          0.1971     7477
+
+  ══ ACCEPTANCE GATE — leave-one-out contribution to the gated book ══
+     book with everything: Sharpe 1.73  DSR 0.223  CAGR 1.6%
+     strategy         ΔSharpe     ΔDSR    ΔCAGR |              book WITHOUT it   verdict
+     Grid                1.57    0.223     1.5% | CAGR   0.1%  Sh  0.17  DD  0.6%   ✓ accept — better on both
+     GridShort          -0.03   -0.018     0.1% | CAGR   1.5%  Sh  1.76  DD  0.9%   ~ TRADE-OFF — adds return, costs risk-adjusted return; a human call
+        own slots: 1305 admitted, 36 turned away by the cap
+        Grid         admitted   4964 ->   4964  (     0)   cap-dropped    333 ->    333
+
+     No strategy is strictly dominated. Any TRADE-OFF row above is a
+     risk-appetite decision, not a defect — this gate does not price it for you.
+
+  ══ RIGOR SCORECARD — ROLLING regime gate, flat sizing ══
+     criterion                        value        bar    verdict
+     Deflated Sharpe                 0.223 >=   0.95    ✗ FAIL
+     Prob. backtest overfitting      0.000 <=   0.20    ✓ pass
+     White's Reality Check p         0.000 <=   0.05    ✓ pass
+     Portfolio ann. Sharpe            1.73 >=   1.00    ✓ pass
+     Calmar                           1.68 >=   0.50    ✓ pass
+     Max drawdown %                   0.95 <=  25.00    ✓ pass
+     Effective indep. samples          378 >= 250.00    ✓ pass
+
+     OVERALL: F   (6/7 criteria met, CAGR 1.6%)
+     Capped at F by deflation: the observed Sharpe is below what a search of this
+     size is expected to produce from strategies with NO true edge. Every other
+     criterion is conditional on that one, so they cannot lift the grade.
+
+  ══ RIGOR SCORECARD — ROLLING regime gate + RISK PARITY ══
+     criterion                        value        bar    verdict
+     Deflated Sharpe                 0.247 >=   0.95    ✗ FAIL
+     Prob. backtest overfitting      0.000 <=   0.20    ✓ pass
+     White's Reality Check p         0.000 <=   0.05    ✓ pass
+     Portfolio ann. Sharpe            1.77 >=   1.00    ✓ pass
+     Calmar                           1.76 >=   0.50    ✓ pass
+     Max drawdown %                   0.98 <=  25.00    ✓ pass
+     Effective indep. samples          378 >= 250.00    ✓ pass
+
+     OVERALL: F   (6/7 criteria met, CAGR 1.7%)
+     Capped at F by deflation: the observed Sharpe is below what a search of this
+     size is expected to produce from strategies with NO true edge. Every other
+     criterion is conditional on that one, so they cannot lift the grade.
+
+  WHAT THIS DOES AND DOES NOT SHOW
+    · Coins are never-trained, so strategy parameters are out-of-sample on price.
+    · The gate is out-of-sample in TIME: fitted only on already-closed trades.
+    · The gate is NOT out-of-sample in coin: it is fitted on these same coins'
+      realised trades, which is what a live system would also do.
+    · Costs are TradeCosts.FeeRoundTripPct + Config.SlippageBps, Bybit-calibrated.
+    · No liquidation model. Valid only while gross exposure stays under equity.
+    · MarkToMarket accrues an open position's P&L LINEARLY across its hold, so the
+      within-hold path is smoothed. That biases Sharpe UP for long-hold strategies
+      (the grid family most), and the effect grows with hold length. Compare Sharpe
+      across strategies of similar hold length only; CAGR and maxDD are unaffected.

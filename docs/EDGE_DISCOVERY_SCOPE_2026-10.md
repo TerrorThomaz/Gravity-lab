@@ -844,3 +844,32 @@ is a new trial.
 
 **Wiring.** `edgetest` with `GRAVITY_GRID_STRUCT=1` replaces both grid simulators under the
 Grid / GridShort labels (caps, direction and acceptance unchanged).
+
+**`edgetest`: struct grid vs current GA grid** (OosCoins, Dec 2021 → Oct 2026, mark-to-market,
+crowding 0.5, identical code and data):
+
+| raw book | PF | CAGR | Sharpe | maxDD | gated book Sharpe / DSR |
+|---|---|---|---|---|---|
+| GA Grid + GridShort (live) | **1.29** | 11.0% | **2.26** | **3.3%** | 1.73 / 0.223 |
+| StructGrid (frozen default) | 1.04 | 11.6% | 0.62 | **40.2%** | 0.70 / 0.004 |
+
+**Reading.**
+- **Same return, far worse risk.** Without a hard stop, the worst trades are −55% (long) and
+  −205% (short, a coin that tripled before the close-triggered trail could act).
+- The research comparison was against a STATIC 1-ATR grid. Against the GA grid, with its gates,
+  TP and hard stop, the structural default does not improve the live Grid.
+- **Verdict: not adopted.** The GA grid stays live. StructGrid stays behind
+  `GRAVITY_GRID_STRUCT=1` for research.
+
+**Port fidelity** (`research/struct_parity.py`).
+- Longs match (C# +0.92% vs Python +0.91%/trade, 2024–25H1).
+- The residual differences come from funding accounting: `edgetest` floor-charges the grid
+  family, while Python used real rates (shorts held up to 7 days received ~+0.2%).
+- One real port bug was fixed: a stop-gap premium double-counted on close-triggered next-open
+  exits.
+
+**Lesson.**
+- A research baseline must be the LIVE strategy, not a strawman. The structural default beat a
+  static grid, not the GA grid.
+- Path exits without a hard stop carry tail risk that realised-P&L books understate. `edgetest`'s
+  mark-to-market caught it.

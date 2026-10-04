@@ -1006,3 +1006,56 @@ averages ≤ 0 after costs unless it is far more selective than any feature here
 1–2 ATR maker rungs, which cost far less) is the remaining path. Its classifier must be trained on
 the GA grid's OWN sessions under authority costs. Caveat: the earlier meta-labeler on GA Grid trades
 did not beat random gates, so option 2 needs a new information source to have a real chance.
+
+## POWER CHECK (2026-10-04, `research/power_check.py`): most "no edge" verdicts were uninformative
+
+Question: could our tests have seen an edge of realistic size (Sharpe 0.5–1.0, the literature range
+for trend/momentum/carry)? Method: plant a market time-series-momentum edge of known Sharpe into
+sign-flipped block bootstraps of the real hourly data (tails, clustering and cross-coin correlation
+kept), then run the trend tests' own pass rules. 200 replicates per cell. True Sharpe = the sleeve's
+mean Sharpe over the replicates themselves.
+
+**A. Pass probability (rows: true Sharpe ≈ 0.1 null / 0.4 / 0.65 / 0.9 / 1.4 / 1.9)**
+
+| window | B1 (block-B rule) | T1 (t≥2 both universes + halves) | T2 (t≥3, upper bound for any search) |
+|---|---|---|---|
+| discovery 3.2y | 26 / 46 / 63 / 74 / 91 / 94% | 3 / 14 / 21 / 38 / 72 / 90% | 0 / 1 / 4 / 13 / 41 / 70% |
+| validation 1.5y | 23 / 38 / 44 / 53 / 71 / 80% | 2 / 7 / 13 / 21 / 44 / 56% | 1 / 1 / 2 / 4 / 14 / 27% |
+| block A 4.7y | 34 / 58 / 72 / 81 / 93 / 96% | 3 / 14 / 33 / 54 / 88 / 98% | 0 / 2 / 7 / 18 / 62 / 88% |
+| block B 1.26y | 28 / 38 / 43 / 50 / 62 / 71% | 5 / 8 / 16 / 22 / 42 / 64% | 0 / 1 / 4 / 6 / 19 / 30% |
+| all 5.9y | 43 / 66 / 80 / 88 / 97 / 99% | 4 / 23 / 45 / 63 / 95 / 100% | 0 / 4 / 12 / 28 / 76 / 95% |
+
+- **The block-B trend verdict carried almost no information.** Its rule passes 28% of nulls and
+  50% of Sharpe-1 edges; failing it moves the odds of "Sharpe-1 edge" by a factor 0.7.
+- **Searches (T2) were blind below Sharpe ~1.4**: ≤ 18% power at Sharpe 0.9 on any window, before
+  the DSR multiplicity penalty. "The finder only finds the grid" is what power predicts: the grid is
+  the one edge above that line (RAW Sharpe 2.29).
+- The rules are honest: false-pass rates 0–5% for T1/T2.
+
+**B. What a sleeve adds to the live book** (ERC of carry + Grid + GridShort, 4.8y, Sharpe 1.62).
+Synthetic sleeves with real book/market noise, σ 10%/yr:
+- Adding X helps iff SR_X > ρ·SR_book; the gain is set by IR = (SR_X − ρ·SR_book)/√(1−ρ²).
+- **A hedge is far easier to prove as an addition than alone:** ρ −0.5, SR 0 → alpha-test power
+  56% vs standalone 2%; ρ −0.5, SR 0.25 → 77% vs 11%. Uncorrelated SR 0.5 → 17% either way.
+- **ERC (equal risk) is the wrong way to add a modest sleeve:** an uncorrelated sleeve must have
+  SR > ~0.67 before equal-risk sizing stops LOWERING the book Sharpe (theory and simulation agree to
+  ±0.05), although any SR_X > 0 helps at the optimal (small) weight.
+
+**C. INFORMATION (seen data)** — the two trend sleeves we have, against that book:
+
+| sleeve | SR | ρ | IR | alpha t | on book's worst 5% days | book SR → +ERC |
+|---|---|---|---|---|---|---|
+| trend_forward (6h Donchian + trail) | −0.05 | 0.00 | −0.05 | −0.1 | +0.02%/day | 1.62 → 0.82 |
+| market TSMOM 30d/7d (trial-1) | +0.61 | −0.01 | +0.63 | +1.1 | **+0.31%/day** | 1.63 → 1.06 |
+
+Market TSMOM is uncorrelated on average but pays on the book's worst days. At the optimal weight it
+would lift the book toward √(1.63² + 0.63²) ≈ 1.75, but equal-risk sizing halves the book instead.
+No funding is charged in this sleeve. Seen data: this is a hypothesis, not evidence.
+
+**Consequences for the spec** (`docs/RESEARCH_REVIEW_2026-10.md`):
+1. Report effect size with a confidence interval and the test's power; "not significant" alone is no
+   longer a verdict.
+2. The acceptance question for a new sleeve is its **alpha against the live book** (and its tail
+   behaviour on the book's worst days), not its standalone t.
+3. Sleeves enter at a risk budget, not equal risk; ERC applies only among sleeves of similar quality.
+4. Slow strategies need longer history (Binance spot 2017+) to be testable at all.

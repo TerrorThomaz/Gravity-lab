@@ -1230,3 +1230,36 @@ PASS requires all of the following:
 
 Both trials run on seen data (2021 →), so a pass is tier T1 information and adoption still needs
 forward data. Two trials count toward the research trial ledger.
+
+## CARRY TRIALS RESULT (run once, 2026-10-05, pre-registration + pre-result fix): BOTH FAIL, on carry's own bleed
+
+The first launch crashed on a reference-length check before printing any statistic. It was fixed in a
+separate commit, then run.
+
+| | OOS Sharpe | OOS halves | OOS worst-1% day | BT Sharpe | BT halves | BT worst-1% day |
+|---|---|---|---|---|---|---|
+| plain carry | 0.57 | 0.52 / 0.62 | −2.48% | 0.18 | 0.52 / **−0.16** | −2.03% |
+| A vol-managed | 0.67 | 0.64 / 0.71 | −2.08% | 0.25 | 0.72 / **−0.21** | −1.64% |
+| B venue switch | 0.59 | 0.56 / 0.63 | −2.48% | 0.28 | 0.65 / **−0.11** | −2.02% |
+| A placebo median | 0.51 | | −2.32% | 0.14 | | −1.89% |
+
+**Book** = ERC(carry variant, Grid, GridShort), OosCoins:
+
+| | Sharpe | maxDD | worst-1% day | on the plain book's worst 5% days |
+|---|---|---|---|---|
+| plain | 1.63 | −4.9% | −0.51% | −0.44%/day |
+| **A** | **1.93** | **−2.6%** | **−0.40%** | **−0.31%/day** |
+| B | 1.64 | −4.9% | −0.50% | −0.44%/day |
+
+- **Trial A FAILS on no-bleed only.** BacktestCoins carry has a negative second half, and vol
+  management does not fix that (−0.21). Every other A criterion passes:
+  - a better worst-1% day in both universes;
+  - book Sharpe 1.63 → 1.93 with maxDD −4.9% → −2.6%;
+  - the tail beats 100% of placebos in both universes (Sharpe 92% / 85%).
+- **Trial B FAILS on the same no-bleed condition.** It improves Sharpe in both universes and both
+  halves, but slightly on OosCoins (+0.02).
+- **The binding finding is about carry itself.** On BacktestCoins it bleeds in the second half
+  (Sharpe −0.16, 2024 →), so plain carry fails S8's no-bleed rule there. On the live OosCoins it
+  passes (0.52 / 0.62).
+- The verdicts stand as pre-registered. Vol-managed carry is a strong but unproven idea, and it waits
+  on carry's own forward evidence.

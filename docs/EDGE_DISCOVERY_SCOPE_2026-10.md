@@ -681,3 +681,25 @@ negative at every L.
 
 Pre-registered verdict: FAIL. Block B is not run. A liquid-only momentum variant would be a new
 trial, and it was suggested by this result, so it would need forward data.
+
+## FROZEN FORWARD SPEC: per-coin trend + ATR trailing stop + vol sizing (2026-10-04)
+
+The full spec is in the docstring of `research/trend_forward.py` and is frozen at the commit that
+adds it. In short:
+- 6h bars, the top-20 coins by 30d quote volume (refreshed monthly);
+- a 20-day Donchian breakout to enter, long or short;
+- a 2.5×ATR14 trailing stop on closes to exit;
+- weight min(10%, 1% / daily vol);
+- taker costs and real funding.
+
+The parameters come from the cited papers, not from our data.
+
+**Evidence = forward rows only,** appended by `--shadow` to `data/forward/trend/book.csv`, one
+pass per 6h bar.
+
+**Review:**
+- 6 months: report only.
+- 12 months: PASS = net > 0, Sharpe ≥ 0.75, both halves positive.
+- Kill switch: drawdown > 25%.
+
+`--backtest` is information only.

@@ -659,3 +659,25 @@ the method note above.
 > 0 in both universes (t reported).
 
 **Trials charged:** 1.
+
+## RESULT: cross-sectional momentum, block A, FAIL (2026-10-04, pre-registration 9146b2c)
+
+| | mean / wk [t] | Sharpe | maxDD | halves | placebo rank | verdict |
+|---|---|---|---|---|---|---|
+| BT, L=3w | +0.38% [1.35] | +0.70 | −19% | +0.04 / +0.72 | beats 99.6% | fails t ≥ 2 |
+| OOS, L=3w | **−0.58% [−1.60]** | −0.89 | −79% | −0.94 / −0.23 | beats 5.4% | FAIL |
+
+The other look-backs (reported only) show the same split: BT positive at 2–3w (Sharpe ~0.7), OOS
+negative at every L.
+
+**Reading.**
+- **On the liquid BacktestCoins the factor is there in rank terms** (above 99.6% of random
+  rankings, β ≈ 0). It is not significant over 210 weeks: 2021 −18%/yr, then +17 / +41 / +30 / +10.
+- **On the smaller OosCoins it REVERSES**, mostly through the losers leg: past losers rose
+  +0.60%/wk, a −79% drawdown, and 2022 was −79%/yr. That matches the residual reversal seen in
+  `j4big`.
+- **Caveat, not an excuse:** the OOS universe is survivors only (37 delisted coins missing). That
+  biases a short-losers leg against itself, so OOS understates momentum by an unknown amount.
+
+Pre-registered verdict: FAIL. Block B is not run. A liquid-only momentum variant would be a new
+trial, and it was suggested by this result, so it would need forward data.

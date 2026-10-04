@@ -617,6 +617,7 @@ which both FAILED.
 - A frozen forward shadow of the always-on logistic dynamic grid (`reports/rulepath_models.json`)
   next to the static default would separate "structure" from "indicators".
 - Porting the dynamic grid into the C# Grid comes only after forward evidence.
+- `StructGridSimulator` (`GRAVITY_GRID_STRUCT=1` in edgetest) holds the frozen structural-default rungs (k3; long 24h, short 3-ATR trail). Against the LIVE GA grid it is NOT an improvement: the same CAGR, but maxDD 40% vs 3.3% (no hard stop; worst trades −55% / −205%). It beat only a static 1-ATR strawman. Kept for research.
 
 ### Discord bot
 

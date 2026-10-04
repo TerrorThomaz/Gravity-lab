@@ -55,6 +55,26 @@ public class RandomWalkNullTests
         return arr;
     }
 
+    // Driftless, fat-tailed: Student-t(3) steps scaled to unit variance, 1% per bar, Ito-corrected.
+    private static Candle[] FatRandomWalk(int n, int seed)
+    {
+        var rng = new Random(seed);
+        double Normal() { double u1 = 1.0 - rng.NextDouble(), u2 = rng.NextDouble(); return Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2); }
+        var arr = new Candle[n];
+        double px = 100.0;
+        for (int i = 0; i < n; i++)
+        {
+            double z1 = Normal(), z2 = Normal(), z3 = Normal();
+            double chi = z1 * z1 + z2 * z2 + z3 * z3;                                    // χ²(3)
+            double tz = Math.Clamp(Normal() / Math.Sqrt(chi / 3.0) / Math.Sqrt(3.0), -8, 8);   // t(3), unit variance; clamp (symmetric) stops a χ²≈0 draw overflowing exp
+            double open = px;
+            px *= Math.Exp(0.01 * tz - 0.00005);
+            double half = Math.Max(open, px) * (0.004 + rng.NextDouble() * 0.004);
+            arr[i] = new Candle(T0.AddHours(i), open, Math.Max(open, px) + half, Math.Min(open, px) - half, px, 1_000_000);
+        }
+        return arr;
+    }
+
     private static GridGenotype PermissiveGrid() => new()
     {
         EmaPeriod = 20, BbPeriod = 20, GridLevels = 3,
@@ -102,6 +122,25 @@ public class RandomWalkNullTests
         Assert.True(t < 2.0,
             $"GridShort earned {mean:F4}% per trade (t={t:F2}) on a driftless random walk over {n} trades. " +
             "There is no edge in this data, so the P&L came from the simulator.");
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void StructGrid_OnADriftlessRandomWalk_DoesNotProfit(bool isLong)
+    {
+        // A Gaussian walk almost never moves 3 ATR inside one bar, so the deep rung would barely trade.
+        // Fat-tailed steps (Student-t, 3 df, unit variance) keep the walk driftless but produce the
+        // 3-ATR hours this rung lives on, as crypto does.
+        var all = new List<double>();
+        for (int sd = 0; sd < 200; sd++) all.AddRange(StructGridSimulator.GetReturns(FatRandomWalk(3000, 5000 + sd), isLong).Select(x => x.Return));
+        int n = all.Count;
+        double mean = n > 0 ? all.Average() : 0;
+        double sdv = n > 1 ? Math.Sqrt(all.Select(x => (x - mean) * (x - mean)).Sum() / (n - 1)) : 0;
+        double t = sdv > 1e-12 ? mean / (sdv / Math.Sqrt(n)) : 0;
+        Assert.True(n >= 300, $"fixture produced only {n} trades — too few to conclude anything");
+        Assert.True(t < 2.0,
+            $"StructGrid ({(isLong ? "long" : "short")}) earned {mean:F4}% per trade (t={t:F2}) on a driftless random walk over {n} trades.");
     }
 
     // THE GATE MUST BE SHOWN TO WORK. A null control that has never rejected anything is not a

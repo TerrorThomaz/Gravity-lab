@@ -813,3 +813,34 @@ entry.
 1. The structural default's exits are too long, especially the short side's 3-ATR trail (up to
    168h).
 2. Sentiment *changes* need data candles don't have: the recorder's OI, liquidations and book.
+
+## FREEZE: structural-default grid, and its C# port (2026-10-04)
+
+**The request:** freeze a shorter-exit default. **Discovery data (2020–23) contradicts it.**
+The predeclared shorter family (pure time exits) on k3 rungs, `research/short_exit_discovery.py`:
+
+| | 4h | 8h | 12h | 24h |
+|---|---|---|---|---|
+| long | +0.22% | +0.14% | +0.12% | **+0.28%** |
+| short | −0.10% | −0.20% | −0.18% | −0.04% (all negative) |
+
+The "shorter is better" signal came only from validation, which has been viewed many times.
+Freezing it would select on the test set.
+
+**FROZEN instead (discovery-backed): long k3 + 24h time exit; short k3 + 3·ATR trailing stop
+(max 168h).** The shorter exit stays measurable via `longHold` / `shortMaxHold`, but changing them
+is a new trial.
+
+**C# port: `src/strategies/grid/StructGridSimulator.cs`.**
+- The same semantics as `rulepath.py`: a one-bar limit at close ∓ 3·ATR14, a 5bp trade-through
+  fill, never on the arming bar.
+- Maker entry, taker exit (stop gap charged on trail exits), funding via `PnlPct`.
+- One position at a time per coin. Always on: no ADX / BB / slope gate.
+
+**Tests.**
+- `RandomWalkNullTests.StructGrid_OnADriftlessRandomWalk_DoesNotProfit` (long and short), on a
+  fat-tailed driftless walk, since a Gaussian walk rarely moves 3 ATR in an hour.
+- `StructGridTests` (trade-through fill, 24h exit, trailing exit).
+
+**Wiring.** `edgetest` with `GRAVITY_GRID_STRUCT=1` replaces both grid simulators under the
+Grid / GridShort labels (caps, direction and acceptance unchanged).

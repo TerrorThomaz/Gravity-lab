@@ -91,6 +91,8 @@ public static class EdgeTest
     // HardStop and BailOut pushed far beyond any reachable ATR excursion. Not infinity: the
     // simulator computes price levels from these, and an infinite level would produce NaN rather
     // than a disabled check.
+    private static readonly bool StructGrid = Environment.GetEnvironmentVariable("GRAVITY_GRID_STRUCT") == "1";
+
     private static GridGenotype CloneWithStopsRemoved(GridGenotype g) => new()
     {
         AdxThreshold = g.AdxThreshold, BbPeriod = g.BbPeriod, BbWidthMaxPct = g.BbWidthMaxPct,
@@ -245,14 +247,19 @@ public static class EdgeTest
             if (StrategyPipeline.SelectVariant(fsVariants, f.m15) is { } fs)
                 Add("FadeShort", FadeShortSimulator.GetFadeShortReturns(fs, f.h1, f.m15)
                     .Select(t => (t.Time, t.Return, t.EntryTime, t.EntryPrice)));
+            // GRAVITY_GRID_STRUCT=1: the frozen structural-default rungs (StructGridSimulator) replace
+            // both grid simulators under the SAME labels, so caps, direction and acceptance treat them
+            // as Grid/GridShort. The genotypes still decide eligibility, exactly as for the GA grids.
             if (StrategyPipeline.SelectVariant(gridVariants, f.m15) is { } gr)
             {
-                Add("Grid", GridSimulator.GetGridSessionReturns(gr, f.h1)
+                Add("Grid", (StructGrid ? StructGridSimulator.GetReturns(f.h1, isLong: true)
+                                        : GridSimulator.GetGridSessionReturns(gr, f.h1))
                     .Select(t => (t.Time, t.Return, t.EntryTime, t.EntryPrice)));
 
             }
             if (StrategyPipeline.SelectVariant(gsVariants, f.m15) is { } gs)
-                Add("GridShort", GridShortSimulator.GetGridShortSessionReturns(gs, f.h1)
+                Add("GridShort", (StructGrid ? StructGridSimulator.GetReturns(f.h1, isLong: false)
+                                             : GridShortSimulator.GetGridShortSessionReturns(gs, f.h1))
                     .Select(t => (t.Time, t.Return, t.EntryTime, t.EntryPrice)));
             if (StrategyPipeline.SelectVariant(dlVariants, f.m15) is { } dl)
                 Add("DipLong", DipLongSimulator.GetDipLongReturns(dl, f.h1, f.m15)

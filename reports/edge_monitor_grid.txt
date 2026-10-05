@@ -1,0 +1,19 @@
+Grid daily P&L (exit-day, 5%/session): 2065 days, mean +0.0244%/day, sd 0.2352, ann. Sharpe 1.98, zero days 45%
+spec: prior = 0.5 × first-365d mean, worth N0 = 60 days; window W = 180d; ALARM when P(edge > 0) < 0.2; 300 block-bootstrap paths (20-day blocks)
+
+   W   N0  false alarms/yr time in alarm  | edge dies later (100%)                     | dies later, half edge                      | dead on arrival                           
+  90   30             0.36          0.5%  | median  140d  p80  297d  found ≤1y  87%    | median  322d  p80 never  found ≤1y  53%    | median  130d  p80  320d  found ≤1y  85%   
+  90   60             0.35          0.5%  | median  140d  p80  297d  found ≤1y  87%    | median  322d  p80 never  found ≤1y  53%    | median  143d  p80  332d  found ≤1y  84%   
+  90  120             0.35          0.5%  | median  140d  p80  297d  found ≤1y  87%    | median  322d  p80 never  found ≤1y  53%    | median  158d  p80  337d  found ≤1y  83%   
+ 180   30             0.07          0.1%  | median  295d  p80  656d  found ≤1y  61%    | median never  p80 never  found ≤1y  18%    | median  174d  p80  482d  found ≤1y  73%   
+ 180   60             0.06          0.1%  | median  295d  p80  656d  found ≤1y  61%    | median never  p80 never  found ≤1y  18%    | median  230d  p80  530d  found ≤1y  68%     ← spec
+ 180  120             0.05          0.1%  | median  295d  p80  656d  found ≤1y  61%    | median never  p80 never  found ≤1y  18%    | median  266d  p80  550d  found ≤1y  65%   
+ 365   30             0.02          0.1%  | median  660d  p80 never  found ≤1y  23%    | median never  p80 never  found ≤1y   3%    | median  209d  p80  724d  found ≤1y  62%   
+ 365   60             0.01          0.0%  | median  660d  p80 never  found ≤1y  23%    | median never  p80 never  found ≤1y   3%    | median  338d  p80 never  found ≤1y  53%   
+ 365  120             0.01          0.0%  | median  660d  p80 never  found ≤1y  23%    | median never  p80 never  found ≤1y   3%    | median  416d  p80 never  found ≤1y  44%   
+
+baseline trailing-180d mean < 0:  false alarms/yr 1.82, time in alarm 8.3%  | dies later median  113d  p80  202d  found ≤1y  95% | half median  184d  p80  406d  found ≤1y  78%
+
+sizing by posterior (report only), spec config, mean over paths:
+   healthy     always-on: total   +42.3%  Sharpe +2.03   posterior-sized: total   +35.9%  Sharpe +1.89  mean size 0.84
+   dies later  always-on: total   +21.8%  Sharpe +1.05   posterior-sized: total   +18.0%  Sharpe +1.12  mean size 0.58

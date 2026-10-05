@@ -141,6 +141,9 @@ def importance(D, h, R, names, cols=None, seed: int = 20261009) -> list[tuple[st
     with mp.get_context("fork").Pool(workers()) as pool:
         out = [r for r in pool.map(_imp_task, range(len(R["models"]))) if r is not None]
     _S.clear()
+    if not out:
+        print("\n   importance: no quarter-side with ≥ 5000 test rows")
+        return []
     base = [b for b, _ in out]
     mean = np.mean([d for _, d in out], axis=0)
     top = sorted(zip(names, mean), key=lambda kv: -kv[1])

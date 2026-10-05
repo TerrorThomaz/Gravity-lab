@@ -1,0 +1,378 @@
+building candidate sets (block A, 15m, touch fills) + structure block …
+/home/thomas/Gravity-lab-structure/research/discover15.py:78: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)                                    # equal-weight market, 15m log returns
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+   backtest: 89 coins, 184,662 15m bars, 1,197,216 candidates ([375878 572332 168734  80272] by k), 49% inside a strategy context gate  [75s]
+/home/thomas/Gravity-lab-structure/research/discover15.py:78: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)                                    # equal-weight market, 15m log returns
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+   oos: 63 coins, 164,506 15m bars, 838,317 candidates ([246754 404098 126202  61263] by k), 50% inside a strategy context gate  [53s]
+      h4 quarter 2021-01 done
+      h4 quarter 2021-04 done
+      h4 quarter 2021-07 done
+      h4 quarter 2021-10 done
+      h4 quarter 2022-01 done
+      h4 quarter 2022-04 done
+      h4 quarter 2022-07 done
+      h4 quarter 2022-10 done
+      h4 quarter 2023-01 done
+      h4 quarter 2023-04 done
+      h4 quarter 2023-07 done
+      h4 quarter 2023-10 done
+      h4 quarter 2024-01 done
+      h4 quarter 2024-04 done
+      h4 quarter 2024-07 done
+      h4 quarter 2024-10 done
+      h4 quarter 2025-01 done
+      h4 quarter 2025-04 done
+
+   ── arm A, H = 4 — selection table (discover15 format, no label nulls) ──
+
+── H = 4 bars (60 min) ──
+   univ side      cands  sel%   all-cand net    SELECTED net [t]   nulls ≥         1st half         2nd half       hedged [t]   outside gates [t]   inside gates
+   bt   long     623100   12%         -0.152     +0.030 [ +0.6]         —   +0.029 [+0.5]   +0.032 [+0.4]   -0.097 [-2.8]     +0.021 [ +0.3]         +0.042
+         selected by rung: k0: -0.121 (n 10430)  k1: +0.011 (n 27406)  k2: +0.036 (n 21915)  k3: +0.173 (n 13939)
+   bt   short    568083    2%         -0.206     -0.066 [ -1.3]         —   -0.149 [-2.3]   +0.032 [+0.4]   -0.050 [-1.2]     -0.061 [ -1.1]         -0.075
+         selected by rung: k0: -0.162 (n 2244)  k1: -0.101 (n 4677)  k2: -0.022 (n 2371)  k3: +0.077 (n 1873)
+   oos  long     434551   11%         -0.175     -0.084 [ -1.4]         —   -0.027 [-0.4]   -0.126 [-1.3]   -0.149 [-3.7]     -0.105 [ -1.5]         -0.056
+         selected by rung: k0: -0.140 (n 5670)  k1: -0.051 (n 15777)  k2: -0.145 (n 14407)  k3: -0.015 (n 9907)
+   oos  short    402735    2%         -0.184     +0.226 [ +4.3]         —   +0.311 [+4.1]   +0.149 [+2.1]   +0.227 [+4.5]     +0.248 [ +3.5]         +0.189
+         selected by rung: k0: -0.049 (n 1589)  k1: +0.128 (n 3593)  k2: +0.326 (n 2294)  k3: +0.500 (n 2024)
+      h4 quarter 2021-01 done
+      h4 quarter 2021-04 done
+      h4 quarter 2021-07 done
+      h4 quarter 2021-10 done
+      h4 quarter 2022-01 done
+      h4 quarter 2022-04 done
+      h4 quarter 2022-07 done
+      h4 quarter 2022-10 done
+      h4 quarter 2023-01 done
+      h4 quarter 2023-04 done
+      h4 quarter 2023-07 done
+      h4 quarter 2023-10 done
+      h4 quarter 2024-01 done
+      h4 quarter 2024-04 done
+      h4 quarter 2024-07 done
+      h4 quarter 2024-10 done
+      h4 quarter 2025-01 done
+      h4 quarter 2025-04 done
+
+   ── arm B, H = 4 — selection table (discover15 format, no label nulls) ──
+
+── H = 4 bars (60 min) ──
+   univ side      cands  sel%   all-cand net    SELECTED net [t]   nulls ≥         1st half         2nd half       hedged [t]   outside gates [t]   inside gates
+   bt   long     623100   12%         -0.152     +0.030 [ +0.6]         —   +0.033 [+0.5]   +0.028 [+0.3]   -0.111 [-3.1]     +0.021 [ +0.3]         +0.042
+         selected by rung: k0: -0.147 (n 11240)  k1: -0.001 (n 27813)  k2: +0.064 (n 20877)  k3: +0.185 (n 14013)
+   bt   short    568083    2%         -0.206     -0.067 [ -1.3]         —   -0.140 [-2.1]   +0.035 [+0.4]   -0.037 [-0.9]     -0.087 [ -1.6]         -0.031
+         selected by rung: k0: -0.174 (n 1935)  k1: -0.110 (n 4323)  k2: +0.021 (n 2361)  k3: +0.024 (n 2068)
+   oos  long     434551   11%         -0.175     -0.099 [ -1.6]         —   -0.072 [-1.1]   -0.118 [-1.2]   -0.170 [-4.1]     -0.120 [ -1.7]         -0.072
+         selected by rung: k0: -0.173 (n 6182)  k1: -0.083 (n 16258)  k2: -0.132 (n 14253)  k3: -0.032 (n 10172)
+   oos  short    402735    2%         -0.184     +0.177 [ +3.3]         —   +0.200 [+2.9]   +0.151 [+1.8]   +0.194 [+3.7]     +0.214 [ +3.0]         +0.118
+         selected by rung: k0: -0.044 (n 1365)  k1: +0.115 (n 3296)  k2: +0.269 (n 2181)  k3: +0.316 (n 2206)
+
+══ H = 4: out-of-sample rank IC, paired by quarter × side ══
+   bt: arm A IC +0.0481 (33 quarter-sides)
+      Δ(B − A) +0.0019 [t +0.83]  halves -0.0011 / +0.0047  MDE80 0.0063
+   oos: arm A IC +0.0492 (30 quarter-sides)
+      Δ(B − A) +0.0003 [t +0.10]  halves -0.0069 / +0.0075  MDE80 0.0071
+      h16 quarter 2021-01 done
+      h16 quarter 2021-04 done
+      h16 quarter 2021-07 done
+      h16 quarter 2021-10 done
+      h16 quarter 2022-01 done
+      h16 quarter 2022-04 done
+      h16 quarter 2022-07 done
+      h16 quarter 2022-10 done
+      h16 quarter 2023-01 done
+      h16 quarter 2023-04 done
+      h16 quarter 2023-07 done
+      h16 quarter 2023-10 done
+      h16 quarter 2024-01 done
+      h16 quarter 2024-04 done
+      h16 quarter 2024-07 done
+      h16 quarter 2024-10 done
+      h16 quarter 2025-01 done
+      h16 quarter 2025-04 done
+
+   ── arm A, H = 16 — selection table (discover15 format, no label nulls) ──
+
+── H = 16 bars (240 min)  [PRIMARY] ──
+   univ side      cands  sel%   all-cand net    SELECTED net [t]   nulls ≥         1st half         2nd half       hedged [t]   outside gates [t]   inside gates
+   bt   long     623044   20%         -0.152     -0.009 [ -0.1]         —   -0.010 [-0.1]   -0.008 [-0.1]   -0.138 [-5.2]     -0.008 [ -0.1]         -0.010
+         selected by rung: k0: -0.187 (n 24034)  k1: -0.050 (n 55763)  k2: +0.042 (n 29699)  k3: +0.277 (n 17761)
+   bt   short    568055   16%         -0.188     -0.098 [ -1.8]         —   -0.067 [-0.8]   -0.126 [-1.9]   -0.149 [-9.2]     -0.092 [ -1.5]         -0.103
+         selected by rung: k0: -0.101 (n 25613)  k1: -0.113 (n 40783)  k2: -0.108 (n 15458)  k3: -0.007 (n 9564)
+   oos  long     434504   18%         -0.176     -0.119 [ -1.3]         —   -0.132 [-1.6]   -0.110 [-0.8]   -0.174 [-6.1]     -0.167 [ -1.7]         -0.059
+         selected by rung: k0: -0.243 (n 13905)  k1: -0.132 (n 34345)  k2: -0.114 (n 19727)  k3: +0.060 (n 11768)
+   oos  short    402701   17%         -0.151     -0.013 [ -0.3]         —   -0.028 [-0.4]   -0.000 [-0.0]   -0.056 [-2.6]     +0.016 [ +0.3]         -0.042
+         selected by rung: k0: -0.114 (n 17378)  k1: -0.078 (n 30170)  k2: +0.055 (n 12789)  k3: +0.321 (n 8618)
+      h16 quarter 2021-01 done
+      h16 quarter 2021-04 done
+      h16 quarter 2021-07 done
+      h16 quarter 2021-10 done
+      h16 quarter 2022-01 done
+      h16 quarter 2022-04 done
+      h16 quarter 2022-07 done
+      h16 quarter 2022-10 done
+      h16 quarter 2023-01 done
+      h16 quarter 2023-04 done
+      h16 quarter 2023-07 done
+      h16 quarter 2023-10 done
+      h16 quarter 2024-01 done
+      h16 quarter 2024-04 done
+      h16 quarter 2024-07 done
+      h16 quarter 2024-10 done
+      h16 quarter 2025-01 done
+      h16 quarter 2025-04 done
+
+   ── arm B, H = 16 — selection table (discover15 format, no label nulls) ──
+
+── H = 16 bars (240 min)  [PRIMARY] ──
+   univ side      cands  sel%   all-cand net    SELECTED net [t]   nulls ≥         1st half         2nd half       hedged [t]   outside gates [t]   inside gates
+   bt   long     623044   21%         -0.152     -0.003 [ -0.0]         —   -0.015 [-0.2]   +0.009 [+0.1]   -0.154 [-6.1]     -0.004 [ -0.1]         -0.001
+         selected by rung: k0: -0.181 (n 25852)  k1: -0.027 (n 56758)  k2: +0.052 (n 29564)  k3: +0.250 (n 17469)
+   bt   short    568055   17%         -0.188     -0.122 [ -2.6]         —   -0.091 [-1.2]   -0.152 [-2.5]   -0.153 [-9.7]     -0.116 [ -2.2]         -0.128
+         selected by rung: k0: -0.109 (n 28838)  k1: -0.126 (n 44011)  k2: -0.129 (n 16565)  k3: -0.131 (n 9183)
+   oos  long     434504   19%         -0.176     -0.060 [ -0.7]         —   -0.133 [-1.7]   -0.013 [-0.1]   -0.177 [-7.3]     -0.115 [ -1.4]         +0.009
+         selected by rung: k0: -0.238 (n 15157)  k1: -0.056 (n 35200)  k2: -0.045 (n 19528)  k3: +0.128 (n 11816)
+   oos  short    402701   18%         -0.151     -0.069 [ -1.6]         —   -0.073 [-1.1]   -0.066 [-1.1]   -0.095 [-5.2]     -0.040 [ -0.6]         -0.099
+         selected by rung: k0: -0.155 (n 19399)  k1: -0.123 (n 32440)  k2: +0.008 (n 13620)  k3: +0.210 (n 8367)
+      h16 quarter 2021-01 done
+      h16 quarter 2021-04 done
+      h16 quarter 2021-07 done
+      h16 quarter 2021-10 done
+      h16 quarter 2022-01 done
+      h16 quarter 2022-04 done
+      h16 quarter 2022-07 done
+      h16 quarter 2022-10 done
+      h16 quarter 2023-01 done
+      h16 quarter 2023-04 done
+      h16 quarter 2023-07 done
+      h16 quarter 2023-10 done
+      h16 quarter 2024-01 done
+      h16 quarter 2024-04 done
+      h16 quarter 2024-07 done
+      h16 quarter 2024-10 done
+      h16 quarter 2025-01 done
+      h16 quarter 2025-04 done
+
+   ── arm Bc, H = 16 — selection table (discover15 format, no label nulls) ──
+
+── H = 16 bars (240 min)  [PRIMARY] ──
+   univ side      cands  sel%   all-cand net    SELECTED net [t]   nulls ≥         1st half         2nd half       hedged [t]   outside gates [t]   inside gates
+   bt   long     623044   20%         -0.152     -0.000 [ -0.0]         —   -0.013 [-0.2]   +0.011 [+0.1]   -0.140 [-5.1]     -0.007 [ -0.1]         +0.009
+         selected by rung: k0: -0.165 (n 25153)  k1: -0.031 (n 55630)  k2: +0.043 (n 28940)  k3: +0.269 (n 17243)
+   bt   short    568055   16%         -0.188     -0.082 [ -1.5]         —   -0.090 [-1.0]   -0.074 [-1.2]   -0.138 [-8.3]     -0.080 [ -1.3]         -0.084
+         selected by rung: k0: -0.074 (n 25562)  k1: -0.099 (n 40691)  k2: -0.086 (n 15456)  k3: -0.022 (n 9080)
+   oos  long     434504   18%         -0.176     -0.094 [ -1.0]         —   -0.116 [-1.4]   -0.082 [-0.6]   -0.173 [-6.3]     -0.142 [ -1.4]         -0.035
+         selected by rung: k0: -0.226 (n 14361)  k1: -0.084 (n 34031)  k2: -0.120 (n 19220)  k3: +0.082 (n 11517)
+   oos  short    402701   17%         -0.151     -0.018 [ -0.4]         —   -0.021 [-0.3]   -0.016 [-0.3]   -0.068 [-3.2]     +0.008 [ +0.1]         -0.045
+         selected by rung: k0: -0.117 (n 17590)  k1: -0.075 (n 30674)  k2: +0.058 (n 13058)  k3: +0.274 (n 8518)
+      h16 quarter 2021-01 done
+      h16 quarter 2021-04 done
+      h16 quarter 2021-07 done
+      h16 quarter 2021-10 done
+      h16 quarter 2022-01 done
+      h16 quarter 2022-04 done
+      h16 quarter 2022-07 done
+      h16 quarter 2022-10 done
+      h16 quarter 2023-01 done
+      h16 quarter 2023-04 done
+      h16 quarter 2023-07 done
+      h16 quarter 2023-10 done
+      h16 quarter 2024-01 done
+      h16 quarter 2024-04 done
+      h16 quarter 2024-07 done
+      h16 quarter 2024-10 done
+      h16 quarter 2025-01 done
+      h16 quarter 2025-04 done
+
+   ── arm Bm, H = 16 — selection table (discover15 format, no label nulls) ──
+
+── H = 16 bars (240 min)  [PRIMARY] ──
+   univ side      cands  sel%   all-cand net    SELECTED net [t]   nulls ≥         1st half         2nd half       hedged [t]   outside gates [t]   inside gates
+   bt   long     623044   21%         -0.152     -0.023 [ -0.3]         —   +0.007 [+0.1]   -0.050 [-0.4]   -0.160 [-6.3]     -0.006 [ -0.1]         -0.045
+         selected by rung: k0: -0.200 (n 25950)  k1: -0.042 (n 57375)  k2: +0.027 (n 29936)  k3: +0.210 (n 17815)
+   bt   short    568055   18%         -0.188     -0.135 [ -2.8]         —   -0.114 [-1.5]   -0.155 [-2.5]   -0.161 [-10.9]     -0.138 [ -2.5]         -0.132
+         selected by rung: k0: -0.129 (n 29743)  k1: -0.132 (n 45093)  k2: -0.144 (n 16631)  k3: -0.156 (n 9574)
+   oos  long     434504   19%         -0.176     -0.106 [ -1.2]         —   -0.115 [-1.5]   -0.101 [-0.8]   -0.186 [-7.0]     -0.148 [ -1.7]         -0.053
+         selected by rung: k0: -0.263 (n 15358)  k1: -0.103 (n 35415)  k2: -0.103 (n 20008)  k3: +0.079 (n 12013)
+   oos  short    402701   19%         -0.151     -0.046 [ -1.0]         —   -0.054 [-0.8]   -0.040 [-0.7]   -0.079 [-4.1]     -0.018 [ -0.3]         -0.074
+         selected by rung: k0: -0.161 (n 19888)  k1: -0.107 (n 33156)  k2: +0.057 (n 13500)  k3: +0.289 (n 8569)
+      h16 quarter 2021-01 done
+      h16 quarter 2021-04 done
+      h16 quarter 2021-07 done
+      h16 quarter 2021-10 done
+      h16 quarter 2022-01 done
+      h16 quarter 2022-04 done
+      h16 quarter 2022-07 done
+      h16 quarter 2022-10 done
+      h16 quarter 2023-01 done
+      h16 quarter 2023-04 done
+      h16 quarter 2023-07 done
+      h16 quarter 2023-10 done
+      h16 quarter 2024-01 done
+      h16 quarter 2024-04 done
+      h16 quarter 2024-07 done
+      h16 quarter 2024-10 done
+      h16 quarter 2025-01 done
+      h16 quarter 2025-04 done
+      h16 quarter 2021-01 done
+      h16 quarter 2021-04 done
+      h16 quarter 2021-07 done
+      h16 quarter 2021-10 done
+      h16 quarter 2022-01 done
+      h16 quarter 2022-04 done
+      h16 quarter 2022-07 done
+      h16 quarter 2022-10 done
+      h16 quarter 2023-01 done
+      h16 quarter 2023-04 done
+      h16 quarter 2023-07 done
+      h16 quarter 2023-10 done
+      h16 quarter 2024-01 done
+      h16 quarter 2024-04 done
+      h16 quarter 2024-07 done
+      h16 quarter 2024-10 done
+      h16 quarter 2025-01 done
+      h16 quarter 2025-04 done
+      h16 quarter 2021-01 done
+      h16 quarter 2021-04 done
+      h16 quarter 2021-07 done
+      h16 quarter 2021-10 done
+      h16 quarter 2022-01 done
+      h16 quarter 2022-04 done
+      h16 quarter 2022-07 done
+      h16 quarter 2022-10 done
+      h16 quarter 2023-01 done
+      h16 quarter 2023-04 done
+      h16 quarter 2023-07 done
+      h16 quarter 2023-10 done
+      h16 quarter 2024-01 done
+      h16 quarter 2024-04 done
+      h16 quarter 2024-07 done
+      h16 quarter 2024-10 done
+      h16 quarter 2025-01 done
+      h16 quarter 2025-04 done
+      h16 quarter 2021-01 done
+      h16 quarter 2021-04 done
+      h16 quarter 2021-07 done
+      h16 quarter 2021-10 done
+      h16 quarter 2022-01 done
+      h16 quarter 2022-04 done
+      h16 quarter 2022-07 done
+      h16 quarter 2022-10 done
+      h16 quarter 2023-01 done
+      h16 quarter 2023-04 done
+      h16 quarter 2023-07 done
+      h16 quarter 2023-10 done
+      h16 quarter 2024-01 done
+      h16 quarter 2024-04 done
+      h16 quarter 2024-07 done
+      h16 quarter 2024-10 done
+      h16 quarter 2025-01 done
+      h16 quarter 2025-04 done
+      h16 quarter 2021-01 done
+      h16 quarter 2021-04 done
+      h16 quarter 2021-07 done
+      h16 quarter 2021-10 done
+      h16 quarter 2022-01 done
+      h16 quarter 2022-04 done
+      h16 quarter 2022-07 done
+      h16 quarter 2022-10 done
+      h16 quarter 2023-01 done
+      h16 quarter 2023-04 done
+      h16 quarter 2023-07 done
+      h16 quarter 2023-10 done
+      h16 quarter 2024-01 done
+      h16 quarter 2024-04 done
+      h16 quarter 2024-07 done
+      h16 quarter 2024-10 done
+      h16 quarter 2025-01 done
+      h16 quarter 2025-04 done
+
+══ H = 16  [PRIMARY]: out-of-sample rank IC, paired by quarter × side ══
+   bt: arm A IC +0.0433 (33 quarter-sides)
+      Δ(B − A) -0.0015 [t -0.44]  halves -0.0023 / -0.0008  MDE80 0.0097
+      Δ(Bc − A) +0.0041 [t +2.25]  halves +0.0021 / +0.0059  MDE80 0.0050
+      Δ(Bm − A) -0.0052 [t -1.61]  halves -0.0056 / -0.0048  MDE80 0.0091
+      placebo Δ: +0.0007 +0.0002 +0.0007 +0.0019 -0.0007  → real beats 0/5
+   oos: arm A IC +0.0418 (30 quarter-sides)
+      Δ(B − A) -0.0022 [t -0.61]  halves -0.0069 / +0.0025  MDE80 0.0101
+      Δ(Bc − A) +0.0033 [t +1.60]  halves +0.0013 / +0.0053  MDE80 0.0057
+      Δ(Bm − A) -0.0059 [t -1.73]  halves -0.0107 / -0.0011  MDE80 0.0096
+      placebo Δ: +0.0017 +0.0012 +0.0006 +0.0016 +0.0005  → real beats 0/5
+
+   out-of-sample rank IC (H=16, BacktestCoins): mean +0.0418 over 33 quarter-sides; positive in 82%
+   features the model leans on (IC drop when permuted):  lbbw +0.0068  disp16 +0.0047  k +0.0045  mvol +0.0036  hour +0.0033  mz96 +0.0032  dow +0.0023  m_s_lo16 +0.0022  s_lo16 +0.0021  z96 +0.0019
+      h48 quarter 2021-01 done
+      h48 quarter 2021-04 done
+      h48 quarter 2021-07 done
+      h48 quarter 2021-10 done
+      h48 quarter 2022-01 done
+      h48 quarter 2022-04 done
+      h48 quarter 2022-07 done
+      h48 quarter 2022-10 done
+      h48 quarter 2023-01 done
+      h48 quarter 2023-04 done
+      h48 quarter 2023-07 done
+      h48 quarter 2023-10 done
+      h48 quarter 2024-01 done
+      h48 quarter 2024-04 done
+      h48 quarter 2024-07 done
+      h48 quarter 2024-10 done
+      h48 quarter 2025-01 done
+      h48 quarter 2025-04 done
+
+   ── arm A, H = 48 — selection table (discover15 format, no label nulls) ──
+
+── H = 48 bars (720 min) ──
+   univ side      cands  sel%   all-cand net    SELECTED net [t]   nulls ≥         1st half         2nd half       hedged [t]   outside gates [t]   inside gates
+   bt   long     622827   28%         -0.174     +0.042 [ +0.3]         —   -0.183 [-1.1]   +0.196 [+1.1]   -0.155 [-8.1]     +0.005 [ +0.0]         +0.084
+         selected by rung: k0: -0.096 (n 46077)  k1: -0.015 (n 79169)  k2: +0.119 (n 32826)  k3: +0.524 (n 17351)
+   bt   short    567841   35%         -0.180     +0.020 [ +0.3]         —   -0.014 [-0.1]   +0.042 [+0.4]   -0.169 [-14.6]     -0.000 [ -0.0]         +0.037
+         selected by rung: k0: +0.042 (n 64418)  k1: +0.030 (n 93764)  k2: -0.029 (n 28222)  k3: -0.050 (n 14071)
+   oos  long     434316   26%         -0.211     -0.051 [ -0.4]         —   -0.270 [-1.3]   +0.054 [+0.3]   -0.178 [-9.4]     -0.120 [ -0.8]         +0.023
+         selected by rung: k0: -0.179 (n 28669)  k1: -0.094 (n 51807)  k2: +0.003 (n 22505)  k3: +0.352 (n 11624)
+   oos  short    402552   38%         -0.107     +0.063 [ +0.8]         —   +0.090 [+0.8]   +0.046 [+0.5]   -0.136 [-8.9]     +0.085 [ +0.9]         +0.044
+         selected by rung: k0: +0.054 (n 44595)  k1: +0.030 (n 72253)  k2: +0.114 (n 23982)  k3: +0.183 (n 13242)
+      h48 quarter 2021-01 done
+      h48 quarter 2021-04 done
+      h48 quarter 2021-07 done
+      h48 quarter 2021-10 done
+      h48 quarter 2022-01 done
+      h48 quarter 2022-04 done
+      h48 quarter 2022-07 done
+      h48 quarter 2022-10 done
+      h48 quarter 2023-01 done
+      h48 quarter 2023-04 done
+      h48 quarter 2023-07 done
+      h48 quarter 2023-10 done
+      h48 quarter 2024-01 done
+      h48 quarter 2024-04 done
+      h48 quarter 2024-07 done
+      h48 quarter 2024-10 done
+      h48 quarter 2025-01 done
+      h48 quarter 2025-04 done
+
+   ── arm B, H = 48 — selection table (discover15 format, no label nulls) ──
+
+── H = 48 bars (720 min) ──
+   univ side      cands  sel%   all-cand net    SELECTED net [t]   nulls ≥         1st half         2nd half       hedged [t]   outside gates [t]   inside gates
+   bt   long     622827   29%         -0.174     +0.071 [ +0.6]         —   -0.167 [-0.9]   +0.212 [+1.3]   -0.156 [-8.3]     +0.062 [ +0.4]         +0.082
+         selected by rung: k0: -0.063 (n 49946)  k1: +0.009 (n 83881)  k2: +0.173 (n 32738)  k3: +0.571 (n 17067)
+   bt   short    567841   35%         -0.180     +0.007 [ +0.1]         —   -0.082 [-0.6]   +0.068 [+0.8]   -0.155 [-13.1]     -0.037 [ -0.4]         +0.045
+         selected by rung: k0: +0.035 (n 63851)  k1: +0.022 (n 91837)  k2: -0.062 (n 28150)  k3: -0.089 (n 13779)
+   oos  long     434316   28%         -0.211     -0.022 [ -0.2]         —   -0.265 [-1.2]   +0.077 [+0.4]   -0.189 [-9.3]     -0.064 [ -0.4]         +0.025
+         selected by rung: k0: -0.206 (n 31302)  k1: -0.057 (n 55976)  k2: +0.088 (n 22840)  k3: +0.417 (n 11798)
+   oos  short    402552   37%         -0.107     +0.046 [ +0.6]         —   -0.011 [-0.1]   +0.083 [+0.8]   -0.139 [-8.6]     +0.069 [ +0.7]         +0.027
+         selected by rung: k0: +0.034 (n 43771)  k1: +0.016 (n 70117)  k2: +0.081 (n 23281)  k3: +0.190 (n 12620)
+
+══ H = 48: out-of-sample rank IC, paired by quarter × side ══
+   bt: arm A IC +0.0563 (33 quarter-sides)
+      Δ(B − A) -0.0009 [t -0.18]  halves -0.0075 / +0.0053  MDE80 0.0148
+   oos: arm A IC +0.0528 (30 quarter-sides)
+      Δ(B − A) -0.0033 [t -0.59]  halves -0.0123 / +0.0057  MDE80 0.0157
+
+Trials: 1 primary (B − A at H=16) + 4 secondary (Bc, Bm, H=4, H=48). Block B untouched.

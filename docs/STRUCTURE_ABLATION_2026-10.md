@@ -98,3 +98,44 @@ on block B once, and then forward.
 
 1 primary (B − A, H = 16) + 4 secondary (Bc, Bm, H = 4, H = 48) = **5**, added to the project ledger.
 Not tuned: W, the 0.25-ATR touch band, the round-number step and the Donchian length are fixed above.
+
+## RESULT (run once, 2026-10-05, pre-registration 4e35a6a): FAIL
+
+Log: `reports/structure15_run.txt`. 1.20M BacktestCoins + 0.84M OosCoins candidates, identical to
+discover15's. Out-of-sample rank IC, paired by quarter × side:
+
+| H | univ | IC(A) | Δ(B − A) [t] | halves | MDE80 | placebos beaten |
+|---|---|---|---|---|---|---|
+| **16 (primary)** | BT | +0.0433 | **−0.0015 [−0.44]** | −0.0023 / −0.0008 | 0.0097 | **0/5** |
+| **16 (primary)** | OOS | +0.0418 | **−0.0022 [−0.61]** | −0.0069 / +0.0025 | 0.0101 | **0/5** |
+| 4 | BT / OOS | +0.048 / +0.049 | +0.0019 [+0.8] / +0.0003 [+0.1] | mixed | 0.006 / 0.007 | — |
+| 48 | BT / OOS | +0.056 / +0.053 | −0.0009 [−0.2] / −0.0033 [−0.6] | mixed | 0.015 / 0.016 | — |
+
+Secondary arms at H = 16:
+
+| arm | BT Δ [t], halves | OOS Δ [t], halves |
+|---|---|---|
+| Bc (coin-only block) | +0.0041 [+2.25], +0.0021 / +0.0059 | +0.0033 [+1.60], +0.0013 / +0.0053 |
+| Bm (market-only block) | −0.0052 [−1.61], −0.0056 / −0.0048 | −0.0059 [−1.73], −0.0107 / −0.0011 |
+
+Permutation importance (arm B, BT): lbbw, disp16, k, mvol, hour, mz96, dow, then `m_s_lo16` (8th)
+and `s_lo16` (9th). No BoS, sweep, test, round-number or prior-day feature is in the top 10.
+
+**Verdict.**
+- **PRIMARY FAIL.** The full structure block adds nothing at 4h in either universe, and it loses to
+  every capacity placebo. MDE80 is 0.0097 / 0.0101, right at the literature's 0.01. So this is
+  "absent at the size the literature allows" on BacktestCoins, and borderline on OosCoins.
+- **The two halves of the block pull in opposite directions** (secondary, found by looking, not a
+  pass):
+  - Coin-level structure adds about +0.004 IC, the same sign in all four universe-halves (t 2.25 /
+    1.60). That is +10% relative to a base IC that already failed to reach the cost line, so it is
+    not tradeable. It is the only hint in the trial.
+  - Market-index structure *hurts* (−0.005 to −0.006). Market features are identical for every
+    coin at a timestamp, so a tree that splits on them is carving out time periods. Each
+    walk-forward window holds only a few market regimes, which makes this the same sample limit
+    that stopped discover1h from learning the trend. **Market-level structure cannot be tested by a
+    learner here.** Like the trend, it would need one theory-backed, pre-registered rule.
+- **Not done:** no trading trial is earned. The coin-level hint would need its own pre-registration,
+  and at +0.004 IC it is not worth one.
+
+Trials charged: 5 (1 primary + 4 secondary), as registered.

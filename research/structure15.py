@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 import discover15 as d15
+import wf_parallel as wfp
 from grid_paths import SEAL, day_t
 
 W_SCALES = (4, 16)                    # fractal half-width in 15m bars: swing confirmed W bars later
@@ -151,21 +152,6 @@ def paired(d: pd.Series) -> tuple[float, float, float, float, float]:
     return d.mean(), d.mean() / se, d.iloc[:half].mean(), d.iloc[half:].mean(), 2.8 * se
 
 
-def arm(D, E, cols, h, rng, permute_seed=None):
-    """Walk-forward on a column subset (same candidates). permute_seed: rows of the structure columns
-    are permuted jointly (placebo) in both universes."""
-    def view(X_):
-        X = X_["X"][:, cols]
-        if permute_seed is not None:
-            r = np.random.default_rng(permute_seed)
-            s = [i for i, c in enumerate(cols) if c >= len(BASE)]
-            X[:, s] = X[r.permutation(len(X))][:, s]
-        return dict(X_, X=X)
-    Dv, Ev = view(D), view(E)
-    R = d15.walk_forward(Dv, Ev, h, 0, rng)
-    return R, Dv, Ev
-
-
 def main_run() -> int:
     d15.FEATURES = BASE + STRUCT              # ponytail: monkeypatch keeps discover15's build() untouched
     d15.feature_iter = full_iter
@@ -179,22 +165,19 @@ def main_run() -> int:
     assert pd.to_datetime(D["fill_time"]).max() < SEAL and pd.to_datetime(E["fill_time"]).max() < SEAL
     for h in d15.HS15:
         names = ["A", "B"] + (["Bc", "Bm"] if h == d15.PRIMARY else [])
-        ics, Rs = {}, {}
-        for nm in names:
-            cols = [ci[n] for n in sets[nm]]
-            R, Dv, Ev = arm(D, E, cols, h, rng)
-            if nm == "B":
-                Rs[nm] = (R, Dv, Ev)                 # only B is needed later; others freed (memory)
-            ics[nm] = {u: ic_table(R["pred"][u], X_, h) for u, X_ in (("bt", D), ("oos", E))}
-            print(f"\n   ── arm {nm}, H = {h} — selection table (discover15 format, no label nulls) ──")
-            d15.report(Dv, Ev, h, R, 0)
-            gc.collect()
-        plc = []
-        if h == d15.PRIMARY:
+        cols = {nm: [ci[n] for n in sets[nm]] for nm in names}
+        specs = {nm: (cols[nm], None, None) for nm in names}
+        if h == d15.PRIMARY:                  # placebo: structure rows permuted jointly, per universe
+            pc = [i for i, c in enumerate(cols["B"]) if c >= len(BASE)]
             for z in range(PLACEBOS):
-                R, _, _ = arm(D, E, [ci[n] for n in sets["B"]], h, rng, permute_seed=7000 + z)
-                plc.append({u: ic_table(R["pred"][u], X_, h) for u, X_ in (("bt", D), ("oos", E))})
-                gc.collect()
+                r = lambda n: np.random.default_rng(7000 + z).permutation(n)
+                specs[f"P{z + 1}"] = (cols["B"], (r(len(D["X"])), pc), (r(len(E["X"])), pc))
+        res = wfp.run(D, E, h, specs)
+        ics = {nm: {u: ic_table(res[nm]["pred"][u], X_, h) for u, X_ in (("bt", D), ("oos", E))} for nm in specs}
+        for nm in names:
+            print(f"\n   ── arm {nm}, H = {h} — selection table (discover15 format, no label nulls) ──")
+            d15.report(D, E, h, res[nm], 0)
+        plc = [ics[f"P{z + 1}"] for z in range(PLACEBOS)] if h == d15.PRIMARY else []
         print(f"\n══ H = {h}{'  [PRIMARY]' if h == d15.PRIMARY else ''}: out-of-sample rank IC, paired by quarter × side ══")
         for u in ("bt", "oos"):
             a = ics["A"][u]
@@ -207,8 +190,9 @@ def main_run() -> int:
                 real = paired(ics["B"][u] - a)[0]
                 print(f"      placebo Δ: {' '.join(f'{v:+.4f}' for v in pm)}  → real beats {sum(real > v for v in pm)}/{len(pm)}")
         if h == d15.PRIMARY:
-            R, Dv, _ = Rs["B"]
-            d15.importance(Dv, h, R, rng, names=sets["B"])
+            wfp.importance(D, h, res["B"], sets["B"], cols["B"])
+        del res
+        gc.collect()
     print("\nTrials: 1 primary (B − A at H=16) + 4 secondary (Bc, Bm, H=4, H=48). Block B untouched.")
     return 0
 

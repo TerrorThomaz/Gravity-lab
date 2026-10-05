@@ -183,46 +183,11 @@ def build(universe: str, rng) -> dict:
     return out
 
 
-def walk_forward(D: dict, E: dict, h: int, nulls: int, rng, bar_min: int = 15) -> dict:
-    """Per side, quarterly refits on D (BacktestCoins); predictions for D's and E's (OosCoins) quarter."""
-    ft = pd.to_datetime(D["fill_time"])
-    start = ft.min() + pd.DateOffset(months=12)
-    qs = pd.date_range(start.to_period("Q").start_time, SEAL, freq="QS")
-    pred = {u: np.full(len(X_["X"]), np.nan) for u, X_ in (("bt", D), ("oos", E))}
-    npred = {u: np.full((nulls, len(X_["X"])), np.nan) for u, X_ in (("bt", D), ("oos", E))}
-    fte = pd.to_datetime(E["fill_time"])
-    models = []
-    for q0, q1 in zip(qs[:-1], qs[1:]):
-        for side in ((0,) if D.get("pooled") else (1, -1)):        # 0 = one model for both sides
-            sm = (lambda X_: np.ones(len(X_["side"]), bool)) if side == 0 else (lambda X_, s=side: X_["side"] == s)
-            tr = np.where(sm(D) & (ft + pd.Timedelta(minutes=bar_min * h) < q0) & np.isfinite(D["y"][h]))[0]
-            if len(tr) > 400_000:
-                tr = rng.choice(tr, 400_000, replace=False)
-            yt = D["y"][h][tr]
-            lo, hi = np.quantile(yt, [0.005, 0.995])
-            yt = np.clip(yt, lo, hi)
-            edges = bin_edges(D["X"][tr])
-            Xb = apply_bins(D["X"][tr], edges)
-            m = Gbm(seed=int(q0.value % 1e6)).fit(Xb, yt)
-            models.append((q0, side, edges, m))
-            for u, X_, tt in (("bt", D, ft), ("oos", E, fte)):
-                te = np.where(sm(X_) & (tt >= q0) & (tt < q1))[0]
-                if len(te):
-                    Xte = apply_bins(X_["X"][te], edges)
-                    pred[u][te] = m.predict(Xte)
-            for z in range(nulls):                                   # permute within k: base rates kept
-                yp = yt.copy()
-                kk = D["k"][tr]
-                for kv in np.unique(kk):
-                    w = np.where(kk == kv)[0]
-                    yp[w] = yp[rng.permutation(w)]
-                mn = Gbm(seed=z + 1000, rounds=150).fit(Xb, yp)
-                for u, X_, tt in (("bt", D, ft), ("oos", E, fte)):
-                    te = np.where(sm(X_) & (tt >= q0) & (tt < q1))[0]
-                    if len(te):
-                        npred[u][z, te] = mn.predict(apply_bins(X_["X"][te], edges))
-        print(f"      h{h} quarter {q0:%Y-%m} done", flush=True)
-    return dict(pred=pred, npred=npred, models=models)
+def walk_forward(D: dict, E: dict, h: int, nulls: int, rng=None, bar_min: int = 15) -> dict:
+    """Per side, quarterly refits on D (BacktestCoins); predictions for D's and E's (OosCoins) quarter.
+    Runs in parallel (wf_parallel); `rng` is unused and kept for callers' signatures."""
+    import wf_parallel as wfp
+    return wfp.run(D, E, h, {"_": (None, None, None)}, nulls, bar_min)["_"]
 
 
 def report(D, E, h, R, nulls, bar_min: int = 15, primary: int = PRIMARY):
@@ -258,28 +223,10 @@ def report(D, E, h, R, nulls, bar_min: int = 15, primary: int = PRIMARY):
                 print(f"         selected by rung: {ks}")
 
 
-def importance(D, h, R, rng, names=None):
-    names = names or FEATURES
-    """Out-of-sample IC drop when one feature is permuted, BacktestCoins, real models."""
-    ft = pd.to_datetime(D["fill_time"])
-    base_ic, drops = [], {n: [] for n in names}
-    for q0, side, edges, m in R["models"]:
-        q1 = q0 + pd.DateOffset(months=3)
-        te = np.where(((D["side"] == side) | (side == 0)) & (ft >= q0) & (ft < q1) & np.isfinite(D["y"][h]))[0]
-        if len(te) < 5000:
-            continue
-        te = rng.choice(te, min(len(te), 60_000), replace=False)
-        X, y = D["X"][te].copy(), D["y"][h][te]
-        ic = lambda P: np.corrcoef(pd.Series(P).rank(), pd.Series(y).rank())[0, 1]
-        b = ic(m.predict(apply_bins(X, edges)))
-        base_ic.append(b)
-        for fi, n in enumerate(names):
-            Xp = X.copy(); Xp[:, fi] = Xp[rng.permutation(len(Xp)), fi]
-            drops[n].append(b - ic(m.predict(apply_bins(Xp, edges))))
-    print(f"\n   out-of-sample rank IC (H={h}, BacktestCoins): mean {np.mean(base_ic):+.4f} over {len(base_ic)} quarter-sides; "
-          f"positive in {np.mean(np.array(base_ic) > 0):.0%}")
-    top = sorted(drops.items(), key=lambda kv: -np.mean(kv[1]))[:10]
-    print("   features the model leans on (IC drop when permuted):  " + "  ".join(f"{n} {np.mean(v):+.4f}" for n, v in top))
+def importance(D, h, R, rng=None, names=None):
+    """Out-of-sample IC drop when one feature is permuted, BacktestCoins, real models (parallel)."""
+    import wf_parallel as wfp
+    return wfp.importance(D, h, R, names or FEATURES)
 
 
 def main() -> int:

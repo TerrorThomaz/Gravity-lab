@@ -62,3 +62,42 @@ only as a single hand-written rule.
 ## Trials
 
 1 primary (H = 16) + 2 secondary horizons (H = 4, 48) = **3**, added to the project ledger.
+
+## RESULT (run once, 2026-10-06, pre-registration 66cf11f + pre-result importance fix): FAIL
+
+Log: `reports/struct_events_run.txt`. 1.38M BacktestCoins + 0.90M OosCoins event candidates (both
+sides), and the same number of random entries.
+
+**Model-selected net % per trade [week-clustered t], H = 16 (primary):**
+
+| univ | side | all events | selected | label nulls ≥ real | hedged | halves |
+|---|---|---|---|---|---|---|
+| BT | long | −0.188 | +0.009 [+0.1] | 0/10 | −0.158 [−5.8] | −0.039 / +0.040 |
+| BT | short | −0.232 | −0.062 [−1.3] | 0/10 | −0.167 [−14.1] | −0.096 / −0.033 |
+| OOS | long | −0.215 | +0.013 [+0.1] | 0/10 | −0.138 [−4.1] | −0.130 / +0.071 |
+| OOS | short | −0.205 | −0.012 [−0.2] | 2/10 | −0.109 [−7.6] | −0.057 / +0.020 |
+
+- **H = 4 and H = 48 (secondary):** best +0.083 [+1.0] (OOS short, 12h). Hedged is negative everywhere.
+- **What the model leans on:** mz96, hour, s_lo16, breadth, lbbw, z96, res4, mvol. That is market
+  state and timing; the event type is not in the top 10.
+
+**Raw map, H = 16 (descriptive), net % against random entries (−0.19 to −0.23, i.e. the cost):**
+- **Trading WITH a break is worse than random.**
+  - BoS: −0.23 to −0.28.
+  - Donchian: −0.23 to −0.34.
+- **Trading AGAINST a break is better than random but still below cost.**
+  - BoS: −0.14 to −0.19.
+  - Donchian: −0.08 / −0.13, i.e. about +0.08–0.13% gross.
+- **Sweeps are the same as random.**
+
+**Verdict.**
+- **FAIL.** The selected events are about break-even in both universes, far from t ≥ 3.
+- The model does beat the label nulls, so it learned something. That something is market timing:
+  hedged, every selection loses.
+- **Breakouts on 15m bars slightly REVERT rather than continue.** Fading a break earns 0.05–0.13%
+  gross over 4h, under the 0.21% taker cost.
+- **Liquidity sweeps carry nothing.**
+
+Structure, whether as a feature (structure15) or as an entry trigger (this trial), adds no edge at
+1–12h on these universes. The fade-the-break residue is the same small-coin reversal as `j4big` and
+pairs, and it cannot pay taker costs.

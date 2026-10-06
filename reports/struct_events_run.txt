@@ -1,0 +1,199 @@
+building event candidates (block A, 15m, next-open taker entries) …
+/home/thomas/Gravity-lab-structure/research/discover15.py:78: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)                                    # equal-weight market, 15m log returns
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+   backtest: 89 coins, 1,381,806 event candidates, 1,381,806 random entries  [93s]
+/home/thomas/Gravity-lab-structure/research/discover15.py:78: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)                                    # equal-weight market, 15m log returns
+/usr/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+   oos: 63 coins, 899,154 event candidates, 899,154 random entries  [68s]
+
+── RAW MAP, H = 4: mean net % [week-clustered t]; 'with' = trade in the event's direction ──
+   event   univ             with: long           with: short         against: long        against: short
+   bos4    bt      -0.219 [-26.4] n78k   -0.244 [-18.9] n79k   -0.176 [-13.6] n79k   -0.201 [-24.2] n78k
+   bos4    oos     -0.240 [-26.1] n52k   -0.241 [-17.4] n52k   -0.179 [-12.9] n52k   -0.180 [-19.7] n52k
+   bos16   bt      -0.208 [-17.0] n80k   -0.239 [-10.5] n83k    -0.181 [-8.0] n83k   -0.212 [-17.3] n80k
+   bos16   oos     -0.243 [-20.1] n52k   -0.252 [-10.1] n54k    -0.168 [-6.7] n54k   -0.177 [-14.5] n52k
+   sweep4  bt      -0.229 [-21.6] n67k   -0.210 [-27.9] n63k   -0.210 [-27.9] n63k   -0.191 [-18.0] n67k
+   sweep4  oos     -0.223 [-21.4] n39k   -0.204 [-21.4] n38k   -0.216 [-22.5] n38k   -0.197 [-18.9] n39k
+   don96   bt     -0.217 [-18.8] n123k  -0.305 [-11.5] n113k   -0.115 [-4.3] n113k  -0.203 [-17.6] n123k
+   don96   oos     -0.265 [-21.9] n82k   -0.280 [-10.4] n77k    -0.140 [-5.2] n77k   -0.155 [-12.9] n82k
+   random entries bt: long -0.215  short -0.205
+   random entries oos: long -0.219  short -0.201
+      h4: 36 fits on 7 workers
+      h4: 3/36 fits done
+      h4: 6/36 fits done
+      h4: 9/36 fits done
+      h4: 12/36 fits done
+      h4: 15/36 fits done
+      h4: 18/36 fits done
+      h4: 21/36 fits done
+      h4: 24/36 fits done
+      h4: 27/36 fits done
+      h4: 30/36 fits done
+      h4: 33/36 fits done
+      h4: 36/36 fits done
+
+── H = 4 bars (60 min) ──
+   univ side      cands  sel%   all-cand net    SELECTED net [t]   nulls ≥         1st half         2nd half       hedged [t]   outside gates [t]   inside gates
+/home/thomas/Gravity-lab-structure/research/discover15.py:217: RuntimeWarning: Mean of empty slice
+  ig = y[sel & X_["in_gate"]].mean()
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in divide
+  ret = ret.dtype.type(ret / rcount)
+   bt   long     687976    6%         -0.191     +0.054 [ +0.8]         —   -0.068 [-0.8]   +0.151 [+1.4]   -0.120 [-2.4]     +0.054 [ +0.8]           +nan
+/home/thomas/Gravity-lab-structure/research/discover15.py:222: RuntimeWarning: Mean of empty slice
+  ks = "  ".join(f"k{kv}: {y[sel & (X_['k'] == kv)].mean():+.3f} (n {(sel & (X_['k'] == kv)).sum()})" for kv in range(4))
+         selected by rung: k0: +0.054 (n 42520)  k1: +nan (n 0)  k2: +nan (n 0)  k3: +nan (n 0)
+/home/thomas/Gravity-lab-structure/research/discover15.py:217: RuntimeWarning: Mean of empty slice
+  ig = y[sel & X_["in_gate"]].mean()
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in divide
+  ret = ret.dtype.type(ret / rcount)
+   bt   short    687976    4%         -0.229     -0.144 [ -3.3]         —   -0.120 [-2.1]   -0.181 [-2.7]   -0.146 [-6.6]     -0.144 [ -3.3]           +nan
+/home/thomas/Gravity-lab-structure/research/discover15.py:222: RuntimeWarning: Mean of empty slice
+  ks = "  ".join(f"k{kv}: {y[sel & (X_['k'] == kv)].mean():+.3f} (n {(sel & (X_['k'] == kv)).sum()})" for kv in range(4))
+         selected by rung: k0: -0.144 (n 28256)  k1: +nan (n 0)  k2: +nan (n 0)  k3: +nan (n 0)
+/home/thomas/Gravity-lab-structure/research/discover15.py:217: RuntimeWarning: Mean of empty slice
+  ig = y[sel & X_["in_gate"]].mean()
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in divide
+  ret = ret.dtype.type(ret / rcount)
+   oos  long     449075    6%         -0.208     +0.054 [ +0.6]         —   -0.092 [-0.9]   +0.135 [+1.0]   -0.110 [-1.9]     +0.054 [ +0.6]           +nan
+/home/thomas/Gravity-lab-structure/research/discover15.py:222: RuntimeWarning: Mean of empty slice
+  ks = "  ".join(f"k{kv}: {y[sel & (X_['k'] == kv)].mean():+.3f} (n {(sel & (X_['k'] == kv)).sum()})" for kv in range(4))
+         selected by rung: k0: +0.054 (n 24919)  k1: +nan (n 0)  k2: +nan (n 0)  k3: +nan (n 0)
+/home/thomas/Gravity-lab-structure/research/discover15.py:217: RuntimeWarning: Mean of empty slice
+  ig = y[sel & X_["in_gate"]].mean()
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in divide
+  ret = ret.dtype.type(ret / rcount)
+   oos  short    449075    5%         -0.212     -0.113 [ -2.7]         —   -0.026 [-0.5]   -0.221 [-3.0]   -0.106 [-3.8]     -0.113 [ -2.7]           +nan
+/home/thomas/Gravity-lab-structure/research/discover15.py:222: RuntimeWarning: Mean of empty slice
+  ks = "  ".join(f"k{kv}: {y[sel & (X_['k'] == kv)].mean():+.3f} (n {(sel & (X_['k'] == kv)).sum()})" for kv in range(4))
+         selected by rung: k0: -0.113 (n 22200)  k1: +nan (n 0)  k2: +nan (n 0)  k3: +nan (n 0)
+
+── RAW MAP, H = 16: mean net % [week-clustered t]; 'with' = trade in the event's direction ──
+   event   univ             with: long           with: short         against: long        against: short
+   bos4    bt      -0.243 [-10.9] n78k    -0.272 [-8.5] n79k    -0.148 [-4.6] n79k    -0.177 [-7.9] n78k
+   bos4    oos     -0.264 [-11.4] n52k    -0.269 [-7.7] n52k    -0.151 [-4.3] n52k    -0.156 [-6.7] n52k
+   bos16   bt       -0.228 [-8.5] n80k    -0.266 [-5.6] n83k    -0.154 [-3.3] n83k    -0.192 [-7.2] n80k
+   bos16   oos     -0.280 [-10.6] n52k    -0.265 [-5.0] n54k    -0.155 [-2.9] n54k    -0.140 [-5.3] n52k
+   sweep4  bt       -0.230 [-8.2] n67k    -0.189 [-7.5] n63k    -0.231 [-9.2] n63k    -0.190 [-6.8] n67k
+   sweep4  oos      -0.210 [-6.6] n39k    -0.184 [-7.2] n38k    -0.236 [-9.3] n38k    -0.210 [-6.6] n39k
+   don96   bt      -0.228 [-7.2] n123k   -0.340 [-4.8] n113k   -0.080 [-1.1] n113k   -0.192 [-6.0] n123k
+   don96   oos      -0.290 [-9.8] n82k    -0.287 [-3.8] n77k    -0.133 [-1.8] n77k    -0.130 [-4.4] n82k
+   random entries bt: long -0.225  short -0.195
+   random entries oos: long -0.230  short -0.190
+      h16: 396 fits on 7 workers
+      h16: 39/396 fits done
+      h16: 78/396 fits done
+      h16: 117/396 fits done
+      h16: 156/396 fits done
+      h16: 195/396 fits done
+      h16: 234/396 fits done
+      h16: 273/396 fits done
+      h16: 312/396 fits done
+      h16: 351/396 fits done
+      h16: 390/396 fits done
+
+── H = 16 bars (240 min)  [PRIMARY] ──
+   univ side      cands  sel%   all-cand net    SELECTED net [t]   nulls ≥         1st half         2nd half       hedged [t]   outside gates [t]   inside gates
+/home/thomas/Gravity-lab-structure/research/discover15.py:217: RuntimeWarning: Mean of empty slice
+  ig = y[sel & X_["in_gate"]].mean()
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in divide
+  ret = ret.dtype.type(ret / rcount)
+   bt   long     687937   15%         -0.188     +0.009 [ +0.1]      0/10   -0.039 [-0.5]   +0.040 [+0.3]   -0.158 [-5.8]     +0.009 [ +0.1]           +nan
+/home/thomas/Gravity-lab-structure/research/discover15.py:222: RuntimeWarning: Mean of empty slice
+  ks = "  ".join(f"k{kv}: {y[sel & (X_['k'] == kv)].mean():+.3f} (n {(sel & (X_['k'] == kv)).sum()})" for kv in range(4))
+         selected by rung: k0: +0.009 (n 103162)  k1: +nan (n 0)  k2: +nan (n 0)  k3: +nan (n 0)
+/home/thomas/Gravity-lab-structure/research/discover15.py:217: RuntimeWarning: Mean of empty slice
+  ig = y[sel & X_["in_gate"]].mean()
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in divide
+  ret = ret.dtype.type(ret / rcount)
+   bt   short    687937   15%         -0.232     -0.062 [ -1.3]      0/10   -0.096 [-1.4]   -0.033 [-0.5]   -0.167 [-14.1]     -0.062 [ -1.3]           +nan
+/home/thomas/Gravity-lab-structure/research/discover15.py:222: RuntimeWarning: Mean of empty slice
+  ks = "  ".join(f"k{kv}: {y[sel & (X_['k'] == kv)].mean():+.3f} (n {(sel & (X_['k'] == kv)).sum()})" for kv in range(4))
+         selected by rung: k0: -0.062 (n 101773)  k1: +nan (n 0)  k2: +nan (n 0)  k3: +nan (n 0)
+/home/thomas/Gravity-lab-structure/research/discover15.py:217: RuntimeWarning: Mean of empty slice
+  ig = y[sel & X_["in_gate"]].mean()
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in divide
+  ret = ret.dtype.type(ret / rcount)
+   oos  long     449056   13%         -0.215     +0.013 [ +0.1]      0/10   -0.130 [-1.4]   +0.071 [+0.5]   -0.138 [-4.1]     +0.013 [ +0.1]           +nan
+/home/thomas/Gravity-lab-structure/research/discover15.py:222: RuntimeWarning: Mean of empty slice
+  ks = "  ".join(f"k{kv}: {y[sel & (X_['k'] == kv)].mean():+.3f} (n {(sel & (X_['k'] == kv)).sum()})" for kv in range(4))
+         selected by rung: k0: +0.013 (n 57844)  k1: +nan (n 0)  k2: +nan (n 0)  k3: +nan (n 0)
+/home/thomas/Gravity-lab-structure/research/discover15.py:217: RuntimeWarning: Mean of empty slice
+  ig = y[sel & X_["in_gate"]].mean()
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in divide
+  ret = ret.dtype.type(ret / rcount)
+   oos  short    449056   16%         -0.205     -0.012 [ -0.2]      2/10   -0.057 [-0.9]   +0.020 [+0.2]   -0.109 [-7.6]     -0.012 [ -0.2]           +nan
+/home/thomas/Gravity-lab-structure/research/discover15.py:222: RuntimeWarning: Mean of empty slice
+  ks = "  ".join(f"k{kv}: {y[sel & (X_['k'] == kv)].mean():+.3f} (n {(sel & (X_['k'] == kv)).sum()})" for kv in range(4))
+         selected by rung: k0: -0.012 (n 72862)  k1: +nan (n 0)  k2: +nan (n 0)  k3: +nan (n 0)
+   selected by event (bt, H=16): bos4 L -0.035 (18152)  bos4 S -0.077 (20686)  bos16 L +0.023 (22982)  bos16 S -0.084 (24486)  sweep4 L -0.193 (10272)  sweep4 S -0.047 (17188)  don96 L +0.058 (51756)  don96 S -0.046 (39413)
+   selected by event (oos, H=16): bos4 L -0.029 (10365)  bos4 S -0.060 (14821)  bos16 L +0.057 (12202)  bos16 S -0.024 (17934)  sweep4 L -0.054 (5512)  sweep4 S -0.083 (10684)  don96 L +0.022 (29765)  don96 S +0.044 (29423)
+
+   out-of-sample rank IC (H=16, BacktestCoins): mean +0.0643 over 34 quarter-sides; positive in 88%
+   features the model leans on (IC drop when permuted):  mz96 +0.0093  hour +0.0080  s_lo16 +0.0075  breadth +0.0074  lbbw +0.0060  z96 +0.0056  res4 +0.0053  mvol +0.0051  disp16 +0.0042  mz384 +0.0024
+
+── RAW MAP, H = 48: mean net % [week-clustered t]; 'with' = trade in the event's direction ──
+   event   univ             with: long           with: short         against: long        against: short
+   bos4    bt       -0.308 [-5.1] n78k    -0.265 [-3.5] n79k    -0.155 [-2.1] n79k    -0.112 [-1.9] n78k
+   bos4    oos      -0.344 [-5.8] n52k    -0.254 [-3.2] n52k    -0.166 [-2.1] n52k    -0.076 [-1.3] n52k
+   bos16   bt       -0.298 [-4.7] n80k    -0.224 [-2.4] n83k    -0.196 [-2.1] n83k    -0.122 [-1.9] n80k
+   bos16   oos      -0.333 [-5.3] n52k    -0.221 [-2.1] n54k    -0.199 [-1.9] n54k    -0.087 [-1.4] n52k
+   sweep4  bt       -0.276 [-4.0] n67k    -0.137 [-2.2] n63k    -0.283 [-4.5] n63k    -0.144 [-2.1] n67k
+   sweep4  oos      -0.278 [-3.8] n39k    -0.138 [-2.1] n38k    -0.282 [-4.3] n38k    -0.142 [-1.9] n39k
+   don96   bt      -0.228 [-2.8] n123k   -0.338 [-2.5] n113k   -0.082 [-0.6] n113k   -0.192 [-2.4] n123k
+   don96   oos      -0.319 [-3.9] n82k    -0.249 [-1.8] n77k    -0.171 [-1.2] n77k    -0.101 [-1.2] n82k
+   random entries bt: long -0.261  short -0.159
+   random entries oos: long -0.283  short -0.137
+      h48: 36 fits on 7 workers
+      h48: 3/36 fits done
+      h48: 6/36 fits done
+      h48: 9/36 fits done
+      h48: 12/36 fits done
+      h48: 15/36 fits done
+      h48: 18/36 fits done
+      h48: 21/36 fits done
+      h48: 24/36 fits done
+      h48: 27/36 fits done
+      h48: 30/36 fits done
+      h48: 33/36 fits done
+      h48: 36/36 fits done
+
+── H = 48 bars (720 min) ──
+   univ side      cands  sel%   all-cand net    SELECTED net [t]   nulls ≥         1st half         2nd half       hedged [t]   outside gates [t]   inside gates
+/home/thomas/Gravity-lab-structure/research/discover15.py:217: RuntimeWarning: Mean of empty slice
+  ig = y[sel & X_["in_gate"]].mean()
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in divide
+  ret = ret.dtype.type(ret / rcount)
+   bt   long     687712   24%         -0.220     +0.001 [ +0.0]         —   -0.155 [-1.0]   +0.082 [+0.5]   -0.175 [-11.0]     +0.001 [ +0.0]           +nan
+/home/thomas/Gravity-lab-structure/research/discover15.py:222: RuntimeWarning: Mean of empty slice
+  ks = "  ".join(f"k{kv}: {y[sel & (X_['k'] == kv)].mean():+.3f} (n {(sel & (X_['k'] == kv)).sum()})" for kv in range(4))
+         selected by rung: k0: +0.001 (n 162191)  k1: +nan (n 0)  k2: +nan (n 0)  k3: +nan (n 0)
+/home/thomas/Gravity-lab-structure/research/discover15.py:217: RuntimeWarning: Mean of empty slice
+  ig = y[sel & X_["in_gate"]].mean()
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in divide
+  ret = ret.dtype.type(ret / rcount)
+   bt   short    687712   35%         -0.200     +0.058 [ +0.7]         —   -0.017 [-0.1]   +0.104 [+1.0]   -0.190 [-20.8]     +0.058 [ +0.7]           +nan
+/home/thomas/Gravity-lab-structure/research/discover15.py:222: RuntimeWarning: Mean of empty slice
+  ks = "  ".join(f"k{kv}: {y[sel & (X_['k'] == kv)].mean():+.3f} (n {(sel & (X_['k'] == kv)).sum()})" for kv in range(4))
+         selected by rung: k0: +0.058 (n 243238)  k1: +nan (n 0)  k2: +nan (n 0)  k3: +nan (n 0)
+/home/thomas/Gravity-lab-structure/research/discover15.py:217: RuntimeWarning: Mean of empty slice
+  ig = y[sel & X_["in_gate"]].mean()
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in divide
+  ret = ret.dtype.type(ret / rcount)
+   oos  long     448918   21%         -0.259     -0.051 [ -0.3]         —   -0.393 [-1.9]   +0.067 [+0.3]   -0.169 [-8.4]     -0.051 [ -0.3]           +nan
+/home/thomas/Gravity-lab-structure/research/discover15.py:222: RuntimeWarning: Mean of empty slice
+  ks = "  ".join(f"k{kv}: {y[sel & (X_['k'] == kv)].mean():+.3f} (n {(sel & (X_['k'] == kv)).sum()})" for kv in range(4))
+         selected by rung: k0: -0.051 (n 95318)  k1: +nan (n 0)  k2: +nan (n 0)  k3: +nan (n 0)
+/home/thomas/Gravity-lab-structure/research/discover15.py:217: RuntimeWarning: Mean of empty slice
+  ig = y[sel & X_["in_gate"]].mean()
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in divide
+  ret = ret.dtype.type(ret / rcount)
+   oos  short    448918   38%         -0.161     +0.083 [ +1.0]         —   +0.004 [+0.0]   +0.126 [+1.1]   -0.142 [-12.8]     +0.083 [ +1.0]           +nan
+/home/thomas/Gravity-lab-structure/research/discover15.py:222: RuntimeWarning: Mean of empty slice
+  ks = "  ".join(f"k{kv}: {y[sel & (X_['k'] == kv)].mean():+.3f} (n {(sel & (X_['k'] == kv)).sum()})" for kv in range(4))
+         selected by rung: k0: +0.083 (n 169241)  k1: +nan (n 0)  k2: +nan (n 0)  k3: +nan (n 0)
+
+Trials: 1 primary (model-selected events, H=16) + 2 secondary horizons. Block B untouched.

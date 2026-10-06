@@ -85,3 +85,52 @@ pre-registration.
 ## Trials
 
 **3** (uses 1, 2, 3).
+
+## RESULT (run once, 2026-10-06, pre-registration 1e0b069): ALL THREE FAIL
+
+Log: `reports/forecast_run.txt`. Forecasts: `data/forecast/{oos,backtest}_h4.npz`, covering 63–66% of
+hour × coin cells (after the 12-month warm-up and coin listings).
+
+**1. Allocator (coin forecast sizes Grid / GridShort).** Book = daily P&L, Grid + GridShort.
+
+| | flat Sharpe / maxDD | sized Sharpe / maxDD | ΔSharpe (halves) | vs shuffles / shifts |
+|---|---|---|---|---|
+| OOS | 2.38 / −4.1% | 2.19 / −3.7% | **−0.185** (−0.11 / −0.25) | 76% / 19/20 |
+| BT | 3.13 / −3.9% | 2.56 / −4.9% | **−0.574** (−0.11 / −0.83) | 9% / 2/20 |
+
+**3. Overlay (market forecast).**
+
+| | sized Sharpe / maxDD | ΔSharpe (halves) | vs shuffles / shifts |
+|---|---|---|---|
+| OOS | 2.33 / −3.4% | −0.048 (−0.03 / −0.07) | 53% / 16/20 |
+| BT | 3.09 / −4.0% | −0.039 (+0.02 / −0.07) | 42% / 13/20 |
+
+**2. Neutral hourly portfolio** (turnover ≈ 7,000x gross per year):
+
+| | taker 0h | taker 1h | maker 0h | maker 1h | vs 30 nulls |
+|---|---|---|---|---|---|
+| OOS | −421%/yr | −530 | −1 | −110 | 30/30 |
+| BT | −486%/yr | −531 | −73 | −118 | 30/30 |
+
+**Reading.**
+- **Uses 1 and 3:** sizing Grid by the forecast lowers Grid's Sharpe in both universes.
+  - On OOS the coin forecast carries a little information (it beats 19/20 time-shifts). But unequal
+    bets on trades of equal quality cost more than that information adds.
+  - On BT the coin forecast mis-sizes Grid: worse than 91% of random sizings.
+  - The market overlay is indistinguishable from chance.
+- **Use 2:** the forecast's cross-sectional ranking is real. It beats all 30 null portfolios.
+  - **Gross before costs:** about +115–140%/yr at 0h delay (OOS), but only about +6–33%/yr at a 1h
+    delay.
+  - **Why:** most of the ranking power is last-print microstructure, which cannot be traded at the price
+    that produced it.
+  - At ~7,000x turnover, costs are 140–540%/yr.
+
+**Verdict.** The price-feature forecast is real information that cannot be monetized at retail costs:
+- not as standalone trades (earlier trials);
+- not as Grid sizing;
+- not as a market overlay;
+- not as a neutral portfolio.
+
+A slower variant (a smoothed forecast, longer horizon, wider bands) would be a new trial. Per the 1h-delay
+numbers, what survives is ≤ 30%/yr gross before any turnover. The price-only feature space at 1–12h
+is closed.

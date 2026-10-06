@@ -1,0 +1,147 @@
+/home/thomas/Gravity-lab-structure/research/discover15.py:78: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)                                    # equal-weight market, 15m log returns
+/home/thomas/Gravity-lab-structure/research/discover15.py:116: RuntimeWarning: Mean of empty slice
+  yield "breadth", np.nanmean(np.where(np.isfinite(C), C > e50, np.nan), axis=1)
+/home/thomas/Gravity-lab/.venv-research/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+   backtest: 89 coins × 57,254 hours, 40 features [54s]
+/home/thomas/Gravity-lab-structure/research/discover15.py:78: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)                                    # equal-weight market, 15m log returns
+/home/thomas/Gravity-lab-structure/research/discover15.py:116: RuntimeWarning: Mean of empty slice
+  yield "breadth", np.nanmean(np.where(np.isfinite(C), C > e50, np.nan), axis=1)
+/home/thomas/Gravity-lab/.venv-research/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+   oos: 63 coins × 52,215 hours, 40 features [33s]
+      quarter 2021-01: trained on 2,653 rows
+      quarter 2021-04: trained on 5,076 rows
+      quarter 2021-07: trained on 9,678 rows
+      quarter 2021-10: trained on 17,815 rows
+      quarter 2022-01: trained on 36,898 rows
+      quarter 2022-04: trained on 63,924 rows
+      quarter 2022-07: trained on 93,585 rows
+      quarter 2022-10: trained on 124,854 rows
+      quarter 2023-01: trained on 157,807 rows
+      quarter 2023-04: trained on 191,209 rows
+      quarter 2023-07: trained on 227,159 rows
+      quarter 2023-10: trained on 266,431 rows
+      quarter 2024-01: trained on 308,373 rows
+      quarter 2024-04: trained on 352,589 rows
+      quarter 2024-07: trained on 398,714 rows
+      quarter 2024-10: trained on 446,114 rows
+      quarter 2025-01: trained on 494,296 rows
+      quarter 2025-04: trained on 541,816 rows
+      quarter 2025-07: trained on 589,422 rows
+      quarter 2025-10: trained on 637,371 rows
+      quarter 2026-01: trained on 684,843 rows
+      quarter 2026-04: trained on 731,283 rows
+      quarter 2026-07: trained on 778,082 rows
+   saved /home/thomas/Gravity-lab/data/forecast/backtest_h4.npz: 63% of hour × coin cells forecast
+   saved /home/thomas/Gravity-lab/data/forecast/oos_h4.npz: 66% of hour × coin cells forecast
+/home/thomas/Gravity-lab/.venv-research/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/home/thomas/Gravity-lab-structure/research/forecast_uses.py:190: RuntimeWarning: divide by zero encountered in divide
+  Z = F / scale[:, None]
+/home/thomas/Gravity-lab-structure/research/forecast_uses.py:191: RuntimeWarning: Mean of empty slice
+  m = np.nanmean(F, axis=1)
+/home/thomas/Gravity-lab-structure/research/forecast_uses.py:193: RuntimeWarning: divide by zero encountered in divide
+  Zm = (m / mscale)[:, None]
+oos: forecasts 2020-10-21 → 2026-10-06, 63 coins; Grid/GridShort trades 8256
+   1 ALLOCATOR (coin forecast)  [PRIMARY of use 1]: coverage 98%, mean size 0.83
+      flat   Sharpe +2.38  maxDD -4.1%  total +61%
+      sized  Sharpe +2.19  maxDD -3.7%  total +54%   ΔSharpe -0.185  halves -0.111 / -0.254
+      nulls: beats 75.5% of 200 shuffles (p95 -0.003), 19/20 time-shifts
+   3 OVERLAY (market forecast): coverage 98%, mean size 0.92
+      flat   Sharpe +2.38  maxDD -4.1%  total +61%
+      sized  Sharpe +2.33  maxDD -3.4%  total +55%   ΔSharpe -0.048  halves -0.028 / -0.072
+      nulls: beats 52.5% of 200 shuffles (p95 +0.103), 16/20 time-shifts
+   2 NEUTRAL hourly portfolio (dollar-neutral, gross 1, band 0.25%/coin)
+      taker + spread, delay 0h   -421.3%/yr  Sharpe -16.26  t_wk -26.62  last 12m -469.4%  2020:+0 2021:-84 2022:-379 2023:-488 2024:-648 2025:-564 2026:-351
+         turnover 7146x gross per year
+      taker + spread, delay 1h   -529.8%/yr  Sharpe -21.10  t_wk -31.18  last 12m -598.8%  2020:+0 2021:-74 2022:-653 2023:-637 2024:-671 2025:-669 2026:-456
+      maker (fills assumed), delay 0h   -1.0%/yr  Sharpe -0.04  t_wk -0.10  last 12m +9.6%  2020:+0 2021:-26 2022:+127 2023:+28 2024:-94 2025:-43 2026:+2
+      maker (fills assumed), delay 1h -109.6%/yr  Sharpe -5.21  t_wk -12.87  last 12m -119.9%  2020:+0 2021:-16 2022:-147 2023:-121 2024:-118 2025:-149 2026:-103
+      null: shuffled across coins -791.8%/yr  Sharpe -31.79  t_wk -34.40  last 12m -900.2%  2020:+0 2021:-111 2022:-991 2023:-1002 2024:-972 2025:-989 2026:-657
+      null: shuffled across coins -791.8%/yr  Sharpe -31.41  t_wk -34.19  last 12m -911.1%  2020:+0 2021:-108 2022:-977 2023:-982 2024:-1001 2025:-987 2026:-667
+      null: shuffled across coins -783.0%/yr  Sharpe -31.72  t_wk -34.23  last 12m -891.1%  2020:+0 2021:-90 2022:-967 2023:-975 2024:-1007 2025:-975 2026:-656
+      null: shuffled across coins -782.5%/yr  Sharpe -31.53  t_wk -34.47  last 12m -906.3%  2020:+0 2021:-91 2022:-962 2023:-977 2024:-992 2025:-984 2026:-660
+      null: shuffled across coins -787.3%/yr  Sharpe -31.96  t_wk -34.35  last 12m -887.0%  2020:+0 2021:-103 2022:-983 2023:-960 2024:-1015 2025:-981 2026:-653
+      null: shuffled across coins -785.4%/yr  Sharpe -31.23  t_wk -34.31  last 12m -897.7%  2020:+0 2021:-95 2022:-942 2023:-987 2024:-1012 2025:-983 2026:-666
+      null: shuffled across coins -787.3%/yr  Sharpe -31.79  t_wk -34.35  last 12m -902.1%  2020:+0 2021:-102 2022:-954 2023:-985 2024:-1007 2025:-983 2026:-664
+      null: shuffled across coins -804.6%/yr  Sharpe -31.76  t_wk -34.55  last 12m -922.4%  2020:+0 2021:-102 2022:-1025 2023:-974 2024:-1004 2025:-1026 2026:-668
+      null: shuffled across coins -792.3%/yr  Sharpe -31.52  t_wk -34.44  last 12m -913.0%  2020:+0 2021:-112 2022:-989 2023:-994 2024:-970 2025:-989 2026:-672
+      null: shuffled across coins -798.1%/yr  Sharpe -31.68  t_wk -34.41  last 12m -932.1%  2020:+0 2021:-115 2022:-961 2023:-996 2024:-1000 2025:-1003 2026:-685
+      null: shuffled across coins -789.7%/yr  Sharpe -32.08  t_wk -34.43  last 12m -904.7%  2020:+0 2021:-106 2022:-978 2023:-957 2024:-1004 2025:-1001 2026:-665
+      null: shuffled across coins -798.4%/yr  Sharpe -32.25  t_wk -34.36  last 12m -909.8%  2020:+0 2021:-115 2022:-995 2023:-969 2024:-1013 2025:-1002 2026:-668
+      null: shuffled across coins -789.8%/yr  Sharpe -31.74  t_wk -34.30  last 12m -901.5%  2020:+0 2021:-113 2022:-973 2023:-977 2024:-984 2025:-997 2026:-667
+      null: shuffled across coins -786.1%/yr  Sharpe -31.49  t_wk -34.20  last 12m -874.3%  2020:+0 2021:-106 2022:-979 2023:-975 2024:-1004 2025:-986 2026:-638
+      null: shuffled across coins -790.0%/yr  Sharpe -31.99  t_wk -34.35  last 12m -906.4%  2020:+0 2021:-116 2022:-965 2023:-980 2024:-982 2025:-1019 2026:-650
+      null: shuffled across coins -789.4%/yr  Sharpe -31.48  t_wk -34.09  last 12m -892.2%  2020:+0 2021:-104 2022:-984 2023:-980 2024:-999 2025:-998 2026:-644
+      null: shuffled across coins -792.8%/yr  Sharpe -31.20  t_wk -34.48  last 12m -896.7%  2020:+0 2021:-96 2022:-1003 2023:-961 2024:-1016 2025:-994 2026:-658
+      null: shuffled across coins -795.0%/yr  Sharpe -31.32  t_wk -34.37  last 12m -901.0%  2020:+0 2021:-124 2022:-958 2023:-1006 2024:-1003 2025:-980 2026:-671
+      null: shuffled across coins -780.3%/yr  Sharpe -31.41  t_wk -34.22  last 12m -882.9%  2020:+0 2021:-108 2022:-957 2023:-979 2024:-980 2025:-992 2026:-638
+      null: shuffled across coins -783.6%/yr  Sharpe -31.38  t_wk -34.23  last 12m -884.5%  2020:+0 2021:-94 2022:-972 2023:-966 2024:-988 2025:-1002 2026:-652
+      null: time-shifted         -536.1%/yr  Sharpe -26.49  t_wk -33.14  last 12m -626.8%  2020:+0 2021:-72 2022:-638 2023:-696 2024:-641 2025:-681 2026:-468
+      null: time-shifted         -535.6%/yr  Sharpe -26.63  t_wk -33.40  last 12m -627.3%  2020:+0 2021:-74 2022:-606 2023:-688 2024:-687 2025:-672 2026:-468
+      null: time-shifted         -531.3%/yr  Sharpe -26.04  t_wk -32.76  last 12m -624.2%  2020:+0 2021:-74 2022:-621 2023:-689 2024:-660 2025:-660 2026:-464
+      null: time-shifted         -522.7%/yr  Sharpe -26.87  t_wk -32.88  last 12m -608.4%  2020:+0 2021:-61 2022:-589 2023:-697 2024:-665 2025:-646 2026:-460
+      null: time-shifted         -540.5%/yr  Sharpe -26.83  t_wk -32.97  last 12m -669.5%  2020:+0 2021:-75 2022:-636 2023:-669 2024:-666 2025:-692 2026:-486
+      null: time-shifted         -535.0%/yr  Sharpe -26.62  t_wk -33.37  last 12m -668.7%  2020:+0 2021:-70 2022:-597 2023:-682 2024:-668 2025:-678 2026:-495
+      null: time-shifted         -533.8%/yr  Sharpe -27.35  t_wk -33.56  last 12m -636.7%  2020:+0 2021:-70 2022:-619 2023:-700 2024:-661 2025:-655 2026:-477
+      null: time-shifted         -536.9%/yr  Sharpe -27.34  t_wk -32.74  last 12m -611.5%  2020:+0 2021:-52 2022:-644 2023:-698 2024:-688 2025:-671 2026:-450
+      null: time-shifted         -529.3%/yr  Sharpe -26.63  t_wk -33.18  last 12m -624.1%  2020:+0 2021:-70 2022:-610 2023:-668 2024:-679 2025:-668 2026:-462
+      null: time-shifted         -535.2%/yr  Sharpe -27.44  t_wk -33.14  last 12m -625.0%  2020:+0 2021:-64 2022:-631 2023:-711 2024:-656 2025:-674 2026:-457
+      real taker Sharpe -16.26 beats 30/30 nulls
+/home/thomas/Gravity-lab/.venv-research/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/home/thomas/Gravity-lab-structure/research/forecast_uses.py:190: RuntimeWarning: divide by zero encountered in divide
+  Z = F / scale[:, None]
+/home/thomas/Gravity-lab-structure/research/forecast_uses.py:191: RuntimeWarning: Mean of empty slice
+  m = np.nanmean(F, axis=1)
+/home/thomas/Gravity-lab-structure/research/forecast_uses.py:193: RuntimeWarning: divide by zero encountered in divide
+  Zm = (m / mscale)[:, None]
+backtest: forecasts 2020-03-25 → 2026-10-06, 89 coins; Grid/GridShort trades 11161
+   1 ALLOCATOR (coin forecast)  [PRIMARY of use 1]: coverage 98%, mean size 0.82
+      flat   Sharpe +3.13  maxDD -3.9%  total +104%
+      sized  Sharpe +2.56  maxDD -4.9%  total +83%   ΔSharpe -0.574  halves -0.108 / -0.829
+      nulls: beats 9.0% of 200 shuffles (p95 +0.031), 2/20 time-shifts
+   3 OVERLAY (market forecast): coverage 98%, mean size 0.91
+      flat   Sharpe +3.13  maxDD -3.9%  total +104%
+      sized  Sharpe +3.09  maxDD -4.0%  total +96%   ΔSharpe -0.039  halves +0.017 / -0.066
+      nulls: beats 42.0% of 200 shuffles (p95 +0.124), 13/20 time-shifts
+   2 NEUTRAL hourly portfolio (dollar-neutral, gross 1, band 0.25%/coin)
+      taker + spread, delay 0h   -485.8%/yr  Sharpe -22.50  t_wk -32.28  last 12m -586.8%  2020:+0 2021:-361 2022:-521 2023:-584 2024:-650 2025:-634 2026:-427
+         turnover 7021x gross per year
+      taker + spread, delay 1h   -531.4%/yr  Sharpe -24.01  t_wk -33.74  last 12m -615.1%  2020:+0 2021:-351 2022:-635 2023:-668 2024:-698 2025:-667 2026:-455
+      maker (fills assumed), delay 0h  -72.5%/yr  Sharpe -4.17  t_wk -9.52  last 12m -103.9%  2020:+0 2021:-78 2022:-16 2023:-77 2024:-111 2025:-121 2026:-71
+      maker (fills assumed), delay 1h -118.1%/yr  Sharpe -6.88  t_wk -16.70  last 12m -132.3%  2020:+0 2021:-69 2022:-130 2023:-161 2024:-158 2025:-153 2026:-100
+      null: shuffled across coins -787.7%/yr  Sharpe -34.06  t_wk -36.64  last 12m -893.5%  2020:+0 2021:-566 2022:-964 2023:-982 2024:-998 2025:-981 2026:-661
+      null: shuffled across coins -786.9%/yr  Sharpe -34.00  t_wk -36.65  last 12m -890.4%  2020:+0 2021:-555 2022:-979 2023:-972 2024:-1013 2025:-967 2026:-661
+      null: shuffled across coins -790.5%/yr  Sharpe -33.93  t_wk -36.61  last 12m -910.3%  2020:+0 2021:-544 2022:-971 2023:-1000 2024:-983 2025:-1003 2026:-669
+      null: shuffled across coins -787.0%/yr  Sharpe -34.18  t_wk -36.70  last 12m -894.8%  2020:+0 2021:-578 2022:-977 2023:-973 2024:-977 2025:-982 2026:-660
+      null: shuffled across coins -787.2%/yr  Sharpe -33.92  t_wk -36.73  last 12m -897.5%  2020:+0 2021:-568 2022:-977 2023:-953 2024:-996 2025:-998 2026:-657
+      null: shuffled across coins -786.5%/yr  Sharpe -33.98  t_wk -36.67  last 12m -905.6%  2020:+0 2021:-568 2022:-952 2023:-979 2024:-989 2025:-989 2026:-666
+      null: shuffled across coins -792.7%/yr  Sharpe -34.12  t_wk -36.61  last 12m -888.0%  2020:+0 2021:-572 2022:-988 2023:-983 2024:-997 2025:-989 2026:-655
+      null: shuffled across coins -785.4%/yr  Sharpe -34.04  t_wk -36.65  last 12m -909.4%  2020:+0 2021:-551 2022:-958 2023:-961 2024:-1007 2025:-993 2026:-667
+      null: shuffled across coins -786.5%/yr  Sharpe -34.13  t_wk -36.71  last 12m -894.0%  2020:+0 2021:-582 2022:-957 2023:-986 2024:-972 2025:-988 2026:-658
+      null: shuffled across coins -789.7%/yr  Sharpe -33.75  t_wk -36.52  last 12m -888.4%  2020:+0 2021:-573 2022:-979 2023:-977 2024:-995 2025:-992 2026:-648
+      null: shuffled across coins -788.1%/yr  Sharpe -33.68  t_wk -36.73  last 12m -886.8%  2020:+0 2021:-559 2022:-987 2023:-980 2024:-990 2025:-984 2026:-653
+      null: shuffled across coins -790.8%/yr  Sharpe -33.96  t_wk -36.75  last 12m -901.2%  2020:+0 2021:-588 2022:-973 2023:-963 2024:-999 2025:-990 2026:-659
+      null: shuffled across coins -788.5%/yr  Sharpe -34.04  t_wk -36.71  last 12m -889.3%  2020:+0 2021:-580 2022:-974 2023:-986 2024:-983 2025:-980 2026:-654
+      null: shuffled across coins -790.6%/yr  Sharpe -34.11  t_wk -36.55  last 12m -898.9%  2020:+0 2021:-571 2022:-989 2023:-981 2024:-981 2025:-994 2026:-654
+      null: shuffled across coins -782.6%/yr  Sharpe -33.65  t_wk -36.60  last 12m -876.9%  2020:+0 2021:-547 2022:-982 2023:-974 2024:-988 2025:-978 2026:-648
+      null: shuffled across coins -780.5%/yr  Sharpe -33.75  t_wk -36.57  last 12m -892.0%  2020:+0 2021:-545 2022:-974 2023:-954 2024:-989 2025:-982 2026:-661
+      null: shuffled across coins -788.7%/yr  Sharpe -33.64  t_wk -36.52  last 12m -878.2%  2020:+0 2021:-591 2022:-961 2023:-981 2024:-995 2025:-985 2026:-644
+      null: shuffled across coins -793.1%/yr  Sharpe -33.84  t_wk -36.77  last 12m -899.4%  2020:+0 2021:-588 2022:-971 2023:-983 2024:-996 2025:-988 2026:-661
+      null: shuffled across coins -788.0%/yr  Sharpe -33.80  t_wk -36.54  last 12m -894.4%  2020:+0 2021:-547 2022:-993 2023:-977 2024:-986 2025:-990 2026:-660
+      null: shuffled across coins -777.6%/yr  Sharpe -33.50  t_wk -36.65  last 12m -886.9%  2020:+0 2021:-541 2022:-959 2023:-958 2024:-990 2025:-983 2026:-654
+      null: time-shifted         -519.4%/yr  Sharpe -29.24  t_wk -34.84  last 12m -615.7%  2020:+0 2021:-341 2022:-623 2023:-656 2024:-659 2025:-661 2026:-457
+      null: time-shifted         -512.7%/yr  Sharpe -29.71  t_wk -35.28  last 12m -640.2%  2020:+0 2021:-345 2022:-591 2023:-644 2024:-647 2025:-646 2026:-479
+      null: time-shifted         -525.3%/yr  Sharpe -29.36  t_wk -35.50  last 12m -658.7%  2020:+0 2021:-360 2022:-620 2023:-653 2024:-644 2025:-671 2026:-487
+      null: time-shifted         -512.4%/yr  Sharpe -29.36  t_wk -35.37  last 12m -619.8%  2020:+0 2021:-348 2022:-589 2023:-652 2024:-643 2025:-664 2026:-457
+      null: time-shifted         -520.0%/yr  Sharpe -29.48  t_wk -35.70  last 12m -629.2%  2020:+0 2021:-343 2022:-600 2023:-662 2024:-653 2025:-661 2026:-481
+      null: time-shifted         -526.6%/yr  Sharpe -29.02  t_wk -35.62  last 12m -630.8%  2020:+0 2021:-377 2022:-619 2023:-668 2024:-646 2025:-668 2026:-466
+      null: time-shifted         -508.7%/yr  Sharpe -29.17  t_wk -35.07  last 12m -617.3%  2020:+0 2021:-333 2022:-607 2023:-649 2024:-638 2025:-634 2026:-465
+      null: time-shifted         -511.5%/yr  Sharpe -29.09  t_wk -34.85  last 12m -654.4%  2020:+0 2021:-340 2022:-569 2023:-651 2024:-634 2025:-656 2026:-495
+      null: time-shifted         -517.1%/yr  Sharpe -29.70  t_wk -35.17  last 12m -635.7%  2020:+0 2021:-334 2022:-614 2023:-676 2024:-624 2025:-658 2026:-475
+      null: time-shifted         -517.6%/yr  Sharpe -29.51  t_wk -35.37  last 12m -634.6%  2020:+0 2021:-367 2022:-587 2023:-659 2024:-645 2025:-650 2026:-478
+      real taker Sharpe -22.50 beats 30/30 nulls

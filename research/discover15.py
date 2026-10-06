@@ -124,8 +124,9 @@ def feature_iter(idx, M, fund, S, A, mlr, mcum):
 def build(universe: str, rng) -> dict:
     """Cached (fcache): keyed on the feature list, the rng state and the source of the build's modules."""
     import fcache
-    return fcache.cached("d15", (universe, tuple(FEATURES), tuple(sorted(KEEP.items())), feature_iter.__module__,
-                                 feature_iter.__name__), rng, lambda: _build(universe, rng))
+    # the feature list + the hashed source identify the build; not feature_iter.__module__, which reads
+    # "__main__" when a script runs directly and its own name when imported (a cache miss every time)
+    return fcache.cached("d15", (universe, tuple(FEATURES), tuple(sorted(KEEP.items()))), rng, lambda: _build(universe, rng))
 
 
 def _build(universe: str, rng) -> dict:

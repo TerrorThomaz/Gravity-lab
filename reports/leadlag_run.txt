@@ -1,0 +1,19 @@
+
+── lagged response to BTC, 1m bars, 148 followers, 2025-08-31 → 2026-09-30 ──
+   k=  1: lagged response to BTC(t) +0.1533 [t +549.5]   (beta to BTC's own next move +1.07; follower's own lag +0.056)
+   k=  2: lagged response to BTC(t) +0.1747 [t +431.2]   (beta to BTC's own next move +1.20; follower's own lag +0.092)
+   k=  5: lagged response to BTC(t) +0.2949 [t +445.3]   (beta to BTC's own next move +1.33; follower's own lag +0.066)
+   k= 10: lagged response to BTC(t) +0.4248 [t +462.3]   (beta to BTC's own next move +1.41; follower's own lag -0.036)
+   k= 15: lagged response to BTC(t) +0.4409 [t +406.0]   (beta to BTC's own next move +1.43; follower's own lag -0.082)
+   BTC minute moves |r| ≥ 0.25%: 4114 events; follower move in BTC's direction over the next k minutes
+      k= 1 min: follower +0.039%   minus BTC's own next move +0.051%   (cost ≈ 0.10% round trip)
+      k= 2 min: follower +0.054%   minus BTC's own next move +0.063%   (cost ≈ 0.10% round trip)
+      k= 5 min: follower +0.101%   minus BTC's own next move +0.109%   (cost ≈ 0.10% round trip)
+      k=10 min: follower +0.151%   minus BTC's own next move +0.158%   (cost ≈ 0.10% round trip)
+
+── lagged response to BTC, 15m bars, 151 followers, 2020-03-25 → 2026-10-06 ──
+   k=  1: lagged response to BTC(t) +0.0696 [t +144.2]   (beta to BTC's own next move +1.28; follower's own lag -0.044)
+   k=  2: lagged response to BTC(t) +0.0782 [t +117.2]   (beta to BTC's own next move +1.29; follower's own lag -0.060)
+   k=  4: lagged response to BTC(t) +0.0750 [t +81.3]   (beta to BTC's own next move +1.28; follower's own lag -0.064)
+
+── forecast engine on BTC (4h, walk-forward): rank IC +0.022, direction hit rate 50.6% over 49,673 hours; top-decile forecasts: hit 52.5%, mean next-4h +0.057% vs all +0.009%

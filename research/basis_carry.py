@@ -22,6 +22,8 @@ from grid_paths import mnr  # noqa: E402
 EXT = os.path.join(os.path.dirname(os.path.realpath(os.path.join(mnr.REPO, "candle_cache"))), "data", "external")
 ENTER, EXIT = 15.0, 5.0          # %/yr, trailing 7d mean funding
 SLOT, MAX_POS, SHIFTS = 0.05, 20, 20
+COHERENT, MIN_TURN = 0.02, 200_000   # POST-RESULT data filter (see doc): |spot/perp − 1| ≤ 2%, spot 24h turnover
+# ZEC's delisted Bybit spot printed at ~1.5% of the perp for 15 months, then relisted (+2,880% fake "basis")
 FEES_RT = 0.2 + 0.11             # spot 0.1%/side + perp taker 0.055%/side, % round trip
 HALF_SPREAD_BP = (4.2, 2.9, 1.8, 0.6)
 
@@ -29,12 +31,13 @@ HALF_SPREAD_BP = (4.2, 2.9, 1.8, 0.6)
 def load(u: str):
     syms = mnr.config_symbols("OosCoins" if u == "oos" else "BacktestCoins")
     mk = mnr.build_market(syms, os.path.join(mnr.REPO, "candle_cache"))
-    spot = {}
+    spot, turn = {}, {}
     for s in mk.close.columns:
         p = os.path.join(EXT, f"{s}_spot1h.csv")
         if os.path.exists(p) and mk.funding_known.get(s, False):
             d = pd.read_csv(p)
             spot[s] = pd.Series(d.close.values, index=pd.to_datetime(d.ts, unit="ms"))
+            turn[s] = pd.Series(d.turnover.values, index=pd.to_datetime(d.ts, unit="ms"))
     cols = list(spot)
     idx = mk.close.index
     S = pd.DataFrame(spot).reindex(index=idx, columns=cols)
@@ -45,10 +48,12 @@ def load(u: str):
     days = idx[idx.hour == 0]
     f7 = F.rolling(24 * 7).sum() / 7 * 365 * 100                              # %/yr, trailing 7 days incl. 00:00
     liq = Q.rolling(720, min_periods=240).median()
-    return days, cols, S, P, F, f7, liq
+    T24 = pd.DataFrame(turn).reindex(index=idx, columns=cols).fillna(0).rolling(24).sum()
+    ok = ((S / P - 1).abs() <= COHERENT) & (T24 >= MIN_TURN)
+    return days, cols, S, P, F, f7, liq, ok
 
 
-def simulate(days, cols, S, P, F, f7, liq, sig=None):
+def simulate(days, cols, S, P, F, f7, liq, ok=None, sig=None):
     """Daily loop. sig: optional f7 replacement (time-shift null)."""
     sig = f7 if sig is None else sig
     held: dict[str, float] = {}                                                # sym -> entry cost already charged
@@ -59,8 +64,12 @@ def simulate(days, cols, S, P, F, f7, liq, sig=None):
         s0, s1 = S.loc[d0], S.loc[d1]
         p0, p1 = P.loc[d0], P.loc[d1]
         day = 0.0
+        bad = set()
         for s in list(held):                                                   # carry existing positions d0 → d1
             if not (np.isfinite(s0[s]) and np.isfinite(s1[s]) and np.isfinite(p0[s]) and np.isfinite(p1[s])):
+                continue
+            if ok is not None and not (ok.at[d0, s] and ok.at[d1, s]):
+                bad.add(s)                                                     # incoherent spot: no P&L, exit
                 continue
             basis = (s1[s] / s0[s] - 1) - (p1[s] / p0[s] - 1)
             fund = cf[s].loc[d1] - cf[s].loc[d0]                               # settlements after d0's close .. d1
@@ -71,11 +80,14 @@ def simulate(days, cols, S, P, F, f7, liq, sig=None):
         hs = dict(zip(cols, np.array(HALF_SPREAD_BP)[q] / 100))
         cost = 0.0
         for s in list(held):                                                   # exits
-            if not np.isfinite(f[s]) or f[s] < EXIT:
+            if not np.isfinite(f[s]) or f[s] < EXIT or s in bad:
                 cost += FEES_RT / 2 + 2 * hs[s] * 1.0
                 del held[s]
         room = MAX_POS - len(held)
-        cand = f[(f > ENTER) & np.isfinite(s0) & np.isfinite(p0)].drop(list(held), errors="ignore").sort_values(ascending=False)
+        elig = (f > ENTER) & np.isfinite(s0) & np.isfinite(p0)
+        if ok is not None:
+            elig &= ok.loc[d0]
+        cand = f[elig].drop(list(held), errors="ignore").sort_values(ascending=False)
         for s in cand.index[:max(room, 0)]:                                     # entries, highest funding first
             cost += FEES_RT / 2 + 2 * hs[s]
             held[s] = 1.0
@@ -105,24 +117,26 @@ def main() -> int:
     ap.add_argument("--universe", choices=["oos", "backtest"], required=True)
     a = ap.parse_args()
     rng = np.random.default_rng(20261006)
-    days, cols, S, P, F, f7, liq = load(a.universe)
+    days, cols, S, P, F, f7, liq, ok = load(a.universe)
     first = S.apply(lambda c: c.first_valid_index()).min()
     days = days[days >= first + pd.Timedelta(days=8)]
     print(f"{a.universe}: {len(cols)} coins with spot + perp + real funding; {days[0]:%Y-%m-%d} → {days[-1]:%Y-%m-%d}")
-    pnl, avg = simulate(days, cols, S, P, F, f7, liq)
-    res = stats(pnl, f"PRIMARY timed carry (avg {avg:.1f} pos)")
+    raw, avg0 = simulate(days, cols, S, P, F, f7, liq)
+    stats(raw, f"as pre-registered (avg {avg0:.1f} pos)")
+    pnl, avg = simulate(days, cols, S, P, F, f7, liq, ok)
+    res = stats(pnl, f"+ data filter (avg {avg:.1f} pos)")
     base_cols = [c for c in ("BTCUSDT", "ETHUSDT") if c in cols]
     if base_cols:
-        always = pd.DataFrame(np.inf, index=f7.index, columns=cols)
-        always[[c for c in cols if c not in base_cols]] = -np.inf
-        b, _ = simulate(days, cols, S, P, F, always, liq)
+        always = pd.DataFrame(1e9, index=f7.index, columns=cols)            # finite: inf read as "no data" → daily churn
+        always[[c for c in cols if c not in base_cols]] = -1e9
+        b, _ = simulate(days, cols, S, P, F, f7, liq, ok, sig=always)
         stats(b / (SLOT * len(base_cols)), f"baseline: always-on {'+'.join(c[:3] for c in base_cols)} (50/50)")
     nulls = []
     for _ in range(SHIFTS):
         sh = f7.copy()
         for c in cols:
             sh[c] = f7[c].shift(int(rng.integers(30, 181)) * 24 * int(rng.choice([-1, 1])))
-        nulls.append(simulate(days, cols, S, P, F, sh, liq)[0].mean() * 365)
+        nulls.append(simulate(days, cols, S, P, F, f7, liq, ok, sig=sh)[0].mean() * 365)
     print(f"   time-shifted signal: real {res['ann']:+.2f}%/yr beats {sum(res['ann'] > n for n in nulls)}/{SHIFTS} "
           f"(null median {np.median(nulls):+.2f})")
     return 0

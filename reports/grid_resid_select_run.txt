@@ -1,0 +1,20 @@
+edgetest oos exit 0
+edgetest backtest exit 0
+oos: 63 coins; trades {'Grid': 6205, 'GridShort': 2051}
+   Grid      z4   prefer low   n 5644/6205  terciles low/mid/high +0.208 / +0.147 / +0.123  (all +0.160)
+      lift +0.049%/trade [t +1.17]  halves +0.037 [+0.6] / +0.057 [+1.1]  beats random 96.8%  beats time-shifts 19/20  [PRIMARY]
+   Grid      z24  prefer low   n 5644/6205  terciles low/mid/high +0.165 / +0.194 / +0.119  (all +0.160)
+      lift +0.006%/trade [t +0.14]  halves -0.043 [-0.7] / +0.029 [+0.5]  beats random 62.8%  beats time-shifts 9/20
+   GridShort z4   prefer high  n 1891/2051  terciles low/mid/high +0.157 / +0.059 / +0.032  (all +0.083)
+      lift -0.051%/trade [t -0.72]  halves -0.139 [-1.2] / +0.036 [+0.4]  beats random 17.4%  beats time-shifts 6/20
+   GridShort z24  prefer high  n 1890/2051  terciles low/mid/high +0.123 / +0.131 / -0.004  (all +0.083)
+      lift -0.087%/trade [t -1.28]  halves -0.157 [-1.5] / +0.002 [+0.0]  beats random 5.0%  beats time-shifts 1/20
+backtest: 89 coins; trades {'Grid': 8552, 'GridShort': 2609}
+   Grid      z4   prefer low   n 7772/8552  terciles low/mid/high +0.200 / +0.151 / +0.191  (all +0.181)
+      lift +0.019%/trade [t +0.49]  halves -0.003 [-0.0] / +0.036 [+0.6]  beats random 80.3%  beats time-shifts 17/20  [PRIMARY]
+   Grid      z24  prefer low   n 7761/8552  terciles low/mid/high +0.222 / +0.157 / +0.165  (all +0.181)
+      lift +0.040%/trade [t +0.88]  halves +0.013 [+0.2] / +0.061 [+0.9]  beats random 95.6%  beats time-shifts 16/20
+   GridShort z4   prefer high  n 2400/2609  terciles low/mid/high +0.179 / +0.115 / +0.143  (all +0.146)
+      lift -0.002%/trade [t -0.03]  halves -0.083 [-0.7] / +0.029 [+0.3]  beats random 46.8%  beats time-shifts 15/20
+   GridShort z24  prefer high  n 2398/2609  terciles low/mid/high +0.121 / +0.126 / +0.185  (all +0.144)
+      lift +0.041%/trade [t +0.53]  halves +0.013 [+0.1] / +0.053 [+0.5]  beats random 79.9%  beats time-shifts 18/20

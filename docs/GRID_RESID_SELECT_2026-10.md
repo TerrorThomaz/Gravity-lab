@@ -62,3 +62,27 @@ That rule is one forward-only trial, because Grid is frozen in the forward test 
 ## Trials
 
 1 primary + 3 secondary = **4**.
+
+## RESULT (run once, 2026-10-06, pre-registration d64d691): FAIL (direction holds, power does not)
+
+Log: `reports/grid_resid_select_run.txt`. Trade logs: `reports/edgetest_raw_trades_{oos,backtest}.csv`.
+The Grid genotype is byte-identical to the frozen forward one.
+
+| primary: Grid, z4, low tercile | terciles low / mid / high (all) | lift [t] | halves | random | time-shifts |
+|---|---|---|---|---|---|
+| OosCoins (5,644 trades) | +0.208 / +0.147 / +0.123 (+0.160) | **+0.049 [+1.17]** | +0.037 / +0.057 | 96.8% ✓ | 19/20 ✓ |
+| BacktestCoins (7,772) | +0.200 / +0.151 / +0.191 (+0.181) | **+0.019 [+0.49]** | −0.003 / +0.036 | 80.3% ✗ | 17/20 ✗ |
+
+- **Secondary.** Grid z24: OOS +0.006, BT +0.040 [+0.9]. GridShort mirrored: −0.05 / −0.09 on OOS,
+  ~0 / +0.04 on BT.
+- **Power.** SE(lift) ≈ 0.042%/trade on OOS, so MDE80 ≈ 0.12%/trade (≈ 70% of Grid's mean). The
+  test could only have seen a lift that large.
+
+**Verdict: FAIL** on t ≥ 3 in both universes.
+- On OosCoins it passes every check except t: both halves positive, 97% of random selections, 19/20
+  time-shifts. The low tercile earns +30% more per trade than the average.
+- On BacktestCoins it is weaker and fails the controls. This matches the earlier split: small coins'
+  residuals revert, liquid coins' continue.
+- **Unproven, not absent.** The sign is consistent, but the effect is below this sample's resolution.
+- **What would decide it:** forward data. Grid is frozen, so it can only be logged as a shadow ranking,
+  not used live.

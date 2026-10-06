@@ -1,0 +1,197 @@
+[3/600] 1000BONKUSDT spot: Not supported symbols (no spot pair)
+[6/600] 1000FLOKIUSDT spot: Not supported symbols (no spot pair)
+[9/600] 1000PEPEUSDT spot: Not supported symbols (no spot pair)
+[10/600] 1000SHIBUSDT premium: params error: Symbol Is Invalid (no data)
+[11/600] 1000SHIBUSDT index: params error: Symbol Is Invalid (no data)
+[12/600] 1000SHIBUSDT spot: Not supported symbols (no spot pair)
+[25/600] ADXUSDT premium: params error: Symbol Is Invalid (no data)
+[26/600] ADXUSDT index: params error: Symbol Is Invalid (no data)
+[27/600] ADXUSDT spot: Not supported symbols (no spot pair)
+[28/600] AGIXUSDT premium: nothing new
+[29/600] AGIXUSDT index: nothing new
+[30/600] AGIXUSDT spot: 12385 rows
+[36/600] ALICEUSDT spot: Not supported symbols (no spot pair)
+[37/600] ALPACAUSDT premium: nothing new
+[38/600] ALPACAUSDT index: nothing new
+[39/600] ALPACAUSDT spot: Not supported symbols (no spot pair)
+[40/600] ALPHAUSDT premium: nothing new
+[41/600] ALPHAUSDT index: nothing new
+[42/600] ALPHAUSDT spot: Not supported symbols (no spot pair)
+[60/600] ARPAUSDT spot: Not supported symbols (no spot pair)
+[66/600] ASTRUSDT spot: Not supported symbols (no spot pair)
+[70/600] AUDIOUSDT premium: nothing new
+[71/600] AUDIOUSDT index: nothing new
+[72/600] AUDIOUSDT spot: Not supported symbols (no spot pair)
+[79/600] BAKEUSDT premium: nothing new
+[80/600] BAKEUSDT index: nothing new
+[81/600] BAKEUSDT spot: Not supported symbols (no spot pair)
+[82/600] BALUSDT premium: nothing new
+[83/600] BALUSDT index: nothing new
+[84/600] BALUSDT spot: Not supported symbols (no spot pair)
+[87/600] BANDUSDT spot: Not supported symbols (no spot pair)
+[90/600] BATUSDT spot: 43508 rows
+[109/600] BONDUSDT premium: nothing new
+[110/600] BONDUSDT index: nothing new
+[111/600] BONDUSDT spot: Not supported symbols (no spot pair)
+[112/600] BTCUSDT premium: nothing new
+[113/600] BTCUSDT index: nothing new
+[115/600] BTTUSDT premium: nothing new
+[116/600] BTTUSDT index: nothing new
+[120/600] CAKEUSDT spot: 42647 rows
+[124/600] CELRUSDT premium: nothing new
+[125/600] CELRUSDT index: nothing new
+[126/600] CELRUSDT spot: Not supported symbols (no spot pair)
+[129/600] CFXUSDT spot: Not supported symbols (no spot pair)
+[132/600] CHRUSDT spot: Not supported symbols (no spot pair)
+[138/600] CKBUSDT spot: Not supported symbols (no spot pair)
+[144/600] COTIUSDT spot: Not supported symbols (no spot pair)
+[148/600] CTSIUSDT premium: nothing new
+[149/600] CTSIUSDT index: nothing new
+[150/600] CTSIUSDT spot: Not supported symbols (no spot pair)
+[153/600] CVCUSDT spot: Not supported symbols (no spot pair)
+[156/600] CVXUSDT spot: Not supported symbols (no spot pair)
+[160/600] DENTUSDT premium: nothing new
+[161/600] DENTUSDT index: nothing new
+[162/600] DENTUSDT spot: Not supported symbols (no spot pair)
+[165/600] DIAUSDT spot: Not supported symbols (no spot pair)
+[166/600] DODOUSDT premium: nothing new
+[167/600] DODOUSDT index: nothing new
+[168/600] DODOUSDT spot: Not supported symbols (no spot pair)
+[169/600] DOGEUSDT premium: nothing new
+[170/600] DOGEUSDT index: nothing new
+[177/600] DUSKUSDT spot: Not supported symbols (no spot pair)
+[180/600] DYDXUSDT spot: 44019 rows
+[196/600] ETHUSDT premium: nothing new
+[197/600] ETHUSDT index: nothing new
+[199/600] FETUSDT premium: nothing new
+[200/600] FETUSDT index: nothing new
+[205/600] FLMUSDT premium: nothing new
+[206/600] FLMUSDT index: nothing new
+[207/600] FLMUSDT spot: Not supported symbols (no spot pair)
+[210/600] FLOWUSDT spot: 39934 rows
+[211/600] FORTHUSDT premium: nothing new
+[212/600] FORTHUSDT index: nothing new
+[213/600] FORTHUSDT spot: Not supported symbols (no spot pair)
+[214/600] FRONTUSDT premium: nothing new
+[215/600] FRONTUSDT index: nothing new
+[216/600] FRONTUSDT spot: Not supported symbols (no spot pair)
+[217/600] FTMUSDT premium: nothing new
+[218/600] FTMUSDT index: nothing new
+[220/600] FXSUSDT premium: nothing new
+[221/600] FXSUSDT index: nothing new
+[226/600] GALUSDT premium: nothing new
+[227/600] GALUSDT index: nothing new
+[229/600] GLMRUSDT premium: nothing new
+[230/600] GLMRUSDT index: nothing new
+[240/600] GRTUSDT spot: 43439 rows
+[241/600] GTCUSDT premium: nothing new
+[242/600] GTCUSDT index: nothing new
+[243/600] GTCUSDT spot: Not supported symbols (no spot pair)
+[247/600] HIGHUSDT premium: nothing new
+[248/600] HIGHUSDT index: nothing new
+[249/600] HIGHUSDT spot: Not supported symbols (no spot pair)
+[264/600] ILVUSDT spot: Not supported symbols (no spot pair)
+[270/600] INJUSDT spot: 35543 rows
+[273/600] IOSTUSDT spot: Not supported symbols (no spot pair)
+[276/600] IOTAUSDT spot: Not supported symbols (no spot pair)
+[279/600] IOTXUSDT spot: Not supported symbols (no spot pair)
+[280/600] JOEUSDT premium: nothing new
+[281/600] JOEUSDT index: nothing new
+[282/600] JOEUSDT spot: Not supported symbols (no spot pair)
+[295/600] KLAYUSDT premium: nothing new
+[296/600] KLAYUSDT index: nothing new
+[300/600] KNCUSDT spot: Not supported symbols (no spot pair)
+[313/600] LOOKSUSDT premium: nothing new
+[314/600] LOOKSUSDT index: nothing new
+[318/600] LPTUSDT spot: Not supported symbols (no spot pair)
+[321/600] LQTYUSDT spot: Not supported symbols (no spot pair)
+[327/600] LSKUSDT spot: Not supported symbols (no spot pair)
+[330/600] LTCUSDT spot: 44691 rows
+[337/600] MATICUSDT premium: nothing new
+[338/600] MATICUSDT index: nothing new
+[340/600] MDTUSDT premium: nothing new
+[341/600] MDTUSDT index: nothing new
+[342/600] MDTUSDT spot: Not supported symbols (no spot pair)
+[348/600] METISUSDT spot: nothing new
+[352/600] MKRUSDT premium: nothing new
+[353/600] MKRUSDT index: nothing new
+[360/600] MOVRUSDT spot: 39456 rows
+[366/600] NEOUSDT spot: Not supported symbols (no spot pair)
+[367/600] NKNUSDT premium: nothing new
+[368/600] NKNUSDT index: nothing new
+[369/600] NKNUSDT spot: Not supported symbols (no spot pair)
+[372/600] NMRUSDT spot: Not supported symbols (no spot pair)
+[376/600] NULSUSDT premium: nothing new
+[377/600] NULSUSDT index: nothing new
+[378/600] NULSUSDT spot: Not supported symbols (no spot pair)
+[379/600] OCEANUSDT premium: nothing new
+[380/600] OCEANUSDT index: nothing new
+[381/600] OCEANUSDT spot: Not supported symbols (no spot pair)
+[382/600] OMUSDT premium: nothing new
+[383/600] OMUSDT index: nothing new
+[390/600] ONTUSDT spot: Not supported symbols (no spot pair)
+[403/600] PERPUSDT premium: nothing new
+[404/600] PERPUSDT index: nothing new
+[408/600] PHAUSDT spot: Not supported symbols (no spot pair)
+[414/600] POLYXUSDT spot: Not supported symbols (no spot pair)
+[417/600] POWRUSDT spot: Not supported symbols (no spot pair)
+[420/600] PYTHUSDT spot: 25220 rows
+[421/600] QIUSDT premium: nothing new
+[422/600] QIUSDT index: nothing new
+[423/600] QIUSDT spot: Not supported symbols (no spot pair)
+[430/600] RADUSDT premium: nothing new
+[431/600] RADUSDT index: nothing new
+[432/600] RADUSDT spot: Not supported symbols (no spot pair)
+[435/600] RAREUSDT spot: Not supported symbols (no spot pair)
+[436/600] RDNTUSDT premium: nothing new
+[437/600] RDNTUSDT index: nothing new
+[439/600] REQUSDT premium: nothing new
+[440/600] REQUSDT index: nothing new
+[441/600] REQUSDT spot: Not supported symbols (no spot pair)
+[442/600] RNDRUSDT premium: nothing new
+[443/600] RNDRUSDT index: nothing new
+[447/600] RONINUSDT spot: Not supported symbols (no spot pair)
+[450/600] ROSEUSDT spot: 36408 rows
+[453/600] RSRUSDT spot: Not supported symbols (no spot pair)
+[466/600] SFPUSDT premium: nothing new
+[467/600] SFPUSDT index: nothing new
+[468/600] SFPUSDT spot: Not supported symbols (no spot pair)
+[471/600] SKLUSDT spot: Not supported symbols (no spot pair)
+[480/600] SOLUSDT spot: 43467 rows
+[481/600] SPELLUSDT premium: nothing new
+[482/600] SPELLUSDT index: nothing new
+[492/600] STORJUSDT spot: Not supported symbols (no spot pair)
+[493/600] STPTUSDT premium: nothing new
+[494/600] STPTUSDT index: nothing new
+[495/600] STPTUSDT spot: Not supported symbols (no spot pair)
+[510/600] SUPERUSDT spot: Not supported symbols (no spot pair)
+[514/600] SXPUSDT premium: nothing new
+[515/600] SXPUSDT index: nothing new
+[516/600] SXPUSDT spot: Not supported symbols (no spot pair)
+[517/600] SYNUSDT premium: nothing new
+[518/600] SYNUSDT index: nothing new
+[519/600] SYNUSDT spot: Not supported symbols (no spot pair)
+[522/600] TAOUSDT spot: Not supported symbols (no spot pair)
+[529/600] TONUSDT premium: nothing new
+[530/600] TONUSDT index: nothing new
+[531/600] TONUSDT spot: Not supported symbols (no spot pair)
+[534/600] TRBUSDT spot: Not supported symbols (no spot pair)
+[538/600] TURBOUSDT premium: params error: Symbol Is Invalid (no data)
+[539/600] TURBOUSDT index: params error: Symbol Is Invalid (no data)
+[540/600] TURBOUSDT spot: Not supported symbols (no spot pair)
+[547/600] UTKUSDT premium: params error: Symbol Is Invalid (no data)
+[548/600] UTKUSDT index: params error: Symbol Is Invalid (no data)
+[549/600] UTKUSDT spot: Not supported symbols (no spot pair)
+[556/600] WEMIXUSDT premium: params error: Symbol Is Invalid (no data)
+[557/600] WEMIXUSDT index: params error: Symbol Is Invalid (no data)
+[562/600] WINUSDT premium: params error: Symbol Is Invalid (no data)
+[563/600] WINUSDT index: params error: Symbol Is Invalid (no data)
+[564/600] WINUSDT spot: Not supported symbols (no spot pair)
+[570/600] WOOUSDT spot: 42993 rows
+[574/600] XPRTUSDT premium: params error: Symbol Is Invalid (no data)
+[575/600] XPRTUSDT index: params error: Symbol Is Invalid (no data)
+[576/600] XPRTUSDT spot: Not supported symbols (no spot pair)
+[585/600] XVSUSDT spot: Not supported symbols (no spot pair)
+[591/600] YGGUSDT spot: Not supported symbols (no spot pair)
+[600/600] ZRXUSDT spot: 43509 rows
+done -> /home/thomas/Gravity-lab/data/external

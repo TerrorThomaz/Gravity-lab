@@ -89,3 +89,31 @@ noise.
 ## Trials
 
 1 primary + 3 comparison arms = **4**.
+
+## RESULT (run once, 2026-10-06, pre-registration 22d7af6): FAIL
+
+Log: `reports/resid_lambda_run.txt`. Net % per trade [week-clustered t], recorder-calibrated costs:
+
+| arm | OosCoins | BacktestCoins |
+|---|---|---|
+| **PRIMARY liq × family** | +0.049 [+0.47], halves +0.16 / −0.06, **last 12m −0.171** (n 533), 20/20 shifts | +0.003 [+0.02], halves +0.09 / −0.09, last 12m +0.54 (n 45), 20/20 shifts |
+| liquidity only | −0.334 [−1.24], n 559 | +0.047 [+0.38], n 1,612, last 12m: stood aside |
+| global | +0.057 [+0.50], n 2,205 | +0.170 [+0.59], n 855, last 12m: stood aside |
+| fixed textbook (h = 4, H = 4) | **−0.081 [−5.06]**, n 37,312 | **−0.107 [−6.94]**, n 57,996 |
+
+**Verdict: FAIL.** t ≈ 0 in both universes, and the OOS last 12 months are negative.
+
+**What the self-calibration did buy:**
+- **The textbook rule loses heavily** (t −5 / −7), its cost paid on every event. The trailing-λ
+  planner turns that into ≈ 0.
+- **It learned to stand aside.** On BacktestCoins it traded only 45 times in the last 12 months, and
+  the simpler arms not at all. That is the decay detector working: it found nothing worth the cost
+  and stopped. It avoids losses; it does not make money.
+- **The timing is real.** It beats all 20 time-shifts in both universes (the null medians are
+  −0.17 / −0.18, because random-time trades pay the cost and get nothing). But the edge over the
+  cost is ≈ 0.
+- **Grouping:** liquidity × family ≈ global on OOS (+0.049 vs +0.057), and liquidity-only is worse.
+  The family split adds nothing measurable.
+
+**The residual-reversion family is closed.** Pairs, `resid`, `j4big`, the Grid selector (unproven),
+structure fades and this trial all measure the same small effect, and it has decayed below cost.

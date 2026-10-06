@@ -1,0 +1,76 @@
+building candidate sets (block A, 15m) + 19 multi-length indicators … engine lgbm
+/home/thomas/Gravity-lab-structure/research/discover15.py:78: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)                                    # equal-weight market, 15m log returns
+/home/thomas/Gravity-lab/.venv-research/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+   backtest: 89 coins, 184,662 15m bars, 1,197,216 candidates ([375878 572332 168734  80272] by k), 49% inside a strategy context gate  [58s]
+/home/thomas/Gravity-lab-structure/research/discover15.py:78: RuntimeWarning: Mean of empty slice
+  mlr = np.nanmean(lr, axis=1)                                    # equal-weight market, 15m log returns
+/home/thomas/Gravity-lab/.venv-research/lib/python3.14/site-packages/numpy/lib/_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+   oos: 63 coins, 164,506 15m bars, 838,317 candidates ([246754 404098 126202  61263] by k), 50% inside a strategy context gate  [35s]
+      h4: 72 fits, engine lgbm
+      h4: 7/72 fits done
+      h4: 14/72 fits done
+      h4: 21/72 fits done
+      h4: 28/72 fits done
+      h4: 35/72 fits done
+      h4: 42/72 fits done
+      h4: 49/72 fits done
+      h4: 56/72 fits done
+      h4: 63/72 fits done
+      h4: 70/72 fits done
+
+══ H = 4: out-of-sample rank IC, paired by quarter × side ══
+   bt: arm A IC +0.0526 (33 quarter-sides)   Δ(B − A) +0.0011 [t +0.70]  halves -0.0009 / +0.0029  MDE80 0.0043
+   oos: arm A IC +0.0518 (30 quarter-sides)   Δ(B − A) +0.0020 [t +1.26]  halves +0.0005 / +0.0035  MDE80 0.0044
+      h16: 252 fits, engine lgbm
+      h16: 25/252 fits done
+      h16: 50/252 fits done
+      h16: 75/252 fits done
+      h16: 100/252 fits done
+      h16: 125/252 fits done
+      h16: 150/252 fits done
+      h16: 175/252 fits done
+      h16: 200/252 fits done
+      h16: 225/252 fits done
+      h16: 250/252 fits done
+
+══ H = 16  [PRIMARY]: out-of-sample rank IC, paired by quarter × side ══
+   bt: arm A IC +0.0420 (33 quarter-sides)   Δ(B − A) +0.0038 [t +2.08]  halves +0.0043 / +0.0034  MDE80 0.0052
+      placebo Δ: +0.0011 +0.0019 +0.0012 +0.0011 +0.0009  → real beats 5/5
+   oos: arm A IC +0.0417 (30 quarter-sides)   Δ(B − A) +0.0039 [t +1.87]  halves +0.0064 / +0.0014  MDE80 0.0059
+      placebo Δ: +0.0020 +0.0029 +0.0018 +0.0016 +0.0018  → real beats 5/5
+
+   ── arm B selection table (discover15 format, no label nulls) ──
+
+── H = 16 bars (240 min)  [PRIMARY] ──
+   univ side      cands  sel%   all-cand net    SELECTED net [t]   nulls ≥         1st half         2nd half       hedged [t]   outside gates [t]   inside gates
+   bt   long     623044   21%         -0.152     -0.024 [ -0.3]         —   -0.031 [-0.5]   -0.019 [-0.1]   -0.141 [-5.2]     -0.024 [ -0.3]         -0.025
+         selected by rung: k0: -0.189 (n 24887)  k1: -0.049 (n 56121)  k2: +0.022 (n 29496)  k3: +0.211 (n 17342)
+   bt   short    568055   16%         -0.188     -0.086 [ -1.9]         —   -0.095 [-1.2]   -0.078 [-1.7]   -0.148 [-9.7]     -0.102 [ -1.7]         -0.070
+         selected by rung: k0: -0.108 (n 26920)  k1: -0.104 (n 41844)  k2: -0.089 (n 15137)  k3: +0.064 (n 9046)
+   oos  long     434504   18%         -0.176     -0.100 [ -1.1]         —   -0.102 [-1.4]   -0.098 [-0.7]   -0.174 [-6.2]     -0.163 [ -1.7]         -0.026
+         selected by rung: k0: -0.225 (n 14356)  k1: -0.104 (n 34777)  k2: -0.107 (n 19494)  k3: +0.080 (n 11647)
+   oos  short    402701   18%         -0.151     +0.008 [ +0.2]         —   +0.011 [+0.2]   +0.005 [+0.1]   -0.058 [-3.0]     +0.012 [ +0.2]         +0.003
+         selected by rung: k0: -0.115 (n 18223)  k1: -0.053 (n 31390)  k2: +0.109 (n 12807)  k3: +0.342 (n 8399)
+
+   out-of-sample rank IC (H=16, BacktestCoins): mean +0.0458 over 33 quarter-sides; positive in 91%
+   features the model leans on (IC drop when permuted):  lbbw +0.0080  k +0.0064  disp16 +0.0053  mvol +0.0049  mz96 +0.0048  hour +0.0044  z96 +0.0041  dow +0.0034  z1 +0.0022  rsi672 +0.0014
+      h48: 72 fits, engine lgbm
+      h48: 7/72 fits done
+      h48: 14/72 fits done
+      h48: 21/72 fits done
+      h48: 28/72 fits done
+      h48: 35/72 fits done
+      h48: 42/72 fits done
+      h48: 49/72 fits done
+      h48: 56/72 fits done
+      h48: 63/72 fits done
+      h48: 70/72 fits done
+
+══ H = 48: out-of-sample rank IC, paired by quarter × side ══
+   bt: arm A IC +0.0564 (33 quarter-sides)   Δ(B − A) +0.0063 [t +1.95]  halves +0.0124 / +0.0007  MDE80 0.0091
+   oos: arm A IC +0.0551 (30 quarter-sides)   Δ(B − A) +0.0048 [t +1.40]  halves +0.0101 / -0.0006  MDE80 0.0096
+
+Trials: 1 primary (B − A at H=16) + 2 secondary horizons. Block B untouched.

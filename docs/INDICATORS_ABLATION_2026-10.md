@@ -51,3 +51,34 @@ splits to construct.
 ## Trials
 
 1 primary + 2 secondary horizons = **3**.
+
+## RESULT (run once, 2026-10-06, pre-registration 1c288c5): FAIL by the OOS t only
+
+Log: `reports/indicators15_run.txt`. Engine: LightGBM. Base IC 0.042–0.056, similar to gbm_np's.
+
+| H | univ | Δ(B − A) [t] | halves | placebos beaten | MDE80 |
+|---|---|---|---|---|---|
+| **16 (primary)** | BT | **+0.0038 [+2.08]** | +0.0043 / +0.0034 | **5/5** | 0.0052 |
+| **16 (primary)** | OOS | **+0.0039 [+1.87]** | +0.0064 / +0.0014 | **5/5** | 0.0059 |
+| 4 | BT / OOS | +0.0011 [+0.7] / +0.0020 [+1.3] | mixed / both + | — | 0.004 |
+| 48 | BT / OOS | +0.0063 [+1.95] / +0.0048 [+1.40] | +0.012 / +0.001 and +0.010 / −0.001 | — | 0.009 / 0.010 |
+
+- **Importance:** the only block feature in the top 10 is `rsi672` (the 7-day RSI, 10th). The model
+  still leans on lbbw, k, disp16, mvol, mz96 and hour.
+- **Selection (arm B, H = 16):** −0.024 / −0.086 BT, −0.100 / +0.008 OOS per trade. Hedged is negative
+  everywhere. Not tradeable.
+
+**Verdict: FAIL.** The OOS t of 1.87 misses the pre-registered 2. Within that, this is the most
+consistent *information* result of the project:
+- **About +0.004 IC** (+9% relative), the same size in both universes;
+- positive in all four universe-halves at 4h;
+- beats every placebo in both universes.
+
+**Indicators at multiple lengths, especially the 7-day oscillator, carry a small real increment that a
+one-length feature set missed. The user's hunch is right in direction.**
+
+It is far too small to move selected trades across the cost line. At 12h it lives in the first half
+only (the decay pattern again).
+
+**Kept as a feature-set improvement** for any future search: the block is cheap and causal. It is not
+a trading result.

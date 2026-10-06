@@ -1,4 +1,4 @@
-# PRE-REGISTRATION: is Grid's edge forced selling? Open-interest drops at arming (2026-10-07)
+# PRE-REGISTRATION: is Grid's edge forced selling? Open-interest drops at arming (2026-10-06)
 
 Written before any OI statistic is read. Frozen at the commit that adds this file together with
 `research/grid_oi_cascade.py`.
@@ -41,7 +41,7 @@ not changed before 2027.
 
 **Trials:** 2 (primary + event study).
 
-## RESULT (run once, 2026-10-07, pre-registration 423e02d): PRIMARY FAIL; the cascade effect exists, outside Grid, on liquid coins
+## RESULT (run once, 2026-10-06, pre-registration 423e02d): PRIMARY FAIL; the cascade effect exists, outside Grid, on liquid coins
 
 Log: `reports/grid_oi_cascade_run.txt`.
 

@@ -1,4 +1,4 @@
-# PRE-REGISTRATION: do the crypto mechanisms hold in US stocks? (2026-10-07)
+# PRE-REGISTRATION: do the crypto mechanisms hold in US stocks? (2026-10-06)
 
 Written before any stock data is read. Frozen at the commit that adds this file together with
 `research/stocks_check.py`. The rules are copied from the crypto book, not fitted.
@@ -33,7 +33,7 @@ Written before any stock data is read. Frozen at the commit that adds this file 
 
 **Trials:** 2.
 
-## RESULT (2026-10-07, pre-registration 795aa4c + a pre-result data fix): BOTH FAIL
+## RESULT (2026-10-06, pre-registration 795aa4c + a pre-result data fix): BOTH FAIL
 
 **Data fix.** Yahoo's `range=max` silently returns MONTHLY bars for `interval=1d`. The first run's
 trend numbers were therefore monthly returns annualised as daily: "SPY +216%/yr, Sharpe 3.1". They

@@ -1,4 +1,4 @@
-# PRE-REGISTRATION: multi-coin trend hybrid, own trend × inverse volatility (2026-10-07)
+# PRE-REGISTRATION: multi-coin trend hybrid, own trend × inverse volatility (2026-10-06)
 
 Written before any statistic of this book is computed. Frozen at the commit that adds this file
 together with `research/trend_multi.py`. Data was fetched first; it carries no outcomes.
@@ -47,7 +47,7 @@ the same mechanics over more coins improve it:
 
 **Trials:** 1.
 
-## RESULT (run once, 2026-10-07, pre-registration 3bf211f): FAIL (second half below the hybrid)
+## RESULT (run once, 2026-10-06, pre-registration 3bf211f): FAIL (second half below the hybrid)
 
 Log: `reports/trend_multi_run.txt`. Window 2017-11-15 → 2026-10-06; median 10 coins live per day.
 

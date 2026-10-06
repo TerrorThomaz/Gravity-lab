@@ -1,4 +1,4 @@
-# Lead-lag to BTC (2026-10-07, descriptive measurement, no trial)
+# Lead-lag to BTC (2026-10-06, descriptive measurement, no trial)
 
 Script `research/leadlag.py`, log `reports/leadlag_run.txt`. Pooled OLS: a follower's return over t+1..t+k
 on BTC's return in bar t, controlling for BTC's own t+1..t+k return and the follower's bar-t return.

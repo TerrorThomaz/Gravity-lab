@@ -1,4 +1,4 @@
-# FORWARD PRE-REGISTRATION: two leads from 2026-10-07 (frozen at the commit that adds this file)
+# FORWARD PRE-REGISTRATION: two leads from 2026-10-06 (frozen at the commit that adds this file)
 
 Both leads came from secondary or descriptive results on seen data:
 - the cascade rebound from `GRID_OI_CASCADE_2026-10.md`;

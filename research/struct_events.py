@@ -55,6 +55,13 @@ def events(H, L, C, A):
 
 
 def build(universe: str, rng, count_only: bool = False):
+    if count_only:
+        return _build(universe, rng, True)
+    import fcache
+    return fcache.cached("sev", (universe, tuple(FEATURES), tuple(sorted(KEEP.items()))), rng, lambda: _build(universe, rng))
+
+
+def _build(universe: str, rng, count_only: bool = False):
     t0 = time.time()
     syms = mnr.config_symbols("OosCoins" if universe == "oos" else "BacktestCoins")
     if os.environ.get("D15_MAXCOINS"):

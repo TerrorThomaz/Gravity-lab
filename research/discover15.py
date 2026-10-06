@@ -122,6 +122,13 @@ def feature_iter(idx, M, fund, S, A, mlr, mcum):
 
 
 def build(universe: str, rng) -> dict:
+    """Cached (fcache): keyed on the feature list, the rng state and the source of the build's modules."""
+    import fcache
+    return fcache.cached("d15", (universe, tuple(FEATURES), tuple(sorted(KEEP.items())), feature_iter.__module__,
+                                 feature_iter.__name__), rng, lambda: _build(universe, rng))
+
+
+def _build(universe: str, rng) -> dict:
     t0 = time.time()
     syms = mnr.config_symbols("OosCoins" if universe == "oos" else "BacktestCoins")
     if os.environ.get("D15_MAXCOINS"):

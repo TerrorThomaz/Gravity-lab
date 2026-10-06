@@ -14,6 +14,11 @@ to runs made before 2026-10-06, which drew everything from one shared sequential
 
 Workers: WF_WORKERS (default: cores − 1, at most 7, because the 7 GB box holds ~1 GB of candidates
 plus ~150 MB per fit).
+
+Engine (WF_ENGINE): "lgbm" (default when lightgbm is importable — run under ~/Gravity-lab/.venv-research)
+or "np" (gbm_np). LightGBM gets the same model spec as gbm_np (depth 3, 150 rounds, lr 0.05, min leaf
+1000, L2 10, row 0.5 / column 0.7 subsampling, 32 bins) and runs its fits one at a time in this process
+on all cores (no fork: OpenMP and fork do not mix). ~20× faster than the numpy engine.
 """
 
 from __future__ import annotations
@@ -26,7 +31,41 @@ import pandas as pd
 
 from gbm_np import Gbm, apply_bins, bin_edges
 
+try:
+    import lightgbm as _lgb
+except ImportError:
+    _lgb = None
+ENGINE = os.environ.get("WF_ENGINE") or ("lgbm" if _lgb is not None else "np")
+
 _S: dict = {}                                           # set in the parent, inherited by forked children
+
+
+class _Lgbm:
+    """gbm_np's spec in LightGBM. Raw floats in; LightGBM bins (32) and routes NaN itself."""
+    def __init__(self, seed: int):
+        self.p = dict(objective="regression", max_depth=3, num_leaves=8, learning_rate=0.05, min_data_in_leaf=1000,
+                      lambda_l2=10.0, bagging_fraction=0.5, bagging_freq=1, feature_fraction=0.7, max_bin=32,
+                      seed=seed, deterministic=True, force_row_wise=True, verbose=-1,
+                      num_threads=int(os.environ.get("LGBM_THREADS", os.cpu_count() or 4)))
+
+    def fit(self, X, y):
+        self.m = _lgb.train(self.p, _lgb.Dataset(X, y, free_raw_data=True), num_boost_round=150)
+        return self
+
+    def predict(self, X):
+        return self.m.predict(X, num_threads=self.p["num_threads"])
+
+
+def _fit_model(X, y, seed):
+    """(edges, model): edges is None for LightGBM, which bins internally."""
+    if ENGINE == "lgbm":
+        return None, _Lgbm(seed).fit(X, y)
+    edges = bin_edges(X)
+    return edges, Gbm(seed=seed).fit(apply_bins(X, edges), y)
+
+
+def _predict(edges, m, X):
+    return m.predict(X) if edges is None else m.predict(apply_bins(X, edges))
 
 
 def workers() -> int:
@@ -69,14 +108,13 @@ def _fit_task(task):
             w = np.where(kk == kv)[0]
             yt[w] = yt[rng.permutation(w)]
     Xtr = _matrix(D, tr, cols, permD)
-    edges = bin_edges(Xtr)
-    m = Gbm(seed=int(q0.value % 1e6) if z < 0 else z + 1000).fit(apply_bins(Xtr, edges), yt)
+    edges, m = _fit_model(Xtr, yt, int(q0.value % 1e6) if z < 0 else z + 1000)
     del Xtr
     out = {}
     for u, X_, ft, perm in (("bt", D, _S["ftD"], permD), ("oos", E, _S["ftE"], permE)):
         te = np.where(sm(X_) & (ft >= q0) & (ft < q1))[0]
         if len(te):
-            out[u] = (te, m.predict(apply_bins(_matrix(X_, te, cols, perm), edges)).astype(np.float32))
+            out[u] = (te, _predict(edges, m, _matrix(X_, te, cols, perm)).astype(np.float32))
     return task, ((q0, side, edges, m) if z < 0 else None), out
 
 
@@ -94,10 +132,11 @@ def run(D, E, h, specs: dict, nulls: int = 0, bar_min: int = 15, seed: int = 202
                     npred={u: np.full((nulls, len(X_["X"])), np.nan) for u, X_ in (("bt", D), ("oos", E))},
                     models=[]) for nm in specs}
     nw = workers()
-    print(f"      h{h}: {len(tasks)} fits on {nw} workers", flush=True)
+    print(f"      h{h}: {len(tasks)} fits, engine {ENGINE}" + (f" on {nw} workers" if ENGINE == "np" else ""), flush=True)
     done = 0
-    with mp.get_context("fork").Pool(nw) as pool:
-        for (nm, qi, s, z), model, out in pool.imap_unordered(_fit_task, tasks, chunksize=1):
+    pool = mp.get_context("fork").Pool(nw) if ENGINE == "np" else None
+    with (pool or _NoPool()) as pl:
+        for (nm, qi, s, z), model, out in (pl.imap_unordered(_fit_task, tasks, chunksize=1) if pool else map(_fit_task, tasks)):
             for u, (te, p) in out.items():
                 if z < 0:
                     res[nm]["pred"][u][te] = p
@@ -114,6 +153,14 @@ def run(D, E, h, specs: dict, nulls: int = 0, bar_min: int = 15, seed: int = 202
     return res
 
 
+class _NoPool:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
 def _imp_task(i):
     D, h, names, cols, seed = _S["D"], _S["h"], _S["names"], _S["cols"], _S["seed"]
     q0, side, edges, m = _S["models"][i]
@@ -127,19 +174,22 @@ def _imp_task(i):
     X, y = _matrix(D, te, cols, None), D["y"][h][te]
     yr = pd.Series(y).rank()
     ic = lambda P: np.corrcoef(pd.Series(P).rank(), yr)[0, 1]
-    b = ic(m.predict(apply_bins(X, edges)))
+    b = ic(_predict(edges, m, X))
     drops = []
     for fi in range(len(names)):
         Xp = X.copy(); Xp[:, fi] = Xp[rng.permutation(len(Xp)), fi]
-        drops.append(b - ic(m.predict(apply_bins(Xp, edges))))
+        drops.append(b - ic(_predict(edges, m, Xp)))
     return b, drops
 
 
 def importance(D, h, R, names, cols=None, seed: int = 20261009) -> list[tuple[str, float]]:
     """discover15.importance, one model per worker. Returns features by mean IC drop, and prints the top 10."""
     _S.update(D=D, h=h, names=names, cols=cols, seed=seed, models=R["models"], ft=pd.to_datetime(D["fill_time"]))
-    with mp.get_context("fork").Pool(workers()) as pool:
-        out = [r for r in pool.map(_imp_task, range(len(R["models"]))) if r is not None]
+    if ENGINE == "np":
+        with mp.get_context("fork").Pool(workers()) as pool:
+            out = [r for r in pool.map(_imp_task, range(len(R["models"]))) if r is not None]
+    else:
+        out = [r for r in map(_imp_task, range(len(R["models"]))) if r is not None]
     _S.clear()
     if not out:
         print("\n   importance: no quarter-side with ≥ 5000 test rows")

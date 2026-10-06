@@ -1,0 +1,18 @@
+oos: 63 coins, OI coverage 68%; trades {'Grid': 6205, 'GridShort': 2051}
+   Grid      oi4  prefer low   n 6145/6205  terciles low/mid/high +0.159 / +0.196 / +0.155  (all +0.170)
+      lift -0.011%/trade [t -0.28]  halves -0.012 [-0.2] / -0.000 [-0.0]  beats random 33.7%  beats time-shifts 4/20  [PRIMARY]
+   GridShort oi4  prefer low   n 2036/2051  terciles low/mid/high +0.179 / +0.026 / +0.049  (all +0.085)
+      lift +0.094%/trade [t +1.38]  halves +0.097 [+0.9] / +0.085 [+1.0]  beats random 97.8%  beats time-shifts 20/20
+   SECONDARY event study (all coins, hourly): dip = price z ≤ −2; forward from next open; excess over the coin's mean
+      2h  dip + OI drop: +0.046% [t +0.4] halves -0.050/+0.142 (n 2453)   |   dip, OI not falling: +0.067% [t +1.3] halves +0.030/+0.103 (n 26631)
+      4h  dip + OI drop: +0.127% [t +0.8] halves -0.025/+0.278 (n 2453)   |   dip, OI not falling: +0.085% [t +1.2] halves +0.084/+0.087 (n 26628)
+      8h  dip + OI drop: +0.076% [t +0.3] halves -0.061/+0.213 (n 2453)   |   dip, OI not falling: +0.088% [t +0.7] halves +0.182/-0.006 (n 26613)
+backtest: 89 coins, OI coverage 66%; trades {'Grid': 8552, 'GridShort': 2609}
+   Grid      oi4  prefer low   n 8445/8552  terciles low/mid/high +0.204 / +0.214 / +0.163  (all +0.194)
+      lift +0.011%/trade [t +0.26]  halves -0.037 [-0.5] / +0.037 [+0.7]  beats random 70.0%  beats time-shifts 12/20  [PRIMARY]
+   GridShort oi4  prefer low   n 2574/2609  terciles low/mid/high +0.175 / +0.103 / +0.180  (all +0.153)
+      lift +0.022%/trade [t +0.32]  halves +0.083 [+0.9] / -0.028 [-0.3]  beats random 68.8%  beats time-shifts 13/20
+   SECONDARY event study (all coins, hourly): dip = price z ≤ −2; forward from next open; excess over the coin's mean
+      2h  dip + OI drop: +0.194% [t +1.5] halves +0.067/+0.321 (n 4039)   |   dip, OI not falling: +0.060% [t +1.2] halves +0.040/+0.079 (n 40376)
+      4h  dip + OI drop: +0.365% [t +2.2] halves +0.266/+0.464 (n 4038)   |   dip, OI not falling: +0.094% [t +1.4] halves +0.111/+0.077 (n 40372)
+      8h  dip + OI drop: +0.685% [t +2.5] halves +0.515/+0.855 (n 4037)   |   dip, OI not falling: +0.125% [t +1.0] halves +0.218/+0.033 (n 40382)

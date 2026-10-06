@@ -1,0 +1,18 @@
+
+── BTC: 2021-03-24 → 2026-07-30, 1915 daily samples ──
+   mean IV 60.9  mean fwd RV 52.6  →  VRP +8.32 vol pts [NW t +5.63]  positive 75% of days  halves +12.25 / +4.39  median +8.74
+   short var-swap proxy, 64 non-overlapping 30d blocks (vol pts per block): mean +7.05, after 2.5 hurdle +4.55;  Sharpe gross +1.66, net +1.07;  skew -0.28; positive 69%
+   net halves: +8.93 / +0.18;  by year: 2021:+15.3 2022:+10.4 2023:+2.1 2024:+2.6 2025:-0.2 2026:-8.3
+   worst blocks: 2026-01-27 -35.3 (IV 39 → RV 64)  2021-04-23 -35.3 (IV 87 → RV 116)  2022-04-18 -23.6 (IV 64 → RV 82)  2026-05-27 -22.0 (IV 36 → RV 52)  2024-02-07 -18.0 (IV 43 → RV 56)
+   correlation of block P&L with BTC return +0.07, with Grid (OOS) -0.13;  on the 20% worst BTC blocks: VRP net -0.27 vs all +4.98
+   timing (report only): VRP when IV − trailing RV above median +10.58, below +6.07
+
+── ETH: 2021-03-24 → 2026-07-30, 1915 daily samples ──
+   mean IV 74.9  mean fwd RV 69.9  →  VRP +5.03 vol pts [NW t +2.29]  positive 65% of days  halves +9.02 / +1.05  median +5.79
+   short var-swap proxy, 64 non-overlapping 30d blocks (vol pts per block): mean +2.75, after 2.5 hurdle +0.25;  Sharpe gross +0.39, net +0.03;  skew -1.88; positive 59%
+   net halves: +4.65 / -4.16;  by year: 2021:+6.6 2022:+5.1 2023:+2.2 2024:-1.2 2025:-7.0 2026:-6.6
+   worst blocks: 2021-04-23 -119.5 (IV 92 → RV 173)  2025-02-01 -49.0 (IV 64 → RV 101)  2022-04-18 -46.0 (IV 67 → RV 101)  2026-01-27 -40.3 (IV 54 → RV 84)  2022-01-18 -33.2 (IV 73 → RV 99)
+   correlation of block P&L with ETH return +0.12, with Grid (OOS) -0.09;  on the 20% worst ETH blocks: VRP net -3.26 vs all +0.64
+   timing (report only): VRP when IV − trailing RV above median +7.38, below +3.04
+
+STAGE 1 FAIL: BTC VRP +8.32 t +5.63 halves +12.25/+4.39 net Sharpe +1.07; ETH VRP +5.03 t +2.29 halves +9.02/+1.05 net Sharpe +0.03

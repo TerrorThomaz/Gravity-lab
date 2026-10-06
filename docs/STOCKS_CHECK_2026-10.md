@@ -32,3 +32,36 @@ Written before any stock data is read. Frozen at the commit that adds this file 
 - **No carry analogue** is tested.
 
 **Trials:** 2.
+
+## RESULT (2026-10-07, pre-registration 795aa4c + a pre-result data fix): BOTH FAIL
+
+**Data fix.** Yahoo's `range=max` silently returns MONTHLY bars for `interval=1d`. The first run's
+trend numbers were therefore monthly returns annualised as daily: "SPY +216%/yr, Sharpe 3.1". They
+were read only as an impossibility and voided. The script now requests explicit epochs and asserts
+that the bars are daily. The hourly data was correct, so B is unchanged. Log:
+`reports/stocks_check_run.txt`. Drawdowns are cumulative log-%.
+
+**A. Trend rule (21-day sign, long/short):**
+
+| | trend %/yr / Sharpe | buy & hold %/yr / Sharpe | beta | alpha t | halves Sharpe |
+|---|---|---|---|---|---|
+| **SPY + QQQ (primary)** | +2.0 / 0.10 | +9.3 / 0.42 | −0.26 | **+1.22** | +0.01 / +0.22 |
+| SPY | +0.1 / 0.01 | +10.3 / 0.55 | −0.23 | +0.91 | +0.02 / −0.01 |
+| QQQ | +4.9 / 0.20 | +10.4 / 0.39 | −0.25 | +1.67 | |
+| other 6 ETFs | Sharpe −0.03 to +0.13 | | | +0.4 to +1.1 (GLD −0.5) | |
+
+Fails (alpha t 1.22 < 2). Note the **negative beta (−0.2 to −0.3) on every equity ETF**: as in crypto,
+the rule mostly acts as a crash hedge. But equities' long-run drift (+9%/yr) makes buy-and-hold the
+better book.
+
+**B. Hourly dip rebound** (excess over the same time of day, day-clustered t):
+
+| group | 1h | 2h | 4h | 6h |
+|---|---|---|---|---|
+| **index ETFs, market-wide dip (primary)** | −0.007 [−0.2] | −0.010 [−0.2] | −0.036 [−0.6] | −0.037 [−0.5] |
+| stocks, market dipped too | −0.006 | −0.001 | −0.007 | +0.004 |
+| stocks, only the stock dipped | +0.026 [+1.4] | +0.011 | +0.029 [+0.8] | +0.019 |
+
+Fails. Grid's mechanism, the hours-scale rebound after a market-wide flush, **does not exist in US
+stocks**. That fits the equity literature on intraday momentum. Grid's edge is crypto-specific: likely
+liquidation cascades in leveraged perps, which overshoot and then refill.

@@ -36,7 +36,9 @@ def yahoo(sym: str, interval: str, rng: str) -> pd.DataFrame:
     path = os.path.join(OUT, f"{sym}_{interval}.csv")
     if os.path.exists(path) and time.time() - os.path.getmtime(path) < 86400:
         return pd.read_csv(path, index_col=0, parse_dates=True)
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval={interval}&range={rng}&includeAdjustedClose=true"
+    # range=max silently returns MONTHLY bars for interval=1d (found 2026-10-07): ask with explicit epochs
+    span = f"period1=0&period2={int(time.time())}" if rng == "max" else f"range={rng}"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval={interval}&{span}&includeAdjustedClose=true"
     d = json.load(urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=30))["chart"]["result"][0]
     q = d["indicators"]["quote"][0]
     df = pd.DataFrame({k: q[k] for k in ("open", "high", "low", "close", "volume")},
@@ -52,6 +54,8 @@ def yahoo(sym: str, interval: str, rng: str) -> pd.DataFrame:
 
 def trend() -> None:
     px = pd.DataFrame({s: yahoo(s, "1d", "max").close for s in ETFS}).sort_index()
+    gap = px.index.to_series().diff().dt.days.median()
+    assert gap <= 3, f"daily data is not daily (median gap {gap} days)"
     r = np.log(px).diff()
 
     def book(cols, label):

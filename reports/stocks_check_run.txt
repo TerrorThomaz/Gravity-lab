@@ -1,0 +1,28 @@
+
+A  TREND (21d sign, 5×5d cohorts, long/short, 1 bp)
+   SPY+QQQ [P]  1999→2026  trend:  +2.0%/yr Sharpe +0.10 maxDD -46%   B&H:  +9.3%/yr Sharpe +0.42 maxDD -121%   beta -0.26  alpha t +1.22  halves Sharpe +0.01/+0.22  1990s:-0.5 2000s:+0.1 2010s:+0.1 2020s:+0.3
+   SPY          1993→2026  trend:  +0.1%/yr Sharpe +0.01 maxDD -63%   B&H: +10.3%/yr Sharpe +0.55 maxDD -80%   beta -0.23  alpha t +0.91  halves Sharpe +0.02/-0.01  1990s:+0.2 2000s:-0.1 2010s:-0.1 2020s:+0.1
+   QQQ          1999→2026  trend:  +4.9%/yr Sharpe +0.20 maxDD -55%   B&H: +10.4%/yr Sharpe +0.39 maxDD -177%   beta -0.25  alpha t +1.67  halves Sharpe +0.16/+0.28  1990s:+0.3 2000s:+0.2 2010s:+0.1 2020s:+0.3
+   IWM          2000→2026  trend:  +2.8%/yr Sharpe +0.13 maxDD -76%   B&H:  +7.8%/yr Sharpe +0.33 maxDD -88%   beta -0.20  alpha t +1.06  halves Sharpe +0.14/+0.12  2000s:+0.3 2010s:-0.3 2020s:+0.4
+   DIA          1998→2026  trend:  -0.5%/yr Sharpe -0.03 maxDD -63%   B&H:  +8.4%/yr Sharpe +0.45 maxDD -73%   beta -0.29  alpha t +0.64  halves Sharpe -0.07/+0.02  1990s:+0.4 2000s:-0.0 2010s:-0.3 2020s:+0.1
+   EFA          2001→2026  trend:  +0.8%/yr Sharpe +0.04 maxDD -94%   B&H:  +6.7%/yr Sharpe +0.33 maxDD -94%   beta -0.26  alpha t +0.71  halves Sharpe +0.24/-0.24  2000s:+0.5 2010s:-0.4 2020s:-0.2
+   EEM          2003→2026  trend:  +1.6%/yr Sharpe +0.06 maxDD -103%   B&H:  +9.4%/yr Sharpe +0.35 maxDD -109%   beta -0.26  alpha t +0.84  halves Sharpe +0.09/+0.03  2000s:+0.3 2010s:-0.1 2020s:-0.0
+   TLT          2002→2026  trend:  +1.4%/yr Sharpe +0.11 maxDD -31%   B&H:  +2.9%/yr Sharpe +0.20 maxDD -66%   beta +0.08  alpha t +0.44  halves Sharpe +0.17/+0.05  2000s:+0.2 2010s:-0.1 2020s:+0.2
+   GLD          2004→2026  trend:  +0.1%/yr Sharpe +0.01 maxDD -88%   B&H:  +9.9%/yr Sharpe +0.54 maxDD -61%   beta +0.18  alpha t -0.50  halves Sharpe +0.04/-0.04  2000s:+0.1 2010s:-0.1 2020s:+0.1
+
+B  DIP REBOUND (hourly, z ≤ −2 vs trailing 70 bars; buy next open; net of costs; vs same time-of-day baseline)
+   index ETFs (market-wide dip)
+      1h: net -0.030% excess -0.007 [t -0.2] halves -0.030/+0.015 (n 485)
+      2h: net -0.022% excess -0.010 [t -0.2] halves -0.046/+0.025 (n 485)
+      4h: net -0.029% excess -0.036 [t -0.6] halves -0.059/-0.013 (n 485)
+      6h: net -0.023% excess -0.037 [t -0.5] halves -0.062/-0.012 (n 485)
+   stocks, market dipped too (SPY z ≤ −1)
+      1h: net -0.032% excess -0.006 [t -0.2] halves +0.010/-0.022 (n 1953)
+      2h: net -0.009% excess -0.001 [t -0.0] halves +0.035/-0.036 (n 1953)
+      4h: net -0.003% excess -0.007 [t -0.1] halves +0.015/-0.030 (n 1953)
+      6h: net +0.030% excess +0.004 [t +0.0] halves +0.036/-0.028 (n 1953)
+   stocks, only the stock dipped (SPY z > −1)
+      1h: net -0.020% excess +0.026 [t +1.4] halves +0.033/+0.019 (n 2201)
+      2h: net -0.031% excess +0.011 [t +0.4] halves +0.035/-0.012 (n 2201)
+      4h: net +0.004% excess +0.029 [t +0.8] halves +0.035/+0.023 (n 2199)
+      6h: net +0.000% excess +0.019 [t +0.4] halves +0.056/-0.018 (n 2199)

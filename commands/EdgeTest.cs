@@ -147,7 +147,7 @@ public static class EdgeTest
 
     private readonly record struct Booked(
         DateTime Entry, DateTime Exit, double Ret, double Size, string Strategy, string Symbol,
-        MarketRegime Regime = MarketRegime.Ranging, double EntryPrice = 0.0);
+        MarketRegime Regime = MarketRegime.Ranging, double EntryPrice = 0.0, bool Stop = false);
 
     public static async Task Run(BybitRestClient client)
     {
@@ -274,9 +274,12 @@ public static class EdgeTest
             // as Grid/GridShort. The genotypes still decide eligibility, exactly as for the GA grids.
             if (StrategyPipeline.SelectVariant(gridVariants, f.m15) is { } gr)
             {
+                var stops = new List<bool>();
+                int first = raw.Count;
                 Add("Grid", (StructGrid ? StructGridSimulator.GetReturns(f.h1, isLong: true)
-                                        : GridSimulator.GetGridSessionReturns(gr, f.h1))
+                                        : GridSimulator.GetGridSessionReturns(gr, f.h1, stopOut: stops))
                     .Select(t => (t.Time, t.Return, t.EntryTime, t.EntryPrice)));
+                for (int k = 0; k < stops.Count; k++) raw[first + k] = raw[first + k] with { Stop = stops[k] };
 
             }
             if (StrategyPipeline.SelectVariant(gsVariants, f.m15) is { } gs)
@@ -355,8 +358,8 @@ public static class EdgeTest
         Directory.CreateDirectory("reports");
         File.WriteAllLines("reports/edgetest_raw_trades.csv",
             raw.Select(t => FormattableString.Invariant(
-                    $"{t.Entry:yyyy-MM-dd HH:mm:ss},{t.Exit:yyyy-MM-dd HH:mm:ss},{t.Symbol},{t.Strategy},{t.Ret:F4},{t.EntryPrice}"))
-               .Prepend("entry_time,exit_time,symbol,strategy,return_pct,entry_price"));
+                    $"{t.Entry:yyyy-MM-dd HH:mm:ss},{t.Exit:yyyy-MM-dd HH:mm:ss},{t.Symbol},{t.Strategy},{t.Ret:F4},{t.EntryPrice},{(t.Stop ? 1 : 0)}"))
+               .Prepend("entry_time,exit_time,symbol,strategy,return_pct,entry_price,stop"));
 
         // GRAVITY_EDGE_SLEEVES=<dir with carry.csv, trend.csv from research/export_sleeves.py>: the whole
         // book across sleeves, sized by SleeveSizer (research/cov_sizing.py's rule) instead of the shared
@@ -951,6 +954,8 @@ public static class EdgeTest
             ("ERC, C# mean-diag shrink, scaled to gross", SleeveSizer.Method.ErcMeanDiagShrink, true,  double.PositiveInfinity),
             ("ERC, correlation shrink, scaled to gross",  SleeveSizer.Method.ErcCorrShrink,     true,  double.PositiveInfinity),
             ("ERC, correlation shrink, scaled, w ≤ 1",    SleeveSizer.Method.ErcCorrShrink,     true,  1.0),
+            ("alpha Σ⁻¹μ (t-shrunk μ), scaled to gross",  SleeveSizer.Method.Alpha,             true,  double.PositiveInfinity),
+            ("alpha Σ⁻¹μ (t-shrunk μ), scaled, w ≤ 1",    SleeveSizer.Method.Alpha,             true,  1.0),
         };
         foreach (double expCap in new[] { 0.60, 0.30 })
         {

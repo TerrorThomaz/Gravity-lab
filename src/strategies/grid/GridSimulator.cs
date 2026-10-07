@@ -28,9 +28,9 @@ public static class GridSimulator
     // maeOut: opt-in per-trade worst adverse excursion, parallel to the returned list.
     public static List<(DateTime Time, double Return, string Kind, DateTime EntryTime, double EntryPrice)> GetGridSessionReturns(
         GridGenotype g, ReadOnlySpan<Candle> h1, FundingRateSession? funding = null,
-        List<double>? maeOut = null)
+        List<double>? maeOut = null, List<bool>? stopOut = null)
     {
-        var (trades, _) = RunGrid(g, h1, sessionLevel: true, funding: funding, maeOut: maeOut);
+        var (trades, _) = RunGrid(g, h1, sessionLevel: true, funding: funding, maeOut: maeOut, stopOut: stopOut);
         return trades;
     }
 
@@ -89,6 +89,9 @@ public static class GridSimulator
                 // percent and <= 0. Feeds FoldScoreHelper.Canonical's drawdown term so the GA can
                 // see time at risk instead of only the settled return.
                 List<double>? maeOut = null,
+                // Opt-in, parallel to the emitted sessions: true when the session ended on the hard
+                // stop or the bail-out (a range break), false on TP / ADX / timeout / end of data.
+                List<bool>? stopOut = null,
                 // RANGE HARVESTING. When supplied this REPLACES the ADX/BB/slope arming gate: it is
                 // asked, at each bar with no live session, where to centre a grid — returning the
                 // anchor price, or null for "do not arm here".
@@ -137,6 +140,7 @@ public static class GridSimulator
         double   sessionScore      = 0;
         DateTime sessionEntryTime  = default;
         double   sessionMae        = 0.0;   // worst unrealised % of the filled rungs this session
+        bool     sessionStopped    = false;
         bool     everFilled        = false; // has this session ever held a rung?
 
         void AddReturn(int i, double ret, string kind, double entryPx)
@@ -157,18 +161,22 @@ public static class GridSimulator
 
         void FlushSession(int i)
         {
+            bool stopped = sessionStopped;
+            sessionStopped = false;
             if (!sessionLevel || sessionFills.Count == 0) return;
             double avg = sessionFills.Average();
             result.Add((times[i], avg, "grid_session", sessionEntryTime,
                         sessionEntryN > 0 ? sessionEntrySum / sessionEntryN : 0.0));
             scoredOut?.Add(new ScoredTrade(coin!, "grid", sessionEntryTime, times[i], avg, sessionScore));
             maeOut?.Add(sessionMae);
+            stopOut?.Add(stopped);
             sessionFills.Clear();
             sessionMae = 0.0;
         }
 
         void CloseAllFilled(int i, double exitPx, bool isStop = false)
         {
+            if (isStop) sessionStopped = true;
             double fundingPnl = FundingRateSession.PnlPct(sessionEntryTime, times[i], funding, isLong: true);
             for (int n = 0; n < levels; n++)
             {

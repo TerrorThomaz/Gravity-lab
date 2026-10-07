@@ -6,7 +6,8 @@ namespace TradingGA;
 // Monthly, from the `lookback` days strictly BEFORE the month:
 //   1. risk weights, summing to 1: inverse vol, or ERC on a shrunk covariance — either the C# rule
 //      (CovarianceMatrix.Shrink, toward mean(diag)·I, which inflates low-vol sleeves and pulls the
-//      weights toward equal) or a correlation-only shrink that keeps each sleeve's own variance;
+//      weights toward equal) or a correlation-only shrink that keeps each sleeve's own variance —
+//      or Alpha (see AlphaWeights), the only one that asks what each sleeve EARNS;
 //   2. optionally scaled up until the book's trailing PEAK gross notional, Σ w_i·g_i(d), reaches
 //      the gross limit: a capital split leaves most of a grid sleeve's capital idle (mean gross ~0.2);
 //   3. each weight capped at maxWeight (the freed budget is NOT redistributed: conservative).
@@ -14,7 +15,7 @@ namespace TradingGA;
 // book never runs levered even when the trailing estimate under-predicted a flush.
 public static class SleeveSizer
 {
-    public enum Method { InverseVol, ErcMeanDiagShrink, ErcCorrShrink }
+    public enum Method { InverseVol, ErcMeanDiagShrink, ErcCorrShrink, Alpha }
 
     public record Result(double[] Daily, double[] Gross, double[][] Weights);
 
@@ -32,13 +33,55 @@ public static class SleeveSizer
     {
         Method.InverseVol        => RiskParity.InverseVol(cov, k),
         Method.ErcMeanDiagShrink => RiskParity.EqualRiskContribution(CovarianceMatrix.Shrink(cov, k, lambda) ?? cov, k, maxIter: 5000, tol: 1e-10).Weights,
-        _                        => RiskParity.EqualRiskContribution(CorrShrink(cov, k, lambda), k, maxIter: 5000, tol: 1e-10).Weights,
+        Method.ErcCorrShrink     => RiskParity.EqualRiskContribution(CorrShrink(cov, k, lambda), k, maxIter: 5000, tol: 1e-10).Weights,
+        _ => throw new ArgumentException("Alpha needs means: use AlphaWeights or Size", nameof(m)),
     };
+
+    // Alpha: w ∝ Σ⁻¹μ, clipped at 0. Component i of Σ⁻¹μ is exactly α_i / σ²_ε,i — sleeve i's alpha
+    // against the best combination of the OTHER sleeves, over its residual variance (Treynor-Black).
+    // So a low-Sharpe sleeve that is uncorrelated with, or hedges, the rest is not starved the way
+    // ERC starves it (power check: ERC lowers book Sharpe for any uncorrelated sleeve with SR < ~0.67),
+    // and a sleeve the others already replicate gets nothing however good it looks alone.
+    // μ is the noisy part, so each mean is shrunk toward 0 by its own t-stat, μ·max(0, 1 − 1/t²)
+    // (positive-part James-Stein): a sleeve must have earned its mean before it is sized on it.
+    // Σ is correlation-shrunk. Nothing positive → inverse vol (no evidence of alpha anywhere).
+    public static double[] AlphaWeights(double[] cov, double[] mean, double[] tStat, int k, double lambda = 0.3)
+    {
+        var mu = new double[k];
+        for (int i = 0; i < k; i++)
+            mu[i] = Math.Abs(tStat[i]) > 1 ? mean[i] * (1 - 1 / (tStat[i] * tStat[i])) : 0.0;
+        var x = Solve(CorrShrink(cov, k, lambda), mu, k);
+        var w = x?.Select(v => Math.Max(0.0, v)).ToArray();
+        double sum = w?.Sum() ?? 0;
+        return sum > 1e-300 ? w!.Select(v => v / sum).ToArray() : RiskParity.InverseVol(cov, k);
+    }
+
+    // Gaussian elimination with partial pivoting; k is the number of sleeves (≤ ~5). Null if singular.
+    private static double[]? Solve(double[] a, double[] b, int k)
+    {
+        var m = new double[k, k + 1];
+        for (int i = 0; i < k; i++) { for (int j = 0; j < k; j++) m[i, j] = a[i * k + j]; m[i, k] = b[i]; }
+        for (int c = 0; c < k; c++)
+        {
+            int p = c;
+            for (int r = c + 1; r < k; r++) if (Math.Abs(m[r, c]) > Math.Abs(m[p, c])) p = r;
+            if (Math.Abs(m[p, c]) < 1e-300) return null;
+            for (int j = c; j <= k; j++) (m[c, j], m[p, j]) = (m[p, j], m[c, j]);
+            for (int r = 0; r < k; r++)
+            {
+                if (r == c) continue;
+                double f = m[r, c] / m[c, c];
+                for (int j = c; j <= k; j++) m[r, j] -= f * m[c, j];
+            }
+        }
+        return Enumerable.Range(0, k).Select(i => m[i, k] / m[i, i]).ToArray();
+    }
 
     // pnl[i][d], gross[i][d]: sleeve i on day d (aligned to `days`).
     public static Result Size(DateTime[] days, double[][] pnl, double[][] gross, Method m, bool scaleToGross,
                               double grossLimit = 1.0, double maxWeight = double.PositiveInfinity,
-                              int lookback = 90, int minDays = 60, double lambda = 0.3)
+                              int lookback = 90, int minDays = 60, double lambda = 0.3,
+                              int alphaLookback = 365)
     {
         int k = pnl.Length, n = days.Length;
         var daily = new double[n];
@@ -58,7 +101,21 @@ public static class SleeveSizer
                 else
                 {
                     var cov = CovarianceMatrix.Sample(pnl.Select(s => past.Select(i => s[i]).ToArray()).ToArray());
-                    w = cov == null ? Enumerable.Repeat(1.0 / k, k).ToArray() : RiskWeights(cov, k, m, lambda);
+                    if (cov == null) w = Enumerable.Repeat(1.0 / k, k).ToArray();
+                    else if (m == Method.Alpha)
+                    {
+                        // Means need a longer window than the covariance: a 90-day mean is mostly noise.
+                        var longPast = Enumerable.Range(0, d).Where(i => days[i] >= start.AddDays(-alphaLookback)).ToArray();
+                        var mean = new double[k]; var t = new double[k];
+                        for (int s = 0; s < k; s++)
+                        {
+                            var x = longPast.Select(i => pnl[s][i]).ToArray();
+                            double mu = x.Average(), sd = Math.Sqrt(x.Sum(v => (v - mu) * (v - mu)) / Math.Max(1, x.Length - 1));
+                            mean[s] = mu; t[s] = sd > 1e-15 ? mu / sd * Math.Sqrt(x.Length) : 0.0;
+                        }
+                        w = AlphaWeights(cov, mean, t, k, lambda);
+                    }
+                    else w = RiskWeights(cov, k, m, lambda);
                     double sum = w.Sum();
                     w = w.Select(x => x / sum).ToArray();
                     if (scaleToGross)

@@ -76,4 +76,46 @@ public class SleeveSizerTests
         var b = SleeveSizer.Size(days, pnl, gross, SleeveSizer.Method.ErcCorrShrink, scaleToGross: true);
         Assert.Equal(a.Weights[firstOfMay + 10], b.Weights[firstOfMay + 10]);       // May weights unchanged
     }
+
+    [Fact]
+    public void Alpha_UncorrelatedSleeves_AreSizedByShrunkMeanOverVariance()
+    {
+        double[] cov = { 0.0004, 0, 0, 0.0001 };
+        double[] mean = { 0.002, 0.001 }, t = { 4, 2 };
+        var w = SleeveSizer.AlphaWeights(cov, mean, t, 2);
+        double a = 0.002 * (1 - 1 / 16.0) / 0.0004, b = 0.001 * (1 - 1 / 4.0) / 0.0001;
+        Assert.Equal(a / (a + b), w[0], 9);
+        Assert.Equal(b / (a + b), w[1], 9);
+    }
+
+    [Fact]
+    public void Alpha_ZeroMeanHedgeEarnsWeight_ZeroMeanUncorrelatedDoesNot()
+    {
+        double[] mean = { 0.002, 0.0 }, t = { 4, 0 };
+        var hedge = SleeveSizer.AlphaWeights(new[] { 0.0004, -0.0001, -0.0001, 0.0001 }, mean, t, 2);
+        Assert.True(hedge[1] > 0.1, $"a hedge of the earning sleeve should be held, got {hedge[1]}");
+        var idle = SleeveSizer.AlphaWeights(new[] { 0.0004, 0.0, 0.0, 0.0001 }, mean, t, 2);
+        Assert.Equal(0.0, idle[1], 12);
+    }
+
+    [Fact]
+    public void Alpha_NoSleeveHasEarnedItsMean_FallsBackToInverseVol()
+    {
+        double[] cov = { 0.0004, 0, 0, 0.0001 };
+        var w = SleeveSizer.AlphaWeights(cov, new[] { 0.001, -0.002 }, new[] { 0.9, -3.0 }, 2);
+        Assert.Equal(RiskParity.InverseVol(cov, 2), w);
+    }
+
+    [Fact]
+    public void Alpha_WeightsUseOnlyDaysBeforeTheMonth()
+    {
+        var (days, pnl, gross) = Fixture(400);
+        for (int i = 0; i < 400; i++) pnl[1][i] += 0.0005;                          // give one sleeve a mean
+        var a = SleeveSizer.Size(days, pnl, gross, SleeveSizer.Method.Alpha, scaleToGross: true);
+        int firstOfDec = Array.FindIndex(days, d => d.Month == 12 && d.Day == 1);
+        pnl[0][firstOfDec + 5] = 0.5;
+        var b = SleeveSizer.Size(days, pnl, gross, SleeveSizer.Method.Alpha, scaleToGross: true);
+        Assert.Equal(a.Weights[firstOfDec + 10], b.Weights[firstOfDec + 10]);
+        Assert.NotEqual(a.Weights[firstOfDec + 10], a.Weights[firstOfDec - 40]);   // and it does move monthly
+    }
 }

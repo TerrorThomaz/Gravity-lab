@@ -1,0 +1,124 @@
+
+═══ EDGE TEST — walk-forward gate, portfolio Sharpe, deflated ═══
+
+  Fetching 100 symbols (never-trained OOS set + BTC/ETH anchors)…
+  [cache] BTCUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ETHUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] SOLUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] BNBUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] XRPUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] DOGEUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ADAUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] AVAXUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] TRXUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] XLMUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] DOTUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] LINKUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ATOMUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] NEARUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] LTCUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] BCHUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ETCUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] VETUSDT: 5 gap(s) > 2x median spacing (15m), first at 2026-06-14 07:30
+  [cache] HBARUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ALGOUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ICPUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] FILUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] STXUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] OPUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ARBUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] APTUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] SUIUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] INJUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] SEIUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] TIAUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] KASUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] CFXUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ROSEUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] KSMUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] STRKUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] UNIUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] AAVEUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] SNXUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] CRVUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] COMPUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] GMXUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] DYDXUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] RUNEUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] LDOUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] SUSHIUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] 1INCHUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] PENDLEUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] JUPUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ENAUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] TAOUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] WLDUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] PYTHUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] EIGENUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ONDOUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ARUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] SANDUSDT: 5 gap(s) > 2x median spacing (15m), first at 2026-06-14 07:30
+  [cache] MANAUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] AXSUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] IMXUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] GALAUSDT: 5 gap(s) > 2x median spacing (15m), first at 2026-06-14 07:30
+  [cache] APEUSDT: 5 gap(s) > 2x median spacing (15m), first at 2026-06-14 07:30
+  [cache] CHZUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ENJUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ZILUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ANKRUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] LRCUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] SKLUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] BANDUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] HNTUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] LPTUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] STORJUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] BATUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] QNTUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] WIFUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] MEMEUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] 1000BONKUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] 1000PEPEUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] 1000FLOKIUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] BOMEUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] NOTUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ORDIUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] HYPEUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] MNTUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] POLUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] GRTUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] GMTUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] STGUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] JTOUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  BTC regime series: 56638 h1 bars (2020-03-25 → 2026-10-07)
+
+  [harvest] DipLong: setups on 87 coins, 12494 anchors
+  [harvest] SwingLong: setups on 87 coins, 29927 anchors
+  CROWDING cap ON (GRAVITY_CROWDING=0.50), 89 symbols — charges same-side open positions against the 20-slot budget
+
+  Raw book: 11183 trades, 87 coins, 2 strategies
+
+═══ SLEEVE BOOK — SleeveSizer across carry, Grid, GridShort, trend (gross notional ≤ 1) ═══
+
+  grid exposure cap 60% of sleeve capital; 2021-12-22 → 2026-10-03
+    sleeves (MTM, per unit capital): carry Sharpe 0.59 mean gross 1.00  grid Sharpe 2.43 mean gross 0.23  gridshort Sharpe 1.22 mean gross 0.09  trend Sharpe 0.74 mean gross 0.85
+    book                                            CAGR    vol  Sharpe   maxDD    DSR  gross μ/peak  avg weights (carry/grid/gridshort/trend)
+    inverse vol, capital split (sum 1)             12.1%   5.4%    2.14   -5.5%  0.579   0.27/0.75   0.11/0.30/0.54/0.05
+    ERC, C# mean-diag shrink, scaled to gross      21.1%  11.6%    1.72   -8.6%  0.226   0.60/1.00   0.32/0.44/0.45/0.16
+    ERC, correlation shrink, scaled to gross       17.2%   7.9%    2.05   -9.1%  0.498   0.42/1.00   0.18/0.46/0.85/0.07
+    ERC, correlation shrink, scaled, w ≤ 1         17.0%   7.8%    2.05   -9.1%  0.501   0.42/1.00   0.18/0.46/0.81/0.07
+    alpha Σ⁻¹μ, EB Sharpe, scaled to gross         19.3%   7.2%    2.50   -5.5%  0.840   0.36/1.00   0.07/0.71/0.81/0.05
+    alpha Σ⁻¹μ, EB Sharpe, scaled, w ≤ 1           19.2%   7.1%    2.52   -5.5%  0.852   0.36/1.00   0.07/0.71/0.79/0.05
+
+  grid exposure cap 30% of sleeve capital; 2021-12-22 → 2026-10-03
+    sleeves (MTM, per unit capital): carry Sharpe 0.59 mean gross 1.00  grid Sharpe 3.02 mean gross 0.16  gridshort Sharpe 1.45 mean gross 0.08  trend Sharpe 0.74 mean gross 0.85
+    book                                            CAGR    vol  Sharpe   maxDD    DSR  gross μ/peak  avg weights (carry/grid/gridshort/trend)
+    inverse vol, capital split (sum 1)             11.9%   4.9%    2.32   -5.5%  0.725   0.23/0.65   0.10/0.33/0.53/0.04
+    ERC, C# mean-diag shrink, scaled to gross      27.6%  14.7%    1.73  -11.0%  0.236   0.74/1.00   0.42/0.59/0.60/0.21
+    ERC, correlation shrink, scaled to gross       28.8%   9.9%    2.62   -5.5%  0.902   0.56/1.00   0.24/0.81/1.36/0.09
+    ERC, correlation shrink, scaled, w ≤ 1         26.8%   9.2%    2.62   -5.5%  0.904   0.52/1.00   0.24/0.80/0.96/0.09
+    alpha Σ⁻¹μ, EB Sharpe, scaled to gross         35.6%   9.7%    3.20   -5.5%  0.995   0.48/1.00   0.10/1.38/1.36/0.06
+    alpha Σ⁻¹μ, EB Sharpe, scaled, w ≤ 1           26.0%   7.4%    3.15   -5.5%  0.993   0.38/0.88   0.10/0.97/0.97/0.06
+
+  Carry and trend are read from research/export_sleeves.py (Python engine, authority cost constants);
+  Grid / GridShort are this engine's trades, marked daily on real prices. Seen data: information.

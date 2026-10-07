@@ -988,7 +988,9 @@ def fs_activity(mk: Market, p: FsMarketParams) -> np.ndarray:
     that bar (entered at or before it, not yet exited). Known at the bar close."""
     d = pd.read_csv(p.trades, parse_dates=["entry_time", "exit_time"])
     d = d[d.strategy == "FadeShort"]
-    end = (mk.close.index + pd.Timedelta(hours=1)).values
+    if d.empty:   # FadeShort's genotype is .DISABLED on the live roster: an empty log is a zero signal, not a result
+        raise SystemExit(f"{p.trades} has no FadeShort trades — dump it with the genotype restored")
+    end =(mk.close.index + pd.Timedelta(hours=1)).values
     ent, ext = np.sort(d.entry_time.values), np.sort(d.exit_time.values)
     k = np.searchsorted(ent, end, "right") - np.searchsorted(ext, end, "right")
     alive = (~np.isnan(mk.close.values)).sum(axis=1)
@@ -998,16 +1000,29 @@ def fs_activity(mk: Market, p: FsMarketParams) -> np.ndarray:
 
 def run_fsmarket(mk: Market, p: FsMarketParams, act: np.ndarray, basket: str = "liquid"):
     """Short `act[t]` of gross in one basket instead of per-coin shorts. basket="liquid":
-    equal-weight top-N liquid, refreshed daily; basket="BTCUSDT": that coin alone."""
+    equal-weight top-N liquid, refreshed daily; basket="BTCUSDT": that coin alone;
+    basket="spread" (docs/PREREG_FS_SPREAD_2026-10.md): the liquid basket WITHOUT BTC/ETH, short,
+    and BTC long at the alt basket's trailing-30d beta to BTC (clipped [0, 3]) — the alt-vs-leader call."""
     n, m = mk.close.shape
     targets: dict[int, np.ndarray] = {}
     start = 24 * 30
-    members, last = None, None
+    members, last, beta = None, None, 0.0
+    cols = list(mk.close.columns)
+    btc = cols.index("BTCUSDT") if "BTCUSDT" in cols else None
     for t in range(start, n - p.delay):
         new_day = (t - start) % 24 == 0
         if new_day:
             if basket == "liquid":
                 members = liquid_universe(mk, t - 24 * 30, t + 1, p.universe_top)
+            elif basket == "spread":
+                drop = {cols.index(c) for c in ("BTCUSDT", "ETHUSDT") if c in cols}
+                members = [c for c in liquid_universe(mk, t - 24 * 30, t + 1, p.universe_top + len(drop))
+                           if c not in drop][:p.universe_top]
+                lr = log_returns(mk, t - 24 * 30, t + 1, members + [btc])
+                alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+                ok = ~np.isnan(alt) & ~np.isnan(b)
+                vb = np.var(b[ok])
+                beta = float(np.clip(np.cov(alt[ok], b[ok])[0, 1] / vb, 0.0, 3.0)) if vb > 0 else 0.0
             else:
                 members = [list(mk.close.columns).index(basket)]
         if not members:
@@ -1017,6 +1032,8 @@ def run_fsmarket(mk: Market, p: FsMarketParams, act: np.ndarray, basket: str = "
             continue
         w = np.zeros(m)
         w[members] = -a / len(members)
+        if basket == "spread":
+            w[btc] += a * beta
         targets[t + p.delay] = w
         last = a
     r = run_book(mk.close.values, mk.funding.values, mk.funding_mask.values,
@@ -1215,8 +1232,8 @@ def report_baseline(mk: Market, n_controls: int, seed: int) -> None:
     report_carry(mk, n_controls, seed, sweep=False)
 
 
-def report_fsmarket(mk: Market, n_controls: int, seed: int) -> list[dict]:
-    p = FsMarketParams()
+def report_fsmarket(mk: Market, n_controls: int, seed: int, basket: str = "liquid") -> list[dict]:
+    p = FsMarketParams(trades=os.environ.get("GRAVITY_FS_TRADES", FsMarketParams.trades))
     if not os.path.exists(p.trades):
         raise SystemExit(f"{p.trades} missing — run `dotnet run -- edgetest` first")
     act = fs_activity(mk, p)
@@ -1225,12 +1242,12 @@ def report_fsmarket(mk: Market, n_controls: int, seed: int) -> list[dict]:
     print(f"  signal: mean {live.mean():.2f} of coins short, p10/p50/p90 "
           f"{np.quantile(live, .1):.2f}/{np.median(live):.2f}/{np.quantile(live, .9):.2f}")
     rows = []
-    r = run_fsmarket(mk, p, act)
-    rows.append(summarize("fsmarket: liquid basket", r))
+    r = run_fsmarket(mk, p, act, basket)
+    rows.append(summarize(f"fsmarket: {basket} basket", r))
     # Control: the same signal shifted in time. Same exposure distribution and persistence,
     # timing destroyed. What the real book earns above this is the timing.
     rng = np.random.default_rng(seed)
-    ctrl = [summarize(f"shift#{k}", run_fsmarket(mk, p, np.roll(act, int(rng.integers(24 * 60, len(act) - 24 * 60)))))
+    ctrl = [summarize(f"shift#{k}", run_fsmarket(mk, p, np.roll(act, int(rng.integers(24 * 60, len(act) - 24 * 60))), basket))
             for k in range(n_controls)]
     if ctrl:
         c = pd.DataFrame(ctrl)
@@ -1239,8 +1256,8 @@ def report_fsmarket(mk: Market, n_controls: int, seed: int) -> list[dict]:
         rows.append(row)
         print(f"  real signal out-earns {(c['ann_net_%'] < rows[0]['ann_net_%']).mean():.0%} of time-shifted controls")
     const = np.full_like(act, live.mean())
-    rows.append(summarize(f"fsmarket: CONSTANT short {live.mean():.2f} (drift only)", run_fsmarket(mk, p, const)))
-    if "BTCUSDT" in mk.close.columns:
+    rows.append(summarize(f"fsmarket: CONSTANT short {live.mean():.2f} (drift only)", run_fsmarket(mk, p, const, basket)))
+    if basket == "liquid" and "BTCUSDT" in mk.close.columns:
         rows.append(summarize("  sensitivity: BTC instead of basket", run_fsmarket(mk, p, act, "BTCUSDT")))
     print_table(rows, "FSMARKET")
     print("  net P&L by year (% of capital):", by_year(r).to_dict())
@@ -1248,6 +1265,11 @@ def report_fsmarket(mk: Market, n_controls: int, seed: int) -> list[dict]:
     tail = BookResult(r.price[r.index >= cut], r.funding[r.index >= cut], r.cost[r.index >= cut],
                       0.0, r.index[r.index >= cut])
     s_t = summarize("last 10%", tail)
+    half = r.index[len(r.index) // 2]
+    for nm, msk in (("first half", r.index < half), ("second half", r.index >= half)):
+        hb = BookResult(r.price[msk], r.funding[msk], r.cost[msk], 0.0, r.index[msk])
+        sh = summarize(nm, hb)
+        print(f"  {nm} (split {half:%Y-%m-%d}): {sh['ann_net_%']:+.2f}%/yr, t_weekly {sh['t_weekly']:+.2f}")
     print(f"  last 10% of the window (from {cut:%Y-%m-%d}): {s_t['ann_net_%']:+.2f}%/yr, t_weekly {s_t['t_weekly']:+.2f}")
     return rows
 
@@ -1513,7 +1535,7 @@ def selftest() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("book", choices=["pairs", "carry", "xcarry", "resid", "grid", "fsmarket", "combo", "all",
+    ap.add_argument("book", choices=["pairs", "carry", "xcarry", "resid", "grid", "fsmarket", "fsspread", "combo", "all",
                                      "baseline", "selftest"])
     ap.add_argument("--trades", default=os.path.join(REPO, "reports", "edgetest_raw_trades.csv"),
                     help="C# trade log for the combo book's Grid sleeve")
@@ -1559,6 +1581,8 @@ def main() -> int:
         report_grid(mk, a.controls, a.seed)
     if a.book == "fsmarket":
         report_fsmarket(mk, a.controls, a.seed)
+    if a.book == "fsspread":
+        report_fsmarket(mk, a.controls, a.seed, basket="spread")
     if a.book == "combo":
         report_combo(mk, a.trades)
     if a.book in ("pairs", "all"):

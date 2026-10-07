@@ -48,3 +48,21 @@ K = 3; the Grid P&L that exits inside each episode window (does the hedge pay wh
 sensitivity H ∈ {12, 48}h — not candidates.
 
 Trials: 2 (A1, A2) at K = 2. Script: `research/grid_stop_breadth.py`.
+
+## Results (run 2026-10-07, after the commit above) — FAIL, both actions, both universes
+
+| K=2 (primary) | OosCoins | BacktestCoins |
+|---|---|---|
+| episodes | 105 | 118 |
+| A1 paused sessions, mean vs kept | **+0.313% vs +0.162%** (paused are BETTER) | +0.050% vs +0.200% |
+| A1 random / shifts / halves | below 15% of random, 4/20 shifts, +11.8/+57.4 | 88%, 19/20, −10.1/+27.7 |
+| A2 short net (gross), t | +0.039% (+0.249%), t 0.11 | +0.316% (+0.526%), t 0.76 |
+| A2 random / shifts / halves | above 78%, 11/20, −0.29/+0.23 | 96%, 18/20, −0.11/+0.56 |
+| corr(short, Grid P&L in window) | −0.24 | −0.25 |
+
+K=3 also fails everywhere. Read: (A1) on the primary universe the sessions armed right after a stop
+cluster are Grid's BEST — the post-flush rebound is the edge, so pausing there removes it. (A2) the short
+points the right way and pays when Grid loses (ρ −0.25), but a 24h basket move carries ~4.5% noise per
+episode; ~110 episodes would need a ~0.9% mean for t 2. Low power on this sample, and it bleeds in the
+first half in both universes (fails no-bleed regardless). Not a live candidate; a forward shadow could
+accumulate episodes, but at ~22/yr it would take years.

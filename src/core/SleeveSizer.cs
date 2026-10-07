@@ -42,18 +42,25 @@ public static class SleeveSizer
     // So a low-Sharpe sleeve that is uncorrelated with, or hedges, the rest is not starved the way
     // ERC starves it (power check: ERC lowers book Sharpe for any uncorrelated sleeve with SR < ~0.67),
     // and a sleeve the others already replicate gets nothing however good it looks alone.
-    // μ is the noisy part, so each mean is shrunk toward 0 by its own t-stat, μ·max(0, 1 − 1/t²)
-    // (positive-part James-Stein): a sleeve must have earned its mean before it is sized on it.
-    // Σ is correlation-shrunk. Nothing positive → inverse vol (no evidence of alpha anywhere).
-    public static double[] AlphaWeights(double[] cov, double[] mean, double[] tStat, int k, double lambda = 0.3)
+    // μ is the noisy part. A sleeve at Sharpe 1 reaches only t ≈ 1 in a year of daily data, so shrinking
+    // each mean toward 0 by its own t zeroed every sleeve but the one that was briefly lucky (measured:
+    // the 2022 book went ~85% trend at full gross, Sharpe 0.29, maxDD −35%). Instead SharpeShrink pulls
+    // each sleeve's Sharpe toward the sleeves' COMMON Sharpe (empirical Bayes): with no evidence μ ∝ σ and
+    // Σ⁻¹μ is the maximum-diversification portfolio; the alpha tilt grows only as evidence accumulates.
+    // Σ is correlation-shrunk. Nothing positive → inverse vol.
+    public static double[] AlphaWeights(double[] cov, double[] mu, int k, double lambda = 0.3)
     {
-        var mu = new double[k];
-        for (int i = 0; i < k; i++)
-            mu[i] = Math.Abs(tStat[i]) > 1 ? mean[i] * (1 - 1 / (tStat[i] * tStat[i])) : 0.0;
         var x = Solve(CorrShrink(cov, k, lambda), mu, k);
         var w = x?.Select(v => Math.Max(0.0, v)).ToArray();
         double sum = w?.Sum() ?? 0;
         return sum > 1e-300 ? w!.Select(v => v / sum).ToArray() : RiskParity.InverseVol(cov, k);
+    }
+
+    // Posterior Sharpe per sleeve: (n·SR_i + n0·mean(SR)) / (n + n0), a prior worth n0 days.
+    public static double[] SharpeShrink(double[] sharpe, int n, double n0)
+    {
+        double bar = sharpe.Average();
+        return sharpe.Select(s => (n * s + n0 * bar) / (n + n0)).ToArray();
     }
 
     // Gaussian elimination with partial pivoting; k is the number of sleeves (≤ ~5). Null if singular.
@@ -81,7 +88,7 @@ public static class SleeveSizer
     public static Result Size(DateTime[] days, double[][] pnl, double[][] gross, Method m, bool scaleToGross,
                               double grossLimit = 1.0, double maxWeight = double.PositiveInfinity,
                               int lookback = 90, int minDays = 60, double lambda = 0.3,
-                              int alphaLookback = 365)
+                              double alphaPriorDays = 365)
     {
         int k = pnl.Length, n = days.Length;
         var daily = new double[n];
@@ -104,16 +111,16 @@ public static class SleeveSizer
                     if (cov == null) w = Enumerable.Repeat(1.0 / k, k).ToArray();
                     else if (m == Method.Alpha)
                     {
-                        // Means need a longer window than the covariance: a 90-day mean is mostly noise.
-                        var longPast = Enumerable.Range(0, d).Where(i => days[i] >= start.AddDays(-alphaLookback)).ToArray();
-                        var mean = new double[k]; var t = new double[k];
+                        // Sharpe from ALL days before the month (a 90-day mean is mostly noise); σ from Σ.
+                        var sr = new double[k];
                         for (int s = 0; s < k; s++)
                         {
-                            var x = longPast.Select(i => pnl[s][i]).ToArray();
+                            var x = pnl[s].Take(d).ToArray();
                             double mu = x.Average(), sd = Math.Sqrt(x.Sum(v => (v - mu) * (v - mu)) / Math.Max(1, x.Length - 1));
-                            mean[s] = mu; t[s] = sd > 1e-15 ? mu / sd * Math.Sqrt(x.Length) : 0.0;
+                            sr[s] = sd > 1e-15 ? mu / sd : 0.0;
                         }
-                        w = AlphaWeights(cov, mean, t, k, lambda);
+                        var post = SharpeShrink(sr, d, alphaPriorDays);
+                        w = AlphaWeights(cov, post.Select((p, s) => p * Math.Sqrt(cov[s * k + s])).ToArray(), k, lambda);
                     }
                     else w = RiskWeights(cov, k, m, lambda);
                     double sum = w.Sum();

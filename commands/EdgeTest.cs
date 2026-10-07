@@ -954,8 +954,8 @@ public static class EdgeTest
             ("ERC, C# mean-diag shrink, scaled to gross", SleeveSizer.Method.ErcMeanDiagShrink, true,  double.PositiveInfinity),
             ("ERC, correlation shrink, scaled to gross",  SleeveSizer.Method.ErcCorrShrink,     true,  double.PositiveInfinity),
             ("ERC, correlation shrink, scaled, w ≤ 1",    SleeveSizer.Method.ErcCorrShrink,     true,  1.0),
-            ("alpha Σ⁻¹μ (t-shrunk μ), scaled to gross",  SleeveSizer.Method.Alpha,             true,  double.PositiveInfinity),
-            ("alpha Σ⁻¹μ (t-shrunk μ), scaled, w ≤ 1",    SleeveSizer.Method.Alpha,             true,  1.0),
+            ("alpha Σ⁻¹μ, EB Sharpe, scaled to gross",      SleeveSizer.Method.Alpha,             true,  double.PositiveInfinity),
+            ("alpha Σ⁻¹μ, EB Sharpe, scaled, w ≤ 1",        SleeveSizer.Method.Alpha,             true,  1.0),
         };
         foreach (double expCap in new[] { 0.60, 0.30 })
         {
@@ -969,6 +969,9 @@ public static class EdgeTest
             var days = Enumerable.Range(0, (int)(d1 - d0).TotalDays + 1).Select(i => d0.AddDays(i)).ToArray();
             var pnl = names.Select(n => days.Select(d => sl[n].Pnl.GetValueOrDefault(d)).ToArray()).ToArray();
             var gross = names.Select(n => days.Select(d => sl[n].Gross.GetValueOrDefault(d)).ToArray()).ToArray();
+            File.WriteAllLines(Path.Combine("reports", FormattableString.Invariant($"sleeves_daily_cap{expCap * 100:F0}.csv")),
+                days.Select((d, j) => $"{d:yyyy-MM-dd}," + string.Join(",", names.Select((_, i) => FormattableString.Invariant($"{pnl[i][j]},{gross[i][j]}"))))
+                    .Prepend("date," + string.Join(",", names.Select(n => $"{n}_pnl,{n}_gross"))));
             Console.WriteLine($"  grid exposure cap {expCap:P0} of sleeve capital; {d0:yyyy-MM-dd} → {d1:yyyy-MM-dd}");
             Console.WriteLine("    sleeves (MTM, per unit capital): " + string.Join("  ", names.Select((n, i) =>
                 $"{n} Sharpe {DailySharpe(pnl[i]):F2} mean gross {gross[i].Average():F2}")));

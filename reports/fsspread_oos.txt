@@ -1,0 +1,194 @@
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+/home/thomas/Gravity-lab/.claude/worktrees/alpha-fade/scripts/market_neutral_research.py:1022: RuntimeWarning: Mean of empty slice
+  alt, b = np.nanmean(lr[:, :-1], axis=1), lr[:, -1]
+/usr/lib/python3.14/site-packages/numpy/_core/fromnumeric.py:4270: RuntimeWarning: Degrees of freedom <= 0 for slice
+  return _methods._var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:178: RuntimeWarning: invalid value encountered in divide
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+/usr/lib/python3.14/site-packages/numpy/_core/_methods.py:211: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+Universe oos: 64 symbols loaded, 37 missing; 2020-03-25 → 2026-10-07; exec maker, cost/side 0.020%
+
+── FSMARKET (FadeShort's open-short fraction, expressed as one short on a basket) ──
+  signal: mean 0.36 of coins short, p10/p50/p90 0.00/0.35/0.69
+  real signal out-earns 100% of time-shifted controls
+
+════ FSMARKET ══════════════════════════════════════════════════════════════════════════════
+                                                      ann_net_%  ann_price_%  ann_funding_%  ann_cost_%  vol_%  sharpe  t_weekly  maxDD_%  turnover_x_yr  orders_yr     days
+book                                                                                                                                                                        
+fsmarket: spread basket                                   11.44        19.05          -3.16       -4.06  24.64    0.46      1.12   -45.32         202.86  40,441.11 2,139.00
+fsmarket: TIME-SHIFTED signal control (median of 20)       0.75         4.79          -0.84       -3.48  28.60    0.03      0.07   -86.54         174.23  29,383.94 2,148.00
+fsmarket: CONSTANT short 0.36 (drift only)                 4.40         5.75          -1.07       -0.23  22.85    0.19      0.52   -62.64          11.54  11,414.41 2,148.00
+  net P&L by year (% of capital): {2020: 22.77, 2021: -16.77, 2022: -8.06, 2023: 24.31, 2024: 36.77, 2025: 35.82, 2026: -25.51}
+  first half (split 2023-07-17): +9.52%/yr, t_weekly +0.69
+  second half (split 2023-07-17): +13.09%/yr, t_weekly +0.96
+  last 10% of the window (from 2026-02-14): -29.85%/yr, t_weekly -1.34
+
+Read: an edge needs (1) net > 0 with t_weekly ≳ 2, (2) a clear gap over its control row, and (3) survival on --universe oos. Grid rows are sensitivity, not candidates — do not pick the best one.

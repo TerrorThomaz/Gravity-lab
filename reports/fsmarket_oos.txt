@@ -1,0 +1,19 @@
+Universe oos: 64 symbols loaded, 37 missing; 2020-03-25 → 2026-10-07; exec maker, cost/side 0.020%
+
+── FSMARKET (FadeShort's open-short fraction, expressed as one short on a basket) ──
+  signal: mean 0.36 of coins short, p10/p50/p90 0.00/0.35/0.69
+  real signal out-earns 100% of time-shifted controls
+
+════ FSMARKET ══════════════════════════════════════════════════════════════════════════════
+                                                      ann_net_%  ann_price_%  ann_funding_%  ann_cost_%  vol_%  sharpe  t_weekly  maxDD_%  turnover_x_yr  orders_yr     days
+book                                                                                                                                                                        
+fsmarket: liquid basket                                   11.06        12.21           0.62       -1.78  34.87    0.32      0.83   -46.94          89.21  39,345.85 2,156.00
+fsmarket: TIME-SHIFTED signal control (median of 20)     -10.79       -12.27           3.48       -1.58  34.70   -0.31     -0.81  -116.08          79.04  26,365.25 2,357.00
+fsmarket: CONSTANT short 0.36 (drift only)                -6.72        -9.65           3.05       -0.12  28.42   -0.24     -0.64   -82.53           6.12  10,235.64 2,357.00
+  sensitivity: BTC instead of basket                      -6.39        -8.25           3.64       -1.78  23.64   -0.27     -0.66   -78.31          89.21   1,127.34 2,156.00
+  net P&L by year (% of capital): {2020: -15.43, 2021: -2.4, 2022: 44.78, 2023: -21.4, 2024: 18.35, 2025: 51.43, 2026: -10.02}
+  first half (split 2023-07-17): +6.70%/yr, t_weekly +0.36
+  second half (split 2023-07-17): +14.69%/yr, t_weekly +0.77
+  last 10% of the window (from 2026-02-14): -29.34%/yr, t_weekly -0.95
+
+Read: an edge needs (1) net > 0 with t_weekly ≳ 2, (2) a clear gap over its control row, and (3) survival on --universe oos. Grid rows are sensitivity, not candidates — do not pick the best one.

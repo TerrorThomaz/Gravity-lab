@@ -1,0 +1,100 @@
+
+═══ EDGE TEST — walk-forward gate, portfolio Sharpe, deflated ═══
+
+  Fetching 102 symbols (never-trained OOS set + BTC/ETH anchors)…
+  [cache] CAKEUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] XTZUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] NEOUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] FLOWUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] KAVAUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] DASHUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] THETAUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] IOSTUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ONTUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] YFIUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] BNTUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] KNCUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] WOOUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ZRXUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] COTIUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] CKBUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] CHRUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] TRBUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] SAFEUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] IDUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] RONINUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] BLURUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ARKMUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] BICOUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] EGLDUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] IOTAUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ZECUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] WAVESUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] QTUMUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] METISUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ASTRUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] CELOUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] LSKUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] CVXUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] MASKUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] LQTYUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] SSVUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] XVSUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] RSRUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ILVUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] SLPUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] YGGUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ALICEUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] RAREUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] PEOPLEUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] NMRUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] PHAUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ARPAUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] POLYXUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] DIAUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] DUSKUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] SUNUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] CVCUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] TWTUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] ACHUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] HIGHUSDT: 1 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] POWRUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] SUPERUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] IOTXUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] LITUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] MOVRUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] MINAUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 09:00
+  [cache] BTCUSDT: 3 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  [cache] ETHUSDT: 4 gap(s) > 2x median spacing (15m), first at 2026-07-13 08:15
+  BTC regime series: 56638 h1 bars (2020-03-25 → 2026-10-07)
+
+  [harvest] DipLong: setups on 63 coins, 8640 anchors
+  [harvest] SwingLong: setups on 63 coins, 21060 anchors
+  CROWDING cap ON (GRAVITY_CROWDING=0.50), 65 symbols — charges same-side open positions against the 20-slot budget
+
+  Raw book: 8266 trades, 63 coins, 2 strategies
+
+═══ SLEEVE BOOK — SleeveSizer across carry, Grid, GridShort, trend (gross notional ≤ 1) ═══
+
+  grid exposure cap 60% of sleeve capital; 2021-12-22 → 2026-10-03
+    sleeves (MTM, per unit capital): carry Sharpe 0.59 mean gross 1.00  grid Sharpe 2.04 mean gross 0.19  gridshort Sharpe 0.63 mean gross 0.08  trend Sharpe 0.74 mean gross 0.85
+    book                                            CAGR    vol  Sharpe   maxDD    DSR  gross μ/peak  avg weights (carry/grid/gridshort/trend)
+    inverse vol, capital split (sum 1)              8.4%   4.9%    1.67   -5.7%  0.194   0.23/0.68   0.09/0.31/0.56/0.04
+    ERC, C# mean-diag shrink, scaled to gross      17.1%  11.9%    1.38  -10.6%  0.066   0.61/1.00   0.34/0.47/0.48/0.17
+    ERC, correlation shrink, scaled to gross       13.4%   7.0%    1.83   -5.7%  0.310   0.39/1.00   0.15/0.56/1.03/0.06
+    ERC, correlation shrink, scaled, w ≤ 1         12.8%   6.7%    1.83   -5.7%  0.311   0.38/1.00   0.15/0.56/0.88/0.06
+    alpha Σ⁻¹μ, EB Sharpe, scaled to gross         12.6%   8.4%    1.45  -11.1%  0.097   0.38/1.00   0.10/0.80/0.82/0.08
+    alpha Σ⁻¹μ, EB Sharpe, scaled, w ≤ 1           12.2%   8.2%    1.46  -11.1%  0.099   0.37/1.00   0.10/0.77/0.73/0.08
+
+  grid exposure cap 30% of sleeve capital; 2021-12-22 → 2026-10-03
+    sleeves (MTM, per unit capital): carry Sharpe 0.59 mean gross 1.00  grid Sharpe 2.31 mean gross 0.14  gridshort Sharpe 0.78 mean gross 0.07  trend Sharpe 0.74 mean gross 0.85
+    book                                            CAGR    vol  Sharpe   maxDD    DSR  gross μ/peak  avg weights (carry/grid/gridshort/trend)
+    inverse vol, capital split (sum 1)              8.4%   4.7%    1.74   -5.7%  0.246   0.20/0.62   0.09/0.33/0.55/0.04
+    ERC, C# mean-diag shrink, scaled to gross      22.0%  14.7%    1.43  -11.8%  0.079   0.73/1.00   0.42/0.59/0.60/0.21
+    ERC, correlation shrink, scaled to gross       20.8%   9.1%    2.12   -5.7%  0.568   0.51/1.00   0.22/0.89/1.45/0.08
+    ERC, correlation shrink, scaled, w ≤ 1         19.3%   8.3%    2.16   -5.7%  0.603   0.47/1.00   0.22/0.86/0.95/0.08
+    alpha Σ⁻¹μ, EB Sharpe, scaled to gross         22.1%   9.5%    2.14   -6.2%  0.583   0.48/1.00   0.12/1.36/1.30/0.08
+    alpha Σ⁻¹μ, EB Sharpe, scaled, w ≤ 1           16.6%   7.7%    2.03   -5.7%  0.480   0.39/0.98   0.12/0.97/0.92/0.08
+
+  Carry and trend are read from research/export_sleeves.py (Python engine, authority cost constants);
+  Grid / GridShort are this engine's trades, marked daily on real prices. Seen data: information.

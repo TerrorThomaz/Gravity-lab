@@ -78,12 +78,10 @@ public class SleeveSizerTests
     }
 
     [Fact]
-    public void Alpha_UncorrelatedSleeves_AreSizedByShrunkMeanOverVariance()
+    public void Alpha_UncorrelatedSleeves_AreSizedByMeanOverVariance()
     {
-        double[] cov = { 0.0004, 0, 0, 0.0001 };
-        double[] mean = { 0.002, 0.001 }, t = { 4, 2 };
-        var w = SleeveSizer.AlphaWeights(cov, mean, t, 2);
-        double a = 0.002 * (1 - 1 / 16.0) / 0.0004, b = 0.001 * (1 - 1 / 4.0) / 0.0001;
+        var w = SleeveSizer.AlphaWeights(new[] { 0.0004, 0, 0, 0.0001 }, new[] { 0.002, 0.001 }, 2);
+        double a = 0.002 / 0.0004, b = 0.001 / 0.0001;
         Assert.Equal(a / (a + b), w[0], 9);
         Assert.Equal(b / (a + b), w[1], 9);
     }
@@ -91,19 +89,28 @@ public class SleeveSizerTests
     [Fact]
     public void Alpha_ZeroMeanHedgeEarnsWeight_ZeroMeanUncorrelatedDoesNot()
     {
-        double[] mean = { 0.002, 0.0 }, t = { 4, 0 };
-        var hedge = SleeveSizer.AlphaWeights(new[] { 0.0004, -0.0001, -0.0001, 0.0001 }, mean, t, 2);
+        double[] mu = { 0.002, 0.0 };
+        var hedge = SleeveSizer.AlphaWeights(new[] { 0.0004, -0.0001, -0.0001, 0.0001 }, mu, 2);
         Assert.True(hedge[1] > 0.1, $"a hedge of the earning sleeve should be held, got {hedge[1]}");
-        var idle = SleeveSizer.AlphaWeights(new[] { 0.0004, 0.0, 0.0, 0.0001 }, mean, t, 2);
+        var idle = SleeveSizer.AlphaWeights(new[] { 0.0004, 0.0, 0.0, 0.0001 }, mu, 2);
         Assert.Equal(0.0, idle[1], 12);
     }
 
     [Fact]
-    public void Alpha_NoSleeveHasEarnedItsMean_FallsBackToInverseVol()
+    public void Alpha_NothingPositive_FallsBackToInverseVol()
     {
         double[] cov = { 0.0004, 0, 0, 0.0001 };
-        var w = SleeveSizer.AlphaWeights(cov, new[] { 0.001, -0.002 }, new[] { 0.9, -3.0 }, 2);
-        Assert.Equal(RiskParity.InverseVol(cov, 2), w);
+        Assert.Equal(RiskParity.InverseVol(cov, 2), SleeveSizer.AlphaWeights(cov, new[] { -0.001, -0.002 }, 2));
+    }
+
+    [Fact]
+    public void SharpeShrink_NoEvidenceIsCommonSharpe_LotsIsOwnSharpe()
+    {
+        double[] sr = { 0.2, 0.0 };
+        Assert.All(SleeveSizer.SharpeShrink(sr, 0, 365), p => Assert.Equal(0.1, p, 12));
+        var many = SleeveSizer.SharpeShrink(sr, 1_000_000, 365);
+        Assert.Equal(0.2, many[0], 3);
+        Assert.Equal(0.0, many[1], 3);
     }
 
     [Fact]
